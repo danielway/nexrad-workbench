@@ -31,7 +31,7 @@ const MAX_RETAINED: usize = 50;
 /// `tests::worker_error_kind_deserializes_known_strings` below.
 #[derive(Copy, Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkerErrorKind {
+pub(crate) enum WorkerErrorKind {
     /// Browser storage quota exceeded — user must free space.
     QuotaExceeded,
     /// IDB read/write failure (transient or DB corruption).
@@ -53,7 +53,7 @@ pub enum WorkerErrorKind {
 /// appropriate icon / link without parsing the message string.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // `Other` is reserved for future reporters not yet migrated.
-pub enum AppError {
+pub(crate) enum AppError {
     /// Failure from the decode worker.
     Worker {
         kind: WorkerErrorKind,
@@ -80,7 +80,7 @@ pub enum AppError {
 
 impl AppError {
     /// Short human-readable label for the originating subsystem.
-    pub fn source_label(&self) -> &'static str {
+    pub(crate) fn source_label(&self) -> &'static str {
         match self {
             AppError::Worker { .. } => "worker",
             AppError::Download { .. } => "download",
@@ -91,7 +91,7 @@ impl AppError {
     }
 
     /// The user-facing message.
-    pub fn message(&self) -> &str {
+    pub(crate) fn message(&self) -> &str {
         match self {
             AppError::Worker { message, .. }
             | AppError::Download { message, .. }
@@ -104,7 +104,7 @@ impl AppError {
 
 /// One entry in the error ring buffer.
 #[derive(Debug, Clone)]
-pub struct TimestampedError {
+pub(crate) struct TimestampedError {
     pub error: AppError,
     /// Wall-clock time the error was pushed (milliseconds since epoch).
     pub timestamp_ms: f64,
@@ -113,14 +113,14 @@ pub struct TimestampedError {
 /// Recent-errors ring buffer. Lives on [`crate::state::AppState`] and
 /// receives pushes from reporters across the codebase.
 #[derive(Default)]
-pub struct ErrorContext {
+pub(crate) struct ErrorContext {
     recent: VecDeque<TimestampedError>,
 }
 
 impl ErrorContext {
     /// Push a fresh error. Older entries fall off when the ring exceeds
     /// [`MAX_RETAINED`].
-    pub fn push(&mut self, error: AppError) {
+    pub(crate) fn push(&mut self, error: AppError) {
         let entry = TimestampedError {
             error,
             timestamp_ms: js_sys::Date::now(),
@@ -133,28 +133,28 @@ impl ErrorContext {
 
     /// All retained entries, oldest first. The returned iterator is
     /// double-ended so callers can `.rev()` for newest-first display.
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &TimestampedError> {
+    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &TimestampedError> {
         self.recent.iter()
     }
 
     /// Most recent error, if any.
     #[allow(dead_code)] // Available for callers; current UI iterates instead.
-    pub fn most_recent(&self) -> Option<&TimestampedError> {
+    pub(crate) fn most_recent(&self) -> Option<&TimestampedError> {
         self.recent.back()
     }
 
     /// Number of retained entries.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.recent.len()
     }
 
     /// Whether the ring is currently empty.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.recent.is_empty()
     }
 
     /// Clear the ring.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.recent.clear();
     }
 }

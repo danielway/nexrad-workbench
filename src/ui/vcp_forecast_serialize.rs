@@ -16,7 +16,7 @@ use crate::core::{
 };
 use std::fmt::Write as _;
 
-pub fn serialize_forecast(
+pub(crate) fn serialize_forecast(
     snap: &VolumeForecastSnapshot,
     arrivals: &[ChunkArrivalStat],
     site_id: &str,

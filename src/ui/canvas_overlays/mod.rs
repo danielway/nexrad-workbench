@@ -51,7 +51,7 @@ use eframe::egui::{self, Rect};
 /// fields are intentionally narrow — overlays that need more (e.g.
 /// the camera for the compass) reach through `state` or get a typed
 /// borrow when constructed.
-pub struct OverlayContext<'a> {
+pub(crate) struct OverlayContext<'a> {
     /// Full canvas rect for this frame.
     pub rect: Rect,
     /// Read-only app state.
@@ -72,7 +72,7 @@ pub struct OverlayContext<'a> {
 ///
 /// Implementors are zero-sized marker types; behavior + dependencies
 /// live in the impl.
-pub trait Overlay {
+pub(crate) trait Overlay {
     /// Lower draws earlier (further back). Z-order is data, not
     /// order-of-call.
     fn z_order(&self) -> i32;

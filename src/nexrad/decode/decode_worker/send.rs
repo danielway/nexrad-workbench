@@ -11,7 +11,7 @@ use web_sys::Worker;
 impl DecodeWorker {
     /// Submit an archive for ingestion: split, probe elevations, store in IDB.
     #[allow(clippy::too_many_arguments)]
-    pub fn ingest(
+    pub(crate) fn ingest(
         &mut self,
         data: Vec<u8>,
         site_id: String,
@@ -58,7 +58,7 @@ impl DecodeWorker {
     }
 
     /// Submit a decode request: fetch records from IDB, decode target elevation, return raw data.
-    pub fn render(
+    pub(crate) fn render(
         &mut self,
         scan_key: crate::data::ScanKey,
         elevation_number: u8,
@@ -87,7 +87,7 @@ impl DecodeWorker {
     }
 
     /// Submit a live (partial sweep) render request: reads from in-memory accumulator.
-    pub fn render_live(&mut self, elevation_number: u8, product: String) {
+    pub(crate) fn render_live(&mut self, elevation_number: u8, product: String) {
         let id = self.next_request_id();
         // Live renders aren't bound to a stored scan; supply a sentinel
         // ScanKey for the context (the receive path doesn't read it for
@@ -115,7 +115,7 @@ impl DecodeWorker {
     }
 
     /// Submit a volume render request: fetch all elevations, pack for ray marching.
-    pub fn render_volume(
+    pub(crate) fn render_volume(
         &mut self,
         scan_key: crate::data::ScanKey,
         product: String,
@@ -147,7 +147,7 @@ impl DecodeWorker {
 
     /// Submit a single real-time chunk for incremental ingest.
     #[allow(clippy::too_many_arguments)]
-    pub fn ingest_chunk(
+    pub(crate) fn ingest_chunk(
         &mut self,
         data: Vec<u8>,
         site_id: String,

@@ -6,7 +6,7 @@
 use nexrad_render::{Color as NrColor, ColorScale, ColorStop, ContinuousColorScale, Product};
 
 /// Default value ranges per product (used for color LUT normalization).
-pub fn product_value_range(product: Product) -> (f32, f32) {
+pub(crate) fn product_value_range(product: Product) -> (f32, f32) {
     match product {
         Product::Reflectivity => (-32.0, 95.0),
         Product::Velocity => (-64.0, 64.0),
@@ -18,7 +18,7 @@ pub fn product_value_range(product: Product) -> (f32, f32) {
     }
 }
 
-pub fn product_from_str(s: &str) -> Product {
+pub(crate) fn product_from_str(s: &str) -> Product {
     match s {
         "velocity" => Product::Velocity,
         "spectrum_width" => Product::SpectrumWidth,
@@ -99,7 +99,7 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 
 /// Build a 1024-entry RGBA LUT for reflectivity using OKLab interpolation,
 /// monotonically increasing luminance, and a low-end alpha ramp.
-pub fn build_reflectivity_lut(min_val: f32, max_val: f32) -> Vec<u8> {
+pub(crate) fn build_reflectivity_lut(min_val: f32, max_val: f32) -> Vec<u8> {
     // Anchor colors: (dBZ, r, g, b, a) in sRGB 0-1.
     // Designed for black background with increasing luminance.
     let anchors: &[(f32, f32, f32, f32, f32)] = &[
@@ -189,7 +189,7 @@ pub fn build_reflectivity_lut(min_val: f32, max_val: f32) -> Vec<u8> {
 /// Build a continuous (linearly-interpolated) color scale for the given product.
 /// Uses the same color stops as the discrete NWS scales from the nexrad_render crate,
 /// but interpolates smoothly between them for a commercial-quality appearance.
-pub fn continuous_color_scale(product: Product) -> ColorScale {
+pub(crate) fn continuous_color_scale(product: Product) -> ColorScale {
     let stops = match product {
         Product::Reflectivity => vec![
             // Unused for LUT generation (build_reflectivity_lut is used instead),

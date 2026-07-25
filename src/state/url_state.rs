@@ -29,7 +29,7 @@ impl ViewState {
     /// `is_live` from [`crate::subsystem::Live::mode_state`] — the
     /// URL-state module doesn't reach for either subsystem so the
     /// dependency stays one-way.
-    pub fn from_state(
+    pub(crate) fn from_state(
         state: &super::AppState,
         playback: &crate::core::PlaybackState,
         is_live: bool,
@@ -75,7 +75,7 @@ impl ViewState {
 /// builder for the pure [`crate::core::decide_persist`]. Kept beside
 /// [`ViewState::from_state`] so the whole state → URL field mapping lives in
 /// one place.
-pub fn build_url_push(
+pub(crate) fn build_url_push(
     state: &super::AppState,
     playback: &crate::core::PlaybackState,
     is_live: bool,
@@ -92,7 +92,7 @@ pub fn build_url_push(
 }
 
 /// Parsed URL parameters.
-pub struct UrlParams {
+pub(crate) struct UrlParams {
     pub site: Option<String>,
     pub time: Option<f64>,
     pub product: Option<String>,
@@ -107,7 +107,7 @@ pub struct UrlParams {
 }
 
 /// Parse URL query parameters from the current browser URL.
-pub fn parse_from_url() -> UrlParams {
+pub(crate) fn parse_from_url() -> UrlParams {
     let mut params = UrlParams {
         site: None,
         time: None,
@@ -164,7 +164,7 @@ pub fn parse_from_url() -> UrlParams {
 ///
 /// `dev` is appended as `&dev=true` only when true; when false the parameter
 /// is omitted so off-mode URLs stay clean.
-pub fn push_to_url(
+pub(crate) fn push_to_url(
     site: &str,
     time: f64,
     product: &str,

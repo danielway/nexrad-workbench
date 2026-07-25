@@ -30,7 +30,7 @@ use nexrad_decode::messages::volume_coverage_pattern;
 /// physics decomposition, the sample count we drew from, whether historical
 /// data contributed, and the retry budget for the *target* chunk's bucket.
 #[derive(Debug, Clone, Copy)]
-pub struct IntervalEstimate {
+pub(crate) struct IntervalEstimate {
     /// Predicted seconds between the two chunks. Pure interval — does not
     /// include retry budget or poll bias.
     pub seconds: f64,
@@ -64,7 +64,7 @@ pub struct IntervalEstimate {
 ///   download poll (`available_at + retry_budget + POLL_BIAS`). Drives the
 ///   sleep before each download attempt.
 #[derive(Debug, Clone, Copy)]
-pub struct ProjectedTimes {
+pub(crate) struct ProjectedTimes {
     pub collection_at_secs: f64,
     pub available_at_secs: f64,
     pub poll_at_secs: f64,
@@ -75,7 +75,7 @@ impl IntervalEstimate {
     /// chunk's collection time and the empirical availability lag.
     /// `tuning.poll_bias_secs` shifts the poll axis so the first attempt
     /// lands slightly after the expected upload rather than racing it.
-    pub fn project_times(
+    pub(crate) fn project_times(
         &self,
         anchor_collection_secs: f64,
         availability_lag_secs: f64,
@@ -99,7 +99,7 @@ impl IntervalEstimate {
 /// AVAILABILITY-domain (S3 upload→upload) samples are never used as the
 /// historical term — upload jitter would bias the collection axis.
 /// Retry budget is read from the same bucket's attempts average.
-pub fn estimate_interval(
+pub(crate) fn estimate_interval(
     prev: &ChunkMetadata,
     next: &ChunkMetadata,
     next_bucket: Option<&ChunkCharacteristics>,
@@ -142,7 +142,7 @@ pub fn estimate_interval(
 /// Resolve a chunk's `ChunkCharacteristics` against the VCP for stats
 /// lookup. Returns `None` when the chunk has no elevation (Start chunk) or
 /// when the elevation index doesn't resolve in the VCP.
-pub fn chunk_characteristics(
+pub(crate) fn chunk_characteristics(
     meta: &ChunkMetadata,
     vcp: &volume_coverage_pattern::Message,
 ) -> Option<ChunkCharacteristics> {

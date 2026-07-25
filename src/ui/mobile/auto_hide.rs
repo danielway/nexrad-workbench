@@ -16,7 +16,7 @@ use crate::state::MOBILE_CHROME_IDLE_HIDE_SECS;
 /// Inputs to the auto-hide decision for one frame. All sourced from
 /// already-resolved per-frame state so the decision stays a pure function.
 #[derive(Clone, Copy, Debug)]
-pub struct AutoHideInputs {
+pub(crate) struct AutoHideInputs {
     /// egui `input.time` (monotonic seconds).
     pub now_secs: f64,
     /// When the user last interacted with the chrome/canvas (tap, drag, reveal).
@@ -34,7 +34,7 @@ pub struct AutoHideInputs {
 /// Hides only while genuinely playing, after [`MOBILE_CHROME_IDLE_HIDE_SECS`]
 /// of no interaction, and never while paused, while a modal/sheet is open, or
 /// mid-gesture. Pure so the state machine is testable without egui.
-pub fn should_hide_chrome(input: AutoHideInputs) -> bool {
+pub(crate) fn should_hide_chrome(input: AutoHideInputs) -> bool {
     if !input.is_playing || input.modal_open || input.gesture_active {
         return false;
     }

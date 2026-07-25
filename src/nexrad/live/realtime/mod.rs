@@ -56,7 +56,7 @@ impl From<&crate::core::ElevationSelection> for StreamingFilter {
 /// attribution, the diagnostics modal) can read attribution data per chunk
 /// rather than only for the immediate next download target.
 #[derive(Clone, Debug)]
-pub struct ChunkProjectedTimes {
+pub(crate) struct ChunkProjectedTimes {
     /// COLLECTION category: projected Unix-seconds time the radar physically
     /// emits/receives for this chunk.
     pub collection_time_secs: f64,
@@ -89,7 +89,7 @@ pub struct ChunkProjectedTimes {
 /// that's present iff the chunk is in the future from the streaming loop's
 /// anchor. Past chunks carry only structural fields.
 #[derive(Clone, Debug)]
-pub struct ChunkProjectionInfo {
+pub(crate) struct ChunkProjectionInfo {
     /// 1-based sequence number in the volume.
     pub sequence: usize,
     /// Elevation number (1-based), None for the Start chunk.
@@ -114,7 +114,7 @@ pub struct ChunkProjectionInfo {
 /// these values are produced and consumed within the same frame.
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
-pub enum RealtimeResult {
+pub(crate) enum RealtimeResult {
     /// Iterator initialized, streaming started
     Started { site_id: String },
     /// Chunk received from the stream (UI status update).
@@ -190,7 +190,7 @@ pub(super) enum ControlMessage {
 /// so messages from a previously-running loop don't leak across sessions.
 /// `active` is a `Cell<bool>` set by `start()` and cleared by the loop on
 /// exit; the UI reads it via [`is_active`](Self::is_active).
-pub struct RealtimeChannel {
+pub(crate) struct RealtimeChannel {
     active: Rc<Cell<bool>>,
     /// Results channel pair. Refilled by `start()`; reads via
     /// `try_recv` borrow the receiver mutably through the `RefCell`.
@@ -265,7 +265,7 @@ impl Default for RealtimeChannel {
 }
 
 impl RealtimeChannel {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             active: Rc::new(Cell::new(false)),
             results: RefCell::new(ResultsChannel::new()),
@@ -275,7 +275,7 @@ impl RealtimeChannel {
         }
     }
 
-    pub fn with_stats(stats: NetworkStats) -> Self {
+    pub(crate) fn with_stats(stats: NetworkStats) -> Self {
         Self {
             active: Rc::new(Cell::new(false)),
             results: RefCell::new(ResultsChannel::new()),
@@ -285,11 +285,11 @@ impl RealtimeChannel {
         }
     }
 
-    pub fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.active.get()
     }
 
-    pub fn start(
+    pub(crate) fn start(
         &self,
         ctx: egui::Context,
         site_id: String,
@@ -340,7 +340,7 @@ impl RealtimeChannel {
         });
     }
 
-    pub fn stop(&self) {
+    pub(crate) fn stop(&self) {
         // Send a Stop message; the loop will exit cleanly the next time
         // it drains the control channel. Also clear `active` eagerly so
         // `is_active()` reflects the user's intent immediately — the
@@ -353,7 +353,7 @@ impl RealtimeChannel {
         self.active.set(false);
     }
 
-    pub fn try_recv(&self) -> Option<RealtimeResult> {
+    pub(crate) fn try_recv(&self) -> Option<RealtimeResult> {
         self.results.borrow_mut().rx.try_recv().ok()
     }
 
@@ -361,7 +361,7 @@ impl RealtimeChannel {
     /// streaming-loop iteration. Adding new observation kinds is purely
     /// a matter of extending [`crate::nexrad::ProjectorObservation`] and the
     /// drain dispatch — no new state field or new channel method needed.
-    pub fn observe(&self, observation: crate::nexrad::ProjectorObservation) {
+    pub(crate) fn observe(&self, observation: crate::nexrad::ProjectorObservation) {
         // Drop the result silently; if the loop has finished and
         // closed the receiver, late observations have no consumer.
         let _ = self.observations.borrow().tx.unbounded_send(observation);
@@ -370,14 +370,14 @@ impl RealtimeChannel {
     /// Push the latest radial collection time (Unix seconds) parsed from
     /// the chunk that was just ingested. Convenience wrapper over
     /// [`Self::observe`].
-    pub fn record_chunk_collection_end_secs(&self, secs: f64) {
+    pub(crate) fn record_chunk_collection_end_secs(&self, secs: f64) {
         self.observe(crate::nexrad::ProjectorObservation::CollectionEndSecs(secs));
     }
 
     /// Push an empirical availability lag (S3 upload − ACTUAL chunk
     /// collection time, seconds) for the chunk just ingested. Convenience
     /// wrapper over [`Self::observe`].
-    pub fn record_availability_lag_secs(&self, lag_secs: f64) {
+    pub(crate) fn record_availability_lag_secs(&self, lag_secs: f64) {
         self.observe(crate::nexrad::ProjectorObservation::AvailabilityLagSecs(
             lag_secs,
         ));
@@ -386,7 +386,7 @@ impl RealtimeChannel {
     /// Update the active streaming filter. The loop's de-dupe check
     /// drops the message if the value didn't actually change, so calling
     /// this every frame from the UI is cheap.
-    pub fn set_filter(&self, filter: StreamingFilter) {
+    pub(crate) fn set_filter(&self, filter: StreamingFilter) {
         let _ = self
             .control
             .borrow()
@@ -397,12 +397,12 @@ impl RealtimeChannel {
     /// Push the user's elevation selection down as a [`StreamingFilter`].
     /// Called once per frame from the UI; the loop's de-dupe makes this
     /// cheap.
-    pub fn sync_filter(&self, selection: &crate::core::ElevationSelection) {
+    pub(crate) fn sync_filter(&self, selection: &crate::core::ElevationSelection) {
         self.set_filter(StreamingFilter::from(selection));
     }
 
     /// Drain every pending result.
-    pub fn poll(&self) -> Vec<RealtimeResult> {
+    pub(crate) fn poll(&self) -> Vec<RealtimeResult> {
         let mut out = Vec::new();
         while let Some(result) = self.try_recv() {
             out.push(result);

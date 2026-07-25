@@ -3,7 +3,7 @@
 //! `radar_timeline`; never set directly.
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum AppMode {
+pub(crate) enum AppMode {
     /// No data under the playback cursor and not streaming.
     #[default]
     Idle,
@@ -21,7 +21,11 @@ pub enum AppMode {
 /// independent: a running stream with a detached playhead (the user
 /// scrubbed away while ingestion continues) is ARCHIVE/IDLE territory —
 /// the canvas shows what's under the cursor, not the stream.
-pub fn derive_app_mode(streaming: bool, playhead_live: bool, has_scan_at_cursor: bool) -> AppMode {
+pub(crate) fn derive_app_mode(
+    streaming: bool,
+    playhead_live: bool,
+    has_scan_at_cursor: bool,
+) -> AppMode {
     if streaming && playhead_live {
         AppMode::Live
     } else if has_scan_at_cursor {
@@ -32,7 +36,7 @@ pub fn derive_app_mode(streaming: bool, playhead_live: bool, has_scan_at_cursor:
 }
 
 impl AppMode {
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             AppMode::Idle => "IDLE",
             AppMode::Archive => "ARCHIVE",

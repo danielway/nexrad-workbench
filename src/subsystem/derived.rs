@@ -28,7 +28,7 @@ use crate::subsystem::Playback;
 
 /// Per-frame snapshot of computed values shared across UI panels.
 #[derive(Debug, Clone, Copy)]
-pub struct Derived {
+pub(crate) struct Derived {
     /// Wall-clock "now" in seconds since epoch, captured once at the
     /// top of the frame so every consumer agrees on it.
     pub frame_now_secs: f64,
@@ -50,7 +50,7 @@ impl Derived {
     /// Populate the snapshot. Called once near the top of `update()`,
     /// before any subsystem tick or panel render, so every consumer
     /// downstream reads the same values.
-    pub fn for_frame(state: &AppState, playback: &Playback) -> Self {
+    pub(crate) fn for_frame(state: &AppState, playback: &Playback) -> Self {
         Self {
             frame_now_secs: state.frame_now.secs(),
             visible_bounds: state.viz_state.last_visible_bounds,

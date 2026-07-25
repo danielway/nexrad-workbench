@@ -7,7 +7,7 @@ use nexrad_decode::messages::volume_coverage_pattern::{self, WaveformType};
 /// Sequence 1 is always the Start chunk containing metadata (VCP, site info).
 /// Subsequent sequences contain radar data, grouped by elevation sweep.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ChunkMetadata {
+pub(crate) struct ChunkMetadata {
     /// Sequence number of this chunk (1-based).
     sequence: usize,
     /// The 1-based elevation number this chunk belongs to, or None for the Start chunk.
@@ -57,59 +57,59 @@ impl ChunkMetadata {
     }
 
     /// The sequence number of this chunk (1-based).
-    pub fn sequence(&self) -> usize {
+    pub(crate) fn sequence(&self) -> usize {
         self.sequence
     }
 
     /// The 1-based elevation number this chunk belongs to, or None for the Start chunk.
-    pub fn elevation_number(&self) -> Option<usize> {
+    pub(crate) fn elevation_number(&self) -> Option<usize> {
         self.elevation_number
     }
 
     /// The chunk's 0-based index within its sweep.
-    pub fn chunk_index_in_sweep(&self) -> usize {
+    pub(crate) fn chunk_index_in_sweep(&self) -> usize {
         self.chunk_index_in_sweep
     }
 
     /// Total number of chunks in this sweep (3 for standard, 6 for super-resolution).
-    pub fn chunks_in_sweep(&self) -> usize {
+    pub(crate) fn chunks_in_sweep(&self) -> usize {
         self.chunks_in_sweep
     }
 
     /// Whether this is the first chunk in a sweep.
-    pub fn is_first_in_sweep(&self) -> bool {
+    pub(crate) fn is_first_in_sweep(&self) -> bool {
         self.is_first_in_sweep
     }
 
     /// Whether this is the last chunk in a sweep.
-    pub fn is_last_in_sweep(&self) -> bool {
+    pub(crate) fn is_last_in_sweep(&self) -> bool {
         self.is_last_in_sweep
     }
 
     /// Azimuth rotation rate for this elevation in degrees/second.
-    pub fn azimuth_rate_dps(&self) -> f64 {
+    pub(crate) fn azimuth_rate_dps(&self) -> f64 {
         self.azimuth_rate_dps
     }
 
     /// Elevation angle in degrees.
-    pub fn elevation_angle_deg(&self) -> f64 {
+    pub(crate) fn elevation_angle_deg(&self) -> f64 {
         self.elevation_angle_deg
     }
 
     /// Waveform type for this elevation. `None` for the Start chunk.
-    pub fn waveform_type(&self) -> Option<WaveformType> {
+    pub(crate) fn waveform_type(&self) -> Option<WaveformType> {
         self.waveform_type
     }
 
     /// Whether this is the Start chunk (sequence 1, metadata-only).
-    pub fn is_start_chunk(&self) -> bool {
+    pub(crate) fn is_start_chunk(&self) -> bool {
         self.is_start_chunk
     }
 }
 
 /// Maps between real-time chunk sequence numbers and volume coverage pattern elevation numbers.
 #[derive(Debug)]
-pub struct ElevationChunkMapper {
+pub(crate) struct ElevationChunkMapper {
     // Index is elevation number - 1, value is chunk range inclusive
     elevation_chunk_mappings: Vec<(usize, usize)>,
     // Metadata for every chunk, indexed by (sequence - 1)
@@ -118,7 +118,7 @@ pub struct ElevationChunkMapper {
 
 impl ElevationChunkMapper {
     /// Create a new mapper from a volume coverage pattern.
-    pub fn new(vcp: &volume_coverage_pattern::Message) -> Self {
+    pub(crate) fn new(vcp: &volume_coverage_pattern::Message) -> Self {
         let mut elevation_chunk_mappings = Vec::new();
         let mut chunk_metadata = Vec::new();
 
@@ -179,7 +179,7 @@ impl ElevationChunkMapper {
 
     /// Get the elevation number for a given sequence number. Returns None if the sequence number
     /// does not correspond to a radar scan described by the VCP.
-    pub fn get_sequence_elevation_number(&self, sequence: usize) -> Option<usize> {
+    pub(crate) fn get_sequence_elevation_number(&self, sequence: usize) -> Option<usize> {
         // The first chunk is metadata, not a radar scan described by the VCP
         if sequence == 1 {
             return None;
@@ -192,7 +192,7 @@ impl ElevationChunkMapper {
     }
 
     /// Returns the final sequence number for the volume.
-    pub fn final_sequence(&self) -> usize {
+    pub(crate) fn final_sequence(&self) -> usize {
         self.elevation_chunk_mappings
             .last()
             .map(|(_, end)| *end)
@@ -202,7 +202,7 @@ impl ElevationChunkMapper {
     /// Get rich metadata for a specific chunk sequence number.
     ///
     /// Returns None if the sequence number is out of range.
-    pub fn get_chunk_metadata(&self, sequence: usize) -> Option<&ChunkMetadata> {
+    pub(crate) fn get_chunk_metadata(&self, sequence: usize) -> Option<&ChunkMetadata> {
         if sequence == 0 || sequence > self.chunk_metadata.len() {
             return None;
         }
@@ -210,12 +210,12 @@ impl ElevationChunkMapper {
     }
 
     /// Get metadata for all chunks in the volume (including the Start chunk at index 0).
-    pub fn all_chunk_metadata(&self) -> &[ChunkMetadata] {
+    pub(crate) fn all_chunk_metadata(&self) -> &[ChunkMetadata] {
         &self.chunk_metadata
     }
 
     /// Total number of chunks in the volume (including the Start chunk).
-    pub fn total_chunks(&self) -> usize {
+    pub(crate) fn total_chunks(&self) -> usize {
         self.chunk_metadata.len()
     }
 
@@ -227,7 +227,7 @@ impl ElevationChunkMapper {
     /// `accept_end` is consulted only when the candidate is `final_sequence`:
     /// callers that want to keep volume-boundary signaling pass `true`, callers
     /// that are happy to synthesize the boundary pass `false`.
-    pub fn next_matching_sequence_after(
+    pub(crate) fn next_matching_sequence_after(
         &self,
         current: usize,
         accept_end: bool,
@@ -261,7 +261,7 @@ impl ElevationChunkMapper {
     /// extend — the streaming loop's next fetch naturally rolls over via
     /// the existing `try_fetch_volume_start` path without needing
     /// chained projection.
-    pub fn has_remaining_match(&self, filter: StreamingFilter, after_seq: usize) -> bool {
+    pub(crate) fn has_remaining_match(&self, filter: StreamingFilter, after_seq: usize) -> bool {
         self.next_matching_sequence_after(after_seq, false, |elev| filter.accepts(elev))
             .is_some()
     }
@@ -270,7 +270,7 @@ impl ElevationChunkMapper {
     /// range `[lower, upper]` inclusive. Used by the filter-aware backfill
     /// path to determine which already-uploaded chunks to download in
     /// parallel.
-    pub fn matching_sequences_in_range(
+    pub(crate) fn matching_sequences_in_range(
         &self,
         lower: usize,
         upper: usize,

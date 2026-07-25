@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 /// Render canvas with optional geographic layers and NEXRAD data.
 #[allow(clippy::too_many_arguments)]
-pub fn render_canvas_with_geo(
+pub(crate) fn render_canvas_with_geo(
     ctx: &egui::Context,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,

@@ -16,7 +16,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 
 /// Result of an archive listing request.
 #[derive(Debug, Clone)]
-pub enum ListingResult {
+pub(crate) enum ListingResult {
     /// Successfully fetched listing
     Success {
         site_id: String,
@@ -33,7 +33,7 @@ pub enum ListingResult {
 
 /// Shared network statistics for live tracking.
 #[derive(Clone, Default)]
-pub struct NetworkStats {
+pub(crate) struct NetworkStats {
     /// Number of currently active (in-flight) network requests
     pub active_requests: Rc<RefCell<u32>>,
     /// Total number of network requests made this session
@@ -43,33 +43,33 @@ pub struct NetworkStats {
 }
 
 impl NetworkStats {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Get current active request count.
-    pub fn active_count(&self) -> u32 {
+    pub(crate) fn active_count(&self) -> u32 {
         *self.active_requests.borrow()
     }
 
     /// Get total request count.
-    pub fn total_count(&self) -> u32 {
+    pub(crate) fn total_count(&self) -> u32 {
         *self.total_requests.borrow()
     }
 
     /// Get total bytes transferred.
-    pub fn bytes_transferred(&self) -> u64 {
+    pub(crate) fn bytes_transferred(&self) -> u64 {
         *self.total_bytes.borrow()
     }
 
     /// Record start of a network request.
-    pub fn request_started(&self) {
+    pub(crate) fn request_started(&self) {
         *self.active_requests.borrow_mut() += 1;
         *self.total_requests.borrow_mut() += 1;
     }
 
     /// Record completion of a network request.
-    pub fn request_completed(&self, bytes: u64) {
+    pub(crate) fn request_completed(&self, bytes: u64) {
         let mut active = self.active_requests.borrow_mut();
         if *active > 0 {
             *active -= 1;
@@ -83,7 +83,7 @@ impl NetworkStats {
 /// Downloads are async but egui's update() is synchronous.
 /// This struct provides a channel to pass results from the async
 /// download task back to the UI thread.
-pub struct DownloadChannel {
+pub(crate) struct DownloadChannel {
     sender: Sender<DownloadResult>,
     receiver: Receiver<DownloadResult>,
     /// Sender for listing results
@@ -105,7 +105,7 @@ impl Default for DownloadChannel {
 }
 
 impl DownloadChannel {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (sender, receiver) = channel();
         let (listing_sender, listing_receiver) = channel();
         Self {
@@ -120,7 +120,7 @@ impl DownloadChannel {
     }
 
     /// Get a clone of the network stats for UI display.
-    pub fn stats(&self) -> NetworkStats {
+    pub(crate) fn stats(&self) -> NetworkStats {
         self.stats.clone()
     }
 
@@ -128,7 +128,7 @@ impl DownloadChannel {
     ///
     /// Returns false if the download is already pending.
     #[allow(clippy::too_many_arguments)]
-    pub fn download_file(
+    pub(crate) fn download_file(
         &self,
         ctx: egui::Context,
         site_id: String,
@@ -177,7 +177,7 @@ impl DownloadChannel {
     }
 
     /// Check if a download is pending for the given storage key.
-    pub fn is_download_pending(&self, site_id: &str, timestamp: i64) -> bool {
+    pub(crate) fn is_download_pending(&self, site_id: &str, timestamp: i64) -> bool {
         let storage_key = format!("{}_{}", site_id, timestamp);
         self.pending_downloads.borrow().contains(&storage_key)
     }
@@ -185,7 +185,12 @@ impl DownloadChannel {
     /// Fetch archive listing for a site/date.
     ///
     /// Returns false if the request is already pending.
-    pub fn fetch_listing(&self, ctx: egui::Context, site_id: String, date: NaiveDate) -> bool {
+    pub(crate) fn fetch_listing(
+        &self,
+        ctx: egui::Context,
+        site_id: String,
+        date: NaiveDate,
+    ) -> bool {
         let listing_key = format!("{}_{}", site_id, date);
 
         // Check if already pending
@@ -222,18 +227,18 @@ impl DownloadChannel {
     }
 
     /// Check if a listing request is pending.
-    pub fn is_listing_pending(&self, site_id: &str, date: &NaiveDate) -> bool {
+    pub(crate) fn is_listing_pending(&self, site_id: &str, date: &NaiveDate) -> bool {
         let listing_key = format!("{}_{}", site_id, date);
         self.pending_listings.borrow().contains(&listing_key)
     }
 
     /// Non-blocking check for a completed download.
-    pub fn try_recv(&self) -> Option<DownloadResult> {
+    pub(crate) fn try_recv(&self) -> Option<DownloadResult> {
         self.receiver.try_recv().ok()
     }
 
     /// Non-blocking check for a completed listing request.
-    pub fn try_recv_listing(&self) -> Option<ListingResult> {
+    pub(crate) fn try_recv_listing(&self) -> Option<ListingResult> {
         self.listing_receiver.try_recv().ok()
     }
 }

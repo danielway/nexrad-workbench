@@ -18,7 +18,7 @@ impl UserPreferences {
     /// `mping_api_key` is sourced separately because the mPING state
     /// lives on the diagnostics subsystem, not on `AppState`.
     /// `playback` comes from the Playback subsystem.
-    pub fn from_app_state(
+    pub(crate) fn from_app_state(
         state: &AppState,
         playback: &crate::core::PlaybackState,
         mping_api_key: Option<String>,
@@ -55,7 +55,7 @@ impl UserPreferences {
     /// `mping_api_key` (if any) so the caller can apply it to the
     /// diagnostics subsystem; `AppState` no longer owns mPING state.
     /// `playback` is mutated to carry the persisted speed.
-    pub fn apply_to(
+    pub(crate) fn apply_to(
         &self,
         state: &mut AppState,
         playback: &mut crate::core::PlaybackState,
@@ -93,7 +93,7 @@ impl UserPreferences {
     }
 
     /// Load preferences from localStorage.
-    pub fn load() -> Self {
+    pub(crate) fn load() -> Self {
         let window = match web_sys::window() {
             Some(w) => w,
             None => return Self::default(),
@@ -153,7 +153,7 @@ impl UserPreferences {
     }
 
     /// Save preferences to localStorage.
-    pub fn save(&self) {
+    pub(crate) fn save(&self) {
         let window = match web_sys::window() {
             Some(w) => w,
             None => return,

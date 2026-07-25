@@ -8,12 +8,12 @@ use super::types::{Alert, AlertGeometry, AlertSeverity, Ring};
 use serde_json::Value;
 
 /// Parsed response payload.
-pub struct ParsedAlerts {
+pub(crate) struct ParsedAlerts {
     pub alerts: Vec<Alert>,
 }
 
 /// Parse a complete alerts response body.
-pub fn parse_response(body: &str) -> Result<ParsedAlerts, String> {
+pub(crate) fn parse_response(body: &str) -> Result<ParsedAlerts, String> {
     let root: Value = serde_json::from_str(body).map_err(|e| format!("parse error: {}", e))?;
 
     let features = root

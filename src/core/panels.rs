@@ -21,7 +21,7 @@ use crate::core::Scan;
 /// Above that the rotating indicators flash violently, so they're held still
 /// while static VCP info keeps rendering. (Was an inline `>30.0` in the left
 /// panel; the canvas sweep-line uses the same 30 s/s ceiling.)
-pub fn animation_frozen(playing: bool, speed_secs_per_sec: f64) -> bool {
+pub(crate) fn animation_frozen(playing: bool, speed_secs_per_sec: f64) -> bool {
     playing && speed_secs_per_sec > 30.0
 }
 
@@ -29,7 +29,7 @@ pub fn animation_frozen(playing: bool, speed_secs_per_sec: f64) -> bool {
 /// or `None` for a non-positive-duration sweep. Mirrors the left panel's inline
 /// `progress * 360 % 360` (note: the `f32` cast happens after the multiply, as
 /// in the original).
-pub fn archive_azimuth_from_progress(start: f64, end: f64, ts: f64) -> Option<f32> {
+pub(crate) fn archive_azimuth_from_progress(start: f64, end: f64, ts: f64) -> Option<f32> {
     let dur = end - start;
     if dur <= 0.0 {
         return None;
@@ -45,7 +45,7 @@ const STATUS_DISMISS_MS: f64 = 10000.0;
 
 /// What the top bar should do with the transient status message this frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum StatusVisibility {
+pub(crate) enum StatusVisibility {
     /// Past the dismiss window — the shell should clear the message.
     Dismiss,
     /// Still showing at this `alpha`; `fading` ⇒ request a repaint to animate.
@@ -55,7 +55,7 @@ pub enum StatusVisibility {
 /// Decide the status message's visibility given when it was set (`set_ms`, ms
 /// since epoch; `<= 0` means "never set") and `now_ms`. Pure extraction of the
 /// top-bar auto-dismiss/fade math.
-pub fn status_message_visibility(set_ms: f64, now_ms: f64) -> StatusVisibility {
+pub(crate) fn status_message_visibility(set_ms: f64, now_ms: f64) -> StatusVisibility {
     let age_ms = now_ms - set_ms;
     if set_ms > 0.0 && age_ms >= STATUS_DISMISS_MS {
         return StatusVisibility::Dismiss;
@@ -77,7 +77,7 @@ pub fn status_message_visibility(set_ms: f64, now_ms: f64) -> StatusVisibility {
 /// State queried from the radar timeline at the current playback timestamp, for
 /// the left panel's azimuth/elevation/VCP readouts. Read-only projection of
 /// the timeline/live/playback state slices; holds borrows tied to them.
-pub struct RadarStateAtTimestamp<'a> {
+pub(crate) struct RadarStateAtTimestamp<'a> {
     /// Current azimuth angle in degrees (0-360), from actual radial data.
     pub azimuth: Option<f32>,
     /// Current elevation angle in degrees, from actual radial data.
@@ -103,7 +103,7 @@ pub struct RadarStateAtTimestamp<'a> {
 /// Pure read over core state slices (no egui, no mutation, no I/O). Moved verbatim
 /// from `ui::left_panel`; the high-speed freeze and the archive azimuth now use
 /// [`animation_frozen`] / [`archive_azimuth_from_progress`].
-pub fn query_radar_state_at_timestamp<'a>(
+pub(crate) fn query_radar_state_at_timestamp<'a>(
     scans: &'a crate::core::RadarTimeline,
     shadow_scan_boundaries: &'a [crate::nexrad::ScanBoundary],
     live_mode: &'a crate::core::live_mode::LiveModeState,

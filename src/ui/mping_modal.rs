@@ -13,7 +13,7 @@ use eframe::egui::{self, Color32, RichText, Vec2};
 /// `AppState` because it holds a transient text-edit buffer that should
 /// not survive a reload.
 #[derive(Default)]
-pub struct MpingModalState {
+pub(crate) struct MpingModalState {
     /// In-flight text entry. Populated from `diagnostics.mping.api_key` when the
     /// modal opens; written back to state on Save.
     pub key_input: String,

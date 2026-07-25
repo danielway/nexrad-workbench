@@ -9,6 +9,7 @@ use super::*;
 ///
 /// Parameters (JS object): `{ scanKey: string, elevationNumber: number, product: string }`
 /// Returns (JS object): `{ azimuths: Float32Array, gateValues: Float32Array, azimuthCount, gateCount, ... }`
+#[allow(unreachable_pub)] // wasm_bindgen export invoked from worker.js; must stay pub
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     init_logger();
@@ -171,6 +172,7 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 ///
 /// Parameters (JS object): `{ scanKey: string, product: string, elevationNumbers: number[] }`
 /// Returns (JS object): `{ buffer: ArrayBuffer, sweepMeta: [...], product, totalMs }`
+#[allow(unreachable_pub)] // wasm_bindgen export invoked from worker.js; must stay pub
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     init_logger();

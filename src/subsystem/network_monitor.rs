@@ -19,7 +19,7 @@ const MAX_PENDING_REQUESTS: usize = 500;
 /// Listens for service worker messages and accumulates network metrics.
 ///
 /// Holds a JS closure that prevents garbage collection of the event listener.
-pub struct NetworkMonitor {
+pub(crate) struct NetworkMonitor {
     pending: Rc<RefCell<Vec<NetworkRequest>>>,
     aggregate: Rc<RefCell<NetworkAggregate>>,
     _listener: Closure<dyn FnMut(web_sys::MessageEvent)>,
@@ -28,7 +28,7 @@ pub struct NetworkMonitor {
 impl NetworkMonitor {
     /// Create a new monitor and attach a message listener to the service worker
     /// container. Returns `None` if service workers are not available.
-    pub fn new() -> Option<Self> {
+    pub(crate) fn new() -> Option<Self> {
         let window = web_sys::window()?;
         let navigator = window.navigator();
         let sw_container = navigator.service_worker();
@@ -122,7 +122,7 @@ impl NetworkMonitor {
     }
 
     /// Get a snapshot of the current aggregate statistics.
-    pub fn aggregate(&self) -> NetworkAggregate {
+    pub(crate) fn aggregate(&self) -> NetworkAggregate {
         self.aggregate.borrow().clone()
     }
 
@@ -131,7 +131,7 @@ impl NetworkMonitor {
     /// Returns an empty `Vec` (no allocation beyond the swap-in) when no
     /// new metrics have arrived, so the common idle case pays only a
     /// borrow-and-check.
-    pub fn take_pending(&self) -> Vec<NetworkRequest> {
+    pub(crate) fn take_pending(&self) -> Vec<NetworkRequest> {
         let mut pending = self.pending.borrow_mut();
         if pending.is_empty() {
             Vec::new()
@@ -144,7 +144,7 @@ impl NetworkMonitor {
 /// Check whether the current browsing context is cross-origin isolated
 /// (i.e., `self.crossOriginIsolated` is true), which means `SharedArrayBuffer`
 /// is available.
-pub fn is_cross_origin_isolated() -> bool {
+pub(crate) fn is_cross_origin_isolated() -> bool {
     js_sys::Reflect::get(&js_sys::global(), &"crossOriginIsolated".into())
         .ok()
         .and_then(|v| v.as_bool())

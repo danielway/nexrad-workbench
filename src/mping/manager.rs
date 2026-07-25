@@ -47,7 +47,7 @@ const RADIUS_METERS: u32 = 300_000;
 
 /// Per-frame inputs computed by the caller. Lets the manager stay
 /// decoupled from `AppState`.
-pub struct MpingTickInputs<'a> {
+pub(crate) struct MpingTickInputs<'a> {
     /// Whether the mPING overlay layer is currently visible.
     pub layer_visible: bool,
     /// Whether the playhead is tracking the live edge (pinned to now or
@@ -69,7 +69,7 @@ struct Covered {
     key_fingerprint: u64,
 }
 
-pub struct MpingManager {
+pub(crate) struct MpingManager {
     channel: MpingChannel,
     fetch_in_flight: bool,
     covered: Option<Covered>,
@@ -82,7 +82,7 @@ impl Default for MpingManager {
 }
 
 impl MpingManager {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             channel: MpingChannel::new(),
             fetch_in_flight: false,
@@ -95,7 +95,7 @@ impl MpingManager {
     /// `errors` is the app-wide error collector; failures encountered
     /// while polling are pushed here in addition to landing in
     /// `mping.last_error` (which the modal still reads to display).
-    pub fn tick(
+    pub(crate) fn tick(
         &mut self,
         ctx: &egui::Context,
         mping: &mut MpingState,
@@ -227,7 +227,7 @@ impl MpingManager {
 
     /// Force a refetch on the next tick — used after the user saves a new
     /// API key.
-    pub fn invalidate(&mut self) {
+    pub(crate) fn invalidate(&mut self) {
         self.covered = None;
     }
 }

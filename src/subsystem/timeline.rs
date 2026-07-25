@@ -18,7 +18,7 @@ use crate::nexrad::ScanBoundary;
 
 /// Owner of the timeline (real + shadowed) scan inventory.
 #[derive(Default)]
-pub struct Timeline {
+pub(crate) struct Timeline {
     /// Scans currently loaded into memory plus their sweep listings.
     /// Populated by [`crate::app::persistence_manager::PersistenceManager`]'s refresh and
     /// the worker ingest callback.

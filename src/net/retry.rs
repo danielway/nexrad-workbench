@@ -17,7 +17,7 @@ use std::time::Duration;
 use wasm_bindgen::prelude::*;
 
 /// Outcome of a single attempt.
-pub enum Verdict<T> {
+pub(crate) enum Verdict<T> {
     /// Attempt succeeded — return this value.
     Ok(T),
     /// Attempt failed transiently — back off and try again.
@@ -29,7 +29,7 @@ pub enum Verdict<T> {
 
 /// Backoff parameters. See module docs for preset rationale.
 #[derive(Clone, Debug)]
-pub struct RetryPolicy {
+pub(crate) struct RetryPolicy {
     /// Base delay for exponential backoff. Delay before retry N is drawn from
     /// `random_uniform(0, min(cap, base * 2^(N-1)))` (full jitter).
     pub base: Duration,
@@ -46,7 +46,7 @@ pub struct RetryPolicy {
 
 /// Default policy for one-shot user-driven fetches: archive list/download,
 /// NWS alerts, zip-code lookup, mosaic refresh.
-pub const DEFAULT_POLICY: RetryPolicy = RetryPolicy {
+pub(crate) const DEFAULT_POLICY: RetryPolicy = RetryPolicy {
     base: Duration::from_millis(250),
     cap: Duration::from_secs(4),
     max_attempts: 4,
@@ -66,7 +66,7 @@ pub const DEFAULT_POLICY: RetryPolicy = RetryPolicy {
 /// against a genuinely failing endpoint takes longer to surface the error;
 /// for a real-time viewer that's the right trade — visual idleness already
 /// communicates the failure.
-pub const REALTIME_CHUNK_POLICY: RetryPolicy = RetryPolicy {
+pub(crate) const REALTIME_CHUNK_POLICY: RetryPolicy = RetryPolicy {
     base: Duration::from_millis(500),
     cap: Duration::from_secs(8),
     max_attempts: 8,
@@ -83,7 +83,7 @@ pub const REALTIME_CHUNK_POLICY: RetryPolicy = RetryPolicy {
 /// captured state across attempts (e.g. an `&mut Iterator`) should use the
 /// per-attempt primitives ([`attempt_with_timeout`], [`compute_delay`],
 /// [`sleep_duration`]) directly in an inline loop.
-pub async fn with_retry<F, Fut, T>(
+pub(crate) async fn with_retry<F, Fut, T>(
     policy: &RetryPolicy,
     label: &str,
     mut op: F,
@@ -134,7 +134,7 @@ where
 
 /// Compute the backoff delay between attempt `n` and attempt `n+1`. Honors a
 /// server-supplied `Retry-After`, otherwise full-jitter exponential.
-pub fn compute_delay(
+pub(crate) fn compute_delay(
     policy: &RetryPolicy,
     failure_count: u32,
     retry_after: Option<Duration>,
@@ -161,7 +161,7 @@ pub fn compute_delay(
 
 /// Run `fut` to completion or treat it as a transient failure if it doesn't
 /// finish within `timeout`.
-pub async fn attempt_with_timeout<Fut, T>(fut: Fut, timeout: Duration) -> Verdict<T>
+pub(crate) async fn attempt_with_timeout<Fut, T>(fut: Fut, timeout: Duration) -> Verdict<T>
 where
     Fut: Future<Output = Verdict<T>>,
 {
@@ -177,7 +177,7 @@ where
 /// Wait approximately `dur` using browser `setTimeout`. The browser clamps
 /// the minimum delay (~4ms in modern browsers); below that `setTimeout(0)`
 /// just yields.
-pub async fn sleep_duration(dur: Duration) {
+pub(crate) async fn sleep_duration(dur: Duration) {
     let ms = dur.as_millis().min(u32::MAX as u128) as u32;
     sleep_ms(ms).await;
 }
@@ -186,7 +186,7 @@ pub async fn sleep_duration(dur: Duration) {
 /// timer if the future is dropped before it fires. Necessary because a stale
 /// `setTimeout` would otherwise invoke a dropped wasm closure and throw
 /// "closure invoked recursively or after being dropped".
-pub fn sleep_ms(ms: u32) -> impl Future<Output = ()> {
+pub(crate) fn sleep_ms(ms: u32) -> impl Future<Output = ()> {
     use std::cell::Cell;
     use std::pin::Pin;
     use std::rc::Rc;
@@ -255,7 +255,7 @@ pub fn sleep_ms(ms: u32) -> impl Future<Output = ()> {
 /// Accepts either delta-seconds (e.g., `"120"`) or HTTP-date. Returns `None`
 /// for malformed values; HTTP-date parsing is best-effort via chrono.
 #[allow(dead_code)] // wired in by the alerts endpoint in a follow-up commit
-pub fn parse_retry_after(header: &str) -> Option<Duration> {
+pub(crate) fn parse_retry_after(header: &str) -> Option<Duration> {
     let trimmed = header.trim();
     if let Ok(secs) = trimmed.parse::<u64>() {
         return Some(Duration::from_secs(secs));

@@ -21,7 +21,7 @@ const ACCEPT: &str = "application/geo+json";
 const USER_AGENT: &str = "NEXRAD-Workbench (https://github.com/danielway/nexrad-workbench)";
 
 /// Spawn a background fetch. Results are pushed into `channel` when done.
-pub fn spawn_fetch(
+pub(crate) fn spawn_fetch(
     ctx: eframe::egui::Context,
     channel: AlertsChannel,
     if_none_match: Option<String>,

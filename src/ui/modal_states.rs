@@ -21,7 +21,7 @@
 use super::{EventModalState, MpingModalState, SiteModalState};
 
 /// Owns all transient modal UI state held outside [`crate::state::AppState`].
-pub struct ModalStates {
+pub(crate) struct ModalStates {
     /// Site-selection modal: search filter, async location queue, and
     /// the welcome/list/zip view mode.
     pub site: SiteModalState,
@@ -37,7 +37,7 @@ impl ModalStates {
     /// `has_preferred_site` controls the site modal's first-visit
     /// welcome verbiage — `true` for returning users (shorter "change
     /// site" heading), `false` for the first visit.
-    pub fn new(has_preferred_site: bool) -> Self {
+    pub(crate) fn new(has_preferred_site: bool) -> Self {
         let mut site = SiteModalState::default();
         if has_preferred_site {
             site.is_first_visit = false;

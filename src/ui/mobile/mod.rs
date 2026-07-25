@@ -5,8 +5,8 @@
 //! panels when [`AppState::is_mobile`](crate::state::AppState::is_mobile) is
 //! true. Detailed controls live in the settings modal (see [`settings_modal`]).
 
-pub mod auto_hide;
-pub mod gestures;
+pub(crate) mod auto_hide;
+pub(crate) mod gestures;
 mod scrubber;
 mod settings_modal;
 mod tabs;

@@ -4,4 +4,4 @@
 //! consistently to every outbound HTTP request the app makes (S3 archive,
 //! S3 real-time chunks, NWS alerts, zip-code geocoding, NOAA mosaic).
 
-pub mod retry;
+pub(crate) mod retry;

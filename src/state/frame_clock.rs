@@ -8,7 +8,7 @@ use crate::core::FrameNow;
 
 impl FrameNow {
     /// Capture the current wall clock. One call site per frame.
-    pub fn capture() -> Self {
+    pub(crate) fn capture() -> Self {
         Self(crate::core::TimeModel::wall_clock_time())
     }
 }

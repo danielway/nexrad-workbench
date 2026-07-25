@@ -27,7 +27,7 @@ const PERSIST_SCHEMA_VERSION: u32 = 3;
 /// while intra-sweep chunks are purely rotation-rate-driven. Mixing the two into one
 /// statistics bucket prevents the rolling average from converging on either value.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct ChunkCharacteristics {
+pub(crate) struct ChunkCharacteristics {
     /// Type of the chunk
     pub chunk_type: ChunkType,
     /// Waveform type of the elevation
@@ -53,7 +53,7 @@ impl Hash for ChunkCharacteristics {
 /// diagnostics summary so we can see which buckets have warmed up and
 /// whether their availability lag deviates from the global median.
 #[derive(Debug, Clone, Copy)]
-pub struct BucketStats {
+pub(crate) struct BucketStats {
     pub characteristics: ChunkCharacteristics,
     pub sample_count: usize,
     pub mean_duration_ms: i64,
@@ -136,14 +136,14 @@ pub(super) struct TimingStat {
 
 /// Statistics for timing between chunks
 #[derive(Debug, Clone, Default)]
-pub struct ChunkTimingStats {
+pub(crate) struct ChunkTimingStats {
     /// Timing statistics for each chunk characteristics
     timings: HashMap<ChunkCharacteristics, VecDeque<TimingStat>>,
 }
 
 impl ChunkTimingStats {
     /// Create a new empty timing statistics
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             timings: HashMap::new(),
         }
@@ -155,7 +155,7 @@ impl ChunkTimingStats {
     /// worker ingest, `None` when only the S3 delta is known. The
     /// collection-interval observation arrives later (worker decode) via
     /// [`Self::attach_collection_interval`].
-    pub fn add_timing(
+    pub(crate) fn add_timing(
         &mut self,
         characteristics: ChunkCharacteristics,
         availability_interval: Duration,
@@ -181,7 +181,7 @@ impl ChunkTimingStats {
     /// a COLLECTION-domain inter-chunk interval (delta of consecutive parsed
     /// radial collection-end times). Recorded once the worker decodes the
     /// chunk, mirroring [`Self::attach_availability_lag`].
-    pub fn attach_collection_interval(
+    pub(crate) fn attach_collection_interval(
         &mut self,
         characteristics: &ChunkCharacteristics,
         collection_interval: Duration,
@@ -197,7 +197,7 @@ impl ChunkTimingStats {
     /// an availability lag observation. Used when the S3 delta is recorded in
     /// the streaming loop but the ACTUAL collection time only becomes known
     /// later once the worker decodes the chunk.
-    pub fn attach_availability_lag(
+    pub(crate) fn attach_availability_lag(
         &mut self,
         characteristics: &ChunkCharacteristics,
         availability_lag: Duration,
@@ -213,7 +213,7 @@ impl ChunkTimingStats {
     /// characteristics, as Unix seconds. Returns `None` until at least one
     /// sample with a lag observation has been recorded. Median (not mean)
     /// so clock outliers don't skew the projection fallback.
-    pub fn median_availability_lag_secs(&self) -> Option<f64> {
+    pub(crate) fn median_availability_lag_secs(&self) -> Option<f64> {
         let mut lags_ms: Vec<i64> = self
             .timings
             .values()
@@ -283,7 +283,9 @@ impl ChunkTimingStats {
     }
 
     /// Get all chunk statistics for display purposes
-    pub fn get_statistics(&self) -> Vec<(ChunkCharacteristics, Option<Duration>, Option<f64>)> {
+    pub(crate) fn get_statistics(
+        &self,
+    ) -> Vec<(ChunkCharacteristics, Option<Duration>, Option<f64>)> {
         self.timings
             .keys()
             .map(|characteristics| {
@@ -299,20 +301,20 @@ impl ChunkTimingStats {
     /// Number of samples held for the given characteristics bucket.
     /// 0 if the bucket has never been populated. Capped at
     /// [`MAX_TIMING_SAMPLES`] (10) by the rolling window.
-    pub fn sample_count(&self, characteristics: &ChunkCharacteristics) -> usize {
+    pub(crate) fn sample_count(&self, characteristics: &ChunkCharacteristics) -> usize {
         self.timings.get(characteristics).map_or(0, |q| q.len())
     }
 
     /// Total number of samples across all buckets — useful as a "warmup
     /// progress" metric in the diagnostics header.
-    pub fn total_sample_count(&self) -> usize {
+    pub(crate) fn total_sample_count(&self) -> usize {
         self.timings.values().map(|q| q.len()).sum()
     }
 
     /// Per-bucket diagnostic snapshot. One entry per characteristics bucket
     /// that has at least one sample. Sorted by `(chunk_type, waveform_type,
     /// channel_configuration, is_first_in_sweep)` for stable display order.
-    pub fn per_bucket_stats(&self) -> Vec<BucketStats> {
+    pub(crate) fn per_bucket_stats(&self) -> Vec<BucketStats> {
         let mut out: Vec<BucketStats> = self
             .timings
             .iter()
@@ -363,7 +365,7 @@ impl ChunkTimingStats {
     ///
     /// The payload includes a schema version; `from_json` ignores payloads with
     /// a mismatched version so schema bumps cleanly invalidate old caches.
-    pub fn to_json(&self) -> Option<String> {
+    pub(crate) fn to_json(&self) -> Option<String> {
         let dto = ChunkTimingStatsDto {
             version: PERSIST_SCHEMA_VERSION,
             timings: self
@@ -394,7 +396,7 @@ impl ChunkTimingStats {
     /// Returns `None` on any parse error or version mismatch. Individual samples
     /// with unrecognised enum variants are silently dropped — a corrupted entry
     /// should not poison the whole cache.
-    pub fn from_json(raw: &str) -> Option<Self> {
+    pub(crate) fn from_json(raw: &str) -> Option<Self> {
         let dto: ChunkTimingStatsDto = serde_json::from_str(raw).ok()?;
         if dto.version != PERSIST_SCHEMA_VERSION {
             return None;

@@ -22,7 +22,7 @@ use eframe::egui;
 const LIVE_WORKER_INDEX: usize = 0;
 
 /// Pool of [`DecodeWorker`]s that parallelizes archive ingest and render.
-pub struct WorkerPool {
+pub(crate) struct WorkerPool {
     workers: Vec<DecodeWorker>,
     next_ingest: usize,
     next_render: usize,
@@ -34,7 +34,7 @@ impl WorkerPool {
     /// Returns an error if **any** worker fails to spawn — the caller then
     /// treats the pool as unavailable and surfaces a retry affordance, just
     /// as it did for a single worker.
-    pub fn new(ctx: egui::Context, count: usize) -> Result<Self, String> {
+    pub(crate) fn new(ctx: egui::Context, count: usize) -> Result<Self, String> {
         let count = count.max(1);
         let mut workers = Vec::with_capacity(count);
         for _ in 0..count {
@@ -50,7 +50,7 @@ impl WorkerPool {
 
     /// Number of workers in the pool.
     #[allow(dead_code)]
-    pub fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         self.workers.len()
     }
 
@@ -69,7 +69,7 @@ impl WorkerPool {
     /// Submit an archive ingest — round-robined across workers. When
     /// `wanted_elevations` is non-empty, only those cuts are stored.
     #[allow(clippy::too_many_arguments)]
-    pub fn ingest(
+    pub(crate) fn ingest(
         &mut self,
         data: Vec<u8>,
         site_id: String,
@@ -93,7 +93,7 @@ impl WorkerPool {
     /// accumulator thread-local stays consistent across chunks of the same
     /// volume.
     #[allow(clippy::too_many_arguments)]
-    pub fn ingest_chunk(
+    pub(crate) fn ingest_chunk(
         &mut self,
         data: Vec<u8>,
         site_id: String,
@@ -117,7 +117,7 @@ impl WorkerPool {
     }
 
     /// Submit an archive render — round-robined across workers.
-    pub fn render(
+    pub(crate) fn render(
         &mut self,
         scan_key: crate::data::ScanKey,
         elevation_number: u8,
@@ -129,12 +129,12 @@ impl WorkerPool {
 
     /// Submit a live (partial) render — pinned to the live worker because it
     /// reads the in-memory accumulator populated by `ingest_chunk`.
-    pub fn render_live(&mut self, elevation_number: u8, product: String) {
+    pub(crate) fn render_live(&mut self, elevation_number: u8, product: String) {
         self.workers[LIVE_WORKER_INDEX].render_live(elevation_number, product);
     }
 
     /// Submit a volume render — round-robined across workers.
-    pub fn render_volume(
+    pub(crate) fn render_volume(
         &mut self,
         scan_key: crate::data::ScanKey,
         product: String,
@@ -145,7 +145,7 @@ impl WorkerPool {
     }
 
     /// Drain pending outcomes from every worker.
-    pub fn try_recv(&mut self) -> Vec<WorkerOutcome> {
+    pub(crate) fn try_recv(&mut self) -> Vec<WorkerOutcome> {
         let mut out = Vec::new();
         for worker in &mut self.workers {
             out.extend(worker.try_recv());
@@ -159,7 +159,7 @@ impl WorkerPool {
 /// We reserve one core for the UI thread and cap the pool at 4 workers to
 /// avoid the diminishing returns of over-subscription on laptops. Fallback is
 /// 2 workers when the browser doesn't expose hardware concurrency.
-pub fn default_pool_size() -> usize {
+pub(crate) fn default_pool_size() -> usize {
     let hw = web_sys::window()
         .map(|w| w.navigator().hardware_concurrency() as usize)
         .unwrap_or(0);

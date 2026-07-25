@@ -23,7 +23,7 @@ use crate::state::AppMode;
 /// Inputs the per-frame `refresh` call reads from outside the
 /// subsystem. Kept explicit so [`Live`] doesn't take a back-reference
 /// to [`AppState`].
-pub struct LiveRefreshInputs<'a> {
+pub(crate) struct LiveRefreshInputs<'a> {
     pub radar_timeline: &'a RadarTimeline,
     pub playback: &'a PlaybackState,
     /// Available archive scan boundaries — fed to the engine for authoritative
@@ -35,7 +35,7 @@ pub struct LiveRefreshInputs<'a> {
 
 /// Owner of the real-time streaming pipeline and the derived
 /// app-mode model.
-pub struct Live {
+pub(crate) struct Live {
     /// Worker-driven streaming-loop handle. Drains observation +
     /// chunk results each frame.
     pub channel: RealtimeChannel,
@@ -63,7 +63,7 @@ pub struct Live {
 }
 
 impl Live {
-    pub fn new(channel: RealtimeChannel) -> Self {
+    pub(crate) fn new(channel: RealtimeChannel) -> Self {
         Self {
             channel,
             mode_state: LiveModeState::default(),
@@ -77,7 +77,7 @@ impl Live {
     /// Stop live streaming: reset the state machine and the engine's volume
     /// observations together (the engine owns the observations now, so the old
     /// `LiveModeState::stop` field-clear must also clear them).
-    pub fn stop(&mut self, reason: crate::core::LiveExitReason) {
+    pub(crate) fn stop(&mut self, reason: crate::core::LiveExitReason) {
         self.mode_state.stop(reason);
         self.engine.borrow_mut().reset_volume_observations();
     }
@@ -94,7 +94,7 @@ impl Live {
     /// detaching stops the background stream immediately — this is the ONE
     /// place that policy is checked, so every seek/jog/jump call site routes
     /// through it. No-op on the stream when already detached or not streaming.
-    pub fn detach_playhead(
+    pub(crate) fn detach_playhead(
         &mut self,
         playback: &mut PlaybackState,
         now: f64,
@@ -117,7 +117,7 @@ impl Live {
 
     /// Whether the stream is running but the playhead has detached from the
     /// live edge (the user is browsing while ingestion continues).
-    pub fn is_detached(&self, playback: &PlaybackState) -> bool {
+    pub(crate) fn is_detached(&self, playback: &PlaybackState) -> bool {
         self.mode_state.is_active()
             && !playback.time_model.is_pinned()
             && !playback.time_model.is_lookback()
@@ -126,7 +126,7 @@ impl Live {
     /// Seconds until the next chunk is expected to be available in S3 — drives
     /// the "next in Xs" countdown. `Some` only while waiting for a chunk, read
     /// from this frame's projection (no `LiveModeState.plan`).
-    pub fn countdown_remaining_secs(&self, now: f64) -> Option<f64> {
+    pub(crate) fn countdown_remaining_secs(&self, now: f64) -> Option<f64> {
         if self.mode_state.phase != crate::core::LivePhase::WaitingForChunk {
             return None;
         }
@@ -140,7 +140,7 @@ impl Live {
     ///
     /// Call once at the start of each UI frame so all consumers see
     /// consistent state derived from the same `now` timestamp.
-    pub fn refresh(&mut self, inputs: LiveRefreshInputs<'_>) {
+    pub(crate) fn refresh(&mut self, inputs: LiveRefreshInputs<'_>) {
         let now = inputs.now.secs();
         // Adopt the engine's latest projection each frame while streaming, so
         // re-anchors and listing updates the loop fed between chunk arrivals

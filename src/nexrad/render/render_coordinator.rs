@@ -14,7 +14,7 @@ use crate::nexrad::decode::decode_worker::{default_pool_size, WorkerOutcome, Wor
 /// The pool is chosen to saturate the ingest pipeline with parallel
 /// decompress/decode work while keeping the UI thread responsive — see
 /// [`default_pool_size`] for the sizing heuristic.
-pub struct RenderCoordinator {
+pub(crate) struct RenderCoordinator {
     /// Pool of Web Workers for offloading expensive NEXRAD operations.
     worker: Option<WorkerPool>,
     /// Identity of the currently displayed scan. Stored as the typed
@@ -38,7 +38,7 @@ pub struct RenderCoordinator {
 }
 
 impl RenderCoordinator {
-    pub fn new(worker: Option<WorkerPool>) -> Self {
+    pub(crate) fn new(worker: Option<WorkerPool>) -> Self {
         Self {
             worker,
             current_scan_key: None,
@@ -49,33 +49,33 @@ impl RenderCoordinator {
     }
 
     /// Whether a decode worker is available.
-    pub fn has_worker(&self) -> bool {
+    pub(crate) fn has_worker(&self) -> bool {
         self.worker.is_some()
     }
 
     /// Current scan key, if any.
-    pub fn scan_key(&self) -> Option<&ScanKey> {
+    pub(crate) fn scan_key(&self) -> Option<&ScanKey> {
         self.current_scan_key.as_ref()
     }
 
     /// Available elevation numbers for the current scan.
-    pub fn available_elevations(&self) -> &[u8] {
+    pub(crate) fn available_elevations(&self) -> &[u8] {
         &self.available_elevations
     }
 
     /// Set the current scan key and available elevations (after ingest).
-    pub fn set_scan(&mut self, key: ScanKey, elevations: Vec<u8>) {
+    pub(crate) fn set_scan(&mut self, key: ScanKey, elevations: Vec<u8>) {
         self.current_scan_key = Some(key);
         self.available_elevations = elevations;
     }
 
     /// Set just the scan key (e.g. during scrub or chunk ingest).
-    pub fn set_scan_key(&mut self, key: ScanKey) {
+    pub(crate) fn set_scan_key(&mut self, key: ScanKey) {
         self.current_scan_key = Some(key);
     }
 
     /// Add newly-completed elevations (used during chunk ingest).
-    pub fn add_elevations(&mut self, new: &[u8]) {
+    pub(crate) fn add_elevations(&mut self, new: &[u8]) {
         for &elev in new {
             if !self.available_elevations.contains(&elev) {
                 self.available_elevations.push(elev);
@@ -85,7 +85,7 @@ impl RenderCoordinator {
     }
 
     /// Clear render state for a site change.
-    pub fn clear_for_site_change(&mut self) {
+    pub(crate) fn clear_for_site_change(&mut self) {
         self.current_scan_key = None;
         self.available_elevations.clear();
         self.last_render = None;
@@ -93,13 +93,13 @@ impl RenderCoordinator {
     }
 
     /// Force the next render request to go through (clears dedup cache).
-    pub fn force_fresh_render(&mut self) {
+    pub(crate) fn force_fresh_render(&mut self) {
         self.last_render = None;
         self.last_volume_render = None;
     }
 
     /// Clear only the scan key (e.g. when no scan is in range).
-    pub fn clear_scan_key(&mut self) {
+    pub(crate) fn clear_scan_key(&mut self) {
         self.current_scan_key = None;
         self.last_render = None;
     }
@@ -107,7 +107,7 @@ impl RenderCoordinator {
     /// Send a render request for an explicit sweep identity. Returns true
     /// if the request was actually sent (false if deduplicated or no
     /// worker).
-    pub fn request_render_for(&mut self, identity: SweepIdentity) -> bool {
+    pub(crate) fn request_render_for(&mut self, identity: SweepIdentity) -> bool {
         let Some(ref mut worker) = self.worker else {
             return false;
         };
@@ -132,7 +132,7 @@ impl RenderCoordinator {
     }
 
     /// Send a volume render request. Returns true if actually sent.
-    pub fn request_volume_render(&mut self, product: &str) -> bool {
+    pub(crate) fn request_volume_render(&mut self, product: &str) -> bool {
         let Some(ref scan_key) = self.current_scan_key else {
             log::debug!("Volume render skipped: no scan key");
             return false;
@@ -170,7 +170,7 @@ impl RenderCoordinator {
     }
 
     /// Send a live render request (partial sweep, no dedup).
-    pub fn render_live(&mut self, elevation_number: u8, product: String) {
+    pub(crate) fn render_live(&mut self, elevation_number: u8, product: String) {
         if let Some(ref mut worker) = self.worker {
             worker.render_live(elevation_number, product);
         }
@@ -179,7 +179,7 @@ impl RenderCoordinator {
     /// Forward raw bytes to worker for ingest. When `wanted_elevations` is
     /// non-empty, the worker stores only those cuts (filter-scoped fetch).
     #[allow(clippy::too_many_arguments)]
-    pub fn ingest(
+    pub(crate) fn ingest(
         &mut self,
         data: Vec<u8>,
         site_id: String,
@@ -202,7 +202,7 @@ impl RenderCoordinator {
 
     /// Forward a chunk to worker for incremental ingest.
     #[allow(clippy::too_many_arguments)]
-    pub fn ingest_chunk(
+    pub(crate) fn ingest_chunk(
         &mut self,
         data: Vec<u8>,
         site_id: String,
@@ -228,14 +228,19 @@ impl RenderCoordinator {
     }
 
     /// Send a direct render request (used by prefetch/prev-sweep, bypasses dedup).
-    pub fn render_direct(&mut self, scan_key: &ScanKey, elevation_number: u8, product: String) {
+    pub(crate) fn render_direct(
+        &mut self,
+        scan_key: &ScanKey,
+        elevation_number: u8,
+        product: String,
+    ) {
         if let Some(ref mut worker) = self.worker {
             worker.render(scan_key.clone(), elevation_number, product);
         }
     }
 
     /// Drain all pending worker results.
-    pub fn try_recv(&mut self) -> Vec<WorkerOutcome> {
+    pub(crate) fn try_recv(&mut self) -> Vec<WorkerOutcome> {
         if let Some(ref mut worker) = self.worker {
             worker.try_recv()
         } else {
@@ -244,7 +249,7 @@ impl RenderCoordinator {
     }
 
     /// Try to create a new decode worker pool (retry after failure).
-    pub fn create_worker(&mut self, ctx: eframe::egui::Context) -> Result<(), String> {
+    pub(crate) fn create_worker(&mut self, ctx: eframe::egui::Context) -> Result<(), String> {
         match WorkerPool::new(ctx, default_pool_size()) {
             Ok(pool) => {
                 self.worker = Some(pool);
@@ -259,7 +264,7 @@ impl RenderCoordinator {
 
     /// Store a prefetch render identity in the dedup cache (to prevent
     /// re-sending the same prefetch request).
-    pub fn set_last_render(&mut self, identity: SweepIdentity) {
+    pub(crate) fn set_last_render(&mut self, identity: SweepIdentity) {
         self.last_render = Some(identity);
     }
 }

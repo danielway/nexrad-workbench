@@ -10,7 +10,7 @@ use nexrad_decode::messages::volume_coverage_pattern;
 /// Surfaced on per-chunk diagnostics so we can tell whether a projection was
 /// based on a real radial-derived anchor or had to fall back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AnchorSource {
+pub(crate) enum AnchorSource {
     /// Used the caller-supplied ACTUAL collection time (parsed from a radial
     /// header). Best case — projections are anchored on real data.
     ObservedCollection,
@@ -24,7 +24,7 @@ pub enum AnchorSource {
 }
 
 impl AnchorSource {
-    pub fn short(&self) -> &'static str {
+    pub(crate) fn short(&self) -> &'static str {
         match self {
             AnchorSource::ObservedCollection => "obs",
             AnchorSource::UploadMinusMedian => "median",
@@ -42,7 +42,7 @@ impl AnchorSource {
 /// The collection axis anchors on the parsed volume header time when the caller
 /// supplies one; otherwise it falls back to a lag-adjusted S3 upload time.
 #[derive(Debug, Clone)]
-pub struct ScanTimingProjection {
+pub(crate) struct ScanTimingProjection {
     /// The sequence number of the anchor chunk (the last observed chunk).
     anchor_sequence: usize,
     /// AVAILABILITY category: S3-upload time of the anchor chunk (or current
@@ -71,14 +71,14 @@ pub struct ScanTimingProjection {
 
 impl ScanTimingProjection {
     /// The sequence number of the anchor chunk this projection is relative to.
-    pub fn anchor_sequence(&self) -> usize {
+    pub(crate) fn anchor_sequence(&self) -> usize {
         self.anchor_sequence
     }
 
     /// AVAILABILITY category: the S3-upload time of the anchor chunk (or
     /// current time as a fallback). Physics intervals added to this yield
     /// projected availability times for future chunks.
-    pub fn anchor_available_at(&self) -> DateTime<Utc> {
+    pub(crate) fn anchor_available_at(&self) -> DateTime<Utc> {
         self.anchor_available_at
     }
 
@@ -86,7 +86,7 @@ impl ScanTimingProjection {
     /// chunk — parsed from a radial header when available, otherwise
     /// estimated as `anchor_available_at - observed_anchor_lag`.
     #[allow(dead_code)] // Consumed by debug UI in a later commit.
-    pub fn anchor_collection_time_secs(&self) -> f64 {
+    pub(crate) fn anchor_collection_time_secs(&self) -> f64 {
         self.anchor_collection_time_secs
     }
 
@@ -94,36 +94,36 @@ impl ScanTimingProjection {
     /// provided an ACTUAL collection anchor. `None` signals the default
     /// fallback lag was used and projections carry more uncertainty.
     #[allow(dead_code)] // Consumed by debug UI in a later commit.
-    pub fn observed_anchor_lag_secs(&self) -> Option<f64> {
+    pub(crate) fn observed_anchor_lag_secs(&self) -> Option<f64> {
         self.observed_anchor_lag_secs
     }
 
     /// Which branch the anchor came from. Used by the diagnostics modal to
     /// flag projections built on a fallback anchor.
-    pub fn anchor_source(&self) -> AnchorSource {
+    pub(crate) fn anchor_source(&self) -> AnchorSource {
         self.anchor_source
     }
 
     /// Projected timing for each future chunk, in sequence order.
-    pub fn chunks(&self) -> &[ChunkProjection] {
+    pub(crate) fn chunks(&self) -> &[ChunkProjection] {
         &self.chunks
     }
 
     /// AVAILABILITY category: projected time the final chunk becomes
     /// available in S3.
-    pub fn volume_end_available_at(&self) -> DateTime<Utc> {
+    pub(crate) fn volume_end_available_at(&self) -> DateTime<Utc> {
         self.volume_end_available_at
     }
 
     /// Projected remaining duration from anchor to volume end.
-    pub fn remaining_duration(&self) -> Duration {
+    pub(crate) fn remaining_duration(&self) -> Duration {
         self.remaining_duration
     }
 }
 
 /// Projection for a single future chunk.
 #[derive(Debug, Clone)]
-pub struct ChunkProjection {
+pub(crate) struct ChunkProjection {
     /// The chunk's sequence number.
     sequence: usize,
     /// The elevation number (1-based), or None for the Start chunk.
@@ -185,84 +185,84 @@ pub struct ChunkProjection {
 
 impl ChunkProjection {
     /// The chunk's sequence number.
-    pub fn sequence(&self) -> usize {
+    pub(crate) fn sequence(&self) -> usize {
         self.sequence
     }
 
     /// The elevation number (1-based), or None for the Start chunk.
-    pub fn elevation_number(&self) -> Option<usize> {
+    pub(crate) fn elevation_number(&self) -> Option<usize> {
         self.elevation_number
     }
 
     /// Elevation angle in degrees.
-    pub fn elevation_angle_deg(&self) -> f64 {
+    pub(crate) fn elevation_angle_deg(&self) -> f64 {
         self.elevation_angle_deg
     }
 
     /// AVAILABILITY category: projected time this chunk becomes available
     /// in S3.
-    pub fn projected_available_at(&self) -> DateTime<Utc> {
+    pub(crate) fn projected_available_at(&self) -> DateTime<Utc> {
         self.projected_available_at
     }
 
     /// POLL category: projected time the scheduler will fire its first
     /// download poll for this chunk.
-    pub fn projected_poll_at(&self) -> DateTime<Utc> {
+    pub(crate) fn projected_poll_at(&self) -> DateTime<Utc> {
         self.projected_poll_at
     }
 
     /// COLLECTION category: projected Unix-seconds time the radar physically
     /// emits/receives for this chunk.
-    pub fn projected_collection_time_secs(&self) -> f64 {
+    pub(crate) fn projected_collection_time_secs(&self) -> f64 {
         self.projected_collection_time_secs
     }
 
     /// Duration from the anchor to this chunk's projected availability.
-    pub fn offset_from_anchor(&self) -> Duration {
+    pub(crate) fn offset_from_anchor(&self) -> Duration {
         self.offset_from_anchor
     }
 
     /// Duration from the previous chunk to this chunk.
-    pub fn interval_from_previous(&self) -> Duration {
+    pub(crate) fn interval_from_previous(&self) -> Duration {
         self.interval_from_previous
     }
 
     /// Whether this chunk starts a new sweep.
-    pub fn starts_new_sweep(&self) -> bool {
+    pub(crate) fn starts_new_sweep(&self) -> bool {
         self.starts_new_sweep
     }
 
     /// Which volume this projection belongs to, relative to the anchor.
     /// `0` = current volume; `1` = next volume (produced by chained
     /// projection in [`project_scan_timing_with_next`]).
-    pub fn volume_offset(&self) -> u8 {
+    pub(crate) fn volume_offset(&self) -> u8 {
         self.volume_offset
     }
 
     /// Physics decomposition for the hop into this chunk.
-    pub fn physics_breakdown(&self) -> PhysicsBreakdown {
+    pub(crate) fn physics_breakdown(&self) -> PhysicsBreakdown {
         self.physics_breakdown
     }
 
     /// Bucket sample count at projection time. `0` when no historical
     /// samples were available for this chunk's bucket.
-    pub fn stats_n(&self) -> usize {
+    pub(crate) fn stats_n(&self) -> usize {
         self.stats_n
     }
 
     /// Whether historical samples contributed to the projected interval.
-    pub fn used_historical(&self) -> bool {
+    pub(crate) fn used_historical(&self) -> bool {
         self.used_historical
     }
 
     /// Typical retry-poll overhead `(avg_attempts − 1).max(0)` for this
     /// chunk's bucket. Already folded into `projected_poll_at`.
-    pub fn retry_budget_secs(&self) -> f64 {
+    pub(crate) fn retry_budget_secs(&self) -> f64 {
         self.retry_budget_secs
     }
 
     /// The bucket key this chunk's projection consulted.
-    pub fn bucket(&self) -> Option<&ChunkCharacteristics> {
+    pub(crate) fn bucket(&self) -> Option<&ChunkCharacteristics> {
         self.bucket.as_ref()
     }
 }
@@ -281,7 +281,7 @@ impl ChunkProjection {
 ///
 /// Returns `None` if the anchor chunk's metadata cannot be resolved or if there are
 /// no remaining chunks to project.
-pub fn project_scan_timing(
+pub(crate) fn project_scan_timing(
     anchor_chunk: &ChunkIdentifier,
     anchor_collection_time_secs: Option<f64>,
     vcp: &volume_coverage_pattern::Message,
@@ -320,7 +320,7 @@ pub fn project_scan_timing(
 /// Consumers wanting current-volume-only bounds should filter `chunks` by
 /// `volume_offset == 0`.
 #[allow(clippy::too_many_arguments)]
-pub fn project_scan_timing_with_next(
+pub(crate) fn project_scan_timing_with_next(
     anchor_chunk: &ChunkIdentifier,
     anchor_collection_time_secs: Option<f64>,
     _vcp: &volume_coverage_pattern::Message,
@@ -527,7 +527,7 @@ fn apply_next_volume_anchor(
 /// starting a fresh volume and wanting to display the full expected timeline.
 ///
 /// The `start_time` parameter is the time the Start chunk was uploaded (or current time).
-pub fn project_full_scan_timing(
+pub(crate) fn project_full_scan_timing(
     site: &str,
     volume: VolumeIndex,
     start_time: DateTime<Utc>,

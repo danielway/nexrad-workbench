@@ -9,7 +9,7 @@ use crate::nexrad::NetworkStats;
 /// after they finish, so the user can see which stages ran even when they
 /// complete within a single frame.
 #[derive(Default, Clone)]
-pub struct PipelineStatus {
+pub(crate) struct PipelineStatus {
     /// Number of active downloads (group 1: Download).
     pub downloading: u32,
     /// Whether processing is in progress: ingest + decode in worker (group 2: Processing).
@@ -32,7 +32,7 @@ impl PipelineStatus {
     const LINGER_MS: f64 = 1500.0;
 
     /// Whether a phase is active or recently completed.
-    pub fn phase_visible(&self, active: bool, last_done_ms: f64) -> bool {
+    pub(crate) fn phase_visible(&self, active: bool, last_done_ms: f64) -> bool {
         if active {
             return true;
         }
@@ -43,12 +43,12 @@ impl PipelineStatus {
         (now - last_done_ms) < Self::LINGER_MS
     }
 
-    pub fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.downloading > 0 || self.processing || self.rendering
     }
 
     /// Whether the indicator row should be shown at all.
-    pub fn should_show(&self) -> bool {
+    pub(crate) fn should_show(&self) -> bool {
         if self.is_active() {
             return true;
         }
@@ -60,14 +60,14 @@ impl PipelineStatus {
     }
 
     /// Mark processing phase as completed (ingest + decode finished).
-    pub fn mark_processing_done(&mut self) {
+    pub(crate) fn mark_processing_done(&mut self) {
         self.processing = false;
         self.last_processing_done_ms = js_sys::Date::now();
         self.ever_active = true;
     }
 
     /// Mark rendering phase as completed (GPU upload finished).
-    pub fn mark_render_done(&mut self) {
+    pub(crate) fn mark_render_done(&mut self) {
         self.rendering = false;
         self.last_render_done_ms = js_sys::Date::now();
         self.ever_active = true;
@@ -76,7 +76,7 @@ impl PipelineStatus {
 
 /// Detailed sub-phase timings from the most recent ingest operation.
 #[derive(Default, Clone)]
-pub struct IngestTimingDetail {
+pub(crate) struct IngestTimingDetail {
     pub split_ms: f64,
     pub decompress_ms: f64,
     pub decode_ms: f64,
@@ -87,7 +87,7 @@ pub struct IngestTimingDetail {
 
 /// Detailed sub-phase timings from the most recent render/decode operation.
 #[derive(Default, Clone)]
-pub struct RenderTimingDetail {
+pub(crate) struct RenderTimingDetail {
     pub fetch_ms: f64,
     pub deser_ms: f64,
     pub marshal_ms: f64,
@@ -96,7 +96,7 @@ pub struct RenderTimingDetail {
 
 /// Statistics displayed in the status bar.
 #[derive(Default, Clone)]
-pub struct SessionStats {
+pub(crate) struct SessionStats {
     /// Total persisted cache size in bytes (IndexedDB).
     pub cache_size_bytes: u64,
 
@@ -133,12 +133,12 @@ pub struct SessionStats {
 
 impl SessionStats {
     /// Create stats with initial (zero) values.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Update stats from live network statistics.
-    pub fn update_from_network_stats(&mut self, network_stats: &NetworkStats) {
+    pub(crate) fn update_from_network_stats(&mut self, network_stats: &NetworkStats) {
         self.session_request_count = network_stats.total_count();
         self.session_transferred_bytes = network_stats.bytes_transferred();
         self.active_request_count = network_stats.active_count();
@@ -147,7 +147,7 @@ impl SessionStats {
 
     /// Record a frame time sample from `stable_dt`, updating the FPS average.
     /// Uses exponential moving average with alpha=0.05 for a smooth readout.
-    pub fn record_frame_time(&mut self, dt: f32) {
+    pub(crate) fn record_frame_time(&mut self, dt: f32) {
         if dt > 0.0 {
             let fps = 1.0 / dt as f64;
             const ALPHA: f64 = 0.05;
@@ -160,7 +160,7 @@ impl SessionStats {
 
     /// Record a render time sample, updating the running average.
     /// Uses exponential moving average with alpha=0.2 for smooth updates.
-    pub fn record_render_time(&mut self, time_ms: f64) {
+    pub(crate) fn record_render_time(&mut self, time_ms: f64) {
         const ALPHA: f64 = 0.2;
         self.avg_render_time_ms = Some(match self.avg_render_time_ms {
             Some(avg) => avg * (1.0 - ALPHA) + time_ms * ALPHA,
@@ -169,17 +169,17 @@ impl SessionStats {
     }
 
     /// Format cache size for display (e.g., "150.2 MB").
-    pub fn format_cache_size(&self) -> String {
+    pub(crate) fn format_cache_size(&self) -> String {
         format_bytes(self.cache_size_bytes)
     }
 
     /// Format transferred bytes for display (e.g., "12.0 MB").
-    pub fn format_transferred(&self) -> String {
+    pub(crate) fn format_transferred(&self) -> String {
         format_bytes(self.session_transferred_bytes)
     }
 
     /// Record a fetch latency sample, updating the running average.
-    pub fn record_fetch_latency(&mut self, ms: f64) {
+    pub(crate) fn record_fetch_latency(&mut self, ms: f64) {
         const ALPHA: f64 = 0.2;
         self.median_chunk_latency_ms = Some(match self.median_chunk_latency_ms {
             Some(avg) => avg * (1.0 - ALPHA) + ms * ALPHA,
@@ -188,7 +188,7 @@ impl SessionStats {
     }
 
     /// Record a processing time sample (full ingest total), updating the running average.
-    pub fn record_processing_time(&mut self, ms: f64) {
+    pub(crate) fn record_processing_time(&mut self, ms: f64) {
         const ALPHA: f64 = 0.2;
         self.median_processing_time_ms = Some(match self.median_processing_time_ms {
             Some(avg) => avg * (1.0 - ALPHA) + ms * ALPHA,
@@ -197,7 +197,7 @@ impl SessionStats {
     }
 
     /// Format latency statistics for display.
-    pub fn format_latency_stats(&self) -> String {
+    pub(crate) fn format_latency_stats(&self) -> String {
         let mut parts = Vec::new();
 
         if let Some(latency) = self.median_chunk_latency_ms {
@@ -220,7 +220,7 @@ impl SessionStats {
 
 /// Which phase of the download pipeline the current file is in.
 #[derive(Default, Clone, Copy, Debug, PartialEq)]
-pub enum DownloadPhase {
+pub(crate) enum DownloadPhase {
     #[default]
     Idle,
     /// Fetching from AWS S3.
@@ -238,7 +238,7 @@ pub enum DownloadPhase {
 /// Scan boundaries are `(start_secs, end_secs)` pairs derived from the archive
 /// listing's adjacent file timestamps, giving accurate ghost widths on the timeline.
 #[derive(Default, Clone)]
-pub struct DownloadProgress {
+pub(crate) struct DownloadProgress {
     /// Scan boundaries (start, end) of files queued but not yet loaded.
     /// The timeline renders ghost markers spanning these intervals.
     pub pending_scans: Vec<(i64, i64)>,
@@ -259,19 +259,19 @@ pub struct DownloadProgress {
 
 impl DownloadProgress {
     /// Whether this is a multi-file batch download.
-    pub fn is_batch(&self) -> bool {
+    pub(crate) fn is_batch(&self) -> bool {
         self.batch_total > 1
     }
 
     /// Whether any download operation is active.
-    pub fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.phase != DownloadPhase::Idle && self.phase != DownloadPhase::Done
             || !self.pending_scans.is_empty()
             || !self.in_flight_scans.is_empty()
     }
 
     /// Reset all progress state.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         *self = Self::default();
     }
 }

@@ -12,7 +12,7 @@ const MAX_RETAINED: usize = 200;
 
 /// The kind of acquisition operation.
 #[derive(Clone, Debug, PartialEq)]
-pub enum OperationKind {
+pub(crate) enum OperationKind {
     /// Archive listing fetch (S3 LIST).
     ArchiveListing {
         site_id: String,
@@ -42,7 +42,7 @@ pub enum OperationKind {
 /// in the same volume appear under one collapsible header.  Other operations
 /// are keyed by their individual `OperationId`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum NetworkGroupKey {
+pub(crate) enum NetworkGroupKey {
     /// A single acquisition operation (archive download, listing, realtime).
     Operation(OperationId),
     /// All realtime chunks sharing the same volume/scan timestamp.
@@ -56,7 +56,7 @@ pub enum NetworkGroupKey {
 
 /// Status of an acquisition operation.
 #[derive(Clone, Debug, PartialEq)]
-pub enum OperationStatus {
+pub(crate) enum OperationStatus {
     /// Waiting in queue.
     Queued,
     /// Currently downloading/processing.
@@ -71,7 +71,7 @@ pub enum OperationStatus {
 
 /// A single acquisition operation.
 #[derive(Clone, Debug)]
-pub struct AcquisitionOperation {
+pub(crate) struct AcquisitionOperation {
     pub id: OperationId,
     pub kind: OperationKind,
     pub status: OperationStatus,
@@ -86,7 +86,7 @@ pub struct AcquisitionOperation {
 
 /// Per-chunk latency metrics for streaming mode.
 #[derive(Clone, Debug)]
-pub struct ChunkLatencyMetrics {
+pub(crate) struct ChunkLatencyMetrics {
     pub chunk_index: u32,
     pub first_radial_time_secs: Option<f64>,
     pub last_radial_time_secs: Option<f64>,
@@ -100,7 +100,7 @@ pub struct ChunkLatencyMetrics {
 
 /// State of the acquisition queue.
 #[derive(Clone, Debug, PartialEq, Default)]
-pub enum QueueState {
+pub(crate) enum QueueState {
     /// Queue is processing items.
     Running,
     /// User-initiated pause.
@@ -112,7 +112,7 @@ pub enum QueueState {
 
 /// Which tab is active in the acquisition drawer.
 #[derive(Clone, Debug, PartialEq, Default)]
-pub enum DrawerTab {
+pub(crate) enum DrawerTab {
     #[default]
     Queue,
     Network,
@@ -120,7 +120,7 @@ pub enum DrawerTab {
 
 /// Latency summary statistics.
 #[derive(Clone, Debug, Default)]
-pub struct LatencySummary {
+pub(crate) struct LatencySummary {
     pub avg_fetch_ms: f64,
     pub p50_fetch_ms: f64,
     pub p95_fetch_ms: f64,
@@ -128,7 +128,7 @@ pub struct LatencySummary {
 }
 
 /// Root acquisition state, lives on `AppState`.
-pub struct AcquisitionState {
+pub(crate) struct AcquisitionState {
     /// Monotonically increasing operation ID counter.
     next_id: OperationId,
     /// All operations, ordered by creation time. Ring buffer of last MAX_RETAINED.
@@ -164,7 +164,7 @@ impl Default for AcquisitionState {
 
 impl AcquisitionState {
     /// Create a new operation and return its ID.
-    pub fn create_operation(&mut self, kind: OperationKind) -> OperationId {
+    pub(crate) fn create_operation(&mut self, kind: OperationKind) -> OperationId {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -193,7 +193,7 @@ impl AcquisitionState {
     }
 
     /// Mark an operation as active (download started).
-    pub fn mark_active(&mut self, id: OperationId) {
+    pub(crate) fn mark_active(&mut self, id: OperationId) {
         if let Some(op) = self.find_mut(id) {
             op.status = OperationStatus::Active;
             op.started_at_ms = Some(js_sys::Date::now());
@@ -202,14 +202,14 @@ impl AcquisitionState {
     }
 
     /// Update the phase of an active operation.
-    pub fn set_phase(&mut self, id: OperationId, phase: DownloadPhase) {
+    pub(crate) fn set_phase(&mut self, id: OperationId, phase: DownloadPhase) {
         if let Some(op) = self.find_mut(id) {
             op.phase = phase;
         }
     }
 
     /// Mark an operation as completed.
-    pub fn mark_completed(&mut self, id: OperationId, bytes: u64) {
+    pub(crate) fn mark_completed(&mut self, id: OperationId, bytes: u64) {
         let now = js_sys::Date::now();
         if let Some(op) = self.find_mut(id) {
             let duration_ms = op.started_at_ms.map(|s| now - s).unwrap_or(0.0);
@@ -228,7 +228,7 @@ impl AcquisitionState {
     /// the strip / queue sheet. We deliberately do NOT pause the whole queue or
     /// auto-expand the drawer here; `update_queue_state` keeps the queue
     /// Running/Empty as appropriate.
-    pub fn mark_failed(&mut self, id: OperationId, error: String) {
+    pub(crate) fn mark_failed(&mut self, id: OperationId, error: String) {
         if let Some(op) = self.find_mut(id) {
             op.status = OperationStatus::Failed { error };
             op.completed_at_ms = Some(js_sys::Date::now());
@@ -238,7 +238,7 @@ impl AcquisitionState {
     }
 
     /// Cancel a specific operation.
-    pub fn cancel_operation(&mut self, id: OperationId) {
+    pub(crate) fn cancel_operation(&mut self, id: OperationId) {
         if let Some(op) = self.find_mut(id) {
             op.status = OperationStatus::Cancelled;
             op.completed_at_ms = Some(js_sys::Date::now());
@@ -247,7 +247,7 @@ impl AcquisitionState {
     }
 
     /// Cancel all queued operations (e.g., on selection change).
-    pub fn cancel_all_queued(&mut self) {
+    pub(crate) fn cancel_all_queued(&mut self) {
         let now = js_sys::Date::now();
         for op in self.operations.iter_mut() {
             if op.status == OperationStatus::Queued {
@@ -259,7 +259,7 @@ impl AcquisitionState {
     }
 
     /// Cancel all pending and active operations (selection change: cancel all + rebuild).
-    pub fn cancel_all(&mut self) {
+    pub(crate) fn cancel_all(&mut self) {
         let now = js_sys::Date::now();
         for op in self.operations.iter_mut() {
             match &op.status {
@@ -274,7 +274,7 @@ impl AcquisitionState {
     }
 
     /// Retry a failed operation: reset to Queued, move to front of queue.
-    pub fn retry_failed(&mut self, id: OperationId) {
+    pub(crate) fn retry_failed(&mut self, id: OperationId) {
         if let Some(op) = self.find_mut(id) {
             op.status = OperationStatus::Queued;
             op.started_at_ms = None;
@@ -299,27 +299,27 @@ impl AcquisitionState {
     }
 
     /// Skip a failed operation: mark as cancelled and resume queue.
-    pub fn skip_failed(&mut self, id: OperationId) {
+    pub(crate) fn skip_failed(&mut self, id: OperationId) {
         self.cancel_operation(id);
         self.queue_state = QueueState::Running;
     }
 
     /// Resume a paused queue.
-    pub fn resume(&mut self) {
+    pub(crate) fn resume(&mut self) {
         if self.queue_state == QueueState::Paused {
             self.queue_state = QueueState::Running;
         }
     }
 
     /// Pause the queue.
-    pub fn pause(&mut self) {
+    pub(crate) fn pause(&mut self) {
         if self.queue_state == QueueState::Running {
             self.queue_state = QueueState::Paused;
         }
     }
 
     /// Reorder an operation by a delta (-1 = move up, +1 = move down).
-    pub fn reorder_operation(&mut self, id: OperationId, delta: isize) {
+    pub(crate) fn reorder_operation(&mut self, id: OperationId, delta: isize) {
         if let Some(idx) = self.operations.iter().position(|o| o.id == id) {
             let new_idx =
                 (idx as isize + delta).clamp(0, self.operations.len() as isize - 1) as usize;
@@ -332,7 +332,7 @@ impl AcquisitionState {
     }
 
     /// Number of queued operations.
-    pub fn queued_count(&self) -> usize {
+    pub(crate) fn queued_count(&self) -> usize {
         self.operations
             .iter()
             .filter(|o| o.status == OperationStatus::Queued)
@@ -340,7 +340,7 @@ impl AcquisitionState {
     }
 
     /// Number of active operations.
-    pub fn active_count(&self) -> usize {
+    pub(crate) fn active_count(&self) -> usize {
         self.operations
             .iter()
             .filter(|o| o.status == OperationStatus::Active)
@@ -348,7 +348,7 @@ impl AcquisitionState {
     }
 
     /// Whether there are any active or queued operations.
-    pub fn has_active_operations(&self) -> bool {
+    pub(crate) fn has_active_operations(&self) -> bool {
         self.operations
             .iter()
             .any(|o| matches!(o.status, OperationStatus::Queued | OperationStatus::Active))
@@ -356,7 +356,7 @@ impl AcquisitionState {
 
     /// Correlate a network request URL with an active/recent operation.
     /// Returns the matching operation ID, if any.
-    pub fn correlate_network_request(&self, url: &str) -> Option<OperationId> {
+    pub(crate) fn correlate_network_request(&self, url: &str) -> Option<OperationId> {
         // Search active operations first (most recent first)
         for op in self.operations.iter().rev() {
             if !matches!(
@@ -392,7 +392,7 @@ impl AcquisitionState {
     }
 
     /// Record per-chunk latency metrics from a streaming result.
-    pub fn record_chunk_latency(
+    pub(crate) fn record_chunk_latency(
         &mut self,
         chunk_index: u32,
         fetch_latency_ms: f64,
@@ -412,7 +412,7 @@ impl AcquisitionState {
     }
 
     /// Compute latency summary statistics from chunk latencies.
-    pub fn latency_summary(&self) -> Option<LatencySummary> {
+    pub(crate) fn latency_summary(&self) -> Option<LatencySummary> {
         if self.chunk_latencies.is_empty() {
             return None;
         }
@@ -449,12 +449,12 @@ impl AcquisitionState {
     }
 
     /// Clear streaming latency data (e.g., when stopping live mode).
-    pub fn clear_latencies(&mut self) {
+    pub(crate) fn clear_latencies(&mut self) {
         self.chunk_latencies.clear();
     }
 
     /// Get a short description for an operation kind.
-    pub fn operation_description(kind: &OperationKind) -> String {
+    pub(crate) fn operation_description(kind: &OperationKind) -> String {
         match kind {
             OperationKind::ArchiveListing { site_id, date } => {
                 format!("List {} {}", site_id, date)
@@ -514,7 +514,7 @@ impl AcquisitionState {
     ///
     /// Realtime chunks get grouped by scan timestamp; everything else
     /// by operation ID.
-    pub fn network_group_key(op: &AcquisitionOperation) -> NetworkGroupKey {
+    pub(crate) fn network_group_key(op: &AcquisitionOperation) -> NetworkGroupKey {
         match &op.kind {
             OperationKind::RealtimeChunk {
                 site_id,
@@ -533,7 +533,7 @@ impl AcquisitionState {
     /// For realtime chunks this returns `Some((site_id, scan_timestamp))` so
     /// that all chunks belonging to the same volume are grouped together in
     /// the network tab. For other operation kinds returns `None`.
-    pub fn scan_group_key(kind: &OperationKind) -> Option<(String, i64)> {
+    pub(crate) fn scan_group_key(kind: &OperationKind) -> Option<(String, i64)> {
         match kind {
             OperationKind::RealtimeChunk {
                 site_id,
@@ -546,7 +546,7 @@ impl AcquisitionState {
 
     /// Human-readable description for a scan-level group (all chunks sharing
     /// the same `scan_timestamp`).
-    pub fn scan_group_description(site_id: &str, scan_timestamp: i64) -> String {
+    pub(crate) fn scan_group_description(site_id: &str, scan_timestamp: i64) -> String {
         let dt = chrono::DateTime::from_timestamp(scan_timestamp, 0);
         if let Some(dt) = dt {
             format!("{} live scan {}", site_id, dt.format("%H:%M:%SZ"))
@@ -561,7 +561,7 @@ impl AcquisitionState {
     }
 
     /// Find an operation by ID (immutable).
-    pub fn find(&self, id: OperationId) -> Option<&AcquisitionOperation> {
+    pub(crate) fn find(&self, id: OperationId) -> Option<&AcquisitionOperation> {
         self.operations.iter().find(|o| o.id == id)
     }
 
@@ -576,7 +576,7 @@ impl AcquisitionState {
     /// frame-cell join uses these to mark failed cells (alert tick); because
     /// `retry_failed` flips the status back to Queued, the marker clears on
     /// retry — unlike the error ring, which never forgets.
-    pub fn failed_scan_starts(&self) -> Vec<i64> {
+    pub(crate) fn failed_scan_starts(&self) -> Vec<i64> {
         self.operations
             .iter()
             .filter_map(|op| match (&op.status, &op.kind) {
@@ -593,7 +593,7 @@ impl AcquisitionState {
     /// `scan_start_secs` within `tolerance_secs`. Used to wire a timeline
     /// failed-cell tick back to `Intent::RetryFailed`. Returns the most
     /// recent match (operations iterate oldest→newest).
-    pub fn failed_operation_for_scan_start(
+    pub(crate) fn failed_operation_for_scan_start(
         &self,
         scan_start_secs: i64,
         tolerance_secs: i64,
@@ -614,7 +614,7 @@ impl AcquisitionState {
     }
 
     /// Get the next queued operation ID (for the download pump to start).
-    pub fn next_queued_id(&self) -> Option<OperationId> {
+    pub(crate) fn next_queued_id(&self) -> Option<OperationId> {
         self.operations
             .iter()
             .find(|o| o.status == OperationStatus::Queued)
@@ -622,7 +622,7 @@ impl AcquisitionState {
     }
 
     /// Whether the queue is paused (user or error).
-    pub fn is_paused(&self) -> bool {
+    pub(crate) fn is_paused(&self) -> bool {
         self.queue_state == QueueState::Paused
     }
 }

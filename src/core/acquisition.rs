@@ -15,7 +15,7 @@ use chrono::NaiveDate;
 /// the live edge (the stream owns acquisition there), while the queue is
 /// manually paused, or when the data-saver `autofetch_while_scrubbing` policy is
 /// off.
-pub fn reactive_prefetch_allowed(
+pub(crate) fn reactive_prefetch_allowed(
     playhead_attached: bool,
     queue_paused: bool,
     autofetch_while_scrubbing: bool,
@@ -25,7 +25,7 @@ pub fn reactive_prefetch_allowed(
 
 /// How a just-finalized timeline selection should be fetched.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SelectionGate {
+pub(crate) enum SelectionGate {
     /// Short span — arm the bulk-fetch pump immediately.
     Arm,
     /// Long span — open the confirm modal first (it arms the same target on
@@ -37,7 +37,7 @@ pub enum SelectionGate {
 /// for confirmation first. Spans at or under `confirm_threshold` seconds arm
 /// directly; longer ones confirm. Mirrors the duration gate in
 /// `resolve_selection_fetch_gate`.
-pub fn decide_selection_gate(start: f64, end: f64, confirm_threshold: f64) -> SelectionGate {
+pub(crate) fn decide_selection_gate(start: f64, end: f64, confirm_threshold: f64) -> SelectionGate {
     if (end - start).abs() <= confirm_threshold {
         SelectionGate::Arm
     } else {
@@ -47,7 +47,7 @@ pub fn decide_selection_gate(start: f64, end: f64, confirm_threshold: f64) -> Se
 
 /// The distinct UTC dates a `[start, end]` second-range touches (one, or two
 /// across a midnight boundary — the prefetch window is always well under 24h).
-pub fn dates_spanning(start_secs: i64, end_secs: i64) -> Vec<NaiveDate> {
+pub(crate) fn dates_spanning(start_secs: i64, end_secs: i64) -> Vec<NaiveDate> {
     let mut dates = Vec::new();
     for ts in [start_secs, end_secs] {
         if let Some(dt) = chrono::DateTime::from_timestamp(ts, 0) {
@@ -63,7 +63,7 @@ pub fn dates_spanning(start_secs: i64, end_secs: i64) -> Vec<NaiveDate> {
 /// Every UTC date a `[start, end]` second-range touches, in order. Unlike
 /// [`dates_spanning`] (which only samples the endpoints), this walks day by day
 /// so multi-day visible windows enumerate their interior dates too.
-pub fn dates_in_range(start_secs: i64, end_secs: i64) -> Vec<NaiveDate> {
+pub(crate) fn dates_in_range(start_secs: i64, end_secs: i64) -> Vec<NaiveDate> {
     let (Some(start_dt), Some(end_dt)) = (
         chrono::DateTime::from_timestamp(start_secs, 0),
         chrono::DateTime::from_timestamp(end_secs.max(start_secs), 0),

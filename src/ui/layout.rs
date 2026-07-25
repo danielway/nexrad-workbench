@@ -68,7 +68,7 @@ use eframe::egui;
 /// [`Layer::z_order`] (debug-checked in [`render_layout`]).
 ///
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LayerKind {
+pub(crate) enum LayerKind {
     Chrome,
     Modal,
 }
@@ -79,7 +79,7 @@ pub enum LayerKind {
 /// (chrome toggles, playback transport, live filter sync). Disjoint
 /// field access is the borrow contract — impls destructure the ctx and
 /// reborrow individual fields.
-pub struct LayoutCtx<'a> {
+pub(crate) struct LayoutCtx<'a> {
     pub ctx: &'a egui::Context,
     pub state: &'a mut AppState,
     pub timeline: &'a Timeline,
@@ -99,7 +99,7 @@ pub struct LayoutCtx<'a> {
 ///
 /// Implementors are zero-sized marker types; behavior lives in the impl
 /// (matching the [`Overlay`](super::canvas_overlays::Overlay) pattern).
-pub trait Layer {
+pub(crate) trait Layer {
     /// Which egui dispatch slot this layer occupies. Chrome layers run
     /// before any modal layer in a single frame.
     fn kind(&self) -> LayerKind;
@@ -126,7 +126,7 @@ pub trait Layer {
 /// then walks it in order. The slice contract: all `Chrome` layers
 /// appear before any `Modal` layers, and within each kind the order
 /// matches ascending `z_order`. Both invariants are debug-checked.
-pub fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
+pub(crate) fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
     let layers: &[&dyn Layer] = if is_mobile {
         &[
             // Chrome: 2 panels above the canvas.

@@ -6,7 +6,7 @@
 
 /// Severity classification per the Common Alerting Protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlertSeverity {
+pub(crate) enum AlertSeverity {
     Extreme,
     Severe,
     Moderate,
@@ -15,7 +15,7 @@ pub enum AlertSeverity {
 }
 
 impl AlertSeverity {
-    pub fn parse(s: &str) -> Self {
+    pub(crate) fn parse(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "extreme" => Self::Extreme,
             "severe" => Self::Severe,
@@ -25,7 +25,7 @@ impl AlertSeverity {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Extreme => "Extreme",
             Self::Severe => "Severe",
@@ -36,7 +36,7 @@ impl AlertSeverity {
     }
 
     /// Numeric rank so callers can sort highest-severity first.
-    pub fn rank(self) -> u8 {
+    pub(crate) fn rank(self) -> u8 {
         match self {
             Self::Extreme => 4,
             Self::Severe => 3,
@@ -55,7 +55,7 @@ impl AlertSeverity {
 /// encodes the product class: warnings render at full intensity, watches dimmer,
 /// and advisories/statements dimmer still, so the most urgent products read
 /// brightest. Unmapped events fall back to a neutral blue-gray.
-pub fn event_color(event: &str) -> (u8, u8, u8) {
+pub(crate) fn event_color(event: &str) -> (u8, u8, u8) {
     let e = event.to_ascii_lowercase();
 
     // Base hue by hazard family.
@@ -113,12 +113,12 @@ pub fn event_color(event: &str) -> (u8, u8, u8) {
 }
 
 /// A polygon ring is a closed sequence of (lon, lat) vertices.
-pub type Ring = Vec<(f64, f64)>;
+pub(crate) type Ring = Vec<(f64, f64)>;
 
 /// An alert's spatial footprint. A MultiPolygon is a list of polygons; each
 /// polygon is an outer ring followed by zero or more holes.
 #[derive(Debug, Clone, Default)]
-pub struct AlertGeometry {
+pub(crate) struct AlertGeometry {
     /// Polygons; each polygon is [outer_ring, hole_ring, hole_ring, ...].
     pub polygons: Vec<Vec<Ring>>,
     /// Precomputed bounding box (min_lon, min_lat, max_lon, max_lat).
@@ -128,12 +128,12 @@ pub struct AlertGeometry {
 impl AlertGeometry {
     /// True if this geometry is empty (e.g. zone-only alerts without
     /// resolved geometry).
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.polygons.is_empty()
     }
 
     /// Recompute bbox from `polygons`. Call after mutating `polygons`.
-    pub fn recompute_bbox(&mut self) {
+    pub(crate) fn recompute_bbox(&mut self) {
         let mut min_lon = f64::INFINITY;
         let mut min_lat = f64::INFINITY;
         let mut max_lon = f64::NEG_INFINITY;
@@ -169,7 +169,7 @@ impl AlertGeometry {
 /// A single active NWS alert. Geometry may be empty for zone-only alerts;
 /// those are filtered out before reaching the UI.
 #[derive(Debug, Clone)]
-pub struct Alert {
+pub(crate) struct Alert {
     /// Stable identifier (from GeoJSON feature `id`). Used as a selection key.
     pub id: String,
     /// Event name (e.g. "Tornado Warning", "Flood Advisory").
@@ -237,7 +237,7 @@ pub(crate) fn triangulate_polygons(polygons: &[Vec<Ring>]) -> Vec<[(f64, f64); 3
 
 impl Alert {
     /// RGB color for this alert, chosen by event type. See [`event_color`].
-    pub fn color(&self) -> (u8, u8, u8) {
+    pub(crate) fn color(&self) -> (u8, u8, u8) {
         event_color(&self.event)
     }
 
@@ -245,12 +245,12 @@ impl Alert {
     /// the event name contains "warning" (case-insensitive). This is the same
     /// distinction [`event_color`] uses to brighten warnings over watches, and
     /// it drives the count split, map de-emphasis, and layer toggles.
-    pub fn is_warning(&self) -> bool {
+    pub(crate) fn is_warning(&self) -> bool {
         self.event.to_ascii_lowercase().contains("warning")
     }
 
     /// True when the alert has an end timestamp in the past.
-    pub fn is_expired(&self, now_secs: f64) -> bool {
+    pub(crate) fn is_expired(&self, now_secs: f64) -> bool {
         let end = self.ends_secs.or(self.expires_secs);
         matches!(end, Some(t) if t < now_secs)
     }

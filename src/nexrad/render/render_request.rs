@@ -9,7 +9,7 @@ use crate::data::ScanKey;
 
 /// Parameters for a volume (all-elevations) render request.
 #[derive(Clone, PartialEq)]
-pub struct VolumeRenderRequest {
+pub(crate) struct VolumeRenderRequest {
     pub scan_key: ScanKey,
     pub product: String,
 }

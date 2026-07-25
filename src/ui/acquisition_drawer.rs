@@ -14,7 +14,7 @@ use eframe::egui::{self, Color32, RichText, ScrollArea};
 use egui_phosphor::regular as icons;
 
 /// Render the acquisition drawer content inside the bottom panel.
-pub fn render_acquisition_drawer(
+pub(crate) fn render_acquisition_drawer(
     ui: &mut egui::Ui,
     state: &mut AppState,
     live: &crate::subsystem::Live,

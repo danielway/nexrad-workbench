@@ -13,7 +13,7 @@
 /// accuracy-tuning work that will label partially-derived bounds.
 #[derive(Clone, Debug, PartialEq)]
 #[allow(dead_code)] // Unproduced variants are display vocabulary (see above).
-pub enum ForecastTimingLabel {
+pub(crate) enum ForecastTimingLabel {
     Observed,
     Anchored,
     Estimated,
@@ -24,7 +24,7 @@ pub enum ForecastTimingLabel {
 /// `Complete`/`Future` (`InProgress` awaits a mid-volume derive pass).
 #[derive(Clone, Debug, PartialEq)]
 #[allow(dead_code)] // `InProgress` is display vocabulary (see above).
-pub enum SweepStatus {
+pub(crate) enum SweepStatus {
     Complete,
     InProgress {
         radials_received: u32,
@@ -39,7 +39,7 @@ use nexrad_decode::messages::volume_coverage_pattern::{ChannelConfiguration, Wav
 
 /// Where the azimuth-rate value driving the prediction came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RateSource {
+pub(crate) enum RateSource {
     /// Rate came straight from the VCP message (`ExtractedVcpElevation.azimuth_rate`).
     VcpMessage,
     /// VCP message had no rate — used `fallback_azimuth_rate(...)`.
@@ -49,7 +49,7 @@ pub enum RateSource {
 }
 
 impl RateSource {
-    pub fn short(&self) -> &'static str {
+    pub(crate) fn short(&self) -> &'static str {
         match self {
             RateSource::VcpMessage => "VCP",
             RateSource::MethodBFallback => "FB",
@@ -65,7 +65,7 @@ impl RateSource {
 /// is re-derivable from the [`CompletedVolumeRecord`]'s `vcp` when a
 /// future column needs it.
 #[derive(Clone, Debug)]
-pub struct SweepForecast {
+pub(crate) struct SweepForecast {
     pub elev_number: u8,
     pub elev_angle: f32,
     pub waveform: String,
@@ -89,7 +89,7 @@ pub struct SweepForecast {
 }
 
 impl SweepForecast {
-    pub fn actual_duration(&self) -> Option<f64> {
+    pub(crate) fn actual_duration(&self) -> Option<f64> {
         match (self.actual_start, self.actual_end) {
             (Some(s), Some(e)) if e > s => Some(e - s),
             _ => None,
@@ -99,7 +99,7 @@ impl SweepForecast {
 
 /// Volume-level snapshot. Serialized into the clipboard text.
 #[derive(Clone, Debug)]
-pub struct VolumeForecastSnapshot {
+pub(crate) struct VolumeForecastSnapshot {
     pub vcp_number: u16,
     /// Name from the static `get_vcp_definition` table; `None` for unknown VCPs.
     pub vcp_name: Option<&'static str>,
@@ -130,7 +130,7 @@ pub struct VolumeForecastSnapshot {
 /// derivation for the in-progress volume — see
 /// [`crate::core::LiveModeState::derive_current_volume_forecast`].
 #[derive(Clone, Debug)]
-pub struct CompletedVolumeRecord {
+pub(crate) struct CompletedVolumeRecord {
     pub vcp: crate::data::keys::ExtractedVcp,
     /// Plan as captured at the start of this volume — preserves the
     /// library-projected predicted times so the diagnostics modal can
@@ -157,7 +157,7 @@ pub struct CompletedVolumeRecord {
 /// the predicted column reflects the library projection rather than a
 /// VCP cum-offset fallback.
 #[allow(clippy::too_many_arguments)]
-pub fn derive_volume_forecast(
+pub(crate) fn derive_volume_forecast(
     vcp: &crate::data::keys::ExtractedVcp,
     volume_start_plan: &crate::nexrad::StreamingPlan,
     volume_start_secs: f64,
@@ -324,7 +324,7 @@ pub fn derive_volume_forecast(
 ///   there at `success_at`, so the earliest usable download time lies
 ///   somewhere in between)
 #[derive(Clone, Debug)]
-pub struct ChunkArrivalStat {
+pub(crate) struct ChunkArrivalStat {
     /// 1-based sequence number within the volume at the time of success.
     pub sequence: u32,
     /// How the wait before this chunk's fetch was resolved. Distinguishes a
@@ -759,7 +759,7 @@ mod test_support {
 /// for a given arrival so prediction-error diagnostics can separate
 /// model-driven sleeps from probe-corrected ones.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WaitResolution {
+pub(crate) enum WaitResolution {
     /// Slept to the projector's predicted poll time with no list probe — the
     /// default path (short / same-volume / unfiltered waits, or a cross-volume
     /// wait whose probes never fired).
@@ -775,7 +775,7 @@ pub enum WaitResolution {
 
 impl WaitResolution {
     /// Compact label for the diagnostics arrivals table.
-    pub fn short(&self) -> &'static str {
+    pub(crate) fn short(&self) -> &'static str {
         match self {
             WaitResolution::SleptToPrediction => "sleep",
             WaitResolution::EarlyFired => "early",
@@ -788,7 +788,7 @@ impl WaitResolution {
 /// without depending on the timing crate's enum types — keeps the stored
 /// diagnostics vocabulary free of upstream imports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BucketKey {
+pub(crate) struct BucketKey {
     pub chunk_type: &'static str,
     pub waveform: &'static str,
     pub channel: &'static str,
@@ -797,7 +797,7 @@ pub struct BucketKey {
 
 impl BucketKey {
     /// Compact label for diagnostics output (e.g. `"I|CS|RP|F"`).
-    pub fn short(&self) -> String {
+    pub(crate) fn short(&self) -> String {
         format!(
             "{}|{}|{}|{}",
             self.chunk_type,
@@ -807,7 +807,7 @@ impl BucketKey {
         )
     }
 
-    pub fn from_characteristics(c: &ChunkCharacteristics) -> Self {
+    pub(crate) fn from_characteristics(c: &ChunkCharacteristics) -> Self {
         Self {
             chunk_type: chunk_type_str(c.chunk_type),
             waveform: waveform_str(c.waveform_type),
@@ -849,14 +849,14 @@ impl ChunkArrivalStat {
     /// Positive values mean the forecaster was too optimistic (we polled
     /// before the chunk was actually available). Negative values mean we
     /// waited longer than necessary.
-    pub fn prediction_error_secs(&self) -> Option<f64> {
+    pub(crate) fn prediction_error_secs(&self) -> Option<f64> {
         self.predicted_available_at.map(|p| self.success_at - p)
     }
 
     /// Time between the last empty poll and the successful download.
     /// Represents wait that could potentially have been avoided if the
     /// poll schedule were better aligned to S3 publishing time.
-    pub fn wait_after_last_empty_ms(&self) -> Option<f64> {
+    pub(crate) fn wait_after_last_empty_ms(&self) -> Option<f64> {
         self.last_empty_poll_at
             .map(|t| (self.success_at - t) * 1000.0)
     }
@@ -864,7 +864,7 @@ impl ChunkArrivalStat {
     /// Actual collection-space interval between this chunk and `prev` — the
     /// ground truth the predicted wait should be compared against. Returns
     /// `None` if either chunk hasn't had its collection time back-filled.
-    pub fn actual_interval_secs(&self, prev: &ChunkArrivalStat) -> Option<f64> {
+    pub(crate) fn actual_interval_secs(&self, prev: &ChunkArrivalStat) -> Option<f64> {
         match (self.collection_time_secs, prev.collection_time_secs) {
             (Some(c), Some(p)) if c > p => Some(c - p),
             _ => None,
@@ -876,7 +876,7 @@ impl ChunkArrivalStat {
     /// the gap (the chunk took longer to arrive than predicted), which is
     /// the dominant signal for "sweep too short" / "sweeps shifted earlier"
     /// symptoms.
-    pub fn interval_error_ms(&self, prev: &ChunkArrivalStat) -> Option<f64> {
+    pub(crate) fn interval_error_ms(&self, prev: &ChunkArrivalStat) -> Option<f64> {
         let actual = self.actual_interval_secs(prev)?;
         let predicted = self.predicted_wait_secs?;
         Some((actual - predicted) * 1000.0)

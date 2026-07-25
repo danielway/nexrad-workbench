@@ -22,12 +22,12 @@ use crate::core::UserPreferences;
 
 /// Minimum wall-clock seconds between URL-bar pushes. Preference saves piggyback
 /// on the same throttle window. (Was a hardcoded `1.0` inside `persist_if_due`.)
-pub const PERSIST_THROTTLE_SECS: f64 = 1.0;
+pub(crate) const PERSIST_THROTTLE_SECS: f64 = 1.0;
 
 /// Pure throttle gate: true when the persist window has elapsed since the last
 /// push. Negative elapsed (clock ran backwards / marker in the future) is still
 /// inside the window, so it suppresses.
-pub fn persist_due(now_secs: f64, last_url_push_secs: f64) -> bool {
+pub(crate) fn persist_due(now_secs: f64, last_url_push_secs: f64) -> bool {
     now_secs - last_url_push_secs >= PERSIST_THROTTLE_SECS
 }
 
@@ -39,7 +39,7 @@ pub fn persist_due(now_secs: f64, last_url_push_secs: f64) -> bool {
 /// keeps the bookkeeping pure and assertable (e.g. "an unchanged prefs snapshot
 /// emits no `SavePreferences`") rather than hiding it in the manager.
 #[derive(Debug, Default, Clone, PartialEq)]
-pub struct PersistDecision {
+pub(crate) struct PersistDecision {
     /// Effects for the shell to execute, in order.
     pub effects: Vec<Effect>,
     /// New throttle marker; `Some(now)` iff the throttle gate passed this call.
@@ -55,7 +55,7 @@ pub struct PersistDecision {
 ///    throttle marker to `now_secs`.
 /// 2. If `current_prefs` differs from `last_saved_preferences`, also emit
 ///    [`Effect::SavePreferences`] and report the new snapshot.
-pub fn decide_persist(
+pub(crate) fn decide_persist(
     now_secs: f64,
     url_push: UrlPush,
     current_prefs: UserPreferences,

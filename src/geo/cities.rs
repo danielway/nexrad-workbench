@@ -841,7 +841,7 @@ static CITIES: &[CityEntry] = &[
 ];
 
 /// Build the cities layer from the built-in data.
-pub fn build_cities_layer() -> GeoLayer {
+pub(crate) fn build_cities_layer() -> GeoLayer {
     let mut layer = GeoLayer::new(GeoLayerType::Cities);
 
     for city in CITIES {

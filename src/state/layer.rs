@@ -4,7 +4,7 @@ use crate::geo::GeoLayerVisibility;
 
 /// State for toggling various overlay layers.
 #[derive(Default)]
-pub struct LayerState {
+pub(crate) struct LayerState {
     /// Geographic layer visibility settings
     pub geo: GeoLayerVisibility,
 }

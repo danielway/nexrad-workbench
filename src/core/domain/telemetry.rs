@@ -8,7 +8,7 @@ use crate::core::OperationId;
 /// A single completed network request reported by the service worker.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
-pub struct NetworkRequest {
+pub(crate) struct NetworkRequest {
     /// Request URL (truncated for display).
     pub url: String,
     /// HTTP status code (0 if the request failed before a response).
@@ -29,7 +29,7 @@ pub struct NetworkRequest {
 
 /// Aggregate network statistics for the session.
 #[derive(Clone, Debug, Default)]
-pub struct NetworkAggregate {
+pub(crate) struct NetworkAggregate {
     /// Total number of requests intercepted.
     pub total_requests: u32,
     /// Number of failed requests (non-ok or network error).

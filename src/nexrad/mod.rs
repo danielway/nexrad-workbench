@@ -28,25 +28,25 @@ pub(crate) mod timing;
 pub(crate) use acquisition::download_queue;
 pub(crate) use render::color_table;
 
-pub use acquisition::acquisition_coordinator::AcquisitionCoordinator;
-pub use acquisition::archive_index::ScanBoundary;
-pub use acquisition::cache_channel::CacheLoadResult;
-pub use acquisition::download::{ListingResult, NetworkStats};
-pub use acquisition::types::DownloadResult;
-pub use decode::decode_worker::{
+pub(crate) use acquisition::acquisition_coordinator::AcquisitionCoordinator;
+pub(crate) use acquisition::archive_index::ScanBoundary;
+pub(crate) use acquisition::cache_channel::CacheLoadResult;
+pub(crate) use acquisition::download::{ListingResult, NetworkStats};
+pub(crate) use acquisition::types::DownloadResult;
+pub(crate) use decode::decode_worker::{
     default_pool_size, ChunkIngestResult, DecodeResult, IngestResult, VolumeData, VolumeSweepMeta,
     WorkerOutcome, WorkerPool,
 };
-pub use live::realtime::{
+pub(crate) use live::realtime::{
     ChunkProjectedTimes, ChunkProjectionInfo, RealtimeChannel, RealtimeResult,
 };
-pub use live::streaming_plan::StreamingPlan;
-pub use projector::ProjectorObservation;
-pub use render::globe_radar_renderer::GlobeRadarRenderer;
-pub use render::gpu_renderer::RadarGpuRenderer;
-pub use render::national_mosaic::NationalMosaic;
-pub use render::render_coordinator::RenderCoordinator;
-pub use render::volume_ray_renderer::VolumeRayRenderer;
+pub(crate) use live::streaming_plan::StreamingPlan;
+pub(crate) use projector::ProjectorObservation;
+pub(crate) use render::globe_radar_renderer::GlobeRadarRenderer;
+pub(crate) use render::gpu_renderer::RadarGpuRenderer;
+pub(crate) use render::national_mosaic::NationalMosaic;
+pub(crate) use render::render_coordinator::RenderCoordinator;
+pub(crate) use render::volume_ray_renderer::VolumeRayRenderer;
 
 /// Standard NEXRAD coverage range in km.
-pub const RADAR_COVERAGE_RANGE_KM: f64 = 300.0;
+pub(crate) const RADAR_COVERAGE_RANGE_KM: f64 = 300.0;

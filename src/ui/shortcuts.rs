@@ -355,7 +355,7 @@ const HELD_KEY_DOCS: &[HelpEntry] = &[
 // ---------------------------------------------------------------------------
 
 /// Process keyboard shortcuts. Call once per frame from the main update loop.
-pub fn handle_shortcuts(
+pub(crate) fn handle_shortcuts(
     ctx: &egui::Context,
     state: &mut AppState,
     live: &mut crate::subsystem::Live,

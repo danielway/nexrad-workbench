@@ -16,14 +16,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Volume + 1-based sequence locating a single chunk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ChunkCoord {
+pub(crate) struct ChunkCoord {
     pub volume: VolumeIndex,
     pub sequence: usize,
 }
 
 /// A chunk known to exist in S3, with its S3 upload time (Unix seconds).
 #[derive(Clone, Copy, Debug)]
-pub struct KnownChunk {
+pub(crate) struct KnownChunk {
     pub coord: ChunkCoord,
     pub upload_secs: f64,
     pub chunk_type: ChunkType,
@@ -66,7 +66,7 @@ impl VolumeInventory {
 
 /// Inventory of all known-available chunks across the current + next volume.
 #[derive(Clone, Debug, Default)]
-pub struct KnownChunkInventory {
+pub(crate) struct KnownChunkInventory {
     by_volume: BTreeMap<usize, VolumeInventory>,
     /// The newest known chunk across all volumes — the availability anchor.
     newest: Option<KnownChunk>,
@@ -77,7 +77,7 @@ impl KnownChunkInventory {
     /// `true` iff the global `newest` advanced (i.e. the availability anchor
     /// moved). Idempotent for an already-seen sequence with an equal/older
     /// upload.
-    pub fn observe(&mut self, chunk: KnownChunk) -> bool {
+    pub(crate) fn observe(&mut self, chunk: KnownChunk) -> bool {
         self.by_volume
             .entry(chunk.coord.volume.as_number())
             .or_default()
@@ -92,7 +92,11 @@ impl KnownChunkInventory {
 
     /// Merge a full S3 listing for one volume (a periodic probe). Returns `true`
     /// iff the global `newest` advanced.
-    pub fn observe_listing(&mut self, volume: VolumeIndex, listed: &[ChunkIdentifier]) -> bool {
+    pub(crate) fn observe_listing(
+        &mut self,
+        volume: VolumeIndex,
+        listed: &[ChunkIdentifier],
+    ) -> bool {
         let mut advanced = false;
         for id in listed {
             let Some(upload) = id
@@ -115,7 +119,7 @@ impl KnownChunkInventory {
 
     /// Drop volumes outside the current + next window to bound memory. Keeps
     /// only `keep` and `keep.next()`.
-    pub fn retain_from(&mut self, keep: VolumeIndex) {
+    pub(crate) fn retain_from(&mut self, keep: VolumeIndex) {
         let a = keep.as_number();
         let b = keep.next().as_number();
         self.by_volume.retain(|v, _| *v == a || *v == b);
@@ -123,33 +127,33 @@ impl KnownChunkInventory {
 
     /// The newest known chunk across all volumes (the availability anchor).
     #[allow(dead_code)] // Exercised by tests; no prod caller.
-    pub fn newest(&self) -> Option<KnownChunk> {
+    pub(crate) fn newest(&self) -> Option<KnownChunk> {
         self.newest
     }
 
     /// Whether a specific `(volume, sequence)` chunk is known-available.
-    pub fn contains(&self, coord: ChunkCoord) -> bool {
+    pub(crate) fn contains(&self, coord: ChunkCoord) -> bool {
         self.by_volume
             .get(&coord.volume.as_number())
             .is_some_and(|v| v.seqs.contains(&coord.sequence))
     }
 
     /// Highest known sequence published in `volume`, if any.
-    pub fn newest_seq_in(&self, volume: VolumeIndex) -> Option<usize> {
+    pub(crate) fn newest_seq_in(&self, volume: VolumeIndex) -> Option<usize> {
         self.by_volume
             .get(&volume.as_number())
             .and_then(|v| v.max_seq())
     }
 
     /// Newest S3 upload time (Unix seconds) seen in `volume`, if any.
-    pub fn newest_upload_in(&self, volume: VolumeIndex) -> Option<f64> {
+    pub(crate) fn newest_upload_in(&self, volume: VolumeIndex) -> Option<f64> {
         self.by_volume
             .get(&volume.as_number())
             .and_then(|v| v.newest_upload_secs)
     }
 
     /// Whether `volume`'s End chunk has been observed.
-    pub fn has_end(&self, volume: VolumeIndex) -> bool {
+    pub(crate) fn has_end(&self, volume: VolumeIndex) -> bool {
         self.by_volume
             .get(&volume.as_number())
             .is_some_and(|v| v.has_end)

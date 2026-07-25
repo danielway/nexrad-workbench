@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// Wraps the downloaded scan data with metadata for the download pipeline.
 /// The scan data is the raw archive bytes before worker processing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedScan {
+pub(crate) struct CachedScan {
     /// Storage key identifying this scan
     pub key: ScanKey,
     /// Original file name from AWS
@@ -22,7 +22,12 @@ pub struct CachedScan {
 
 impl CachedScan {
     /// Creates a new cached scan from raw data.
-    pub fn new(site_id: &str, timestamp_secs: i64, file_name: String, data: Vec<u8>) -> Self {
+    pub(crate) fn new(
+        site_id: &str,
+        timestamp_secs: i64,
+        file_name: String,
+        data: Vec<u8>,
+    ) -> Self {
         Self {
             key: ScanKey::from_secs(site_id, timestamp_secs),
             file_size: data.len() as u64,
@@ -37,14 +42,14 @@ mod base64_bytes {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use serde::{Deserialize, Deserializer, Serializer};
 
-    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    pub(crate) fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         serializer.serialize_str(&STANDARD.encode(bytes))
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -55,7 +60,7 @@ mod base64_bytes {
 
 /// Result of a download operation.
 #[derive(Debug, Clone)]
-pub enum DownloadResult {
+pub(crate) enum DownloadResult {
     /// Download completed successfully, with timing info
     Success {
         scan: CachedScan,

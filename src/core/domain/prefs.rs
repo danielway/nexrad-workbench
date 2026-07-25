@@ -10,7 +10,7 @@ use crate::core::{InterpolationMode, PlaybackSpeed};
 
 /// User preferences that persist across page reloads.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct UserPreferences {
+pub(crate) struct UserPreferences {
     #[serde(default)]
     pub speed: PlaybackSpeed,
     #[serde(default)]

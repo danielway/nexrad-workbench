@@ -8,7 +8,7 @@ use super::types::{ReportCategory, StormReport};
 use serde_json::Value;
 
 /// Outcome of a successful parse.
-pub struct ParsedReports {
+pub(crate) struct ParsedReports {
     pub reports: Vec<StormReport>,
     /// Total count reported by the server (may exceed `reports.len()` if we
     /// only fetched the first page).
@@ -16,7 +16,7 @@ pub struct ParsedReports {
 }
 
 /// Parse a single page of the mPING reports response.
-pub fn parse_response(body: &str) -> Result<ParsedReports, String> {
+pub(crate) fn parse_response(body: &str) -> Result<ParsedReports, String> {
     let root: Value = serde_json::from_str(body).map_err(|e| format!("parse error: {}", e))?;
 
     let results = root

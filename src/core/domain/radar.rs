@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// A contiguous time range of radar data.
 #[derive(Clone, Debug, PartialEq)]
-pub struct TimeRange {
+pub(crate) struct TimeRange {
     /// Start timestamp (Unix seconds)
     pub start: f64,
     /// End timestamp (Unix seconds)
@@ -14,18 +14,18 @@ pub struct TimeRange {
 
 impl TimeRange {
     /// Creates a new time range.
-    pub fn new(start: f64, end: f64) -> Self {
+    pub(crate) fn new(start: f64, end: f64) -> Self {
         Self { start, end }
     }
 
     /// Returns the duration of this range in seconds.
     #[allow(dead_code)]
-    pub fn duration(&self) -> f64 {
+    pub(crate) fn duration(&self) -> f64 {
         self.end - self.start
     }
 
     /// Returns true if the given timestamp is within this range.
-    pub fn contains(&self, ts: f64) -> bool {
+    pub(crate) fn contains(&self, ts: f64) -> bool {
         ts >= self.start && ts <= self.end
     }
 }
@@ -33,7 +33,7 @@ impl TimeRange {
 /// A single radial (one azimuth direction at one elevation)
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
-pub struct Radial {
+pub(crate) struct Radial {
     /// Start timestamp (Unix seconds with sub-second precision)
     pub start_time: f64,
     /// Duration in seconds
@@ -44,7 +44,7 @@ pub struct Radial {
 
 /// A sweep (360-degree rotation at one elevation)
 #[derive(Clone, Debug)]
-pub struct Sweep {
+pub(crate) struct Sweep {
     /// Start timestamp (Unix seconds with sub-second precision)
     pub start_time: f64,
     /// End timestamp
@@ -66,7 +66,7 @@ pub struct Sweep {
 
 impl Sweep {
     #[allow(dead_code)]
-    pub fn duration(&self) -> f64 {
+    pub(crate) fn duration(&self) -> f64 {
         self.end_time - self.start_time
     }
 }
@@ -82,7 +82,7 @@ fn sweep_has_product(sweep: &Sweep, product: &str) -> bool {
 
 /// A complete volume scan (multiple sweeps at different elevations)
 #[derive(Clone, Debug)]
-pub struct Scan {
+pub(crate) struct Scan {
     /// Start timestamp (Unix seconds with sub-second precision).
     /// May be adjusted earlier than `key_timestamp` to encompass sweep data.
     pub start_time: f64,
@@ -107,14 +107,14 @@ pub struct Scan {
 
 impl Scan {
     #[allow(dead_code)]
-    pub fn duration(&self) -> f64 {
+    pub(crate) fn duration(&self) -> f64 {
         self.end_time - self.start_time
     }
 
     /// The scan's storage-key timestamp in milliseconds — the same value
     /// encoded in its `ScanKey`. Use this (not ad-hoc `* 1000.0` math) when
     /// matching against millisecond keys from IDB or the live stream.
-    pub fn key_ms(&self) -> i64 {
+    pub(crate) fn key_ms(&self) -> i64 {
         crate::data::UnixMillis::from_secs_f64(self.key_timestamp).0
     }
 
@@ -129,7 +129,7 @@ impl Scan {
     /// Display-only: does NOT affect `end_time`, which stays anchored to real
     /// data for playback progress, scan-at-timestamp, and contiguous-range
     /// logic.
-    pub fn display_end_time(&self) -> f64 {
+    pub(crate) fn display_end_time(&self) -> f64 {
         self.vcp_pattern
             .as_ref()
             .and_then(|v| v.estimated_volume_duration())
@@ -142,7 +142,7 @@ impl Scan {
     /// Returns `None` only when neither source has an entry — callers should
     /// fall back to `Sweep::elevation` (the per-sweep measured average from
     /// the antenna encoder) for display.
-    pub fn target_elevation_angle(&self, elevation_number: u8) -> Option<f32> {
+    pub(crate) fn target_elevation_angle(&self, elevation_number: u8) -> Option<f32> {
         let idx = elevation_number.saturating_sub(1) as usize;
         if let Some(ref pattern) = self.vcp_pattern {
             if let Some(elev) = pattern.elevations.get(idx) {
@@ -161,13 +161,13 @@ impl Scan {
     /// measured average. Use this everywhere we render an elevation cut to
     /// the user; it keeps every surface anchored to the commanded angle
     /// (the cut's identity) instead of the encoder's noisy reading.
-    pub fn display_angle(&self, sweep: &Sweep) -> f32 {
+    pub(crate) fn display_angle(&self, sweep: &Sweep) -> f32 {
         self.target_elevation_angle(sweep.elevation_number)
             .unwrap_or(sweep.elevation)
     }
 
     /// Find the sweep containing the given timestamp
-    pub fn find_sweep_at_timestamp(&self, ts: f64) -> Option<(usize, &Sweep)> {
+    pub(crate) fn find_sweep_at_timestamp(&self, ts: f64) -> Option<(usize, &Sweep)> {
         self.sweeps
             .iter()
             .enumerate()
@@ -175,7 +175,7 @@ impl Scan {
     }
 
     /// Calculate scan progress as a percentage (0.0 to 1.0)
-    pub fn progress_at_timestamp(&self, ts: f64) -> Option<f32> {
+    pub(crate) fn progress_at_timestamp(&self, ts: f64) -> Option<f32> {
         if ts < self.start_time || ts > self.end_time {
             return None;
         }
@@ -189,7 +189,7 @@ impl Scan {
 
 /// Lightweight metadata for timeline display (avoids loading full scan data).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanMetadata {
+pub(crate) struct ScanMetadata {
     /// Storage key identifying this scan
     pub key: ScanKey,
     /// Original file name from AWS
@@ -212,7 +212,7 @@ pub struct ScanMetadata {
 
 /// Collection of radar data for timeline display
 #[derive(Clone, Debug, Default)]
-pub struct RadarTimeline {
+pub(crate) struct RadarTimeline {
     /// All scans, ordered by start time
     pub scans: Vec<Scan>,
 }
@@ -228,7 +228,7 @@ impl RadarTimeline {
     /// Returns multiple ranges when there are large gaps between scans
     /// (e.g., data from different days or sessions). Consecutive scans
     /// within ~15 minutes of each other are grouped into the same range.
-    pub fn time_ranges(&self) -> Vec<TimeRange> {
+    pub(crate) fn time_ranges(&self) -> Vec<TimeRange> {
         if self.scans.is_empty() {
             return Vec::new();
         }
@@ -260,7 +260,7 @@ impl RadarTimeline {
     /// This is a convenience method that returns the bounding box of all ranges.
     /// For checking if data exists in a specific period, use `time_ranges()` instead.
     #[allow(dead_code)]
-    pub fn overall_time_range(&self) -> Option<(f64, f64)> {
+    pub(crate) fn overall_time_range(&self) -> Option<(f64, f64)> {
         if self.scans.is_empty() {
             return None;
         }
@@ -272,7 +272,7 @@ impl RadarTimeline {
     /// Find the scan containing the given timestamp.
     ///
     /// Uses binary search on the sorted scan list for O(log n) lookup.
-    pub fn find_scan_at_timestamp(&self, ts: f64) -> Option<&Scan> {
+    pub(crate) fn find_scan_at_timestamp(&self, ts: f64) -> Option<&Scan> {
         // partition_point returns the first index where start_time > ts,
         // so the candidate scan is the one just before that.
         let idx = self.scans.partition_point(|s| s.start_time <= ts);
@@ -285,7 +285,7 @@ impl RadarTimeline {
     /// Returns the scan whose start_time is closest to (but not after) the timestamp,
     /// as long as it's within `max_age_secs` of the timestamp.
     /// Uses binary search on the sorted scan list for O(log n) lookup.
-    pub fn find_recent_scan(&self, ts: f64, max_age_secs: f64) -> Option<&Scan> {
+    pub(crate) fn find_recent_scan(&self, ts: f64, max_age_secs: f64) -> Option<&Scan> {
         let idx = self.scans.partition_point(|s| s.start_time <= ts);
         let most_recent = self.scans.get(idx.wrapping_sub(1))?;
         (ts - most_recent.start_time <= max_age_secs).then_some(most_recent)
@@ -295,7 +295,7 @@ impl RadarTimeline {
     ///
     /// Returns `None` if `ts` is before or within the first scan, or if the
     /// previous scan is older than `max_age_secs` from `ts`.
-    pub fn find_previous_scan(&self, ts: f64, max_age_secs: f64) -> Option<&Scan> {
+    pub(crate) fn find_previous_scan(&self, ts: f64, max_age_secs: f64) -> Option<&Scan> {
         let idx = self.scans.partition_point(|s| s.start_time <= ts);
         // idx-1 is the scan containing ts; idx-2 is the one before it
         if idx >= 2 {
@@ -309,14 +309,14 @@ impl RadarTimeline {
     /// Get the timestamp of a scan for identification purposes.
     /// Used to check if we need to load a different scan.
     #[allow(dead_code)] // Utility method
-    pub fn scan_timestamp(scan: &Scan) -> i64 {
+    pub(crate) fn scan_timestamp(scan: &Scan) -> i64 {
         scan.start_time as i64
     }
 
     /// Generate sample data for testing/demo purposes
     /// Creates scans for the specified duration ending at `end_time`
     #[allow(dead_code)] // Kept for testing/demo purposes
-    pub fn generate_sample_data(end_time: f64, duration_hours: f64) -> Self {
+    pub(crate) fn generate_sample_data(end_time: f64, duration_hours: f64) -> Self {
         let mut scans = Vec::new();
         let start_time = end_time - duration_hours * 3600.0;
 
@@ -398,7 +398,7 @@ impl RadarTimeline {
     ///
     /// Returns a sorted, deduplicated `Vec<f64>` of `end_time` values. If
     /// `bounds` is provided, only sweeps within that time range are included.
-    pub fn matching_sweep_end_times_by_number(
+    pub(crate) fn matching_sweep_end_times_by_number(
         &self,
         elevation_number: u8,
         product: &str,
@@ -431,7 +431,11 @@ impl RadarTimeline {
     /// blob for `product`. Used by Latest/auto mode where every matching sweep
     /// is a frame. See [`Self::matching_sweep_end_times_by_number`] for the
     /// product-filter contract.
-    pub fn all_sweep_end_times(&self, product: &str, bounds: Option<(f64, f64)>) -> Vec<f64> {
+    pub(crate) fn all_sweep_end_times(
+        &self,
+        product: &str,
+        bounds: Option<(f64, f64)>,
+    ) -> Vec<f64> {
         let mut times: Vec<f64> = Vec::new();
         for scan in &self.scans {
             if let Some((start, end)) = bounds {
@@ -467,7 +471,7 @@ impl RadarTimeline {
     /// frames, spans all available. A single frame yields a zero-width span
     /// (`start == end`); callers must reject that before using it as loop
     /// bounds (looping divides by the span width).
-    pub fn lookback_window(
+    pub(crate) fn lookback_window(
         &self,
         elevation_selection: &crate::core::ElevationSelection,
         product: &str,
@@ -492,7 +496,11 @@ impl RadarTimeline {
     }
 
     /// Find the end time of the next sweep matching `elevation_number` after `ts`.
-    pub fn next_matching_sweep_end_by_number(&self, ts: f64, elevation_number: u8) -> Option<f64> {
+    pub(crate) fn next_matching_sweep_end_by_number(
+        &self,
+        ts: f64,
+        elevation_number: u8,
+    ) -> Option<f64> {
         for scan in &self.scans {
             for sweep in &scan.sweeps {
                 if sweep.elevation_number == elevation_number && sweep.end_time > ts + 0.5 {
@@ -504,7 +512,11 @@ impl RadarTimeline {
     }
 
     /// Find the end time of the previous sweep matching `elevation_number` before `ts`.
-    pub fn prev_matching_sweep_end_by_number(&self, ts: f64, elevation_number: u8) -> Option<f64> {
+    pub(crate) fn prev_matching_sweep_end_by_number(
+        &self,
+        ts: f64,
+        elevation_number: u8,
+    ) -> Option<f64> {
         let mut best: Option<f64> = None;
         for scan in self.scans.iter().rev() {
             for sweep in scan.sweeps.iter().rev() {
@@ -526,7 +538,7 @@ impl RadarTimeline {
     }
 
     /// Find the end time of the next sweep of any elevation after `ts`.
-    pub fn next_any_sweep_end(&self, ts: f64) -> Option<f64> {
+    pub(crate) fn next_any_sweep_end(&self, ts: f64) -> Option<f64> {
         for scan in &self.scans {
             for sweep in &scan.sweeps {
                 if sweep.end_time > ts + 0.5 {
@@ -538,7 +550,7 @@ impl RadarTimeline {
     }
 
     /// Find the end time of the previous sweep of any elevation before `ts`.
-    pub fn prev_any_sweep_end(&self, ts: f64) -> Option<f64> {
+    pub(crate) fn prev_any_sweep_end(&self, ts: f64) -> Option<f64> {
         let mut best: Option<f64> = None;
         for scan in self.scans.iter().rev() {
             for sweep in scan.sweeps.iter().rev() {
@@ -604,7 +616,7 @@ impl RadarTimeline {
     /// *next whole volume scan* after the one `ts` resolves into, matching
     /// `elevation_number`. When `ts` is before all scans, lands in the first
     /// scan. `None` when there is no later scan.
-    pub fn next_scan_matching_sweep_end_by_number(
+    pub(crate) fn next_scan_matching_sweep_end_by_number(
         &self,
         ts: f64,
         elevation_number: u8,
@@ -620,7 +632,7 @@ impl RadarTimeline {
     /// Scan step backward (spec §12 Shift+←): a landing timestamp inside the
     /// *previous whole volume scan* before the one `ts` resolves into, matching
     /// `elevation_number`. `None` when there is no earlier scan.
-    pub fn prev_scan_matching_sweep_end_by_number(
+    pub(crate) fn prev_scan_matching_sweep_end_by_number(
         &self,
         ts: f64,
         elevation_number: u8,
@@ -633,7 +645,7 @@ impl RadarTimeline {
 
     /// Scan step forward in `Latest` mode (any tilt). See
     /// [`Self::next_scan_matching_sweep_end_by_number`].
-    pub fn next_scan_any_sweep_end(&self, ts: f64) -> Option<f64> {
+    pub(crate) fn next_scan_any_sweep_end(&self, ts: f64) -> Option<f64> {
         let next_idx = match self.scan_index_at(ts) {
             Some(i) => i + 1,
             None => 0,
@@ -644,7 +656,7 @@ impl RadarTimeline {
 
     /// Scan step backward in `Latest` mode (any tilt). See
     /// [`Self::prev_scan_matching_sweep_end_by_number`].
-    pub fn prev_scan_any_sweep_end(&self, ts: f64) -> Option<f64> {
+    pub(crate) fn prev_scan_any_sweep_end(&self, ts: f64) -> Option<f64> {
         let cur = self.scan_index_at(ts)?;
         let prev = cur.checked_sub(1)?;
         let scan = self.scans.get(prev)?;
@@ -656,7 +668,7 @@ impl RadarTimeline {
     /// [`Self::scans_in_visual_range`]; keep this for callers that need the
     /// scan's true cached-data bounds rather than the projected block.
     #[allow(dead_code)]
-    pub fn scans_in_range(&self, start: f64, end: f64) -> impl Iterator<Item = &Scan> {
+    pub(crate) fn scans_in_range(&self, start: f64, end: f64) -> impl Iterator<Item = &Scan> {
         self.scans
             .iter()
             .filter(move |scan| scan.end_time >= start && scan.start_time <= end)
@@ -672,7 +684,7 @@ impl RadarTimeline {
     /// This is the fast path for loading the timeline from IndexedDB -
     /// it only uses lightweight metadata, not full scan data.
     /// Sweeps are left empty and loaded on-demand when a scan is selected.
-    pub fn from_metadata(metadata_list: Vec<ScanMetadata>) -> Self {
+    pub(crate) fn from_metadata(metadata_list: Vec<ScanMetadata>) -> Self {
         // Default scan duration estimate (5 minutes) when end_timestamp is unknown
         const DEFAULT_SCAN_DURATION_SECS: i64 = 300;
 

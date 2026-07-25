@@ -25,7 +25,7 @@ use crate::nexrad::AcquisitionCoordinator;
 use crate::state::AcquisitionState;
 
 /// Owner of all acquisition state and I/O.
-pub struct Acquisition {
+pub(crate) struct Acquisition {
     /// Per-operation tracking + UI drawer state.
     pub state: AcquisitionState,
     /// Download channels, cache loader, archive index, data facade.
@@ -54,7 +54,7 @@ pub struct Acquisition {
 /// after [`crate::SELECTION_FETCH_DEADLINE_SECS`] if a listing never arrives —
 /// the hard backstop that keeps the pump from staying armed forever.
 #[derive(Clone, Copy, Debug)]
-pub struct SelectionFetchTarget {
+pub(crate) struct SelectionFetchTarget {
     /// Selected `(start, end)` in seconds-since-epoch (normalized start <= end).
     pub range: (f64, f64),
     /// Wall-clock "now" (seconds) when this request was armed.
@@ -67,7 +67,7 @@ impl Acquisition {
     /// `data_facade` is shared with whatever else needs to talk to
     /// IndexedDB (workers, eviction tasks); the coordinator clones it
     /// per request as it dispatches downloads.
-    pub fn new(data_facade: DataFacade) -> Self {
+    pub(crate) fn new(data_facade: DataFacade) -> Self {
         Self {
             state: AcquisitionState::default(),
             coordinator: AcquisitionCoordinator::new(data_facade),
@@ -90,7 +90,7 @@ impl Acquisition {
 /// cursor continuously). `resolved_signature` suppresses redundant
 /// re-evaluation once a settled view has been fully handled.
 #[derive(Default)]
-pub struct PrefetchSettle {
+pub(crate) struct PrefetchSettle {
     last_signature: u64,
     settled_since_ms: Option<f64>,
     resolved_signature: Option<u64>,
@@ -100,7 +100,7 @@ impl PrefetchSettle {
     /// Record this frame's signature and report whether the view has been
     /// settled for at least `settle_ms`. A changed signature resets the timer
     /// and clears the resolved marker.
-    pub fn poll(&mut self, signature: u64, now_ms: f64, settle_ms: f64) -> bool {
+    pub(crate) fn poll(&mut self, signature: u64, now_ms: f64, settle_ms: f64) -> bool {
         if signature != self.last_signature {
             self.last_signature = signature;
             self.settled_since_ms = Some(now_ms);
@@ -112,12 +112,12 @@ impl PrefetchSettle {
 
     /// Whether the current signature has already been fully handled (nothing
     /// left to enqueue, no listing pending), so re-evaluation can be skipped.
-    pub fn already_resolved(&self) -> bool {
+    pub(crate) fn already_resolved(&self) -> bool {
         self.resolved_signature == Some(self.last_signature)
     }
 
     /// Mark the current signature as fully handled.
-    pub fn mark_resolved(&mut self) {
+    pub(crate) fn mark_resolved(&mut self) {
         self.resolved_signature = Some(self.last_signature);
     }
 }

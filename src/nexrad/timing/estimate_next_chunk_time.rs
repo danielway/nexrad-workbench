@@ -12,7 +12,7 @@ use nexrad_decode::messages::volume_coverage_pattern;
 /// returned wait duration. Surfaced in the per-chunk diagnostic so we can see
 /// which estimator drove each prediction without trawling the debug log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SchedulerPath {
+pub(crate) enum SchedulerPath {
     /// Constant Start→first-Intermediate gap (no prediction needed).
     StartConstant,
     /// `ChunkTimingStats` has samples for this bucket; the interval is a
@@ -27,7 +27,7 @@ pub enum SchedulerPath {
 }
 
 impl SchedulerPath {
-    pub fn short(&self) -> &'static str {
+    pub(crate) fn short(&self) -> &'static str {
         match self {
             SchedulerPath::StartConstant => "start",
             SchedulerPath::Blended => "blend",
@@ -39,7 +39,7 @@ impl SchedulerPath {
 
 /// Rich diagnostic version of [`estimate_chunk_processing_time`]'s output.
 #[derive(Debug, Clone)]
-pub struct EstimatedChunkProcessing {
+pub(crate) struct EstimatedChunkProcessing {
     pub duration: ChronoDuration,
     pub path: SchedulerPath,
     /// Number of samples in the next chunk's bucket at prediction time. 0
@@ -65,7 +65,7 @@ pub struct EstimatedChunkProcessing {
 /// The estimate is anchored to the previous chunk's upload time rather than the current time,
 /// so querying late will correctly yield a past time (indicating the chunk should already be
 /// available) rather than pushing the estimate forward.
-pub fn estimate_chunk_availability_time(
+pub(crate) fn estimate_chunk_availability_time(
     chunk: &ChunkIdentifier,
     vcp: &volume_coverage_pattern::Message,
     elevation_chunk_mapper: &ElevationChunkMapper,
@@ -84,7 +84,7 @@ pub fn estimate_chunk_availability_time(
 /// bucket following the previous chunk. Requires an [ElevationChunkMapper] to describe the
 /// relationship between chunk sequence and VCP elevations. A None result indicates that an estimate
 /// cannot be made.
-pub fn estimate_chunk_processing_time(
+pub(crate) fn estimate_chunk_processing_time(
     chunk: &ChunkIdentifier,
     vcp: &volume_coverage_pattern::Message,
     elevation_chunk_mapper: &ElevationChunkMapper,
@@ -98,7 +98,7 @@ pub fn estimate_chunk_processing_time(
 /// was taken, the bucket sample count at prediction time, and (when applicable)
 /// the physics-term decomposition. Used by the diagnostics modal to attribute
 /// prediction errors to a specific component.
-pub fn estimate_chunk_processing_diagnostics(
+pub(crate) fn estimate_chunk_processing_diagnostics(
     chunk: &ChunkIdentifier,
     vcp: &volume_coverage_pattern::Message,
     elevation_chunk_mapper: &ElevationChunkMapper,
@@ -205,7 +205,7 @@ pub fn estimate_chunk_processing_diagnostics(
 /// Each hop uses the same shared [`estimate_interval`] primitive as the
 /// single-hop scheduler and the projector, so a filter-disabled run remains
 /// in lock-step with the no-filter path.
-pub fn estimate_chunk_processing_time_to_target(
+pub(crate) fn estimate_chunk_processing_time_to_target(
     current: &ChunkIdentifier,
     target_sequence: usize,
     vcp: &volume_coverage_pattern::Message,

@@ -22,56 +22,58 @@
 //! orchestration during the migration lands here as `decide_*` / `reduce`
 //! functions.
 
-pub mod acquisition;
-pub mod canvas;
-pub mod diagnostics;
-pub mod domain;
-pub mod effect;
-pub mod intent;
-pub mod live_mode;
-pub mod live_radar_model;
-pub mod panels;
-pub mod persist;
-pub mod render;
-pub mod timeline_view;
+pub(crate) mod acquisition;
+pub(crate) mod canvas;
+pub(crate) mod diagnostics;
+pub(crate) mod domain;
+pub(crate) mod effect;
+pub(crate) mod intent;
+pub(crate) mod live_mode;
+pub(crate) mod live_radar_model;
+pub(crate) mod panels;
+pub(crate) mod persist;
+pub(crate) mod render;
+pub(crate) mod timeline_view;
 
 #[allow(unused_imports)]
-pub use domain::errors::TimestampedError;
-pub use domain::errors::{AppError, ErrorContext, WorkerErrorKind};
-pub use domain::feeds::{AlertsState, GpsState, MpingState};
-pub use domain::forecast::{
+pub(crate) use domain::errors::TimestampedError;
+pub(crate) use domain::errors::{AppError, ErrorContext, WorkerErrorKind};
+pub(crate) use domain::feeds::{AlertsState, GpsState, MpingState};
+pub(crate) use domain::forecast::{
     derive_volume_forecast, BucketKey, ChunkArrivalStat, CompletedVolumeRecord,
     ForecastTimingLabel, SweepForecast, SweepStatus, VolumeForecastSnapshot, WaitResolution,
 };
 // Consumed only by test modules today; in a bin crate that reads as unused.
 #[allow(unused_imports)]
-pub use domain::forecast::RateSource;
-pub use domain::ops::OperationId;
-pub use domain::playback::{
+pub(crate) use domain::forecast::RateSource;
+pub(crate) use domain::ops::OperationId;
+pub(crate) use domain::playback::{
     format_lag, FreezeAt, LoopBasis, LoopMode, LoopPreset, MacroFrameInputs, MacroPlaybackState,
     PlaybackDirection, PlaybackMode, PlaybackSpeed, PlaybackState, PlayheadMode, RebuildCause,
     TimeModel, TimeSelection, TimelineTier, TIMELINE_ZOOM_MAX,
 };
 // Consumed only by test modules today; in a bin crate that reads as unused.
 #[allow(unused_imports)]
-pub use domain::playback::LoopWindow;
-pub use domain::prefs::UserPreferences;
-pub use domain::radar::{RadarTimeline, Scan, ScanMetadata, Sweep};
+pub(crate) use domain::playback::LoopWindow;
+pub(crate) use domain::prefs::UserPreferences;
+pub(crate) use domain::radar::{RadarTimeline, Scan, ScanMetadata, Sweep};
 #[allow(unused_imports)]
-pub use domain::radar::{Radial, TimeRange};
-pub use domain::telemetry::{NetworkAggregate, NetworkRequest};
-pub use domain::time::FrameNow;
-pub use domain::view::ViewState;
-pub use domain::viz::{
+pub(crate) use domain::radar::{Radial, TimeRange};
+pub(crate) use domain::telemetry::{NetworkAggregate, NetworkRequest};
+pub(crate) use domain::time::FrameNow;
+pub(crate) use domain::view::ViewState;
+pub(crate) use domain::viz::{
     DisplayedSweep, ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct,
     RenderProcessing, StormCellInfo, SweepIdentity,
 };
-pub use domain::volume::VolumeElevationRoster;
-pub use effect::{Effect, LocationResult};
-pub use live_mode::{should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase};
-pub use live_radar_model::LiveRadarModel;
-pub use persist::{decide_persist, persist_due, PersistDecision};
-pub use timeline_view::{
+pub(crate) use domain::volume::VolumeElevationRoster;
+pub(crate) use effect::{Effect, LocationResult};
+pub(crate) use live_mode::{
+    should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase,
+};
+pub(crate) use live_radar_model::LiveRadarModel;
+pub(crate) use persist::{decide_persist, persist_due, PersistDecision};
+pub(crate) use timeline_view::{
     FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView,
     SCAN_JOIN_TOLERANCE_SECS,
 };
@@ -79,4 +81,4 @@ pub use timeline_view::{
 // `Intent` is consumed starting P5; in a bin crate the re-export reads as unused
 // until the first consumer lands.
 #[allow(unused_imports)]
-pub use intent::Intent;
+pub(crate) use intent::Intent;

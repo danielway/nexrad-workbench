@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 /// Result of a cache load operation.
 #[derive(Debug, Clone)]
-pub enum CacheLoadResult {
+pub(crate) enum CacheLoadResult {
     /// Successfully loaded metadata for a site
     Success {
         site_id: String,
@@ -27,7 +27,7 @@ pub enum CacheLoadResult {
 /// Channel for async cache loading operations.
 ///
 /// Allows the UI to request metadata loading from IndexedDB without blocking.
-pub struct CacheLoadChannel {
+pub(crate) struct CacheLoadChannel {
     /// Receiver for completed cache loads
     receiver: Rc<RefCell<Option<CacheLoadResult>>>,
     /// Flag indicating a load is in progress
@@ -36,7 +36,7 @@ pub struct CacheLoadChannel {
 
 impl CacheLoadChannel {
     /// Creates a new cache load channel.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             receiver: Rc::new(RefCell::new(None)),
             loading: Rc::new(RefCell::new(false)),
@@ -44,14 +44,14 @@ impl CacheLoadChannel {
     }
 
     /// Returns true if a cache load is currently in progress.
-    pub fn is_loading(&self) -> bool {
+    pub(crate) fn is_loading(&self) -> bool {
         *self.loading.borrow()
     }
 
     /// Initiates an async load of timeline metadata for a site.
     ///
     /// If a load is already in progress, this call is ignored.
-    pub fn load_site_timeline(&self, ctx: Context, facade: DataFacade, site_id: String) {
+    pub(crate) fn load_site_timeline(&self, ctx: Context, facade: DataFacade, site_id: String) {
         if *self.loading.borrow() {
             log::debug!("Cache load already in progress, ignoring request");
             return;
@@ -125,12 +125,12 @@ impl CacheLoadChannel {
     }
 
     /// Non-blocking receive for cache load results.
-    pub fn try_recv(&self) -> Option<CacheLoadResult> {
+    pub(crate) fn try_recv(&self) -> Option<CacheLoadResult> {
         self.receiver.borrow_mut().take()
     }
 
     /// Clears all cached data.
-    pub fn clear_cache(&self, ctx: Context, facade: DataFacade) {
+    pub(crate) fn clear_cache(&self, ctx: Context, facade: DataFacade) {
         if *self.loading.borrow() {
             log::debug!("Cache operation in progress, ignoring clear request");
             return;

@@ -13,7 +13,7 @@ use crate::core::Scan;
 
 /// Build a [`ScanProjection`] from a cached/archived [`Scan`] — all sweeps
 /// observed and collected-by-us, no projection/ghost/extrapolation.
-pub fn scan_to_projection(scan: &Scan) -> ScanProjection {
+pub(crate) fn scan_to_projection(scan: &Scan) -> ScanProjection {
     let sweeps = scan
         .sweeps
         .iter()

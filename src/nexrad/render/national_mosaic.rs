@@ -53,7 +53,7 @@ enum FetchOutcome {
 }
 
 /// Holds the current mosaic texture and drives background refreshes.
-pub struct NationalMosaic {
+pub(crate) struct NationalMosaic {
     texture: Option<egui::TextureHandle>,
     /// Timestamp (seconds) of the last attempt — successful or not. Used to
     /// gate the next attempt against `REFRESH_INTERVAL_SECS`.
@@ -80,7 +80,7 @@ impl NationalMosaic {
     /// Per-frame tick. When `enabled`, kicks off a fetch if none is in
     /// flight and the texture is stale; when disabled, drops the texture
     /// so no GPU memory is held while the layer is off.
-    pub fn poll_tick(&mut self, ctx: &egui::Context, enabled: bool) {
+    pub(crate) fn poll_tick(&mut self, ctx: &egui::Context, enabled: bool) {
         if !enabled {
             if self.texture.is_some() || self.last_attempt_ts.is_some() {
                 self.texture = None;
@@ -155,12 +155,12 @@ impl NationalMosaic {
     }
 
     /// Current texture, if loaded.
-    pub fn texture(&self) -> Option<&egui::TextureHandle> {
+    pub(crate) fn texture(&self) -> Option<&egui::TextureHandle> {
         self.texture.as_ref()
     }
 
     /// Mosaic geographic bounds as (min_lon, min_lat, max_lon, max_lat).
-    pub fn bounds(&self) -> (f64, f64, f64, f64) {
+    pub(crate) fn bounds(&self) -> (f64, f64, f64, f64) {
         MOSAIC_BOUNDS
     }
 }

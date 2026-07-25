@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// (`src/state/url_state.rs`); this is just the wire shape, which may grow
 /// over time without changing the URL schema.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ViewState {
+pub(crate) struct ViewState {
     /// Map zoom level (f32).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mz: Option<f32>,

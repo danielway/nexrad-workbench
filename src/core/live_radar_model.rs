@@ -14,7 +14,7 @@ use crate::nexrad::projection::{ExtrapolationState, ScanProjection};
 /// `now` timestamp, eliminating inconsistencies between components that would
 /// otherwise independently call `js_sys::Date::now()`.
 #[derive(Clone, Debug, Default)]
-pub struct LiveRadarModel {
+pub(crate) struct LiveRadarModel {
     /// Whether live streaming is active (not Idle, not Error).
     pub active: bool,
 
@@ -45,7 +45,7 @@ pub struct LiveRadarModel {
 /// `position` is `Some` and live mode is active; otherwise all fields
 /// are `None`.
 #[derive(Clone, Debug, Default)]
-pub struct FrameDerivedPosition {
+pub(crate) struct FrameDerivedPosition {
     /// 0-based index of the sweep currently being received.
     pub sweep_index: Option<usize>,
     /// Elevation angle (degrees) of the sweep currently being received.
@@ -56,7 +56,7 @@ pub struct FrameDerivedPosition {
 
 /// Volume-level state for the in-progress scan.
 #[derive(Clone, Debug)]
-pub struct LiveVolumeModel {
+pub(crate) struct LiveVolumeModel {
     /// VCP pattern for elevation angle lookups.
     pub vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
 
@@ -71,7 +71,7 @@ impl LiveVolumeModel {
     /// VCP-defined target angle for this elevation cut. Returns `None`
     /// if no VCP pattern is attached yet — callers fall back to the
     /// measured average from the decode result.
-    pub fn target_elevation_angle(&self, elevation_number: u8) -> Option<f32> {
+    pub(crate) fn target_elevation_angle(&self, elevation_number: u8) -> Option<f32> {
         self.vcp_pattern.as_ref().and_then(|vcp| {
             vcp.elevations
                 .get(elevation_number.saturating_sub(1) as usize)
@@ -82,7 +82,7 @@ impl LiveVolumeModel {
 
 /// Active sweep state: the elevation currently being collected.
 #[derive(Clone, Debug)]
-pub struct LiveSweepModel {
+pub(crate) struct LiveSweepModel {
     /// Elevation number being collected.
     pub elevation_number: u8,
 
@@ -112,7 +112,7 @@ pub struct LiveSweepModel {
 /// A single chunk's azimuth boundary within a sweep.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
-pub struct LiveChunkBoundary {
+pub(crate) struct LiveChunkBoundary {
     pub first_az: f32,
     pub last_az: f32,
     pub radial_count: u32,
@@ -123,7 +123,11 @@ impl LiveModeState {
     ///
     /// Call once per frame at the start of the UI rendering pass, then pass the
     /// result to all consumers so they see the same `now` timestamp.
-    pub fn compute_model(&self, now_secs: f64, position: Option<ScanProjection>) -> LiveRadarModel {
+    pub(crate) fn compute_model(
+        &self,
+        now_secs: f64,
+        position: Option<ScanProjection>,
+    ) -> LiveRadarModel {
         let active = self.is_active();
         if !active {
             return LiveRadarModel::default();

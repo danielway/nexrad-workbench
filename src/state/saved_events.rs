@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// A user-saved weather event bookmark.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
-pub struct SavedEvent {
+pub(crate) struct SavedEvent {
     /// Unique identifier (epoch millis at creation).
     pub id: u64,
     /// User-defined event name.
@@ -23,7 +23,7 @@ pub struct SavedEvent {
 
 /// Collection of saved events, persisted to localStorage.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct SavedEvents {
+pub(crate) struct SavedEvents {
     #[serde(default)]
     pub events: Vec<SavedEvent>,
 }
@@ -32,7 +32,7 @@ impl SavedEvents {
     const STORAGE_KEY: &'static str = "nexrad_saved_events";
 
     /// Load saved events from localStorage.
-    pub fn load() -> Self {
+    pub(crate) fn load() -> Self {
         let window = match web_sys::window() {
             Some(w) => w,
             None => return Self::default(),
@@ -61,7 +61,7 @@ impl SavedEvents {
     }
 
     /// Save events to localStorage.
-    pub fn save(&self) {
+    pub(crate) fn save(&self) {
         let window = match web_sys::window() {
             Some(w) => w,
             None => return,
@@ -86,7 +86,7 @@ impl SavedEvents {
     }
 
     /// Add a new event and persist immediately.
-    pub fn add(&mut self, name: String, site_id: String, start_time: f64, end_time: f64) {
+    pub(crate) fn add(&mut self, name: String, site_id: String, start_time: f64, end_time: f64) {
         let id = js_sys::Date::now() as u64;
         self.events.push(SavedEvent {
             id,
@@ -99,13 +99,13 @@ impl SavedEvents {
     }
 
     /// Remove an event by ID and persist immediately.
-    pub fn remove(&mut self, id: u64) {
+    pub(crate) fn remove(&mut self, id: u64) {
         self.events.retain(|e| e.id != id);
         self.save();
     }
 
     /// Update an existing event and persist immediately.
-    pub fn update(&mut self, id: u64, name: String, start_time: f64, end_time: f64) {
+    pub(crate) fn update(&mut self, id: u64, name: String, start_time: f64, end_time: f64) {
         if let Some(event) = self.events.iter_mut().find(|e| e.id == id) {
             event.name = name;
             event.start_time = start_time;

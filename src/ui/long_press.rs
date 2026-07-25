@@ -13,7 +13,7 @@ use eframe::egui::{self, Pos2, Response};
 
 /// How long a touch must stay down (and roughly still) to count as a
 /// long-press. ~500 ms matches the platform convention for context menus.
-pub const LONG_PRESS_SECS: f64 = 0.5;
+pub(crate) const LONG_PRESS_SECS: f64 = 0.5;
 
 /// Maximum movement (screen points) allowed during the hold before it's
 /// treated as a drag/scrub instead of a long-press.
@@ -34,7 +34,7 @@ struct PressState {
 ///
 /// `id` namespaces the press state so multiple long-press surfaces don't
 /// collide. State auto-clears when the press ends.
-pub fn detect(ctx: &egui::Context, response: &Response, id: egui::Id) -> Option<Pos2> {
+pub(crate) fn detect(ctx: &egui::Context, response: &Response, id: egui::Id) -> Option<Pos2> {
     let key = id.with("long_press");
     let now = ctx.input(|i| i.time);
     let down = response.is_pointer_button_down_on();

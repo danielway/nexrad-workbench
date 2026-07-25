@@ -38,19 +38,19 @@ type RawZones = HashMap<String, Vec<Vec<Vec<(f64, f64)>>>>;
 /// The table is parsed lazily on first use so it costs nothing until an alert
 /// actually needs it.
 #[derive(Default)]
-pub struct ZoneResolver {
+pub(crate) struct ZoneResolver {
     zones: HashMap<String, AlertGeometry>,
     loaded: bool,
 }
 
 impl ZoneResolver {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Fill in geometry for any zone-only alert by stitching together its
     /// referenced zones' polygons. Returns true if any alert's geometry changed.
-    pub fn resolve(&mut self, alerts: &mut [Alert]) -> bool {
+    pub(crate) fn resolve(&mut self, alerts: &mut [Alert]) -> bool {
         // Nothing to do (and no reason to pay the one-time parse) unless some
         // alert is still missing a footprint but lists zones to resolve from.
         let needs = alerts

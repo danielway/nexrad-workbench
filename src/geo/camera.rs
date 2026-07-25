@@ -1283,7 +1283,7 @@ impl Camera {
 /// the future hybrid path or 3D overlays that may want to share the same
 /// call sites.
 #[allow(dead_code)] // 3D overlays are not yet sharing the &dyn Projection call sites.
-pub struct GlobeProjection<'a> {
+pub(crate) struct GlobeProjection<'a> {
     pub camera: &'a Camera,
     pub screen_rect: Rect,
 }

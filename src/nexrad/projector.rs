@@ -35,7 +35,7 @@ use nexrad_decode::messages::volume_coverage_pattern;
 /// sleep-interruption semantics (`filter_epoch`) and a separate
 /// re-entry path in the loop, so they keep their own dedicated channel.
 #[derive(Clone, Copy, Debug)]
-pub enum ProjectorObservation {
+pub(crate) enum ProjectorObservation {
     /// ACTUAL category: collection-end time of the most recently
     /// ingested chunk (Unix seconds, sub-second precision). Anchors
     /// projected COLLECTION times for future chunks.
@@ -52,7 +52,7 @@ pub enum ProjectorObservation {
 /// durations, availability lags) and the current volume's VCP. Produces
 /// a [`StreamingPlan`] anchored at a caller-supplied chunk.
 #[derive(Debug, Default)]
-pub struct Projector {
+pub(crate) struct Projector {
     vcp: Option<volume_coverage_pattern::Message<'static>>,
     elevation_mapper: Option<ElevationChunkMapper>,
     timing_stats: ChunkTimingStats,
@@ -76,14 +76,14 @@ pub struct Projector {
 }
 
 impl Projector {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Install (or replace) the VCP for the in-progress volume. The
     /// derived [`ElevationChunkMapper`] is rebuilt automatically. Called
     /// on every Start-chunk arrival.
-    pub fn set_vcp(&mut self, vcp: volume_coverage_pattern::Message<'static>) {
+    pub(crate) fn set_vcp(&mut self, vcp: volume_coverage_pattern::Message<'static>) {
         self.elevation_mapper = Some(ElevationChunkMapper::new(&vcp));
         self.vcp = Some(vcp);
     }
@@ -103,7 +103,7 @@ impl Projector {
     /// `next_volume_anchor` is an optional freshly-listed next-volume chunk
     /// `(sequence, upload_secs)` that pins the next-volume (offset 1) timeline
     /// to a real measurement.
-    pub fn build_plan_with_collection(
+    pub(crate) fn build_plan_with_collection(
         &mut self,
         anchor_chunk: &ChunkIdentifier,
         now_secs: f64,
@@ -141,13 +141,13 @@ impl Projector {
         ))
     }
 
-    pub fn set_filter(&mut self, filter: StreamingFilter) {
+    pub(crate) fn set_filter(&mut self, filter: StreamingFilter) {
         self.filter = filter;
     }
 
     /// The active streaming filter. Used by `ProjectionEngine` to skip a
     /// cache-busting revision bump when `set_filter` is a no-op.
-    pub fn filter(&self) -> StreamingFilter {
+    pub(crate) fn filter(&self) -> StreamingFilter {
         self.filter
     }
 
@@ -157,7 +157,7 @@ impl Projector {
     /// bucket as a COLLECTION-domain interval sample — the historical term
     /// of the interval-estimate blend. The anchor resets at volume
     /// boundaries, so no sample ever spans two volumes.
-    pub fn record_collection_end(&mut self, chunk_id: &ChunkIdentifier, secs: f64) {
+    pub(crate) fn record_collection_end(&mut self, chunk_id: &ChunkIdentifier, secs: f64) {
         if let Some(prev) = self.latest_chunk_collection_end_secs {
             let delta = secs - prev;
             if delta > 0.0 {
@@ -174,17 +174,17 @@ impl Projector {
 
     /// Reset the collection-end anchor — used at volume boundaries when
     /// the previous volume's last-radial time no longer applies.
-    pub fn reset_collection_anchor(&mut self) {
+    pub(crate) fn reset_collection_anchor(&mut self) {
         self.latest_chunk_collection_end_secs = None;
     }
 
-    pub fn latest_chunk_collection_end_secs(&self) -> Option<f64> {
+    pub(crate) fn latest_chunk_collection_end_secs(&self) -> Option<f64> {
         self.latest_chunk_collection_end_secs
     }
 
     /// Attach an observed availability-lag (S3 upload − ACTUAL collection
     /// time) sample to the most recent timing stat recorded for `current`.
-    pub fn record_availability_lag_for(&mut self, current: &ChunkIdentifier, lag_secs: f64) {
+    pub(crate) fn record_availability_lag_for(&mut self, current: &ChunkIdentifier, lag_secs: f64) {
         let Some(characteristics) = self.characteristics_for_sequence(current) else {
             return;
         };
@@ -199,7 +199,7 @@ impl Projector {
     /// when only the rolling median S3 lag is, or `UploadMinusDefault`
     /// otherwise. Captured per-chunk so the diagnostics modal can spot
     /// degraded projections.
-    pub fn current_anchor_source(&self) -> AnchorSource {
+    pub(crate) fn current_anchor_source(&self) -> AnchorSource {
         if self.latest_chunk_collection_end_secs.is_some() {
             AnchorSource::ObservedCollection
         } else if self.timing_stats.median_availability_lag_secs().is_some() {
@@ -212,18 +212,18 @@ impl Projector {
     /// Replace the rolling timing statistics with a previously-persisted
     /// snapshot. Called once on stream start when localStorage has cached
     /// stats for the site.
-    pub fn preload_timing_stats(&mut self, stats: ChunkTimingStats) {
+    pub(crate) fn preload_timing_stats(&mut self, stats: ChunkTimingStats) {
         self.timing_stats = stats;
     }
 
-    pub fn timing_stats(&self) -> &ChunkTimingStats {
+    pub(crate) fn timing_stats(&self) -> &ChunkTimingStats {
         &self.timing_stats
     }
 
     /// Record an inter-chunk arrival sample for `chunk_id`'s bucket.
     /// Called by the streaming loop after each successful download with
     /// the wall-clock duration since the previous chunk landed.
-    pub fn record_inter_chunk_duration(
+    pub(crate) fn record_inter_chunk_duration(
         &mut self,
         chunk_id: &ChunkIdentifier,
         duration: ChronoDuration,

@@ -19,6 +19,7 @@ struct RenderLiveParams {
 /// Returns the same RenderResponse shape as `worker_render`.
 ///
 /// Parameters (JS object): `{ product: string, elevationNumber?: number }`
+#[allow(unreachable_pub)] // wasm_bindgen export invoked from worker.js; must stay pub
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsValue> {
     use crate::nexrad::color_table::product_from_str;

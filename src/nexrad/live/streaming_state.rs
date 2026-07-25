@@ -23,7 +23,7 @@ use nexrad_decode::messages::volume_coverage_pattern;
 /// Fetched at init: the latest chunk in the volume, plus the Start chunk if
 /// we joined mid-volume. Mirrors `nexrad_data::aws::realtime::ChunkIteratorInit`.
 #[derive(Debug)]
-pub struct StreamingInit {
+pub(crate) struct StreamingInit {
     pub state: StreamingState,
     pub latest_chunk: DownloadedChunk,
     pub start_chunk: Option<DownloadedChunk>,
@@ -42,7 +42,7 @@ pub struct StreamingInit {
 /// next volume's Start without issuing a fetch — the End chunk itself never
 /// surfaces in this case, but the volume-boundary signal does.
 #[derive(Debug)]
-pub enum TryNextOutcome {
+pub(crate) enum TryNextOutcome {
     Downloaded(DownloadedChunk),
     NotYetAvailable,
     SyntheticVolumeEnd,
@@ -54,7 +54,7 @@ pub enum TryNextOutcome {
 /// derivation lives on the shared [`ProjectionEngine`], fed by the streaming
 /// loop.
 #[derive(Debug)]
-pub struct StreamingState {
+pub(crate) struct StreamingState {
     site: String,
     current: ChunkIdentifier,
     requests_made: usize,
@@ -72,7 +72,7 @@ impl StreamingState {
     ///
     /// `prior_requests` counts requests already made during volume discovery so
     /// the iterator's `requests_made()` reflects total session cost.
-    pub async fn init_at_volume(
+    pub(crate) async fn init_at_volume(
         site: &str,
         volume: VolumeIndex,
         prior_requests: usize,
@@ -148,7 +148,7 @@ impl StreamingState {
     /// `accept_end` keeps the End chunk as an unconditional accept so the
     /// real volume-boundary signal still lands when the user's filter
     /// happens to cover the last sweep.
-    pub async fn try_next_matching(
+    pub(crate) async fn try_next_matching(
         &mut self,
         accept_end: bool,
         mut predicate: impl FnMut(Option<usize>) -> bool,
@@ -224,7 +224,7 @@ impl StreamingState {
     /// - `Ok(Some(chunk))` — downloaded
     /// - `Ok(None)` — not yet available, caller should wait and retry
     /// - `Err(...)` — unrecoverable error
-    pub async fn try_next(&mut self) -> Result<Option<DownloadedChunk>> {
+    pub(crate) async fn try_next(&mut self) -> Result<Option<DownloadedChunk>> {
         let mapper = self
             .mapper
             .as_ref()
@@ -326,7 +326,7 @@ impl StreamingState {
     /// mapper and return the parsed VCP so the loop can feed the shared engine
     /// (`set_vcp` + `reset_collection_anchor`). `None` when the chunk carries no
     /// readable VCP.
-    pub fn install_vcp_from_start(
+    pub(crate) fn install_vcp_from_start(
         &mut self,
         chunk: &Chunk,
     ) -> Option<volume_coverage_pattern::Message<'static>> {
@@ -335,7 +335,7 @@ impl StreamingState {
         Some(vcp)
     }
 
-    pub fn mapper_matching_sequences_in_range(
+    pub(crate) fn mapper_matching_sequences_in_range(
         &self,
         lower: usize,
         upper: usize,
@@ -347,7 +347,7 @@ impl StreamingState {
             .unwrap_or_default()
     }
 
-    pub fn chunk_metadata(&self, sequence: usize) -> Option<&ChunkMetadata> {
+    pub(crate) fn chunk_metadata(&self, sequence: usize) -> Option<&ChunkMetadata> {
         self.mapper
             .as_ref()
             .and_then(|m| m.get_chunk_metadata(sequence))
@@ -355,7 +355,7 @@ impl StreamingState {
 
     /// The chunk identifier currently anchoring the download cursor. The loop
     /// passes this to the engine as the projection anchor.
-    pub fn current_id(&self) -> &ChunkIdentifier {
+    pub(crate) fn current_id(&self) -> &ChunkIdentifier {
         &self.current
     }
 
@@ -363,7 +363,7 @@ impl StreamingState {
     /// download cursor, or `None` if the identifier carries no upload time.
     /// Used as the "previous occupant" reference for the rotating-slot
     /// freshness guard when probing the next volume's slot.
-    pub fn current_upload_secs(&self) -> Option<f64> {
+    pub(crate) fn current_upload_secs(&self) -> Option<f64> {
         self.current
             .upload_date_time()
             .map(|dt| dt.timestamp_millis() as f64 / 1000.0)
@@ -372,20 +372,20 @@ impl StreamingState {
     // ── Download bookkeeping ───────────────────────────────────────────
 
     /// 1-based sequence number of the chunk currently anchoring the iterator.
-    pub fn current_sequence(&self) -> usize {
+    pub(crate) fn current_sequence(&self) -> usize {
         self.current.sequence()
     }
 
     /// Volume index the iterator is currently anchored in.
-    pub fn current_volume(&self) -> VolumeIndex {
+    pub(crate) fn current_volume(&self) -> VolumeIndex {
         *self.current.volume()
     }
 
-    pub fn requests_made(&self) -> usize {
+    pub(crate) fn requests_made(&self) -> usize {
         self.requests_made
     }
 
-    pub fn bytes_downloaded(&self) -> u64 {
+    pub(crate) fn bytes_downloaded(&self) -> u64 {
         self.bytes_downloaded
     }
 }

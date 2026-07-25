@@ -29,7 +29,7 @@ pub(super) enum RequestType {
 }
 
 impl RequestType {
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Init => "init",
             Self::Ingest => "ingest",
@@ -56,7 +56,7 @@ pub(super) enum ResponseType {
 }
 
 impl ResponseType {
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Ready => "ready",
             Self::Ingested => "ingested",
@@ -68,7 +68,7 @@ impl ResponseType {
         }
     }
 
-    pub fn parse(s: &str) -> Option<Self> {
+    pub(crate) fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "ready" => Self::Ready,
             "ingested" => Self::Ingested,
@@ -362,7 +362,7 @@ pub(super) type RequestId = u64;
 
 /// Context for an ingest request.
 #[allow(dead_code)]
-pub struct IngestContext {
+pub(crate) struct IngestContext {
     /// Typed identifier for the volume being ingested. Built once at
     /// dispatch (in `WorkerPool::ingest`) so the worker round-trip
     /// doesn't re-parse the storage-key string — the JS side and the
@@ -376,7 +376,7 @@ pub struct IngestContext {
 }
 
 /// Successful ingest result from the worker.
-pub struct IngestResult {
+pub(crate) struct IngestResult {
     pub context: IngestContext,
     /// Typed identifier for the ingested scan, parsed from the storage-key
     /// string the worker actually wrote under (derived from the decoded
@@ -411,7 +411,7 @@ pub struct IngestResult {
 
 /// Context for a per-chunk ingest request (real-time streaming).
 #[allow(dead_code)]
-pub struct ChunkIngestContext {
+pub(crate) struct ChunkIngestContext {
     pub site_id: String,
     /// Typed identifier for the in-progress volume. Built once at dispatch
     /// from `(site_id, timestamp_secs)`; every chunk of the volume shares
@@ -426,7 +426,7 @@ pub struct ChunkIngestContext {
 }
 
 /// Successful per-chunk ingest result from the worker.
-pub struct ChunkIngestResult {
+pub(crate) struct ChunkIngestResult {
     pub context: ChunkIngestContext,
     /// Typed identifier for the in-progress volume. Same value as
     /// `context.scan_key`; surfaced separately for ergonomic access.
@@ -470,7 +470,7 @@ pub struct ChunkIngestResult {
 
 /// Context for a render/decode request.
 #[allow(dead_code)]
-pub struct RenderContext {
+pub(crate) struct RenderContext {
     /// Typed identifier for the scan being rendered. The wire-protocol
     /// uses `to_storage_key()` once at dispatch.
     pub scan_key: crate::data::ScanKey,
@@ -479,7 +479,7 @@ pub struct RenderContext {
 }
 
 /// Decoded radar sweep data from the worker (raw data for GPU rendering).
-pub struct DecodeResult {
+pub(crate) struct DecodeResult {
     #[allow(dead_code)]
     pub context: RenderContext,
     /// Sorted azimuth angles in degrees.
@@ -532,7 +532,7 @@ pub struct VolumeSweepMeta {
 }
 
 /// All-elevation packed volume data for ray-march rendering.
-pub struct VolumeData {
+pub(crate) struct VolumeData {
     /// Packed raw gate values (all sweeps concatenated).
     /// Byte width per value is determined by `word_size`.
     pub buffer: Vec<u8>,
@@ -545,7 +545,7 @@ pub struct VolumeData {
 }
 
 /// Outcome of any worker operation.
-pub enum WorkerOutcome {
+pub(crate) enum WorkerOutcome {
     /// Archive ingest completed.
     Ingested(IngestResult),
     /// Per-chunk ingest completed (real-time streaming).
@@ -574,7 +574,7 @@ pub enum WorkerOutcome {
 
 /// Context for a volume render request.
 #[allow(dead_code)]
-pub struct VolumeRenderContext {
+pub(crate) struct VolumeRenderContext {
     pub scan_key: crate::data::ScanKey,
 }
 

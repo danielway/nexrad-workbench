@@ -4,7 +4,7 @@ use super::types::Alert;
 
 /// True if the alert's bounding box intersects the given view bounds.
 /// Bounds are `(min_lon, min_lat, max_lon, max_lat)`.
-pub fn bbox_intersects(alert: &Alert, bounds: (f64, f64, f64, f64)) -> bool {
+pub(crate) fn bbox_intersects(alert: &Alert, bounds: (f64, f64, f64, f64)) -> bool {
     let Some((amin_lon, amin_lat, amax_lon, amax_lat)) = alert.geometry.bbox else {
         return false;
     };
@@ -16,7 +16,7 @@ pub fn bbox_intersects(alert: &Alert, bounds: (f64, f64, f64, f64)) -> bool {
 ///
 /// Uses the even-odd ray-casting rule. Each outer ring is tested for
 /// containment; if inside, hole rings invalidate the hit.
-pub fn contains_point(alert: &Alert, lon: f64, lat: f64) -> bool {
+pub(crate) fn contains_point(alert: &Alert, lon: f64, lat: f64) -> bool {
     for polygon in &alert.geometry.polygons {
         let mut iter = polygon.iter();
         let Some(outer) = iter.next() else { continue };

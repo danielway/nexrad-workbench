@@ -18,7 +18,7 @@ use geo_types::Coord;
 /// `GlobeProjection` wrapper in [`crate::geo::camera`] (3D, returns
 /// `None` for points hidden behind the globe). UI code that doesn't
 /// care which view mode is active can hold `&dyn Projection`.
-pub trait Projection {
+pub(crate) trait Projection {
     /// Project a geographic coordinate to screen space, or `None` if
     /// the point isn't visible (e.g. behind a 3D globe).
     fn geo_to_screen(&self, lat: f64, lon: f64) -> Option<Pos2>;
@@ -37,7 +37,7 @@ pub trait Projection {
 
 /// Map projection for converting geographic to screen coordinates.
 #[derive(Debug, Clone)]
-pub struct MapProjection {
+pub(crate) struct MapProjection {
     /// Center latitude of the view (radar site location)
     pub center_lat: f64,
     /// Center longitude of the view (radar site location)
@@ -69,7 +69,7 @@ impl Default for MapProjection {
 
 impl MapProjection {
     /// Creates a new projection centered on a radar site.
-    pub fn new(center_lat: f64, center_lon: f64) -> Self {
+    pub(crate) fn new(center_lat: f64, center_lon: f64) -> Self {
         Self {
             center_lat,
             center_lon,
@@ -78,7 +78,7 @@ impl MapProjection {
     }
 
     /// Updates the projection with current view state.
-    pub fn update(&mut self, zoom: f32, pan_offset: Vec2, screen_rect: Rect) {
+    pub(crate) fn update(&mut self, zoom: f32, pan_offset: Vec2, screen_rect: Rect) {
         self.zoom = zoom;
         self.pan_offset = pan_offset;
         self.screen_rect = screen_rect;
@@ -88,7 +88,7 @@ impl MapProjection {
     ///
     /// Uses a simple equirectangular projection which is adequate for
     /// the typical ~500km range of NEXRAD displays.
-    pub fn geo_to_screen(&self, coord: Coord<f64>) -> Pos2 {
+    pub(crate) fn geo_to_screen(&self, coord: Coord<f64>) -> Pos2 {
         let lon = coord.x;
         let lat = coord.y;
 
@@ -118,7 +118,7 @@ impl MapProjection {
     }
 
     /// Converts screen position to geographic coordinates (lon, lat).
-    pub fn screen_to_geo(&self, pos: Pos2) -> Coord<f64> {
+    pub(crate) fn screen_to_geo(&self, pos: Pos2) -> Coord<f64> {
         let effective_range = self.range_deg / self.zoom as f64;
 
         let center = self.screen_rect.center() + self.pan_offset;
@@ -140,7 +140,7 @@ impl MapProjection {
     }
 
     /// Returns the visible geographic bounds as (min_lon, min_lat, max_lon, max_lat).
-    pub fn visible_bounds(&self) -> (f64, f64, f64, f64) {
+    pub(crate) fn visible_bounds(&self) -> (f64, f64, f64, f64) {
         let top_left = self.screen_to_geo(self.screen_rect.left_top());
         let bottom_right = self.screen_to_geo(self.screen_rect.right_bottom());
 
@@ -153,7 +153,7 @@ impl MapProjection {
     }
 
     /// Checks if a coordinate is within the visible bounds (with margin).
-    pub fn is_visible(&self, coord: Coord<f64>, margin_deg: f64) -> bool {
+    pub(crate) fn is_visible(&self, coord: Coord<f64>, margin_deg: f64) -> bool {
         let (min_lon, min_lat, max_lon, max_lat) = self.visible_bounds();
         coord.x >= min_lon - margin_deg
             && coord.x <= max_lon + margin_deg
@@ -162,7 +162,13 @@ impl MapProjection {
     }
 
     /// Checks if a bounding box intersects with the visible bounds.
-    pub fn bbox_visible(&self, min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64) -> bool {
+    pub(crate) fn bbox_visible(
+        &self,
+        min_lon: f64,
+        min_lat: f64,
+        max_lon: f64,
+        max_lat: f64,
+    ) -> bool {
         let (vis_min_lon, vis_min_lat, vis_max_lon, vis_max_lat) = self.visible_bounds();
 
         // Add margin for edge cases
@@ -179,7 +185,7 @@ impl MapProjection {
     /// identical results. Used by feature-level caches to avoid
     /// re-projecting thousands of coordinates every frame when the view
     /// is idle.
-    pub fn fingerprint(&self) -> ProjectionFingerprint {
+    pub(crate) fn fingerprint(&self) -> ProjectionFingerprint {
         ProjectionFingerprint {
             center_lat: self.center_lat.to_bits(),
             center_lon: self.center_lon.to_bits(),
@@ -216,7 +222,7 @@ impl Projection for MapProjection {
 /// input coord to the same screen position. Constructed via
 /// [`MapProjection::fingerprint`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProjectionFingerprint {
+pub(crate) struct ProjectionFingerprint {
     center_lat: u64,
     center_lon: u64,
     range_deg: u64,

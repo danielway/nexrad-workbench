@@ -18,7 +18,7 @@ mod layer;
 mod playback;
 pub(crate) mod playback_manager;
 mod preferences;
-pub mod recency;
+pub(crate) mod recency;
 pub(crate) mod render_cache;
 mod saved_events;
 mod settings;
@@ -27,27 +27,27 @@ pub(crate) mod theme;
 pub(crate) mod url_state;
 mod viz;
 
-pub use acquisition::{
+pub(crate) use acquisition::{
     AcquisitionState, DrawerTab, NetworkGroupKey, OperationKind, OperationStatus,
 };
-pub use app_mode::{derive_app_mode, AppMode};
-pub use calendar::{aggregate_day_buckets, day_tap_macro_view, DayBucket, DAY_SECS};
-pub use layer::LayerState;
-pub use render_cache::{PrevSweepCacheKey, RenderCache};
-pub use saved_events::{SavedEvent, SavedEvents};
-pub use settings::{format_bytes, StorageSettings};
-pub use stats::{
+pub(crate) use app_mode::{derive_app_mode, AppMode};
+pub(crate) use calendar::{aggregate_day_buckets, day_tap_macro_view, DayBucket, DAY_SECS};
+pub(crate) use layer::LayerState;
+pub(crate) use render_cache::{PrevSweepCacheKey, RenderCache};
+pub(crate) use saved_events::{SavedEvent, SavedEvents};
+pub(crate) use settings::{format_bytes, StorageSettings};
+pub(crate) use stats::{
     DownloadPhase, DownloadProgress, IngestTimingDetail, RenderTimingDetail, SessionStats,
 };
-pub use theme::ThemeMode;
-pub use viz::{derive_canvas_caption, CanvasCaption, VizState};
+pub(crate) use theme::ThemeMode;
+pub(crate) use viz::{derive_canvas_caption, CanvasCaption, VizState};
 
 /// Cap on the recent-network-requests ring used by the UI log.
-pub const MAX_RECENT_NETWORK_REQUESTS: usize = 100;
+pub(crate) const MAX_RECENT_NETWORK_REQUESTS: usize = 100;
 
 /// Root application state containing all sub-states.
 #[derive(Default)]
-pub struct AppState {
+pub(crate) struct AppState {
     /// Wall-clock "now" for this frame, captured once in
     /// `apply_frame_setup` before any consumer runs.
     pub frame_now: FrameNow,
@@ -199,7 +199,7 @@ pub struct AppState {
 /// Advanced top bar) so the surviving inline content provably fits each tier's
 /// smallest viewport, which is what structurally prevents overlap.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
-pub enum WidthTier {
+pub(crate) enum WidthTier {
     /// `< 720px` (down to the ~500px floor before mobile takes over):
     /// aggressive overflow — title dropped, status hidden, the Basic/Advanced
     /// pill and all view pills demoted, timestamp compacted to time-only.
@@ -215,7 +215,7 @@ pub enum WidthTier {
 
 /// Tabs in the mobile settings modal. Order matches the tab strip layout.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum MobileSettingsTab {
+pub(crate) enum MobileSettingsTab {
     #[default]
     Playback,
     Product,
@@ -224,7 +224,7 @@ pub enum MobileSettingsTab {
 }
 
 impl MobileSettingsTab {
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Playback => "Playback",
             Self::Product => "Product",
@@ -233,14 +233,14 @@ impl MobileSettingsTab {
         }
     }
 
-    pub fn all() -> [Self; 4] {
+    pub(crate) fn all() -> [Self; 4] {
         [Self::Playback, Self::Product, Self::Layers, Self::More]
     }
 }
 
 /// Idle threshold (seconds) of no interaction before mobile chrome hides while
 /// playing (spec §13 phone: "chrome auto-hides during playback").
-pub const MOBILE_CHROME_IDLE_HIDE_SECS: f64 = 3.0;
+pub(crate) const MOBILE_CHROME_IDLE_HIDE_SECS: f64 = 3.0;
 
 /// Per-frame bookkeeping for the mobile chrome auto-hide (spec §13 phone:
 /// "Canvas full-bleed; chrome auto-hides during playback, tap to reveal").
@@ -251,7 +251,7 @@ pub const MOBILE_CHROME_IDLE_HIDE_SECS: f64 = 3.0;
 /// [`crate::ui::mobile::auto_hide::should_hide_chrome`]; this struct only holds
 /// the timer + a one-frame reveal latch it feeds.
 #[derive(Clone, Copy, Debug)]
-pub struct MobileChromeAutoHide {
+pub(crate) struct MobileChromeAutoHide {
     /// egui `input.time` of the last interaction (chrome tap/drag or reveal
     /// tap). Far-past sentinel by default so the first idle period while
     /// playing still hides on schedule rather than instantly on launch.
@@ -280,7 +280,7 @@ impl Default for MobileChromeAutoHide {
 impl MobileChromeAutoHide {
     /// Record an interaction at `now`, resetting the idle timer so chrome stays
     /// visible for another [`MOBILE_CHROME_IDLE_HIDE_SECS`] window.
-    pub fn touch(&mut self, now_secs: f64) {
+    pub(crate) fn touch(&mut self, now_secs: f64) {
         self.last_interaction_secs = now_secs;
     }
 
@@ -288,7 +288,7 @@ impl MobileChromeAutoHide {
     /// playback is advancing, or `None` if it won't hide (paused, or already
     /// past the threshold). Used to schedule one repaint at the hide moment
     /// rather than spinning every frame.
-    pub fn secs_until_hide(&self, now_secs: f64, is_playing: bool) -> Option<f64> {
+    pub(crate) fn secs_until_hide(&self, now_secs: f64, is_playing: bool) -> Option<f64> {
         if !is_playing {
             return None;
         }
@@ -328,7 +328,7 @@ mod mobile_auto_hide_tests {
 
 /// State for the datetime jump picker popup.
 #[derive(Default)]
-pub struct DateTimePickerState {
+pub(crate) struct DateTimePickerState {
     /// Whether the picker popup is currently open.
     pub open: bool,
     /// Input values for the picker (as strings for text editing).
@@ -342,7 +342,7 @@ pub struct DateTimePickerState {
 
 impl DateTimePickerState {
     /// Initialize the picker with a timestamp, respecting the timezone setting.
-    pub fn init_from_timestamp(&mut self, ts: f64, use_local: bool) {
+    pub(crate) fn init_from_timestamp(&mut self, ts: f64, use_local: bool) {
         if use_local {
             let d = js_sys::Date::new_0();
             d.set_time(ts * 1000.0);
@@ -366,7 +366,7 @@ impl DateTimePickerState {
     }
 
     /// Try to parse the current input values into a UTC timestamp (seconds).
-    pub fn to_timestamp(&self, use_local: bool) -> Option<f64> {
+    pub(crate) fn to_timestamp(&self, use_local: bool) -> Option<f64> {
         let year: i32 = self.year.parse().ok()?;
         let month: u32 = self.month.parse().ok()?;
         let day: u32 = self.day.parse().ok()?;
@@ -400,7 +400,7 @@ impl DateTimePickerState {
     }
 
     /// Close the picker and reset state.
-    pub fn close(&mut self) {
+    pub(crate) fn close(&mut self) {
         self.open = false;
     }
 }
@@ -411,7 +411,7 @@ impl DateTimePickerState {
 /// but no longer live on `AppState` itself: the persisted speed
 /// (which belongs on the Playback subsystem) and the saved mPING API
 /// key (which belongs on the Diagnostics subsystem).
-pub struct AppStateBootstrap {
+pub(crate) struct AppStateBootstrap {
     pub state: AppState,
     pub playback: PlaybackState,
     pub mping_api_key: Option<String>,
@@ -429,7 +429,7 @@ impl AppState {
     /// pieces of the persisted state that belong on subsystems
     /// (currently the playback speed and mPING API key) can be applied
     /// at the right place by the caller.
-    pub fn bootstrap() -> AppStateBootstrap {
+    pub(crate) fn bootstrap() -> AppStateBootstrap {
         // Use current time for initialization
         let now = js_sys::Date::now() / 1000.0;
 
@@ -481,17 +481,17 @@ impl AppState {
     /// throughout the codebase — call this rather than reading
     /// `advanced_mode` directly so future logic (e.g. forced-advanced
     /// during a session) can live in one place.
-    pub fn show_advanced(&self) -> bool {
+    pub(crate) fn show_advanced(&self) -> bool {
         self.advanced_mode
     }
 
     /// Push a command onto the queue for the main update loop to process.
-    pub fn push_command(&mut self, cmd: Intent) {
+    pub(crate) fn push_command(&mut self, cmd: Intent) {
         self.commands.push_back(cmd);
     }
 
     /// Drain all pending commands from the queue.
-    pub fn drain_commands(&mut self) -> Vec<Intent> {
+    pub(crate) fn drain_commands(&mut self) -> Vec<Intent> {
         self.commands.drain(..).collect()
     }
 
@@ -501,7 +501,7 @@ impl AppState {
     /// flag or `width < 500px` (so a very narrow desktop window also switches
     /// without needing a touch event). A user override in `mobile_override`
     /// takes precedence.
-    pub fn refresh_mobile_mode(&mut self, ctx: &eframe::egui::Context) {
+    pub(crate) fn refresh_mobile_mode(&mut self, ctx: &eframe::egui::Context) {
         let width = ctx.content_rect().width();
         let touch_now = ctx.input(|i| i.any_touches() || i.multi_touch().is_some());
         if touch_now {
@@ -538,7 +538,7 @@ impl AppState {
     /// Macro mode and Basic UI both suppress the animation regardless of
     /// the stored preference; Basic users get a calmer display and the
     /// preference is preserved across UI-mode toggles.
-    pub fn effective_sweep_animation(&self, playback: &PlaybackState) -> bool {
+    pub(crate) fn effective_sweep_animation(&self, playback: &PlaybackState) -> bool {
         self.render_processing.sweep_animation
             && playback.playback_mode() == PlaybackMode::Micro
             && self.advanced_mode
@@ -553,7 +553,7 @@ impl AppState {
     /// `playback` / `timeline` / `live_vcp_pattern` are passed in from
     /// their respective subsystems so this method doesn't reach into
     /// them itself.
-    pub fn current_elevation_list(
+    pub(crate) fn current_elevation_list(
         &self,
         playback: &PlaybackState,
         timeline: &RadarTimeline,

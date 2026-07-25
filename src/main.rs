@@ -1,4 +1,5 @@
 #![warn(clippy::all)]
+#![warn(unreachable_pub)]
 
 //! NEXRAD Workbench — a browser-based NEXRAD weather radar visualization tool.
 //!
@@ -13,6 +14,7 @@
 mod alerts;
 mod app;
 mod core;
+#[allow(unreachable_pub)] // pub surface is the lib facade for tests/idb.rs
 mod data;
 mod geo;
 mod mping;

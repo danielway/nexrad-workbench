@@ -11,7 +11,7 @@ use crate::core::{decide_persist, persist_due, Effect, PersistDecision, Playback
 use crate::state::AppState;
 
 /// Manages URL state persistence, preference saving, and site change detection.
-pub struct PersistenceManager {
+pub(crate) struct PersistenceManager {
     /// Wall-clock seconds of the last URL push (for throttling to ~1/sec).
     /// Wall-clock (the injected [`crate::core::FrameNow`]) rather than a
     /// monotonic `Instant`, so the decision is clock-injectable and testable.
@@ -23,7 +23,7 @@ pub struct PersistenceManager {
 }
 
 impl PersistenceManager {
-    pub fn new(initial_site_id: String, initial_prefs: UserPreferences) -> Self {
+    pub(crate) fn new(initial_site_id: String, initial_prefs: UserPreferences) -> Self {
         Self {
             // Seed with the construction-time wall clock so the first push still
             // waits a throttle window, preserving the old `Instant::now()` seed.
@@ -34,7 +34,7 @@ impl PersistenceManager {
     }
 
     /// Returns true if the site has changed since last check, updating the internal tracker.
-    pub fn detect_site_change(&mut self, current_site_id: &str) -> bool {
+    pub(crate) fn detect_site_change(&mut self, current_site_id: &str) -> bool {
         if current_site_id != self.previous_site_id {
             log::info!(
                 "Site changed from {} to {}",
@@ -56,7 +56,7 @@ impl PersistenceManager {
     /// `is_live` is sourced from the Live subsystem; `playback` is the Playback
     /// subsystem's state. All are passed in so the persistence manager doesn't
     /// take back-references to subsystems.
-    pub fn persist_if_due(
+    pub(crate) fn persist_if_due(
         &mut self,
         now_secs: f64,
         state: &AppState,

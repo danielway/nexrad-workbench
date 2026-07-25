@@ -1,4 +1,4 @@
 //! Operation identity for acquisition tracking.
 
 /// Unique identifier for an acquisition operation.
-pub type OperationId = u64;
+pub(crate) type OperationId = u64;

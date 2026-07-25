@@ -16,7 +16,7 @@ mod features;
 use crate::core::StormCellInfo;
 
 /// Borrowed view of the sweep data needed to run detection.
-pub struct DetectionInput<'a> {
+pub(crate) struct DetectionInput<'a> {
     /// Sorted azimuth angles (degrees, 0..360). Negative values mark padded
     /// slots from partial live sweeps and are skipped.
     pub azimuths: &'a [f32],
@@ -36,7 +36,7 @@ pub struct DetectionInput<'a> {
 }
 
 /// Tuning knobs for the detector.
-pub struct DetectionParams {
+pub(crate) struct DetectionParams {
     /// Core (promotion) threshold in dBZ. A component must contain at
     /// least one gate this strong to survive.
     pub threshold_dbz: f32,
@@ -65,7 +65,7 @@ impl Default for DetectionParams {
 
 /// Run detection over the provided sweep, returning one `StormCellInfo`
 /// per surviving cell.
-pub fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> Vec<StormCellInfo> {
+pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> Vec<StormCellInfo> {
     if input.azimuth_count == 0 || input.gate_count == 0 || input.azimuths.is_empty() {
         return Vec::new();
     }

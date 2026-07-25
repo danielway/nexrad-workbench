@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// Storage quota and eviction settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StorageSettings {
+pub(crate) struct StorageSettings {
     /// Maximum cache size in bytes before eviction triggers.
     pub quota_bytes: u64,
     /// Target size after eviction (typically 80% of quota).
@@ -30,7 +30,7 @@ impl StorageSettings {
 
     /// Sets the quota and derives the eviction target from
     /// `QuotaPolicy::eviction_target_fraction`.
-    pub fn set_quota(&mut self, quota_bytes: u64) {
+    pub(crate) fn set_quota(&mut self, quota_bytes: u64) {
         self.quota_bytes = quota_bytes;
         self.eviction_target_bytes = (quota_bytes as f64
             * crate::data::quota::QuotaPolicy::DEFAULT.eviction_target_fraction)
@@ -38,7 +38,7 @@ impl StorageSettings {
     }
 
     /// Load settings from localStorage.
-    pub fn load() -> Self {
+    pub(crate) fn load() -> Self {
         let window = match web_sys::window() {
             Some(w) => w,
             None => return Self::default(),
@@ -67,7 +67,7 @@ impl StorageSettings {
     }
 
     /// Save settings to localStorage.
-    pub fn save(&self) {
+    pub(crate) fn save(&self) {
         let window = match web_sys::window() {
             Some(w) => w,
             None => return,
@@ -94,18 +94,18 @@ impl StorageSettings {
     }
 
     /// Returns minimum quota (100 MB).
-    pub fn min_quota() -> u64 {
+    pub(crate) fn min_quota() -> u64 {
         100 * 1024 * 1024
     }
 
     /// Returns maximum quota (20 GB).
-    pub fn max_quota() -> u64 {
+    pub(crate) fn max_quota() -> u64 {
         20 * 1024 * 1024 * 1024
     }
 }
 
 /// Format bytes as human-readable string.
-pub fn format_bytes(bytes: u64) -> String {
+pub(crate) fn format_bytes(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 {
         format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     } else if bytes >= 1024 * 1024 {

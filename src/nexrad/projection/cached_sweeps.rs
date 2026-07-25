@@ -17,7 +17,7 @@ fn scan_key(scan_start_secs: f64) -> i64 {
 
 /// Locally-cached sweeps, keyed by `(scan, elevation)`; sparse within a scan.
 #[derive(Clone, Debug, Default)]
-pub struct CachedSweepSet {
+pub(crate) struct CachedSweepSet {
     /// Observed (start, end) collection span per cached cut.
     spans: BTreeMap<(i64, u8), (f64, f64)>,
 }
@@ -25,7 +25,7 @@ pub struct CachedSweepSet {
 impl CachedSweepSet {
     /// Replace the cached cuts recorded for one scan. Cuts of other scans are
     /// untouched, so sparse per-scan coverage accumulates independently.
-    pub fn set_for_scan(&mut self, scan_start_secs: f64, sweeps: &[CachedSweep]) {
+    pub(crate) fn set_for_scan(&mut self, scan_start_secs: f64, sweeps: &[CachedSweep]) {
         let key = scan_key(scan_start_secs);
         self.spans.retain(|(s, _), _| *s != key);
         for sweep in sweeps {
@@ -35,14 +35,14 @@ impl CachedSweepSet {
     }
 
     /// Whether a specific `(scan, elevation)` cut is cached locally.
-    pub fn has(&self, scan_start_secs: f64, elevation_number: u8) -> bool {
+    pub(crate) fn has(&self, scan_start_secs: f64, elevation_number: u8) -> bool {
         self.spans
             .contains_key(&(scan_key(scan_start_secs), elevation_number))
     }
 
     /// Observed (start, end) collection span for a cached cut, if present.
     #[allow(dead_code)] // Exercised by tests; utility accessor with no prod caller.
-    pub fn span(&self, scan_start_secs: f64, elevation_number: u8) -> Option<(f64, f64)> {
+    pub(crate) fn span(&self, scan_start_secs: f64, elevation_number: u8) -> Option<(f64, f64)> {
         self.spans
             .get(&(scan_key(scan_start_secs), elevation_number))
             .copied()
@@ -51,7 +51,7 @@ impl CachedSweepSet {
     /// Cached cuts for one scan, as `(elevation_number, start, end)`, ascending
     /// by elevation.
     #[allow(dead_code)] // Utility accessor; no caller yet.
-    pub fn cuts_for_scan(&self, scan_start_secs: f64) -> Vec<(u8, f64, f64)> {
+    pub(crate) fn cuts_for_scan(&self, scan_start_secs: f64) -> Vec<(u8, f64, f64)> {
         let key = scan_key(scan_start_secs);
         self.spans
             .iter()

@@ -1,7 +1,7 @@
 //! Storm report types from the mPING API.
 
 /// A single crowd-sourced storm report.
-pub struct StormReport {
+pub(crate) struct StormReport {
     /// Stable mPING report id (from `id` field of the API result).
     pub id: i64,
     /// Observation time, milliseconds since Unix epoch.
@@ -22,14 +22,14 @@ impl StormReport {
     /// position (Unix seconds). We never show a report observed *after*
     /// the time being rendered — surfacing a future report would be a
     /// lie about what was known at that moment.
-    pub fn visible_at(&self, playback_secs: f64) -> bool {
+    pub(crate) fn visible_at(&self, playback_secs: f64) -> bool {
         self.obtime_ms <= playback_secs * 1000.0
     }
 }
 
 /// Coarse category bucket used for color coding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReportCategory {
+pub(crate) enum ReportCategory {
     RainSnow,
     Hail,
     WindDamage,
@@ -41,7 +41,7 @@ pub enum ReportCategory {
 
 impl ReportCategory {
     /// Map an mPING `category` string to a category bucket.
-    pub fn parse(s: &str) -> Self {
+    pub(crate) fn parse(s: &str) -> Self {
         match s {
             "Rain/Snow" => Self::RainSnow,
             "Hail" => Self::Hail,
@@ -54,7 +54,7 @@ impl ReportCategory {
     }
 
     /// Human-readable label for the category, used in detail popovers.
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::RainSnow => "Rain / Snow",
             Self::Hail => "Hail",

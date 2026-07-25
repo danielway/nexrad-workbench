@@ -24,12 +24,12 @@ impl Default for TimeModel {
 
 impl TimeModel {
     /// Get current wall-clock time as Unix seconds.
-    pub fn wall_clock_time() -> f64 {
+    pub(crate) fn wall_clock_time() -> f64 {
         js_sys::Date::now() / 1000.0
     }
 
     /// Create a new time model at the given position.
-    pub fn at_position(position: f64) -> Self {
+    pub(crate) fn at_position(position: f64) -> Self {
         Self {
             playback_position: position,
             ..Default::default()
@@ -60,7 +60,7 @@ impl Default for PlaybackState {
 }
 
 impl PlaybackState {
-    pub fn new_at_time(now: f64) -> Self {
+    pub(crate) fn new_at_time(now: f64) -> Self {
         let zoom = 0.15;
         let view_width_secs = 1000.0 / zoom;
 

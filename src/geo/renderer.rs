@@ -16,7 +16,7 @@ use std::sync::Arc;
 /// Which geo rendering pass to execute. Split so lines/markers can draw
 /// below the radar texture while labels draw on top of it for legibility.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum GeoPass {
+pub(crate) enum GeoPass {
     Lines,
     Labels,
 }
@@ -41,7 +41,7 @@ const HALO_OFFSETS: [Vec2; 8] = [
 /// (sweep overlay, alerts, etc.). Cached label rendering uses the lower-
 /// level [`paint_galley_with_halo`] which avoids re-laying-out text every
 /// frame.
-pub fn text_with_halo(
+pub(crate) fn text_with_halo(
     painter: &Painter,
     pos: Pos2,
     align: Align2,
@@ -96,7 +96,7 @@ fn aligned_galley_pos(pos: Pos2, galley_size: Vec2, align: Align2) -> Pos2 {
 /// (refreshed on the Lines pass) and a settle-debounced label cache
 /// (refreshed on the Labels pass when camera motion has stopped).
 #[allow(clippy::too_many_arguments)]
-pub fn render_geo_layers(
+pub(crate) fn render_geo_layers(
     painter: &Painter,
     layers: &GeoLayerSet,
     visibility: &GeoLayerVisibility,

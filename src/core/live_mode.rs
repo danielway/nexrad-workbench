@@ -42,7 +42,7 @@
 /// `false`. A `detached_since` in the future likewise yields a non-positive
 /// elapsed and `false`. The comparison is strictly greater-than, so an elapsed
 /// exactly equal to the threshold does not yet stop.
-pub fn should_stop_for_detached_idle(
+pub(crate) fn should_stop_for_detached_idle(
     detached_since: Option<f64>,
     now: f64,
     threshold_secs: f64,
@@ -53,7 +53,7 @@ pub fn should_stop_for_detached_idle(
 
 /// Live mode phase - current state in the streaming state machine.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum LivePhase {
+pub(crate) enum LivePhase {
     /// Not in live mode.
     #[default]
     Idle,
@@ -71,7 +71,7 @@ pub enum LivePhase {
 impl LivePhase {
     /// Human-readable label for the phase.
     #[allow(dead_code)]
-    pub fn label(&self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self {
             LivePhase::Idle => "Idle",
             LivePhase::AcquiringLock => "CONNECTING",
@@ -83,7 +83,7 @@ impl LivePhase {
 
     /// Color for the phase indicator (RGB).
     #[allow(dead_code)]
-    pub fn color(&self) -> (u8, u8, u8) {
+    pub(crate) fn color(&self) -> (u8, u8, u8) {
         match self {
             LivePhase::Idle => (100, 100, 100),
             LivePhase::AcquiringLock => (255, 180, 50),
@@ -96,7 +96,7 @@ impl LivePhase {
 
 /// Reason why live mode was exited.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum LiveExitReason {
+pub(crate) enum LiveExitReason {
     /// Network or connection error.
     ConnectionError,
     /// User explicitly stopped live mode.
@@ -107,7 +107,7 @@ pub enum LiveExitReason {
 
 impl LiveExitReason {
     /// Human-readable message for the exit reason.
-    pub fn message(&self) -> &'static str {
+    pub(crate) fn message(&self) -> &'static str {
         match self {
             LiveExitReason::ConnectionError => "Live mode error: connection lost",
             LiveExitReason::UserStopped => "Live mode stopped",
@@ -119,7 +119,7 @@ impl LiveExitReason {
 }
 
 /// Full state container for live mode.
-pub struct LiveModeState {
+pub(crate) struct LiveModeState {
     /// Current phase in the state machine
     pub phase: LivePhase,
 
@@ -237,13 +237,13 @@ impl Default for LiveModeState {
 impl LiveModeState {
     /// Create a new idle live mode state.
     #[allow(dead_code)] // Convenience constructor
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Create a state initialized for testing with dummy streaming data.
     #[allow(dead_code)] // Used for testing different live mode states
-    pub fn with_dummy_streaming(phase: LivePhase, now: f64) -> Self {
+    pub(crate) fn with_dummy_streaming(phase: LivePhase, now: f64) -> Self {
         let mut state = Self::new();
         state.phase = phase;
         state.phase_started_at = Some(now - 5.0); // Started 5 seconds ago
@@ -270,7 +270,7 @@ impl LiveModeState {
     }
 
     /// Start live mode - transition to AcquiringLock phase.
-    pub fn start(&mut self, now: f64) {
+    pub(crate) fn start(&mut self, now: f64) {
         self.phase = LivePhase::AcquiringLock;
         self.phase_started_at = Some(now);
         self.chunks_received = 0;
@@ -281,7 +281,7 @@ impl LiveModeState {
     }
 
     /// Stop live mode - transition to Idle with given reason.
-    pub fn stop(&mut self, reason: LiveExitReason) {
+    pub(crate) fn stop(&mut self, reason: LiveExitReason) {
         self.phase = LivePhase::Idle;
         self.phase_started_at = None;
         self.last_exit_reason = Some(reason);
@@ -300,14 +300,14 @@ impl LiveModeState {
 
     /// Set error state with message.
     #[allow(dead_code)]
-    pub fn set_error(&mut self, message: String) {
+    pub(crate) fn set_error(&mut self, message: String) {
         self.phase = LivePhase::Error;
         self.error_message = Some(message);
         self.last_exit_reason = Some(LiveExitReason::ConnectionError);
     }
 
     /// Transition to Streaming phase (lock acquired, receiving data).
-    pub fn start_streaming(&mut self, now: f64) {
+    pub(crate) fn start_streaming(&mut self, now: f64) {
         self.phase = LivePhase::Streaming;
         self.phase_started_at = Some(now);
     }
@@ -315,14 +315,14 @@ impl LiveModeState {
     /// Transition to WaitingForChunk phase. The countdown displayed downstream
     /// is driven by the frame projection's next target if present.
     #[allow(dead_code)]
-    pub fn wait_for_next_chunk(&mut self, now: f64) {
+    pub(crate) fn wait_for_next_chunk(&mut self, now: f64) {
         self.phase = LivePhase::WaitingForChunk;
         self.phase_started_at = Some(now);
         self.chunks_received += 1;
     }
 
     /// Check if live mode is active (not Idle or Error).
-    pub fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         matches!(
             self.phase,
             LivePhase::AcquiringLock | LivePhase::Streaming | LivePhase::WaitingForChunk
@@ -330,14 +330,14 @@ impl LiveModeState {
     }
 
     /// Get elapsed time in current phase.
-    pub fn phase_elapsed_secs(&self, now: f64) -> f64 {
+    pub(crate) fn phase_elapsed_secs(&self, now: f64) -> f64 {
         self.phase_started_at
             .map(|start| now - start)
             .unwrap_or(0.0)
     }
 
     /// Update pulse animation state.
-    pub fn update_pulse(&mut self, dt: f32) {
+    pub(crate) fn update_pulse(&mut self, dt: f32) {
         if self.is_active() {
             // Pulse at ~1 Hz
             self.pulse_phase = (self.pulse_phase + dt) % 1.0;
@@ -345,7 +345,7 @@ impl LiveModeState {
     }
 
     /// Get current pulse alpha value (0.0 to 1.0) for animation.
-    pub fn pulse_alpha(&self) -> f32 {
+    pub(crate) fn pulse_alpha(&self) -> f32 {
         if !self.is_active() {
             return 0.0;
         }
@@ -355,7 +355,7 @@ impl LiveModeState {
 
     /// Format status text for display.
     #[allow(dead_code)]
-    pub fn status_text(&self, now: f64) -> String {
+    pub(crate) fn status_text(&self, now: f64) -> String {
         match self.phase {
             LivePhase::Idle => String::new(),
             LivePhase::AcquiringLock => {
@@ -377,7 +377,7 @@ impl LiveModeState {
     ///
     /// This is the main integration point between the RealtimeChannel and
     /// the live mode state machine.
-    pub fn handle_realtime_chunk(
+    pub(crate) fn handle_realtime_chunk(
         &mut self,
         chunks_in_volume: u32,
         now: f64,
@@ -403,7 +403,7 @@ impl LiveModeState {
     /// is known. Called once per frame from [`crate::subsystem::Live::refresh`]
     /// with the engine's plan. Idempotent: once captured, never overwrites
     /// until the next `handle_volume_complete` clears it.
-    pub fn try_capture_volume_start_plan(&mut self, plan: &crate::nexrad::StreamingPlan) {
+    pub(crate) fn try_capture_volume_start_plan(&mut self, plan: &crate::nexrad::StreamingPlan) {
         if self.volume_start_plan.is_some() {
             return;
         }
@@ -421,7 +421,7 @@ impl LiveModeState {
     }
 
     /// Handle streaming started event.
-    pub fn handle_streaming_started(&mut self, now: f64) {
+    pub(crate) fn handle_streaming_started(&mut self, now: f64) {
         if self.phase == LivePhase::AcquiringLock {
             self.start_streaming(now);
         }
@@ -430,7 +430,7 @@ impl LiveModeState {
     /// Handle volume complete event — seal the diagnostics record from the
     /// engine's `obs` and reset the live state. The caller resets the engine
     /// observations after this (seal-before-reset).
-    pub fn handle_volume_complete(
+    pub(crate) fn handle_volume_complete(
         &mut self,
         now: f64,
         obs: &crate::nexrad::projection::VolumeObservations,
@@ -491,7 +491,7 @@ impl LiveModeState {
     /// `try_capture_forecast` so a snapshot lands as soon as both the
     /// volume start and the VCP pattern are known, regardless of the order
     /// they arrive.
-    pub fn set_or_confirm_volume(
+    pub(crate) fn set_or_confirm_volume(
         &mut self,
         scan_key: crate::data::ScanKey,
         provisional_secs: f64,
@@ -526,12 +526,12 @@ impl LiveModeState {
     /// change (it clears its own per-chunk az list); this clears the live field.
     /// `live_data_azimuth_range` is intentionally kept until the next
     /// `LiveDecoded` result arrives, to avoid a 1–2 frame compositing flash.
-    pub fn on_in_progress_elevation_changed(&mut self) {
+    pub(crate) fn on_in_progress_elevation_changed(&mut self) {
         self.sweep_start_azimuth = None;
     }
 
     /// Append a chunk arrival diagnostic sample for the current volume.
-    pub fn record_chunk_arrival(&mut self, stat: crate::core::ChunkArrivalStat) {
+    pub(crate) fn record_chunk_arrival(&mut self, stat: crate::core::ChunkArrivalStat) {
         // Bound memory — clamp to 1024 per volume; anything beyond that is
         // pathological and unhelpful to the diagnostics modal.
         if self.chunk_arrivals.len() < 1024 {
@@ -543,7 +543,7 @@ impl LiveModeState {
     /// empirical availability lag onto the most recent chunk arrival record.
     /// Both quantities come from the worker ingest (which parses the chunk's
     /// last-radial timestamp) and are dispatched together from `main.rs`.
-    pub fn attach_collection_data_to_last_arrival(
+    pub(crate) fn attach_collection_data_to_last_arrival(
         &mut self,
         collection_time_secs: f64,
         availability_lag_ms: Option<i64>,
@@ -557,7 +557,7 @@ impl LiveModeState {
     }
 
     /// Record last radial azimuth and timestamp from a chunk.
-    pub fn record_last_radial(&mut self, azimuth: Option<f32>, time_secs: Option<f64>) {
+    pub(crate) fn record_last_radial(&mut self, azimuth: Option<f32>, time_secs: Option<f64>) {
         if let Some(az) = azimuth {
             self.last_radial_azimuth = Some(az);
         }
@@ -570,7 +570,7 @@ impl LiveModeState {
     /// captured `volume_start_plan` plus the engine's observations (`obs`) and
     /// the diagnostics state held here (chunk arrivals, previous volume end).
     /// Returns `None` when prerequisites aren't met. Called by the modal.
-    pub fn derive_current_volume_forecast(
+    pub(crate) fn derive_current_volume_forecast(
         &self,
         obs: &crate::nexrad::projection::VolumeObservations,
     ) -> Option<crate::core::VolumeForecastSnapshot> {

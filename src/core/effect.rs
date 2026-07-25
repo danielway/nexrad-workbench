@@ -22,7 +22,7 @@ use crate::core::ViewState;
 
 /// Result of an async location operation (browser geolocation or zip-code
 /// geocoding) — the response vocabulary of [`Effect::StartGeolocation`].
-pub enum LocationResult {
+pub(crate) enum LocationResult {
     /// Successfully resolved to a lat/lon.
     Success(f64, f64),
     /// The operation failed with an error message.
@@ -32,7 +32,7 @@ pub enum LocationResult {
 /// A fully-described URL-bar push (`history.replaceState`). The core builds this
 /// from the current view; the shell calls [`crate::state::url_state::push_to_url`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct UrlPush {
+pub(crate) struct UrlPush {
     pub site: String,
     pub time: f64,
     pub product: String,
@@ -44,7 +44,7 @@ pub struct UrlPush {
 
 /// A side effect the core asks the shell to perform.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Effect {
+pub(crate) enum Effect {
     /// Push the current view state to the browser URL bar (throttled upstream).
     PushUrl(UrlPush),
     /// Persist user preferences to localStorage.

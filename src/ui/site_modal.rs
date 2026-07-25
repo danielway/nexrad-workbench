@@ -16,7 +16,7 @@ use wasm_bindgen::JsCast;
 
 /// Which view the modal is currently showing.
 #[derive(Default, Clone, PartialEq)]
-pub enum SiteModalMode {
+pub(crate) enum SiteModalMode {
     /// First-visit welcome screen with three selection paths.
     #[default]
     Welcome,
@@ -29,7 +29,7 @@ pub enum SiteModalMode {
 }
 
 /// Persistent state for the site modal.
-pub struct SiteModalState {
+pub(crate) struct SiteModalState {
     /// Search filter for the site list view.
     pub filter: String,
     /// Current modal view.
@@ -48,12 +48,12 @@ pub struct SiteModalState {
 
 impl SiteModalState {
     /// A clone-able sink for async callbacks (geolocation, zip lookup).
-    pub fn location_sender(&self) -> UnboundedSender<LocationResult> {
+    pub(crate) fn location_sender(&self) -> UnboundedSender<LocationResult> {
         self.location_tx.clone()
     }
 
     /// Drain all location results that have arrived since the last call.
-    pub fn drain_location_results(&mut self) -> Vec<LocationResult> {
+    pub(crate) fn drain_location_results(&mut self) -> Vec<LocationResult> {
         let mut out = Vec::new();
         while let Ok(r) = self.location_rx.try_recv() {
             out.push(r);
@@ -92,7 +92,7 @@ fn responsive_width(ctx: &egui::Context, desktop: f32) -> f32 {
 /// `SiteModalLayer` handles the result — success closes the modal after
 /// applying the selection, failure drops back to the welcome screen with
 /// the error visible.
-pub fn trigger_geolocation(
+pub(crate) fn trigger_geolocation(
     ctx: &egui::Context,
     _state: &mut AppState,
     chrome: &mut crate::subsystem::Chrome,

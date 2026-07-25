@@ -9,6 +9,7 @@ use super::*;
 ///
 /// Parameters (JS object): `{ data: ArrayBuffer, siteId: string, timestampSecs: number, fileName: string }`
 /// Returns (JS object): `{ recordsStored, scanKey, elevationMap, totalMs, sweepsJson, vcpJson? }`
+#[allow(unreachable_pub)] // wasm_bindgen export invoked from worker.js; must stay pub
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     init_logger();
@@ -275,6 +276,7 @@ pub(super) fn set_chunk_accum(value: Option<ChunkAccumulator>) {
 /// Parameters (JS object):
 /// `{ data: ArrayBuffer, siteId: string, timestampSecs: number,
 ///    chunkIndex: number, isStart: bool, isEnd: bool, fileName: string }`
+#[allow(unreachable_pub)] // wasm_bindgen export invoked from worker.js; must stay pub
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     init_logger();

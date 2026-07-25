@@ -17,7 +17,7 @@ use nexrad_render::Product;
 ///
 /// Returns the decoded radials (may be empty if the record contains only
 /// non-radial messages like VCP metadata).
-pub fn decode_record_to_radials(record_bytes: &[u8]) -> Result<Vec<Radial>, String> {
+pub(crate) fn decode_record_to_radials(record_bytes: &[u8]) -> Result<Vec<Radial>, String> {
     let record = Record::from_slice(record_bytes);
 
     if !record.compressed() {
@@ -40,7 +40,7 @@ pub fn decode_record_to_radials(record_bytes: &[u8]) -> Result<Vec<Radial>, Stri
 /// Looks for a radial whose status is `ScanStart` (the first radial of a new
 /// volume scan) and returns its collection timestamp in Unix seconds. Returns
 /// `None` if no such radial is present in this set.
-pub fn extract_volume_start_time(radials: &[Radial]) -> Option<f64> {
+pub(crate) fn extract_volume_start_time(radials: &[Radial]) -> Option<f64> {
     use ::nexrad::model::data::RadialStatus;
     radials
         .iter()
@@ -53,7 +53,7 @@ pub fn extract_volume_start_time(radials: &[Radial]) -> Option<f64> {
 ///
 /// This avoids redundant full-array scans and per-product sorting when
 /// extracting multiple products from the same elevation group.
-pub fn extract_sweep_data_from_sorted(
+pub(crate) fn extract_sweep_data_from_sorted(
     sorted_radials: &[&Radial],
     product: Product,
 ) -> Option<PrecomputedSweep> {

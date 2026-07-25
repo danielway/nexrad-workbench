@@ -14,7 +14,7 @@
 
 /// Owner of UI chrome visibility + modal-open state.
 #[derive(Default)]
-pub struct Chrome {
+pub(crate) struct Chrome {
     /// Whether the left sidebar is visible (desktop only).
     pub left_sidebar_visible: bool,
     /// Whether the right sidebar is visible (desktop only).
@@ -72,7 +72,7 @@ impl Chrome {
     ///
     /// The two desktop sidebars start visible; everything else starts
     /// hidden. Matches the previous `AppState` defaults.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             left_sidebar_visible: true,
             right_sidebar_visible: true,

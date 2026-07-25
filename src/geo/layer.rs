@@ -9,7 +9,7 @@ use std::io::Cursor;
 
 /// Visibility settings for geographic map layers.
 #[derive(Clone)]
-pub struct GeoLayerVisibility {
+pub(crate) struct GeoLayerVisibility {
     /// Show state/province boundaries
     pub states: bool,
     /// Show county boundaries (auto-hidden at low zoom)
@@ -149,7 +149,7 @@ pub enum GeoFeature {
 
 /// Computes the true geometric centroid of a polygon using the shoelace formula.
 /// Falls back to vertex average for degenerate (≤2 verts or zero area) polygons.
-pub fn compute_polygon_centroid(coords: &[Coord<f64>]) -> Coord<f64> {
+pub(crate) fn compute_polygon_centroid(coords: &[Coord<f64>]) -> Coord<f64> {
     if coords.is_empty() {
         return Coord { x: 0.0, y: 0.0 };
     }
@@ -643,7 +643,7 @@ mod tests {
 
 /// Collection of all geographic layers.
 #[derive(Debug, Clone, Default)]
-pub struct GeoLayerSet {
+pub(crate) struct GeoLayerSet {
     pub states: Option<GeoLayer>,
     pub counties: Option<GeoLayer>,
     pub cities: Option<GeoLayer>,
@@ -653,12 +653,12 @@ pub struct GeoLayerSet {
 
 impl GeoLayerSet {
     /// Creates a new empty layer set.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Loads a layer from shapefile bytes.
-    pub fn load_layer_from_shapefile(
+    pub(crate) fn load_layer_from_shapefile(
         &mut self,
         layer_type: GeoLayerType,
         shp_bytes: &[u8],
@@ -677,7 +677,7 @@ impl GeoLayerSet {
     }
 
     /// Load a pre-built layer directly.
-    pub fn set_layer(&mut self, layer: GeoLayer) {
+    pub(crate) fn set_layer(&mut self, layer: GeoLayer) {
         match layer.layer_type {
             GeoLayerType::States => self.states = Some(layer),
             GeoLayerType::Counties => self.counties = Some(layer),

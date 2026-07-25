@@ -5,7 +5,7 @@ use crate::data::ScanKey;
 
 /// Available radar products for display.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
-pub enum RadarProduct {
+pub(crate) enum RadarProduct {
     #[default]
     Reflectivity,
     Velocity,
@@ -17,7 +17,7 @@ pub enum RadarProduct {
 }
 
 impl RadarProduct {
-    pub fn label(&self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self {
             RadarProduct::Reflectivity => "Reflectivity",
             RadarProduct::Velocity => "Velocity",
@@ -30,7 +30,7 @@ impl RadarProduct {
     }
 
     /// Unit string for display (e.g., "dBZ", "m/s").
-    pub fn unit(&self) -> &'static str {
+    pub(crate) fn unit(&self) -> &'static str {
         match self {
             RadarProduct::Reflectivity => "dBZ",
             RadarProduct::Velocity => "m/s",
@@ -43,7 +43,7 @@ impl RadarProduct {
     }
 
     /// Short code for URL parameters.
-    pub fn short_code(&self) -> &'static str {
+    pub(crate) fn short_code(&self) -> &'static str {
         match self {
             RadarProduct::Reflectivity => "REF",
             RadarProduct::Velocity => "VEL",
@@ -56,7 +56,7 @@ impl RadarProduct {
     }
 
     /// Parse from a short code string.
-    pub fn from_short_code(code: &str) -> Option<Self> {
+    pub(crate) fn from_short_code(code: &str) -> Option<Self> {
         match code {
             "REF" => Some(RadarProduct::Reflectivity),
             "VEL" => Some(RadarProduct::Velocity),
@@ -69,7 +69,7 @@ impl RadarProduct {
         }
     }
 
-    pub fn all() -> &'static [RadarProduct] {
+    pub(crate) fn all() -> &'static [RadarProduct] {
         &[
             RadarProduct::Reflectivity,
             RadarProduct::Velocity,
@@ -82,7 +82,7 @@ impl RadarProduct {
     }
 
     /// String identifier used by the worker protocol.
-    pub fn to_worker_string(self) -> &'static str {
+    pub(crate) fn to_worker_string(self) -> &'static str {
         match self {
             RadarProduct::Reflectivity => "reflectivity",
             RadarProduct::Velocity => "velocity",
@@ -106,7 +106,7 @@ impl RadarProduct {
 /// `product` is the worker-string form (matches `SweepDataKey` and
 /// `RadarProduct::to_worker_string`).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct SweepIdentity {
+pub(crate) struct SweepIdentity {
     pub scan_key: ScanKey,
     pub elevation_number: u8,
     pub product: String,
@@ -125,7 +125,7 @@ pub struct SweepIdentity {
 /// Reading this field is therefore safe to interpret as "what the user
 /// is actually looking at right now."
 #[derive(Clone, PartialEq, Debug)]
-pub struct DisplayedSweep {
+pub(crate) struct DisplayedSweep {
     pub identity: SweepIdentity,
     /// Sweep start time (Unix seconds, sub-second precision).
     pub start_time: f64,
@@ -136,7 +136,7 @@ pub struct DisplayedSweep {
 }
 
 impl SweepIdentity {
-    pub fn new(scan_key: ScanKey, elevation_number: u8, product: impl Into<String>) -> Self {
+    pub(crate) fn new(scan_key: ScanKey, elevation_number: u8, product: impl Into<String>) -> Self {
         Self {
             scan_key,
             elevation_number,
@@ -148,19 +148,19 @@ impl SweepIdentity {
     ///
     /// Used by the timeline to compare against `Scan::key_timestamp` (also
     /// `f64` with sub-second precision); round-trips through `UnixMillis`.
-    pub fn scan_timestamp_secs(&self) -> f64 {
+    pub(crate) fn scan_timestamp_secs(&self) -> f64 {
         self.scan_key.scan_start.as_secs_f64()
     }
 
     #[allow(dead_code)] // Read by tests and reserved for cross-site checks.
-    pub fn site_id(&self) -> &str {
+    pub(crate) fn site_id(&self) -> &str {
         &self.scan_key.site.0
     }
 }
 
 /// User's elevation selection — by specific VCP cut or auto (latest) mode.
 #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ElevationSelection {
+pub(crate) enum ElevationSelection {
     /// A specific VCP elevation number. The f32 is the angle at time of
     /// selection, used for resilience when VCP changes.
     Fixed { elevation_number: u8, angle: f32 },
@@ -178,11 +178,11 @@ impl Default for ElevationSelection {
 }
 
 impl ElevationSelection {
-    pub fn is_auto(&self) -> bool {
+    pub(crate) fn is_auto(&self) -> bool {
         matches!(self, ElevationSelection::Latest)
     }
 
-    pub fn elevation_number(&self) -> Option<u8> {
+    pub(crate) fn elevation_number(&self) -> Option<u8> {
         match self {
             ElevationSelection::Fixed {
                 elevation_number, ..
@@ -191,7 +191,7 @@ impl ElevationSelection {
         }
     }
 
-    pub fn angle(&self) -> f32 {
+    pub(crate) fn angle(&self) -> f32 {
         match self {
             ElevationSelection::Fixed { angle, .. } => *angle,
             ElevationSelection::Latest => 0.5,
@@ -199,7 +199,7 @@ impl ElevationSelection {
     }
 
     /// On VCP change, find the closest angle match and update elevation_number.
-    pub fn resolve_for_vcp(&mut self, entries: &[ElevationListEntry]) {
+    pub(crate) fn resolve_for_vcp(&mut self, entries: &[ElevationListEntry]) {
         if let ElevationSelection::Fixed {
             angle,
             elevation_number,
@@ -220,7 +220,7 @@ impl ElevationSelection {
 
 /// One row in the elevation list UI.
 #[derive(Clone, Debug)]
-pub struct ElevationListEntry {
+pub(crate) struct ElevationListEntry {
     pub elevation_number: u8,
     pub angle: f32,
     pub waveform: String,

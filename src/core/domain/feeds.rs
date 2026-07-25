@@ -13,7 +13,7 @@ use crate::mping::StormReport;
 /// selections (which alert is open in the detail modal, is the list modal
 /// open, etc.).
 #[derive(Default)]
-pub struct AlertsState {
+pub(crate) struct AlertsState {
     /// All currently-active alerts returned by the most recent successful fetch.
     pub alerts: Vec<Alert>,
     /// Wall-clock ms (JS Date.now) when the last fetch was started.
@@ -36,7 +36,7 @@ pub struct AlertsState {
 
 impl AlertsState {
     /// Return alerts whose bbox intersects `bounds`, sorted by severity (high first).
-    pub fn visible_in(&self, bounds: (f64, f64, f64, f64)) -> Vec<&Alert> {
+    pub(crate) fn visible_in(&self, bounds: (f64, f64, f64, f64)) -> Vec<&Alert> {
         let mut out: Vec<&Alert> = self
             .alerts
             .iter()
@@ -47,7 +47,7 @@ impl AlertsState {
     }
 
     /// Look up an alert by id.
-    pub fn find(&self, id: &str) -> Option<&Alert> {
+    pub(crate) fn find(&self, id: &str) -> Option<&Alert> {
         self.alerts.iter().find(|a| a.id == id)
     }
 }
@@ -57,7 +57,7 @@ impl AlertsState {
 /// Mirrors the report list updated by `MpingManager` plus settings-modal UI
 /// flags and the user's API key.
 #[derive(Default)]
-pub struct MpingState {
+pub(crate) struct MpingState {
     /// Currently-loaded reports for the active fetch window.
     pub reports: Vec<StormReport>,
     /// Total reports the server reported for this query (may exceed
@@ -99,7 +99,7 @@ pub struct MpingState {
 /// [`GpsState::coords`] (or [`GpsState::error`] on failure). Not persisted
 /// across reloads — geolocation permission is per-session in many browsers,
 /// so a stored "on" state would silently re-prompt or fail.
-pub struct GpsState {
+pub(crate) struct GpsState {
     /// Last successfully fetched coordinates, as (latitude, longitude).
     pub coords: Option<(f64, f64)>,
     /// Most recent error, surfaced next to the layer checkbox. Cleared
@@ -114,12 +114,12 @@ pub struct GpsState {
 
 impl GpsState {
     /// A clone-able sink that browser callbacks can push results into.
-    pub fn result_sender(&self) -> UnboundedSender<LocationResult> {
+    pub(crate) fn result_sender(&self) -> UnboundedSender<LocationResult> {
         self.results_tx.clone()
     }
 
     /// Drain all results that have arrived since the last call.
-    pub fn drain_results(&mut self) -> Vec<LocationResult> {
+    pub(crate) fn drain_results(&mut self) -> Vec<LocationResult> {
         let mut out = Vec::new();
         while let Ok(r) = self.results_rx.try_recv() {
             out.push(r);

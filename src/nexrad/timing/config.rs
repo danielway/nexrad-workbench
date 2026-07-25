@@ -13,7 +13,7 @@
 /// global constants (`TimingTuning::DEFAULT`) by types that have no
 /// projector at hand (`ChunkTimingStats`, `VolumeObservations`).
 #[derive(Debug, Clone, Copy)]
-pub struct TimingTuning {
+pub(crate) struct TimingTuning {
     /// Weight of historical samples in the physics/historical blend:
     /// `seconds = (1 − w) * physics + w * historical`. Biases the
     /// COLLECTION axis (and everything downstream of it).
@@ -36,7 +36,7 @@ pub struct TimingTuning {
 }
 
 impl TimingTuning {
-    pub const DEFAULT: TimingTuning = TimingTuning {
+    pub(crate) const DEFAULT: TimingTuning = TimingTuning {
         hist_weight: 0.3,
         poll_bias_secs: 0.750,
         default_availability_lag_secs: 5.0,

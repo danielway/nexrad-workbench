@@ -36,7 +36,7 @@ struct CacheKey {
 /// Single owner of every projection input; emits one cached [`Projection`].
 /// Constructed and fed via [`super::SharedProjectionEngine`] (see
 /// `subsystem::live`).
-pub struct ProjectionEngine {
+pub(crate) struct ProjectionEngine {
     /// The math kernel: VCP, mapper, rolling stats, collection anchor, filter.
     projector: Projector,
     /// Known-available chunks (arrivals + periodic listings). Supplies the
@@ -62,7 +62,7 @@ pub struct ProjectionEngine {
 }
 
 impl ProjectionEngine {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             projector: Projector::new(),
             inventory: KnownChunkInventory::default(),
@@ -80,7 +80,7 @@ impl ProjectionEngine {
 
     /// Install (or replace) the VCP for the in-progress volume. Always bumps —
     /// a new Start chunk means a new (or re-derived) volume structure.
-    pub fn set_vcp(&mut self, vcp: volume_coverage_pattern::Message<'static>) {
+    pub(crate) fn set_vcp(&mut self, vcp: volume_coverage_pattern::Message<'static>) {
         self.projector.set_vcp(vcp);
         self.bump();
     }
@@ -97,7 +97,7 @@ impl ProjectionEngine {
     /// from the observations before resetting them (seal-before-reset)
     /// once the worker reports the volume complete, or when the session
     /// stops.
-    pub fn begin_volume(
+    pub(crate) fn begin_volume(
         &mut self,
         vcp: volume_coverage_pattern::Message<'static>,
         scan_start_secs: f64,
@@ -110,7 +110,7 @@ impl ProjectionEngine {
     }
 
     /// Set the active streaming filter. No-op (no bump) when unchanged.
-    pub fn set_filter(&mut self, filter: StreamingFilter) {
+    pub(crate) fn set_filter(&mut self, filter: StreamingFilter) {
         if self.projector.filter() != filter {
             self.projector.set_filter(filter);
             self.bump();
@@ -121,7 +121,7 @@ impl ProjectionEngine {
     /// chunk just ingested. No-op when unchanged. The chunk id keys the
     /// COLLECTION-interval stats sample the projector derives from
     /// consecutive anchors.
-    pub fn set_collection_anchor(&mut self, chunk_id: &ChunkIdentifier, secs: f64) {
+    pub(crate) fn set_collection_anchor(&mut self, chunk_id: &ChunkIdentifier, secs: f64) {
         if self.projector.latest_chunk_collection_end_secs() != Some(secs) {
             self.projector.record_collection_end(chunk_id, secs);
             self.bump();
@@ -130,7 +130,7 @@ impl ProjectionEngine {
 
     /// Clear the collection anchor at a volume boundary. No-op when already
     /// cleared.
-    pub fn reset_collection_anchor(&mut self) {
+    pub(crate) fn reset_collection_anchor(&mut self) {
         if self.projector.latest_chunk_collection_end_secs().is_some() {
             self.projector.reset_collection_anchor();
             self.bump();
@@ -138,7 +138,7 @@ impl ProjectionEngine {
     }
 
     /// Replace rolling timing stats with a persisted snapshot (warm start).
-    pub fn preload_timing_stats(&mut self, stats: ChunkTimingStats) {
+    pub(crate) fn preload_timing_stats(&mut self, stats: ChunkTimingStats) {
         self.projector.preload_timing_stats(stats);
         self.bump();
     }
@@ -146,25 +146,25 @@ impl ProjectionEngine {
     /// Mutable access to the in-progress volume's observations the worker feeds
     /// (the engine owns them). Bumps the input revision — the worker only takes
     /// this handle to record a change.
-    pub fn observations_mut(&mut self) -> &mut VolumeObservations {
+    pub(crate) fn observations_mut(&mut self) -> &mut VolumeObservations {
         self.bump();
         &mut self.observed
     }
 
     /// Read-only access to the volume observations (status build + diagnostics).
-    pub fn observations(&self) -> &VolumeObservations {
+    pub(crate) fn observations(&self) -> &VolumeObservations {
         &self.observed
     }
 
     /// Reset the volume observations at a volume boundary. Bumps.
-    pub fn reset_volume_observations(&mut self) {
+    pub(crate) fn reset_volume_observations(&mut self) {
         self.observed.reset();
         self.bump();
     }
 
     /// Set the available archive scan boundaries (authoritative next-scan
     /// extent). Replaces; bumps on a length/content change.
-    pub fn set_archive_boundaries(&mut self, boundaries: Vec<crate::nexrad::ScanBoundary>) {
+    pub(crate) fn set_archive_boundaries(&mut self, boundaries: Vec<crate::nexrad::ScanBoundary>) {
         if self.archive_boundaries != boundaries {
             self.archive_boundaries = boundaries;
             self.bump();
@@ -172,7 +172,7 @@ impl ProjectionEngine {
     }
 
     /// Record an inter-chunk arrival sample (feeds the blend + retry budget).
-    pub fn record_inter_chunk_duration(
+    pub(crate) fn record_inter_chunk_duration(
         &mut self,
         chunk_id: &ChunkIdentifier,
         duration: ChronoDuration,
@@ -184,7 +184,11 @@ impl ProjectionEngine {
     }
 
     /// Attach an availability-lag sample (S3 upload − collection) for a chunk.
-    pub fn record_availability_lag_for(&mut self, chunk_id: &ChunkIdentifier, lag_secs: f64) {
+    pub(crate) fn record_availability_lag_for(
+        &mut self,
+        chunk_id: &ChunkIdentifier,
+        lag_secs: f64,
+    ) {
         self.projector
             .record_availability_lag_for(chunk_id, lag_secs);
         self.bump();
@@ -192,7 +196,7 @@ impl ProjectionEngine {
 
     /// Record a single known-available chunk (an arrival, or one listing entry).
     /// Bumps the input revision only when the availability anchor advanced.
-    pub fn observe_known_chunk(&mut self, chunk: KnownChunk) {
+    pub(crate) fn observe_known_chunk(&mut self, chunk: KnownChunk) {
         if self.inventory.observe(chunk) {
             self.bump();
         }
@@ -200,7 +204,7 @@ impl ProjectionEngine {
 
     /// Merge a full S3 listing for one volume (periodic probe). Bumps the input
     /// revision only when the availability anchor advanced.
-    pub fn observe_listing(&mut self, volume: VolumeIndex, listed: &[ChunkIdentifier]) {
+    pub(crate) fn observe_listing(&mut self, volume: VolumeIndex, listed: &[ChunkIdentifier]) {
         if self.inventory.observe_listing(volume, listed) {
             self.bump();
         }
@@ -208,7 +212,7 @@ impl ProjectionEngine {
 
     /// Drop inventory volumes outside the current + next window (call on
     /// rollover to bound memory).
-    pub fn retain_inventory_from(&mut self, keep: VolumeIndex) {
+    pub(crate) fn retain_inventory_from(&mut self, keep: VolumeIndex) {
         self.inventory.retain_from(keep);
     }
 
@@ -216,7 +220,7 @@ impl ProjectionEngine {
     /// observations' completed-sweep metas (drives `CollectedByUs`). Reads the
     /// metas as of now — call before `update_sweep_metas` for this ingest to
     /// preserve the prior-metas semantics. Always bumps.
-    pub fn set_cached_sweeps_for_scan(&mut self, scan_start_secs: f64) {
+    pub(crate) fn set_cached_sweeps_for_scan(&mut self, scan_start_secs: f64) {
         self.cached_sweeps
             .set_for_scan(scan_start_secs, &self.observed.completed_sweep_metas);
         self.bump();
@@ -224,7 +228,7 @@ impl ProjectionEngine {
 
     /// Set the current in-progress volume's whole-second scan start. No-op when
     /// unchanged.
-    pub fn set_current_scan_start_secs(&mut self, secs: f64) {
+    pub(crate) fn set_current_scan_start_secs(&mut self, secs: f64) {
         if self.current_scan_start_secs != Some(secs) {
             self.current_scan_start_secs = Some(secs);
             self.bump();
@@ -233,7 +237,7 @@ impl ProjectionEngine {
 
     /// Set (or clear) the elevation currently being received for a scan. No-op
     /// when unchanged.
-    pub fn set_in_progress_elevation(
+    pub(crate) fn set_in_progress_elevation(
         &mut self,
         scan_start_secs: f64,
         elevation_number: Option<u8>,
@@ -251,14 +255,18 @@ impl ProjectionEngine {
     /// anchor and self-anchoring the next volume on the inventory. Recomputed
     /// only when an input changed since the last build for the same anchor +
     /// whole-second `now`. `None` only in a cold state (no VCP/mapper yet).
-    pub fn projection(&mut self, anchor: &ChunkIdentifier, now_secs: f64) -> Option<&Projection> {
+    pub(crate) fn projection(
+        &mut self,
+        anchor: &ChunkIdentifier,
+        now_secs: f64,
+    ) -> Option<&Projection> {
         self.projection_inner(anchor, now_secs)
     }
 
     /// The most recently built projection, without rebuilding. Lets the UI read
     /// the latest projection each frame (so re-anchors/listings the loop fed
     /// propagate) without needing the loop's download cursor as an anchor.
-    pub fn last_projection(&self) -> Option<&Projection> {
+    pub(crate) fn last_projection(&self) -> Option<&Projection> {
         self.cached.as_ref().map(|(_, p)| p)
     }
 
@@ -363,15 +371,15 @@ impl ProjectionEngine {
 
     // ── Passthrough reads (still needed by the loop + diagnostics) ──
 
-    pub fn timing_stats(&self) -> &ChunkTimingStats {
+    pub(crate) fn timing_stats(&self) -> &ChunkTimingStats {
         self.projector.timing_stats()
     }
 
-    pub fn current_anchor_source(&self) -> AnchorSource {
+    pub(crate) fn current_anchor_source(&self) -> AnchorSource {
         self.projector.current_anchor_source()
     }
 
-    pub fn collection_anchor_secs(&self) -> Option<f64> {
+    pub(crate) fn collection_anchor_secs(&self) -> Option<f64> {
         self.projector.latest_chunk_collection_end_secs()
     }
 

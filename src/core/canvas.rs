@@ -27,7 +27,7 @@ use crate::core::Sweep;
 /// Mirrors the original `compute_sweep_line_azimuth` body exactly: per-radial
 /// interpolation with 360° wrap-around bridging when radials are present, else a
 /// uniform-rotation fallback from `start_azimuth`.
-pub fn sweep_line_azimuth(sweep: &Sweep, ts: f64) -> Option<(f32, f32)> {
+pub(crate) fn sweep_line_azimuth(sweep: &Sweep, ts: f64) -> Option<(f32, f32)> {
     let duration = sweep.end_time - sweep.start_time;
     if duration <= 0.0 {
         return None;
@@ -84,7 +84,7 @@ pub fn sweep_line_azimuth(sweep: &Sweep, ts: f64) -> Option<(f32, f32)> {
 ///    against the resolved sweep's `(start_time, end_time)` — before start →
 ///    `(0.0, 0.0)` sentinel, within → the interpolated `sweep_info`, after → none.
 /// 3. Otherwise none.
-pub fn select_gpu_sweep(
+pub(crate) fn select_gpu_sweep(
     live_data_azimuth_range: Option<(f32, f32)>,
     effective_sweep_animation: bool,
     sweep_bounds: Option<(f64, f64)>,
@@ -108,7 +108,7 @@ pub fn select_gpu_sweep(
 ///
 /// Caches a real sweep position (skipping the `(0.0, 0.0)` "reveal not started"
 /// sentinel), and clears the cache entirely when animation is off.
-pub fn next_sweep_cache(
+pub(crate) fn next_sweep_cache(
     prev: Option<(f32, f32)>,
     gpu_sweep: Option<(f32, f32)>,
     effective_sweep_animation: bool,
@@ -127,7 +127,7 @@ pub fn next_sweep_cache(
 
 /// Whether the canvas is "between sweeps": animation on, no live/archive sweep
 /// resolved this frame, but a cached position exists (so the stale line shows).
-pub fn between_sweeps(
+pub(crate) fn between_sweeps(
     effective_sweep_animation: bool,
     gpu_sweep: Option<(f32, f32)>,
     cache: Option<(f32, f32)>,
@@ -142,7 +142,7 @@ pub fn between_sweeps(
 /// Spatial metadata for a single sweep's CPU buffers, mirrored from the GL
 /// renderer's `SweepState`. Lets the polar lookups be pure over plain slices.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PolarSweepMeta {
+pub(crate) struct PolarSweepMeta {
     pub azimuth_count: u32,
     pub gate_count: u32,
     pub first_gate_km: f64,
@@ -155,7 +155,7 @@ pub struct PolarSweepMeta {
 /// Nearest azimuth index for `target_deg` among `azimuths` (sparse radial
 /// layout, negative slots skipped), or `None` if the closest radial is more than
 /// 1.5× the nominal spacing away. Was `gpu_renderer::find_nearest_azimuth_index`.
-pub fn find_nearest_azimuth_index(
+pub(crate) fn find_nearest_azimuth_index(
     azimuths: &[f32],
     azimuth_count: usize,
     target_deg: f32,
@@ -193,7 +193,7 @@ pub fn find_nearest_azimuth_index(
 /// Whether a polar query at `azimuth_deg` falls in the *previous*-sweep region,
 /// given the active sweep's `(sweep_az, sweep_start)`. `None` params → always
 /// current sweep.
-pub fn polar_in_prev_region(azimuth_deg: f32, sweep_params: Option<(f32, f32)>) -> bool {
+pub(crate) fn polar_in_prev_region(azimuth_deg: f32, sweep_params: Option<(f32, f32)>) -> bool {
     if let Some((sweep_az, sweep_start)) = sweep_params {
         let swept_arc = (sweep_az - sweep_start).rem_euclid(360.0);
         let pixel_from_start = (azimuth_deg - sweep_start).rem_euclid(360.0);
@@ -219,7 +219,7 @@ fn scale_raw(raw: f32, offset: f32, scale: f32) -> Option<f32> {
 
 /// Current-sweep value lookup using sparse nearest-azimuth indexing (with gap
 /// detection). Mirrors `RadarGpuRenderer::value_at_polar`'s current branch.
-pub fn value_at_polar_current(
+pub(crate) fn value_at_polar_current(
     azimuth_deg: f32,
     range_km: f64,
     meta: &PolarSweepMeta,
@@ -245,7 +245,7 @@ pub fn value_at_polar_current(
 
 /// Previous-sweep value lookup using evenly-spaced azimuth indexing (matches the
 /// GPU shader's prev-sweep sampling). Mirrors `prev_value_at_polar`.
-pub fn value_at_polar_prev(
+pub(crate) fn value_at_polar_prev(
     azimuth_deg: f32,
     range_km: f64,
     meta: &PolarSweepMeta,
@@ -271,7 +271,7 @@ pub fn value_at_polar_prev(
 
 /// Current-sweep collection-time lookup (sparse azimuth indexing). Mirrors
 /// `collection_time_at_polar`'s current branch.
-pub fn collection_time_current(
+pub(crate) fn collection_time_current(
     azimuth_deg: f32,
     azimuth_count: u32,
     azimuths: &[f32],
@@ -285,7 +285,7 @@ pub fn collection_time_current(
 }
 
 /// Previous-sweep collection-time lookup (evenly-spaced azimuth indexing).
-pub fn collection_time_prev(
+pub(crate) fn collection_time_prev(
     azimuth_deg: f32,
     azimuth_count: u32,
     radial_times: &[f64],
@@ -303,13 +303,13 @@ pub fn collection_time_prev(
 // ---------------------------------------------------------------------------
 
 /// Equirectangular km-per-degree used throughout the canvas polar math.
-pub const KM_PER_DEGREE: f64 = 111.0;
+pub(crate) const KM_PER_DEGREE: f64 = 111.0;
 
 /// Convert a geographic point to radar-relative polar `(azimuth_deg, range_km)`.
 ///
 /// Equirectangular approximation (matches the canvas projection): longitude is
 /// scaled by `cos(radar_lat)`. Mirrors the data-probe's inline math.
-pub fn geo_to_polar(lat: f64, lon: f64, radar_lat: f64, radar_lon: f64) -> (f64, f64) {
+pub(crate) fn geo_to_polar(lat: f64, lon: f64, radar_lat: f64, radar_lon: f64) -> (f64, f64) {
     let dlat = lat - radar_lat;
     let dlon = (lon - radar_lon) * radar_lat.to_radians().cos();
     let range_km = (dlat * dlat + dlon * dlon).sqrt() * KM_PER_DEGREE;
@@ -320,7 +320,7 @@ pub fn geo_to_polar(lat: f64, lon: f64, radar_lat: f64, radar_lon: f64) -> (f64,
 /// Longitude span (degrees) covering `range_km` at `center_lat`, accounting for
 /// meridian convergence (`/cos(lat)`). The coverage-cutout circle's radius is
 /// this span projected to screen. Mirrors the canvas cutout math.
-pub fn cutout_lon_range_deg(center_lat: f64, range_km: f64) -> f64 {
+pub(crate) fn cutout_lon_range_deg(center_lat: f64, range_km: f64) -> f64 {
     let lat_correction = center_lat.to_radians().cos();
     range_km / KM_PER_DEGREE / lat_correction
 }

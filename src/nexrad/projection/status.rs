@@ -21,7 +21,7 @@ use std::collections::HashMap;
 /// Precedence: cached locally → currently receiving → published-but-not-ours →
 /// purely future.
 #[allow(clippy::too_many_arguments)]
-pub fn derive_sweep_status(
+pub(crate) fn derive_sweep_status(
     scan_start_secs: f64,
     elevation_number: u8,
     volume: VolumeIndex,
@@ -46,7 +46,7 @@ pub fn derive_sweep_status(
 /// Whether a sweep's final chunk (or a later sequence / the End chunk) is known
 /// to be published in S3 per the inventory — the presence rule shared by the
 /// status derivation and the streaming probe's early-fire.
-pub fn published_in_inventory(
+pub(crate) fn published_in_inventory(
     inventory: &KnownChunkInventory,
     volume: VolumeIndex,
     last_seq_of_sweep: usize,
@@ -62,7 +62,7 @@ pub fn published_in_inventory(
 }
 
 /// Inputs to [`build_sweeps`], bundled to keep the signature manageable.
-pub struct SweepBuildCtx<'a> {
+pub(crate) struct SweepBuildCtx<'a> {
     /// Every chunk of the current volume (past chunks carry `projected: None`).
     pub current_chunks: &'a [ChunkProjectionInfo],
     /// Every chunk of the next volume, when the projection extends into it.
@@ -152,7 +152,7 @@ fn last_seq_by_elev(chunks: &[ChunkProjectionInfo]) -> HashMap<u8, usize> {
 /// Inputs to the current-scan bounds cascade. Borrowed slices so both the
 /// engine (`build_sweeps`) and the `build_position_from_live` oracle can call
 /// the SAME cascade — guaranteeing the per-sweep bounds can't diverge.
-pub struct CascadeInputs<'a> {
+pub(crate) struct CascadeInputs<'a> {
     pub vol_start: f64,
     pub expected_count: usize,
     /// `received[elev_idx]` — elevation `elev_idx + 1` is fully received.
@@ -171,7 +171,7 @@ pub struct CascadeInputs<'a> {
 
 /// One sweep's derived bounds + provenance + in-progress detail — the shared
 /// output of the cascade, mapped by each caller to its own render type.
-pub struct SweepBounds {
+pub(crate) struct SweepBounds {
     pub elevation_number: u8,
     pub elevation_angle: f32,
     pub start: f64,
@@ -197,7 +197,7 @@ pub struct SweepBounds {
 /// for the current scan, as a pure function. Centralized here so the engine and
 /// the legacy `from_live` oracle share one implementation. Faithful transcription
 /// of the previous `from_live` body.
-pub fn cascade_current_sweeps(inp: &CascadeInputs) -> Vec<SweepBounds> {
+pub(crate) fn cascade_current_sweeps(inp: &CascadeInputs) -> Vec<SweepBounds> {
     let vol_start = inp.vol_start;
     let expected_count = inp.expected_count;
     let expected_dur = inp.expected_dur;
@@ -456,7 +456,7 @@ fn elev_angle(
 }
 
 /// Build the per-sweep projection for the current + next scan.
-pub fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
+pub(crate) fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
     let mut sweeps = Vec::new();
 
     // ── Current scan — full cascade over every expected elevation ──

@@ -7,7 +7,7 @@ use nexrad_decode::messages::volume_coverage_pattern::WaveformType;
 /// error came from intra-sweep rotation rate, inter-sweep transition, or the
 /// fixed inter-volume gap — three completely different fixes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IntervalCase {
+pub(crate) enum IntervalCase {
     /// Pure rotation rate: same elevation, no transition.
     IntraSweep,
     /// First chunk of a new sweep within the same volume — base gap +
@@ -18,7 +18,7 @@ pub enum IntervalCase {
 }
 
 impl IntervalCase {
-    pub fn short(&self) -> &'static str {
+    pub(crate) fn short(&self) -> &'static str {
         match self {
             IntervalCase::IntraSweep => "intra",
             IntervalCase::InterSweep => "inter_sweep",
@@ -33,7 +33,7 @@ impl IntervalCase {
 /// the other fields expose the components that fed it so prediction error
 /// can be attributed to a specific knob.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PhysicsBreakdown {
+pub(crate) struct PhysicsBreakdown {
     pub case: IntervalCase,
     pub total_secs: f64,
     /// Per-chunk rotation duration (sweep_duration / chunks_in_sweep).
@@ -87,7 +87,7 @@ const START_TO_FIRST_INTERMEDIATE_GAP_SECS: f64 = 1.5;
 /// All predictions are derived from analysis of 59 archive volumes across 12 NEXRAD sites,
 /// 8 VCP types, and diverse meteorological scenarios. The azimuth rate from the VCP is the
 /// dominant predictor, achieving a mean absolute error of 0.33s for sweep duration prediction.
-pub struct ChunkTimingModel;
+pub(crate) struct ChunkTimingModel;
 
 impl ChunkTimingModel {
     /// Predicted sweep duration in seconds based on azimuth rotation rate.
@@ -95,7 +95,7 @@ impl ChunkTimingModel {
     /// Formula: `(360 / azimuth_rate_dps) - 0.67`
     ///
     /// Returns `None` if `azimuth_rate_dps` is zero or negative.
-    pub fn sweep_duration_secs(azimuth_rate_dps: f64) -> Option<f64> {
+    pub(crate) fn sweep_duration_secs(azimuth_rate_dps: f64) -> Option<f64> {
         if azimuth_rate_dps <= 0.0 {
             return None;
         }
@@ -107,7 +107,10 @@ impl ChunkTimingModel {
     /// Chunks divide a sweep evenly: `sweep_duration / chunks_in_sweep`.
     ///
     /// Returns `None` if `azimuth_rate_dps` is zero or negative, or `chunks_in_sweep` is zero.
-    pub fn chunk_duration_secs(azimuth_rate_dps: f64, chunks_in_sweep: usize) -> Option<f64> {
+    pub(crate) fn chunk_duration_secs(
+        azimuth_rate_dps: f64,
+        chunks_in_sweep: usize,
+    ) -> Option<f64> {
         if chunks_in_sweep == 0 {
             return None;
         }
@@ -123,7 +126,7 @@ impl ChunkTimingModel {
     /// antenna slew rate during transitions (much faster than the survey rotation rate).
     /// The waveform penalty accounts for additional mode-switch overhead when the
     /// waveform type changes between sweeps (see [`waveform_transition_penalty_secs`]).
-    pub fn inter_sweep_gap_secs(
+    pub(crate) fn inter_sweep_gap_secs(
         from_elevation_deg: f64,
         to_elevation_deg: f64,
         from_waveform: Option<WaveformType>,
@@ -138,7 +141,7 @@ impl ChunkTimingModel {
     /// Predicted inter-volume gap in seconds (constant 8.5s).
     ///
     /// Measures the gap from the End chunk of one volume to the Start chunk of the next.
-    pub fn inter_volume_gap_secs() -> f64 {
+    pub(crate) fn inter_volume_gap_secs() -> f64 {
         INTER_VOLUME_GAP_SECS
     }
 
@@ -148,7 +151,7 @@ impl ChunkTimingModel {
     ///
     /// Distinct from [`inter_volume_gap_secs`]: that measures End → Start across volumes,
     /// whereas this measures Start → first intermediate within a single volume.
-    pub fn start_to_first_intermediate_gap_secs() -> f64 {
+    pub(crate) fn start_to_first_intermediate_gap_secs() -> f64 {
         START_TO_FIRST_INTERMEDIATE_GAP_SECS
     }
 
@@ -157,7 +160,10 @@ impl ChunkTimingModel {
     /// Thin wrapper around [`Self::estimate_chunk_interval_breakdown`] for callers
     /// that only need the total. Diagnostic paths should call the breakdown form
     /// directly so the component split is observable.
-    pub fn estimate_chunk_interval_secs(previous: &ChunkMetadata, next: &ChunkMetadata) -> f64 {
+    pub(crate) fn estimate_chunk_interval_secs(
+        previous: &ChunkMetadata,
+        next: &ChunkMetadata,
+    ) -> f64 {
         Self::estimate_chunk_interval_breakdown(previous, next).total_secs
     }
 
@@ -174,7 +180,7 @@ impl ChunkTimingModel {
     /// Falls back to a static chunk-duration default if the azimuth rate is
     /// zero or unavailable; in that case `chunk_duration_secs` in the
     /// returned breakdown is `None` to signal the fallback was used.
-    pub fn estimate_chunk_interval_breakdown(
+    pub(crate) fn estimate_chunk_interval_breakdown(
         previous: &ChunkMetadata,
         next: &ChunkMetadata,
     ) -> PhysicsBreakdown {

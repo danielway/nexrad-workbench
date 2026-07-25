@@ -23,7 +23,7 @@ use crate::core::Scan;
 /// `future_scan` need only be supplied when the current sweep is the last in its
 /// scan; the caller may pass `None` otherwise (it's ignored when an in-scan next
 /// sweep exists).
-pub fn decide_prefetch_next_elevation(
+pub(crate) fn decide_prefetch_next_elevation(
     scan: &Scan,
     sweep_idx: usize,
     sweep_end_time: f64,
@@ -57,7 +57,7 @@ pub fn decide_prefetch_next_elevation(
 /// / `worker.render_volume(...)`. Keeping it a tiny pure function makes the
 /// "identical request is suppressed; a changed one goes through" rule assertable
 /// without a worker.
-pub fn should_dispatch<T: PartialEq>(new: &T, last: Option<&T>) -> bool {
+pub(crate) fn should_dispatch<T: PartialEq>(new: &T, last: Option<&T>) -> bool {
     last != Some(new)
 }
 

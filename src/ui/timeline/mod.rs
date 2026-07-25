@@ -78,13 +78,13 @@ pub(super) struct TimelineFrame<'a> {
 
 impl TimelineFrame<'_> {
     /// Timestamp → x pixel. The single definition all renderers share.
-    pub fn ts_to_x(&self, ts: f64) -> f32 {
+    pub(crate) fn ts_to_x(&self, ts: f64) -> f32 {
         self.rects.scan.left() + ((ts - self.view_start) * self.zoom) as f32
     }
 
     /// X pixel → timestamp (inverse of [`Self::ts_to_x`]); used by the
     /// interaction handlers to resolve clicks/drags.
-    pub fn x_to_ts(&self, x: f32) -> f64 {
+    pub(crate) fn x_to_ts(&self, x: f32) -> f64 {
         self.view_start + (x - self.rects.scan.left()) as f64 / self.zoom
     }
 }

@@ -11,22 +11,22 @@
 //! `AppState`, channels lived on `WorkbenchApp`, the two had to be kept
 //! in sync by every caller).
 
-pub mod acquisition;
-pub mod chrome;
-pub mod derived;
-pub mod diagnostics;
-pub mod live;
-pub mod network_monitor;
-pub mod playback;
-pub mod render;
-pub mod timeline;
+pub(crate) mod acquisition;
+pub(crate) mod chrome;
+pub(crate) mod derived;
+pub(crate) mod diagnostics;
+pub(crate) mod live;
+pub(crate) mod network_monitor;
+pub(crate) mod playback;
+pub(crate) mod render;
+pub(crate) mod timeline;
 
-pub use acquisition::Acquisition;
-pub use chrome::Chrome;
-pub use derived::Derived;
-pub use diagnostics::Diagnostics;
-pub use live::Live;
-pub use network_monitor::NetworkMonitor;
-pub use playback::Playback;
-pub use render::Render;
-pub use timeline::Timeline;
+pub(crate) use acquisition::Acquisition;
+pub(crate) use chrome::Chrome;
+pub(crate) use derived::Derived;
+pub(crate) use diagnostics::Diagnostics;
+pub(crate) use live::Live;
+pub(crate) use network_monitor::NetworkMonitor;
+pub(crate) use playback::Playback;
+pub(crate) use render::Render;
+pub(crate) use timeline::Timeline;

@@ -17,7 +17,7 @@ use crate::core::{LoopPreset, OperationId};
 /// Replaces scattered boolean `*_requested` flags with an explicit command queue,
 /// making state transitions easier to follow and impossible to forget to clear.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Intent {
+pub(crate) enum Intent {
     /// Refresh the timeline from the cache. Optionally auto-position the cursor.
     RefreshTimeline { auto_position: bool },
     /// Clear the record cache.

@@ -29,7 +29,7 @@ use crate::state::playback_manager::PlaybackManager;
 /// the cache. The active scan timestamp catches ingest-driven scan
 /// changes that happen without playback movement.
 #[derive(Default)]
-pub struct ScrubCache {
+pub(crate) struct ScrubCache {
     pub last_playback_ts: Option<f64>,
     pub last_elevation_selection: Option<crate::core::ElevationSelection>,
     pub last_scan_count: usize,
@@ -39,7 +39,7 @@ pub struct ScrubCache {
 }
 
 /// Owner of the worker render pipeline + the sweep-animation cache.
-pub struct Render {
+pub(crate) struct Render {
     /// Worker pool, active scan tracking, render-request dedup.
     pub coordinator: RenderCoordinator,
     /// Previous-sweep cache + resolution for sweep crossfade animation.
@@ -49,7 +49,7 @@ pub struct Render {
 }
 
 impl Render {
-    pub fn new(coordinator: RenderCoordinator) -> Self {
+    pub(crate) fn new(coordinator: RenderCoordinator) -> Self {
         Self {
             coordinator,
             playback_manager: PlaybackManager::new(),

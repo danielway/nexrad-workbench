@@ -23,17 +23,17 @@ mod status;
 // `subsystem::live`); a few helpers are still consumed only within this module,
 // hence the `allow(unused_imports)` until every consumer converges.
 #[allow(unused_imports)]
-pub use archive_adapter::scan_to_projection;
+pub(crate) use archive_adapter::scan_to_projection;
 #[allow(unused_imports)]
-pub use cached_sweeps::CachedSweepSet;
+pub(crate) use cached_sweeps::CachedSweepSet;
 #[allow(unused_imports)]
-pub use engine::ProjectionEngine;
+pub(crate) use engine::ProjectionEngine;
 #[allow(unused_imports)]
-pub use inventory::{ChunkCoord, KnownChunk, KnownChunkInventory};
+pub(crate) use inventory::{ChunkCoord, KnownChunk, KnownChunkInventory};
 #[allow(unused_imports)]
-pub use observations::VolumeObservations;
+pub(crate) use observations::VolumeObservations;
 #[allow(unused_imports)]
-pub use status::{
+pub(crate) use status::{
     build_sweeps, cascade_current_sweeps, derive_sweep_status, CascadeInputs, SweepBounds,
     SweepBuildCtx,
 };
@@ -48,16 +48,16 @@ use std::rc::Rc;
 /// the same instance. Sound because the streaming loop runs on the main thread
 /// (`spawn_local`), so borrows never cross threads — and, per the engine's
 /// invariant, never span an `.await`.
-pub type SharedProjectionEngine = Rc<RefCell<ProjectionEngine>>;
+pub(crate) type SharedProjectionEngine = Rc<RefCell<ProjectionEngine>>;
 
 /// Construct a fresh shared engine.
-pub fn new_shared_engine() -> SharedProjectionEngine {
+pub(crate) fn new_shared_engine() -> SharedProjectionEngine {
     Rc::new(RefCell::new(ProjectionEngine::new()))
 }
 
 /// Where a projected sweep sits relative to the streaming anchor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProjectionScanRole {
+pub(crate) enum ProjectionScanRole {
     /// A sweep of the volume currently being received.
     CurrentInProgress,
     /// A sweep of the *next* volume, projected one scan ahead.
@@ -69,7 +69,7 @@ pub enum ProjectionScanRole {
 /// Precedence when deriving: `CollectedByUs` > `InProgress` > `AvailableNotCollected`
 /// > `FutureExpected`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SweepProjectionStatus {
+pub(crate) enum SweepProjectionStatus {
     /// We have this sweep cached locally (possibly sparse coverage).
     CollectedByUs,
     /// Published in S3 (per the inventory) but not downloaded by us.
@@ -84,7 +84,7 @@ pub enum SweepProjectionStatus {
 /// acquisition `status`). Mirrors the old `state::vcp_position::SweepTiming`
 /// with an explicit `Projected` variant for the library-forecast path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SweepTimingProvenance {
+pub(crate) enum SweepTimingProvenance {
     /// Actual observed radial timestamps.
     Observed,
     /// Anchored to actual chunk data / a known predecessor.
@@ -98,7 +98,7 @@ pub enum SweepTimingProvenance {
 /// Source-agnostic availability the timeline renders by. Adds `Available`
 /// (published in S3 but not downloaded by us) to the old three.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SweepAvailability {
+pub(crate) enum SweepAvailability {
     /// Persisted/renderable — collected by us (archive download or live flush).
     Cached,
     /// Actively being received now.
@@ -111,7 +111,7 @@ pub enum SweepAvailability {
 
 /// A single chunk's time + azimuth span within a sweep (live in-progress only).
 #[derive(Clone, Copy, Debug)]
-pub struct ChunkSpan {
+pub(crate) struct ChunkSpan {
     pub start: f64,
     pub end: f64,
     pub first_azimuth: f32,
@@ -123,7 +123,7 @@ pub struct ChunkSpan {
 /// rate comes from the projection; `last_radial_*` are filled per frame by the
 /// live model.
 #[derive(Clone, Copy, Debug)]
-pub struct ExtrapolationState {
+pub(crate) struct ExtrapolationState {
     pub last_radial_azimuth: f32,
     pub last_radial_time: f64,
     /// Degrees per second for the current sweep (360 / sweep_duration).
@@ -134,7 +134,7 @@ pub struct ExtrapolationState {
 /// reads, carrying the COLLECTION-time span the timeline / VCP panel / sweep
 /// line render from.
 #[derive(Clone, Debug)]
-pub struct SweepProjection {
+pub(crate) struct SweepProjection {
     /// 1-based elevation number.
     pub elevation_number: u8,
     /// Elevation angle in degrees.
@@ -163,28 +163,28 @@ pub struct SweepProjection {
 
 impl SweepProjection {
     /// We have this cut cached locally.
-    pub fn is_complete(&self) -> bool {
+    pub(crate) fn is_complete(&self) -> bool {
         self.status == SweepProjectionStatus::CollectedByUs
     }
     /// This cut is currently being received.
-    pub fn is_in_progress(&self) -> bool {
+    pub(crate) fn is_in_progress(&self) -> bool {
         self.status == SweepProjectionStatus::InProgress
     }
     /// This cut hasn't started and isn't published yet.
     #[allow(dead_code)] // status mapped to FrameCellState::Projected in the join.
-    pub fn is_future(&self) -> bool {
+    pub(crate) fn is_future(&self) -> bool {
         self.status == SweepProjectionStatus::FutureExpected
     }
     /// Whether the bounds are observed (not estimated/projected).
-    pub fn is_observed(&self) -> bool {
+    pub(crate) fn is_observed(&self) -> bool {
         self.timing == SweepTimingProvenance::Observed
     }
     /// COLLECTION-span duration in seconds.
-    pub fn duration(&self) -> f64 {
+    pub(crate) fn duration(&self) -> f64 {
         self.collection_end_secs - self.collection_start_secs
     }
     /// Source-agnostic availability for the timeline.
-    pub fn availability(&self) -> SweepAvailability {
+    pub(crate) fn availability(&self) -> SweepAvailability {
         match self.status {
             SweepProjectionStatus::CollectedByUs => SweepAvailability::Cached,
             SweepProjectionStatus::InProgress => SweepAvailability::Collecting,
@@ -199,7 +199,7 @@ impl SweepProjection {
 /// live extrapolation state, and the VCP pattern + elevation roster the panels
 /// read, with the per-frame query methods consumers call.
 #[derive(Clone, Debug)]
-pub struct ScanProjection {
+pub(crate) struct ScanProjection {
     pub vcp_number: u16,
     /// Full VCP pattern for elevation-angle lookups (display); `None` pre-VCP.
     pub vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
@@ -221,7 +221,7 @@ pub struct ScanProjection {
 
 impl ScanProjection {
     /// Sweep whose COLLECTION span contains `ts`.
-    pub fn sweep_at(&self, ts: f64) -> Option<&SweepProjection> {
+    pub(crate) fn sweep_at(&self, ts: f64) -> Option<&SweepProjection> {
         self.sweeps
             .iter()
             .find(|s| ts >= s.collection_start_secs && ts <= s.collection_end_secs)
@@ -229,7 +229,7 @@ impl ScanProjection {
 
     /// Estimated sweep-line azimuth at `ts` — live extrapolation, else archive
     /// interpolation within the containing sweep.
-    pub fn estimated_azimuth_at(&self, ts: f64) -> Option<f32> {
+    pub(crate) fn estimated_azimuth_at(&self, ts: f64) -> Option<f32> {
         if let Some(ref ext) = self.extrapolation {
             let dt = ts - ext.last_radial_time;
             if !(0.0..=120.0).contains(&dt) {
@@ -248,7 +248,7 @@ impl ScanProjection {
     }
 
     /// Volume progress 0.0..1.0 at `ts`.
-    pub fn progress_at(&self, ts: f64) -> f32 {
+    pub(crate) fn progress_at(&self, ts: f64) -> f32 {
         let duration = self.volume_end - self.volume_start;
         if duration <= 0.0 {
             return 0.0;
@@ -258,7 +258,7 @@ impl ScanProjection {
 
     /// Estimated 0-based elevation index at `ts` (containment, else next
     /// not-yet-ended, else last).
-    pub fn elevation_index_at(&self, ts: f64) -> Option<usize> {
+    pub(crate) fn elevation_index_at(&self, ts: f64) -> Option<usize> {
         for (i, s) in self.sweeps.iter().enumerate() {
             if ts >= s.collection_start_secs && ts <= s.collection_end_secs {
                 return Some(i);
@@ -277,7 +277,7 @@ impl ScanProjection {
     }
 
     /// Count of cached (collected-by-us) sweeps.
-    pub fn completed_count(&self) -> usize {
+    pub(crate) fn completed_count(&self) -> usize {
         self.sweeps.iter().filter(|s| s.is_complete()).count()
     }
 }
@@ -287,7 +287,7 @@ impl ScanProjection {
 /// a faded ghost. `extrapolation` is left `None` — the live model fills it per
 /// frame from the last radial + the current sweep's rate.
 #[allow(clippy::too_many_arguments)]
-pub fn assemble_live_scan(
+pub(crate) fn assemble_live_scan(
     sweeps: &[SweepProjection],
     vcp_number: u16,
     vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
@@ -349,7 +349,7 @@ pub fn assemble_live_scan(
 /// consumers. Pairs the per-chunk math carrier (`plan`, read by the acquisition
 /// loop) with the assembled per-sweep display container (`live_scan`).
 #[derive(Clone, Debug)]
-pub struct Projection {
+pub(crate) struct Projection {
     /// The wrapped producer output — the math carrier (per-chunk forecasts)
     /// the acquisition loop reads for `next_target` and sleep targets.
     pub plan: StreamingPlan,
@@ -361,35 +361,35 @@ pub struct Projection {
 // Read-delegators to the wrapped `plan` — the consumer-facing API on `Projection`.
 impl Projection {
     /// Wrap a plan together with its assembled live-scan container.
-    pub fn from_parts(plan: StreamingPlan, live_scan: Option<ScanProjection>) -> Self {
+    pub(crate) fn from_parts(plan: StreamingPlan, live_scan: Option<ScanProjection>) -> Self {
         Self { plan, live_scan }
     }
 
     /// The immediate next chunk the streaming loop plans to download.
-    pub fn next_target(&self) -> Option<&ChunkProjectionInfo> {
+    pub(crate) fn next_target(&self) -> Option<&ChunkProjectionInfo> {
         self.plan.next_target()
     }
 
     /// Whether the immediate next download target falls in the *next* volume.
     #[allow(dead_code)] // consumed by the next-volume ghost path; retained delegator.
-    pub fn next_target_in_next_volume(&self) -> bool {
+    pub(crate) fn next_target_in_next_volume(&self) -> bool {
         self.plan.next_target_in_next_volume()
     }
 
     /// Elevation number (1-based) of the immediate next download target.
     #[allow(dead_code)] // consumed by the next-volume ghost path; retained delegator.
-    pub fn next_target_elevation(&self) -> Option<u8> {
+    pub(crate) fn next_target_elevation(&self) -> Option<u8> {
         self.plan.next_target_elevation()
     }
 
     /// Seconds from `now_secs` until the next target becomes available in S3
     /// (drives the UI countdown).
-    pub fn next_available_in_secs(&self, now_secs: f64) -> Option<f64> {
+    pub(crate) fn next_available_in_secs(&self, now_secs: f64) -> Option<f64> {
         self.plan.next_available_in_secs(now_secs)
     }
 
     /// Per-chunk info for the current in-progress volume.
-    pub fn current_volume_chunks(&self) -> &[ChunkProjectionInfo] {
+    pub(crate) fn current_volume_chunks(&self) -> &[ChunkProjectionInfo] {
         &self.plan.current_volume_chunks
     }
 }

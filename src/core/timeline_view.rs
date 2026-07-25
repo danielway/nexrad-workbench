@@ -49,11 +49,11 @@ use std::collections::BTreeSet;
 /// normal NEXRAD volume cadence (~5–10 min) without absorbing adjacent
 /// volumes. (The former `SCAN_CACHE_MATCH_TOLERANCE_SECS` in `main.rs` now
 /// aliases this so there is one number.)
-pub const SCAN_JOIN_TOLERANCE_SECS: i64 = 60;
+pub(crate) const SCAN_JOIN_TOLERANCE_SECS: i64 = 60;
 
 /// Back-compat alias for [`SCAN_JOIN_TOLERANCE_SECS`]; the boundary-match name
 /// existed before the join consolidated every scan-start tolerance here.
-pub const BOUNDARY_MATCH_TOLERANCE_SECS: i64 = SCAN_JOIN_TOLERANCE_SECS;
+pub(crate) const BOUNDARY_MATCH_TOLERANCE_SECS: i64 = SCAN_JOIN_TOLERANCE_SECS;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Frame-cell state model (spec §6.2 / §6.3 frames-first).
@@ -71,7 +71,7 @@ pub const BOUNDARY_MATCH_TOLERANCE_SECS: i64 = SCAN_JOIN_TOLERANCE_SECS;
 /// in grayscale (spec §6.2 accessibility): hollow outline, solid fill, segmented
 /// in-flight, hatched queued, dashed ghost, alert-tick failure.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum FrameCellState {
+pub(crate) enum FrameCellState {
     /// Downloaded and renderable — solid fill.
     Cached,
     /// Published on the server but not downloaded — hollow outline. For
@@ -92,7 +92,7 @@ pub enum FrameCellState {
 /// telemetry (3 or 6 slots, faithfully — alignment decision #4). Archive
 /// in-flight cells carry `None` here and use a pulsing fill instead.
 #[derive(Clone, Debug, Default)]
-pub struct CellChunkProgress {
+pub(crate) struct CellChunkProgress {
     /// Total chunk slots expected in this sweep (3 or 6; 0 ⇒ unknown).
     pub chunks_expected: u32,
     /// Whole chunks received so far.
@@ -106,7 +106,7 @@ pub struct CellChunkProgress {
 /// identity, join-resolved state, and (for in-flight live cells) chunk
 /// segmentation.
 #[derive(Clone, Debug)]
-pub struct FrameCell {
+pub(crate) struct FrameCell {
     /// Collection-time span (radar physically scans). Drives x-extent.
     pub start_secs: f64,
     pub end_secs: f64,
@@ -129,7 +129,7 @@ pub struct FrameCell {
 /// cells of the selected product/tilt plus the faint neutral sub-texture of
 /// the full volume's sweep boundaries.
 #[derive(Clone, Debug)]
-pub struct ScanContainer {
+pub(crate) struct ScanContainer {
     /// Container left edge (scan start, seconds).
     pub start_secs: f64,
     /// Container right edge — the clamped display end (next-volume start).
@@ -156,7 +156,7 @@ pub struct ScanContainer {
 /// set of failed scan-starts. Kept as a small borrowed bundle so the renderer
 /// passes them in one place and the view owns the join.
 #[derive(Clone, Copy)]
-pub struct FrameJoinInputs<'i> {
+pub(crate) struct FrameJoinInputs<'i> {
     /// `(start, end)` second spans queued to download.
     pub queued: &'i [(i64, i64)],
     /// `(start, end)` second spans actively downloading or ingesting.
@@ -178,7 +178,7 @@ pub struct FrameJoinInputs<'i> {
 /// Frame-scoped, source-agnostic view of the timeline.
 ///
 /// Borrows the cache scans; owns the merged in-progress volume.
-pub struct TimelineView<'a> {
+pub(crate) struct TimelineView<'a> {
     cache: &'a RadarTimeline,
     shadows: &'a [ScanBoundary],
     /// Key-millis of the in-progress volume the overlay will draw. Excluded
@@ -200,7 +200,7 @@ impl<'a> TimelineView<'a> {
     /// `live_position` is the live subsystem's per-frame `from_live` model
     /// (`live.radar_model.position`); the adapter clones it and overlays the
     /// cached sweeps for the same volume.
-    pub fn build(
+    pub(crate) fn build(
         cache: &'a RadarTimeline,
         shadows: &'a [ScanBoundary],
         live_state: Option<&LiveModeState>,
@@ -242,7 +242,7 @@ impl<'a> TimelineView<'a> {
     /// [`Self::settled_scans_in_range`] filters it back out for the settled
     /// track. This is the single source of the displayed right edge, so block
     /// fills, connector lines, and visual-range culling all agree on one value.
-    pub fn visual_scans_in_range(
+    pub(crate) fn visual_scans_in_range(
         &self,
         start: f64,
         end: f64,
@@ -261,7 +261,7 @@ impl<'a> TimelineView<'a> {
     /// to the underlying cache (`'a`), not to the view, so callers can return
     /// them past the view's own scope. Each item carries the clamped display
     /// end from [`Self::visual_scans_in_range`].
-    pub fn settled_scans_in_range(
+    pub(crate) fn settled_scans_in_range(
         &self,
         start: f64,
         end: f64,
@@ -272,7 +272,7 @@ impl<'a> TimelineView<'a> {
     }
 
     /// The cached scan at `ts`, excluding the in-progress volume.
-    pub fn settled_scan_at(&self, ts: f64) -> Option<&'a Scan> {
+    pub(crate) fn settled_scan_at(&self, ts: f64) -> Option<&'a Scan> {
         let scan = self.cache.find_scan_at_timestamp(ts)?;
         (!is_live_scan(scan, self.live_volume_ms)).then_some(scan)
     }
@@ -280,18 +280,18 @@ impl<'a> TimelineView<'a> {
     /// The full cache handle (for callers that need range bounds or sweep
     /// lookups across all cached scans, e.g. the mobile scrubber). Prefer
     /// the availability-oriented accessors above where possible.
-    pub fn cache(&self) -> &'a RadarTimeline {
+    pub(crate) fn cache(&self) -> &'a RadarTimeline {
         self.cache
     }
 
     /// Archive shadow boundaries (scans known to exist but not downloaded).
-    pub fn shadow_boundaries(&self) -> &'a [ScanBoundary] {
+    pub(crate) fn shadow_boundaries(&self) -> &'a [ScanBoundary] {
         self.shadows
     }
 
     /// The in-progress volume, with cached sweeps merged in. `None` when not
     /// streaming (or when the VCP isn't known yet and no overlay is drawn).
-    pub fn live_volume(&self) -> Option<&ScanProjection> {
+    pub(crate) fn live_volume(&self) -> Option<&ScanProjection> {
         self.live_position.as_ref()
     }
 
@@ -299,7 +299,7 @@ impl<'a> TimelineView<'a> {
     /// covered by cached data (or the in-progress volume), within
     /// [`BOUNDARY_MATCH_TOLERANCE_SECS`]. Overlays use this to suppress
     /// markers for ranges already represented by a filled block.
-    pub fn is_covered_by_cached(&self, start_secs: i64) -> bool {
+    pub(crate) fn is_covered_by_cached(&self, start_secs: i64) -> bool {
         let lo = (start_secs - BOUNDARY_MATCH_TOLERANCE_SECS).saturating_mul(1000);
         let hi = (start_secs + BOUNDARY_MATCH_TOLERANCE_SECS).saturating_mul(1000);
         self.coverage_keys.range(lo..=hi).next().is_some()
@@ -311,7 +311,7 @@ impl<'a> TimelineView<'a> {
     /// then the cached scan at-or-before `ts`, then the nearest shadow boundary
     /// whose span contains `ts`. Returns the scan-start the inspector keys on
     /// (`container.key_secs`), or `None` when `ts` sits over empty timeline.
-    pub fn scan_start_at(&self, ts: f64) -> Option<f64> {
+    pub(crate) fn scan_start_at(&self, ts: f64) -> Option<f64> {
         // Live in-progress volume wins when ts falls inside it.
         if let Some(pos) = self.live_position.as_ref() {
             if ts >= pos.volume_start && ts <= pos.volume_end {
@@ -350,7 +350,7 @@ impl<'a> TimelineView<'a> {
     /// product/tilt and the download/failure inputs come from `join`.
     /// Containers are returned in time order: settled (cached + available)
     /// first, then the live in-progress volume last so it paints on top.
-    pub fn frame_containers_in_range(
+    pub(crate) fn frame_containers_in_range(
         &self,
         start: f64,
         end: f64,
@@ -744,7 +744,7 @@ fn scan_with_key_ms(cache: &RadarTimeline, key_ms: i64) -> Option<&Scan> {
 /// The live model's own freshly-decoded sweeps win (they already carry
 /// sub-second radial timing for this session), so cached data only fills the
 /// elevations the live session hasn't produced yet. Idempotent and pure.
-pub fn merge_cached_into_live(position: &mut ScanProjection, cached: &Scan) {
+pub(crate) fn merge_cached_into_live(position: &mut ScanProjection, cached: &Scan) {
     for sw in &cached.sweeps {
         if let Some(p) = position
             .sweeps

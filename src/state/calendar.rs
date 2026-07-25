@@ -25,17 +25,17 @@ use crate::nexrad::ScanBoundary;
 use crate::state::SavedEvents;
 
 /// Seconds in a UTC day. Day buckets are `[day_start, day_start + DAY_SECS)`.
-pub const DAY_SECS: f64 = 86_400.0;
+pub(crate) const DAY_SECS: f64 = 86_400.0;
 
 /// Hard cap on how many day cells the aggregator emits, so an absurd span
 /// (e.g. an old URL with a microscopic zoom) can't allocate a runaway vector.
 /// The Archive tier's widest sensible view is months, not millennia; past this
 /// the heatmap is unreadable anyway.
-pub const MAX_DAY_BUCKETS: usize = 800;
+pub(crate) const MAX_DAY_BUCKETS: usize = 800;
 
 /// One day's coverage in the Archive heatmap.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub struct DayBucket {
+pub(crate) struct DayBucket {
     /// UTC day start (Unix seconds) — the cell's identity and the tap-to-zoom
     /// target's day origin.
     pub day_start: f64,
@@ -63,7 +63,7 @@ impl DayBucket {
 }
 
 /// The UTC day start (Unix seconds) containing `ts`.
-pub fn utc_day_start(ts: f64) -> f64 {
+pub(crate) fn utc_day_start(ts: f64) -> f64 {
     (ts / DAY_SECS).floor() * DAY_SECS
 }
 
@@ -82,7 +82,7 @@ pub fn utc_day_start(ts: f64) -> f64 {
 ///
 /// Spans are unioned per day (overlaps don't double-count) so a fraction never
 /// exceeds 1.0.
-pub fn aggregate_day_buckets(
+pub(crate) fn aggregate_day_buckets(
     cache: &RadarTimeline,
     shadows: &[ScanBoundary],
     saved_events: &SavedEvents,
@@ -202,7 +202,7 @@ fn union_seconds(spans: &mut [(f64, f64)]) -> f64 {
 /// window of [`MACRO_LANDING_SPAN_SECS`] centred on the day's midpoint. Routing
 /// the returned zoom through [`crate::core::PlaybackState::set_timeline_zoom`]
 /// lands the tier machine in Macro.
-pub fn day_tap_macro_view(day_start: f64, width_px: f64) -> (f64, f64) {
+pub(crate) fn day_tap_macro_view(day_start: f64, width_px: f64) -> (f64, f64) {
     let span = MACRO_LANDING_SPAN_SECS;
     let zoom = (width_px / span).max(f64::MIN_POSITIVE);
     let day_mid = day_start + DAY_SECS / 2.0;
@@ -214,7 +214,7 @@ pub fn day_tap_macro_view(day_start: f64, width_px: f64) -> (f64, f64) {
 /// side of the tapped day's midpoint (≈1 day visible) sits safely below the
 /// Archive-enter span (60 h) and well above the Micro boundary, so the tier
 /// machine settles in Macro and the tapped day fills the strip.
-pub const MACRO_LANDING_SPAN_SECS: f64 = DAY_SECS;
+pub(crate) const MACRO_LANDING_SPAN_SECS: f64 = DAY_SECS;
 
 #[cfg(test)]
 mod tests {

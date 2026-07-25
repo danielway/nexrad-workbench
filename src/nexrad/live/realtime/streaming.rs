@@ -75,7 +75,7 @@ fn drain_control(
 /// should re-evaluate before continuing; `Completed` is the normal "slept the
 /// full duration" path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SleepOutcome {
+pub(crate) enum SleepOutcome {
     Completed,
     Stopped,
     FilterChanged,

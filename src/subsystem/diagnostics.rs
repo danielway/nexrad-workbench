@@ -23,7 +23,7 @@ use eframe::egui;
 ///
 /// Computed by the caller from `AppState` so this subsystem stays
 /// decoupled from the god struct.
-pub struct DiagnosticsInputs<'a> {
+pub(crate) struct DiagnosticsInputs<'a> {
     /// Recency gate for the alerts overlay. (mPING no longer gates on
     /// this — it shows reports for historical playback too.)
     pub is_live: bool,
@@ -40,7 +40,7 @@ pub struct DiagnosticsInputs<'a> {
 }
 
 /// Owner of telemetry/observability state and the managers that drive it.
-pub struct Diagnostics {
+pub(crate) struct Diagnostics {
     /// NWS active-alerts overlay state.
     pub alerts: AlertsState,
     /// Lifecycle for the NWS alerts polling loop.
@@ -60,7 +60,7 @@ pub struct Diagnostics {
 }
 
 impl Diagnostics {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             alerts: AlertsState::default(),
             alerts_manager: AlertsManager::new(),
@@ -76,7 +76,7 @@ impl Diagnostics {
     /// `errors` is the app-wide error collector that managers push into
     /// when they encounter a failure, so the unified errors view sees
     /// every report alongside worker / download failures.
-    pub fn tick(
+    pub(crate) fn tick(
         &mut self,
         ctx: &egui::Context,
         inputs: DiagnosticsInputs<'_>,

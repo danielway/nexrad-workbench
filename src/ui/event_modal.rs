@@ -8,7 +8,7 @@ use eframe::egui::{self, Color32, RichText, Vec2};
 
 /// Transient form state for the event modal. Stored on WorkbenchApp.
 #[derive(Default)]
-pub struct EventModalState {
+pub(crate) struct EventModalState {
     /// Whether the form has been initialized for the current open.
     initialized: bool,
     pub name: String,
@@ -31,7 +31,13 @@ pub struct EventModalState {
 
 impl EventModalState {
     /// Initialize form fields from a selection range and current site.
-    pub fn init_from_selection(&mut self, site_id: &str, start: f64, end: f64, use_local: bool) {
+    pub(crate) fn init_from_selection(
+        &mut self,
+        site_id: &str,
+        start: f64,
+        end: f64,
+        use_local: bool,
+    ) {
         self.name.clear();
         self.site_id = site_id.to_string();
         (
@@ -53,7 +59,7 @@ impl EventModalState {
     }
 
     /// Initialize form fields from an existing event for editing.
-    pub fn init_from_event(
+    pub(crate) fn init_from_event(
         &mut self,
         name: &str,
         site_id: &str,

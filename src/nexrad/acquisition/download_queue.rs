@@ -47,7 +47,7 @@ pub(crate) struct QueueItem {
 }
 
 impl QueueItem {
-    pub fn new(
+    pub(crate) fn new(
         date: chrono::NaiveDate,
         file_name: String,
         scan_start: i64,
@@ -67,7 +67,7 @@ impl QueueItem {
     }
 
     /// Attach the acquisition operation that tracks this item.
-    pub fn with_operation(mut self, id: crate::core::OperationId) -> Self {
+    pub(crate) fn with_operation(mut self, id: crate::core::OperationId) -> Self {
         self.operation_id = Some(id);
         self
     }
@@ -186,7 +186,7 @@ pub(crate) struct DownloadQueueManager {
 }
 
 impl DownloadQueueManager {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             queue: Vec::new(),
             active_operation_ids: std::collections::HashMap::new(),
@@ -197,7 +197,7 @@ impl DownloadQueueManager {
     }
 
     /// Check if the queue has any active or pending items.
-    pub fn has_work(&self) -> bool {
+    pub(crate) fn has_work(&self) -> bool {
         self.queue
             .iter()
             .any(|item| matches!(item.state, QueueItemState::Pending | QueueItemState::Active))
@@ -207,7 +207,7 @@ impl DownloadQueueManager {
     ///
     /// Idempotent: if the item is already Done or no longer Active, this is
     /// a no-op.
-    pub fn mark_active_done(&mut self, scan_start: i64) {
+    pub(crate) fn mark_active_done(&mut self, scan_start: i64) {
         if let Some(item) = self.queue.iter_mut().find(|item| {
             matches!(item.state, QueueItemState::Active) && item.scan_start == scan_start
         }) {
@@ -216,7 +216,7 @@ impl DownloadQueueManager {
     }
 
     /// Number of items currently in the Active state.
-    pub fn active_count(&self) -> usize {
+    pub(crate) fn active_count(&self) -> usize {
         self.queue
             .iter()
             .filter(|item| matches!(item.state, QueueItemState::Active))
@@ -224,7 +224,7 @@ impl DownloadQueueManager {
     }
 
     /// All currently active items (for concurrency polling).
-    pub fn active_items(&self) -> impl Iterator<Item = &QueueItem> {
+    pub(crate) fn active_items(&self) -> impl Iterator<Item = &QueueItem> {
         self.queue
             .iter()
             .filter(|item| matches!(item.state, QueueItemState::Active))
@@ -233,7 +233,7 @@ impl DownloadQueueManager {
     /// All items still waiting to dispatch (Pending). Used to populate the
     /// timeline's queued-cell ghosts each pump — without it queued scans are
     /// invisible on the strip.
-    pub fn pending_items(&self) -> impl Iterator<Item = &QueueItem> {
+    pub(crate) fn pending_items(&self) -> impl Iterator<Item = &QueueItem> {
         self.queue
             .iter()
             .filter(|item| matches!(item.state, QueueItemState::Pending))
@@ -242,7 +242,7 @@ impl DownloadQueueManager {
     /// Recompute every Pending item's dispatch priority against the playhead.
     /// Call once per pump, before the fill loop, so `advance` serves the
     /// scans nearest the cursor (in playback direction) first.
-    pub fn reprioritize(&mut self, playhead: i64, forward: bool) {
+    pub(crate) fn reprioritize(&mut self, playhead: i64, forward: bool) {
         for item in &mut self.queue {
             if matches!(item.state, QueueItemState::Pending) {
                 item.priority =
@@ -255,7 +255,7 @@ impl DownloadQueueManager {
     /// scrubbed far away from), returning them so the caller can cancel their
     /// acquisition operations. Active items always survive — in-flight HTTP
     /// is left to finish and free its slot naturally.
-    pub fn prune_pending(&mut self, keep: impl Fn(&QueueItem) -> bool) -> Vec<QueueItem> {
+    pub(crate) fn prune_pending(&mut self, keep: impl Fn(&QueueItem) -> bool) -> Vec<QueueItem> {
         let mut pruned = Vec::new();
         self.queue.retain(|item| {
             if matches!(item.state, QueueItemState::Pending) && !keep(item) {
@@ -271,7 +271,7 @@ impl DownloadQueueManager {
     /// Advance the queue: start the highest-priority (lowest value) pending
     /// item if a concurrency slot is available and the queue is not paused.
     /// Ties dispatch in enqueue order.
-    pub fn advance(&mut self, is_paused: bool) -> QueueAction {
+    pub(crate) fn advance(&mut self, is_paused: bool) -> QueueAction {
         if is_paused {
             return QueueAction::Paused;
         }
@@ -319,30 +319,33 @@ impl DownloadQueueManager {
     }
 
     /// Clear the queue and all tracked operation IDs.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.queue.clear();
         self.active_operation_ids.clear();
     }
 
     /// Associate an acquisition operation ID with an active download.
-    pub fn set_operation_id(&mut self, scan_start: i64, id: crate::core::OperationId) {
+    pub(crate) fn set_operation_id(&mut self, scan_start: i64, id: crate::core::OperationId) {
         self.active_operation_ids.insert(scan_start, id);
     }
 
     /// Take (remove) the operation ID for the given scan_start.
-    pub fn take_operation_id(&mut self, scan_start: i64) -> Option<crate::core::OperationId> {
+    pub(crate) fn take_operation_id(
+        &mut self,
+        scan_start: i64,
+    ) -> Option<crate::core::OperationId> {
         self.active_operation_ids.remove(&scan_start)
     }
 
     /// Find an item by scan_start timestamp.
-    pub fn find_by_scan_start(&self, scan_start: i64) -> Option<&QueueItem> {
+    pub(crate) fn find_by_scan_start(&self, scan_start: i64) -> Option<&QueueItem> {
         self.queue.iter().find(|item| item.scan_start == scan_start)
     }
 
     /// Append items to the existing queue (used by reactive prefetch, which
     /// adds to in-flight work rather than replacing it). Skips any scan_start
     /// already present so the same scan is never queued twice.
-    pub fn enqueue(&mut self, items: impl IntoIterator<Item = QueueItem>) {
+    pub(crate) fn enqueue(&mut self, items: impl IntoIterator<Item = QueueItem>) {
         for item in items {
             if self.find_by_scan_start(item.scan_start).is_none() {
                 self.queue.push(item);
@@ -365,7 +368,7 @@ impl DownloadQueueManager {
     /// stay Pending and get redundantly redispatched, and the elevation-filter
     /// swap could re-scope the in-flight ingest. Returns whether work is now
     /// pending (or already in flight) for that scan (always true).
-    pub fn requeue(&mut self, item: QueueItem) -> bool {
+    pub(crate) fn requeue(&mut self, item: QueueItem) -> bool {
         if let Some(existing) = self
             .queue
             .iter_mut()
@@ -398,12 +401,12 @@ impl DownloadQueueManager {
     }
 
     /// Whether the session auto-fetch volume cap has been reached.
-    pub fn auto_fetch_cap_reached(&self) -> bool {
+    pub(crate) fn auto_fetch_cap_reached(&self) -> bool {
         self.auto_fetched_bytes >= self.max_auto_fetch_bytes
     }
 
     /// Record bytes fetched via reactive prefetch toward the volume cap.
-    pub fn record_auto_fetched(&mut self, bytes: u64) {
+    pub(crate) fn record_auto_fetched(&mut self, bytes: u64) {
         self.auto_fetched_bytes = self.auto_fetched_bytes.saturating_add(bytes);
     }
 }

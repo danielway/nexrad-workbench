@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 /// Metadata for a single archive file (lightweight, no actual data).
 #[derive(Debug, Clone)]
-pub struct ArchiveFileMeta {
+pub(crate) struct ArchiveFileMeta {
     /// File name (e.g., "KDMX20240501_000000_V06")
     pub name: String,
     /// File size in bytes (may be 0 if not available from listing).
@@ -20,7 +20,7 @@ pub struct ArchiveFileMeta {
 
 impl ArchiveFileMeta {
     /// Parse timestamp from NEXRAD filename format: SITE_YYYYMMDD_HHMMSS_V0X
-    pub fn parse_timestamp_from_name(name: &str, date: &NaiveDate) -> Option<i64> {
+    pub(crate) fn parse_timestamp_from_name(name: &str, date: &NaiveDate) -> Option<i64> {
         // Format: KDMX20240501_120000_V06
         // The timestamp part is after the site ID (4 chars) and date (8 chars)
         if name.len() < 19 {
@@ -40,13 +40,13 @@ impl ArchiveFileMeta {
 
 /// Key for archive index entries.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ArchiveIndexKey {
+pub(crate) struct ArchiveIndexKey {
     pub site_id: String,
     pub date: NaiveDate,
 }
 
 impl ArchiveIndexKey {
-    pub fn new(site_id: impl Into<String>, date: NaiveDate) -> Self {
+    pub(crate) fn new(site_id: impl Into<String>, date: NaiveDate) -> Self {
         Self {
             site_id: site_id.into(),
             date,
@@ -56,7 +56,7 @@ impl ArchiveIndexKey {
 
 /// Cached archive listing for a site/date.
 #[derive(Debug, Clone)]
-pub struct ArchiveListing {
+pub(crate) struct ArchiveListing {
     /// Files available in the archive, sorted by timestamp
     pub files: Vec<ArchiveFileMeta>,
     /// When this listing was fetched (for potential TTL)
@@ -66,7 +66,7 @@ pub struct ArchiveListing {
 
 /// A scan's time boundaries derived from adjacent file timestamps in a listing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScanBoundary {
+pub(crate) struct ScanBoundary {
     /// Start of this scan (Unix seconds).
     pub start: i64,
     /// End of this scan (next scan's start, or estimated for last scan; Unix seconds).
@@ -79,7 +79,7 @@ impl ArchiveListing {
     /// Each scan starts at its own timestamp and ends at the next scan's
     /// timestamp. The last scan's duration is estimated from the average
     /// interval, or 300s if there's only one file.
-    pub fn scan_boundaries(&self) -> Vec<ScanBoundary> {
+    pub(crate) fn scan_boundaries(&self) -> Vec<ScanBoundary> {
         let n = self.files.len();
         if n == 0 {
             return Vec::new();
@@ -102,7 +102,7 @@ impl ArchiveListing {
     }
 
     /// Find all scans whose time span `[start, end)` intersects `[range_start, range_end]`.
-    pub fn scans_intersecting(
+    pub(crate) fn scans_intersecting(
         &self,
         range_start: i64,
         range_end: i64,
@@ -123,7 +123,10 @@ impl ArchiveListing {
     /// matching `find_recent_scan`'s "most recent started" semantics on the
     /// render side. `find_scan_containing` only matches when the cursor is
     /// *within* a scan's span; this also covers the after-the-end case.
-    pub fn scan_at_or_before(&self, timestamp: i64) -> Option<(&ArchiveFileMeta, ScanBoundary)> {
+    pub(crate) fn scan_at_or_before(
+        &self,
+        timestamp: i64,
+    ) -> Option<(&ArchiveFileMeta, ScanBoundary)> {
         let boundaries = self.scan_boundaries();
         self.files
             .iter()
@@ -137,24 +140,24 @@ impl ArchiveListing {
 /// How long today's listing stays fresh (seconds). The archive only grows at
 /// the live edge, so non-today listings never expire; today's is re-listed on
 /// this cadence so the shadow track keeps growing near "now".
-pub const TODAY_LISTING_TTL_SECS: f64 = 120.0;
+pub(crate) const TODAY_LISTING_TTL_SECS: f64 = 120.0;
 
 /// In-memory cache for archive listings.
 ///
 /// Caches all listings for the current session. Today's listings are stored
 /// in memory but may become stale as new files are added to the archive.
 #[derive(Default)]
-pub struct ArchiveIndex {
+pub(crate) struct ArchiveIndex {
     listings: HashMap<ArchiveIndexKey, ArchiveListing>,
 }
 
 impl ArchiveIndex {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Check if we have a cached listing for this site/date.
-    pub fn get(&self, site_id: &str, date: &NaiveDate) -> Option<&ArchiveListing> {
+    pub(crate) fn get(&self, site_id: &str, date: &NaiveDate) -> Option<&ArchiveListing> {
         let key = ArchiveIndexKey::new(site_id, *date);
         self.listings.get(&key)
     }
@@ -164,7 +167,7 @@ impl ArchiveIndex {
     /// Stale-but-present listings are still served by [`Self::get`] (better
     /// stale shadows than none); this only tells the listing pump whether a
     /// refresh is worthwhile.
-    pub fn has_fresh(
+    pub(crate) fn has_fresh(
         &self,
         site_id: &str,
         date: &NaiveDate,
@@ -184,7 +187,7 @@ impl ArchiveIndex {
     /// Today's listings are cached in memory for the current session.
     /// They may become stale as new files are added, but avoid repeated
     /// API calls during the same download operation.
-    pub fn insert(&mut self, site_id: &str, date: NaiveDate, listing: ArchiveListing) {
+    pub(crate) fn insert(&mut self, site_id: &str, date: NaiveDate, listing: ArchiveListing) {
         let today = chrono::Utc::now().date_naive();
         let is_today = date == today;
 
@@ -205,7 +208,7 @@ impl ArchiveIndex {
     /// Collect scan boundaries from all cached listings for a given site.
     ///
     /// Returns boundaries sorted by start time with duplicates removed.
-    pub fn all_boundaries_for_site(&self, site_id: &str) -> Vec<ScanBoundary> {
+    pub(crate) fn all_boundaries_for_site(&self, site_id: &str) -> Vec<ScanBoundary> {
         let mut boundaries: Vec<ScanBoundary> = self
             .listings
             .iter()
@@ -219,7 +222,7 @@ impl ArchiveIndex {
 }
 
 /// Get current timestamp in seconds.
-pub fn current_timestamp_secs() -> f64 {
+pub(crate) fn current_timestamp_secs() -> f64 {
     js_sys::Date::now() / 1000.0
 }
 

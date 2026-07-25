@@ -123,7 +123,7 @@ pub(crate) struct PlaybackManager {
 }
 
 impl PlaybackManager {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             sweep_cache: SweepDataCache::new(4),
             pending_prev_sweep_key: None,
@@ -132,28 +132,28 @@ impl PlaybackManager {
     }
 
     /// Insert decoded sweep data into the cache.
-    pub fn cache_sweep(&mut self, key: String, data: CachedSweepData) {
+    pub(crate) fn cache_sweep(&mut self, key: String, data: CachedSweepData) {
         self.sweep_cache.insert(key, data);
     }
 
     /// Get cached sweep data.
-    pub fn get_cached_sweep(&self, key: &str) -> Option<&CachedSweepData> {
+    pub(crate) fn get_cached_sweep(&self, key: &str) -> Option<&CachedSweepData> {
         self.sweep_cache.get(key)
     }
 
     /// Clear the sweep cache and invalidate prev-sweep resolution cache.
-    pub fn clear_cache(&mut self) {
+    pub(crate) fn clear_cache(&mut self) {
         self.sweep_cache.clear();
         self.cached_prev_identity = None;
     }
 
     /// Get the pending prev sweep key.
-    pub fn pending_prev_sweep_key(&self) -> Option<&str> {
+    pub(crate) fn pending_prev_sweep_key(&self) -> Option<&str> {
         self.pending_prev_sweep_key.as_deref()
     }
 
     /// Set the pending prev sweep key.
-    pub fn set_pending_prev_sweep_key(&mut self, key: Option<String>) {
+    pub(crate) fn set_pending_prev_sweep_key(&mut self, key: Option<String>) {
         self.pending_prev_sweep_key = key;
     }
 
@@ -164,7 +164,7 @@ impl PlaybackManager {
     /// Unix seconds (preserving sub-second precision from the IDB key)
     /// rather than truncated `i64` — the comparison sites in main.rs read
     /// it against `displayed_scan_timestamp` which is also `f64`.
-    pub fn find_prev_sweep(
+    pub(crate) fn find_prev_sweep(
         timeline: &RadarTimeline,
         playback_ts: f64,
         displayed_elev: u8,
@@ -214,7 +214,7 @@ impl PlaybackManager {
 
     /// Invalidate the cached prev-sweep identity (call on scan or elevation change).
     #[allow(dead_code)]
-    pub fn invalidate_prev_cache(&mut self) {
+    pub(crate) fn invalidate_prev_cache(&mut self) {
         self.cached_prev_identity = None;
     }
 
@@ -222,7 +222,7 @@ impl PlaybackManager {
     ///
     /// `current_gpu_prev_id` is the sweep ID currently loaded in the GPU's
     /// previous-sweep slot (from `renderer.prev_sweep_id()`).
-    pub fn resolve_prev_sweep(
+    pub(crate) fn resolve_prev_sweep(
         &mut self,
         prev_scan_key: &crate::data::ScanKey,
         prev_elev_num: u8,

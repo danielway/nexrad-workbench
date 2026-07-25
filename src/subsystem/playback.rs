@@ -16,7 +16,7 @@ use crate::core::PlaybackState;
 
 /// Owner of cursor state, playback rate, and animation timing.
 #[derive(Default)]
-pub struct Playback {
+pub(crate) struct Playback {
     /// Cursor position (seconds since epoch), playback rate, macro/micro
     /// mode, animation flags, timeline view bounds, realtime time-model.
     pub state: PlaybackState,

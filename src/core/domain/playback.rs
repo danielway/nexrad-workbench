@@ -8,7 +8,7 @@
 /// hysteresis around this value (see [`tier`]); this constant survives only
 /// as the seam used for deterministic tier seeding (boot / URL restore) and
 /// as the return-to-live floor's reference point.
-pub const MICRO_ZOOM_THRESHOLD: f64 = 1.0;
+pub(crate) const MICRO_ZOOM_THRESHOLD: f64 = 1.0;
 
 /// Minimum / maximum timeline zoom (pixels per second). Every zoom mutation
 /// routes through [`PlaybackState::set_timeline_zoom`], which clamps here.
@@ -20,8 +20,8 @@ pub const MICRO_ZOOM_THRESHOLD: f64 = 1.0;
 /// the "label soup" year-wide zoom the Archive calendar tier replaces (spec
 /// §6.4 DECIDED, §15 cut #4). It is now tightened so the widest view is a
 /// readable multi-month calendar span, not decades.
-pub const TIMELINE_ZOOM_MIN: f64 = 0.00001;
-pub const TIMELINE_ZOOM_MAX: f64 = 1000.0;
+pub(crate) const TIMELINE_ZOOM_MIN: f64 = 0.00001;
+pub(crate) const TIMELINE_ZOOM_MAX: f64 = 1000.0;
 
 /// Widest visible span (seconds) any timeline view may show — the ceiling the
 /// width-aware min-zoom enforces. The linear Micro/Macro strip stops being the
@@ -30,25 +30,25 @@ pub const TIMELINE_ZOOM_MAX: f64 = 1000.0;
 /// ceiling sizes the calendar's widest reach (~a quarter of day cells) rather
 /// than the deprecated year-wide strip. Tuned so a multi-month heatmap stays
 /// legible while old URLs with absurd (near-zero) zooms clamp sanely into range.
-pub const MAX_VIEW_SPAN_SECS: f64 = 100.0 * 86_400.0;
+pub(crate) const MAX_VIEW_SPAN_SECS: f64 = 100.0 * 86_400.0;
 
 /// Tunable tier thresholds. The timeline's zoom level maps to one of three
 /// behavioral+visual tiers; transitions carry hysteresis (distinct enter/exit
 /// thresholds) so a zoom hovering at a boundary never flickers. Values are
 /// the alignment-pass decisions (see docs/PRODUCT.md, Alignment §2);
 /// tune here, in one place.
-pub mod tier {
+pub(crate) mod tier {
     /// Enter Micro (from Macro) when zoom rises to/above this (px/sec).
-    pub const MICRO_ENTER_ZOOM: f64 = 1.15;
+    pub(crate) const MICRO_ENTER_ZOOM: f64 = 1.15;
     /// Exit Micro (to Macro) when zoom falls to/below this (px/sec).
-    pub const MICRO_EXIT_ZOOM: f64 = 0.87;
+    pub(crate) const MICRO_EXIT_ZOOM: f64 = 0.87;
     /// Enter Archive (from Macro) when the visible span exceeds this (seconds).
-    pub const ARCHIVE_ENTER_SPAN_SECS: f64 = 60.0 * 3600.0;
+    pub(crate) const ARCHIVE_ENTER_SPAN_SECS: f64 = 60.0 * 3600.0;
     /// Exit Archive (to Macro) when the visible span falls below this (seconds).
-    pub const ARCHIVE_EXIT_SPAN_SECS: f64 = 48.0 * 3600.0;
+    pub(crate) const ARCHIVE_EXIT_SPAN_SECS: f64 = 48.0 * 3600.0;
     /// Nominal Archive boundary used only for hysteresis-free seeding
     /// (boot / URL restore), midway between the enter/exit spans.
-    pub const ARCHIVE_NOMINAL_SPAN_SECS: f64 = 54.0 * 3600.0;
+    pub(crate) const ARCHIVE_NOMINAL_SPAN_SECS: f64 = 54.0 * 3600.0;
 }
 
 /// The single stored timeline tier. Replaces the two previously-uncoupled
@@ -56,7 +56,7 @@ pub mod tier {
 /// detail level). Transitions are owned by [`PlaybackState::set_timeline_zoom`]
 /// / the per-frame reconcile, which apply hysteresis; nothing else writes it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum TimelineTier {
+pub(crate) enum TimelineTier {
     /// Zoomed in (minutes–hours visible): realtime-multiple playback, frame
     /// cells / sweep detail on the strip.
     #[default]
@@ -71,7 +71,7 @@ pub enum TimelineTier {
 /// the rest of the app reads: Micro tier → continuous realtime-multiple
 /// advance; Macro/Archive tier → equidistant frame stepping.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PlaybackMode {
+pub(crate) enum PlaybackMode {
     /// Frame-stepping between matching sweeps (Macro/Archive tier).
     Macro,
     /// Continuous time-based playback (Micro tier).
@@ -81,7 +81,7 @@ pub enum PlaybackMode {
 /// Fallback median frame spacing (seconds) for cadence conversion when the
 /// macro frame list is too short to derive one — a typical NEXRAD volume
 /// interval.
-pub const FALLBACK_FRAME_SPACING_SECS: f64 = 300.0;
+pub(crate) const FALLBACK_FRAME_SPACING_SECS: f64 = 300.0;
 
 /// Map a tier (plus the lookback override) to the behavioral playback mode.
 /// Free function so it's callable from `apply_tier` before `&mut self`
@@ -100,7 +100,7 @@ fn mode_of_tier(tier: TimelineTier, is_lookback: bool) -> PlaybackMode {
 /// Inputs the macro `sweep_frames` list is built from. Compared against the
 /// previous build's inputs to decide whether a rebuild is needed.
 #[derive(PartialEq, Clone, Default)]
-pub struct MacroFrameInputs {
+pub(crate) struct MacroFrameInputs {
     pub elevation: crate::core::ElevationSelection,
     /// Selected product (worker-string). A frame is a sweep matching the
     /// product AND tilt, so the list must rebuild when the product changes —
@@ -116,7 +116,7 @@ pub struct MacroFrameInputs {
 /// distinguished because it additionally snaps the playback position to the
 /// resolved frame (see `render_loop`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RebuildCause {
+pub(crate) enum RebuildCause {
     ElevationChanged,
     /// Bounds or scan count changed (streaming, selection edits) — rebuild
     /// without teleporting the cursor.
@@ -124,7 +124,7 @@ pub enum RebuildCause {
 }
 
 /// State for macro (frame-stepping) playback.
-pub struct MacroPlaybackState {
+pub(crate) struct MacroPlaybackState {
     /// Sorted sweep end-times matching the user's elevation filter.
     pub sweep_frames: Vec<f64>,
     /// Current index into sweep_frames.
@@ -153,7 +153,7 @@ impl MacroPlaybackState {
     /// `None` = the frame list is current; `Some(cause)` = the owner must
     /// rebuild. An elevation change wins over a simultaneous window change
     /// because it carries the snap-to-frame side effect.
-    pub fn rebuild_cause(&self, inputs: &MacroFrameInputs) -> Option<RebuildCause> {
+    pub(crate) fn rebuild_cause(&self, inputs: &MacroFrameInputs) -> Option<RebuildCause> {
         if self.built_from.elevation != inputs.elevation {
             Some(RebuildCause::ElevationChanged)
         } else if self.built_from.product != inputs.product
@@ -171,7 +171,7 @@ impl MacroPlaybackState {
 
     /// Install a freshly built frame list and remember the inputs it was
     /// built from.
-    pub fn store_rebuilt(&mut self, inputs: MacroFrameInputs, frames: Vec<f64>) {
+    pub(crate) fn store_rebuilt(&mut self, inputs: MacroFrameInputs, frames: Vec<f64>) {
         self.sweep_frames = frames;
         self.built_from = inputs;
     }
@@ -179,7 +179,7 @@ impl MacroPlaybackState {
 
 /// Playback speed multiplier options.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
-pub enum PlaybackSpeed {
+pub(crate) enum PlaybackSpeed {
     /// Real-time: 1 second of timeline = 1 second of real time
     Realtime,
     /// 2x real-time: 2 seconds of timeline per 1 second of real time
@@ -200,7 +200,7 @@ impl PlaybackSpeed {
     /// Micro-mode label: realtime multiple in `×` notation (spec §9). The
     /// multiple is `timeline_seconds_per_real_second()` — 1 timeline-second per
     /// real second is 1×, 1200 is 1200×, etc.
-    pub fn label(&self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self {
             PlaybackSpeed::Realtime => "1×",
             PlaybackSpeed::RealtimeDouble => "2×",
@@ -214,7 +214,7 @@ impl PlaybackSpeed {
         }
     }
 
-    pub fn all() -> &'static [PlaybackSpeed] {
+    pub(crate) fn all() -> &'static [PlaybackSpeed] {
         &[
             PlaybackSpeed::Realtime,
             PlaybackSpeed::RealtimeDouble,
@@ -230,7 +230,7 @@ impl PlaybackSpeed {
 
     /// Returns the frames-per-second for macro mode, or None if this speed
     /// is not available in macro mode (the real-time / sub-minute speeds).
-    pub fn macro_frames_per_second(&self) -> Option<f64> {
+    pub(crate) fn macro_frames_per_second(&self) -> Option<f64> {
         match self {
             PlaybackSpeed::Realtime
             | PlaybackSpeed::RealtimeDouble
@@ -245,7 +245,7 @@ impl PlaybackSpeed {
     }
 
     /// Label for macro mode display (fps-based).
-    pub fn macro_label(&self) -> &'static str {
+    pub(crate) fn macro_label(&self) -> &'static str {
         match self {
             PlaybackSpeed::Realtime => "1x (real)",
             PlaybackSpeed::RealtimeDouble => "2x (real)",
@@ -260,7 +260,7 @@ impl PlaybackSpeed {
     }
 
     /// Speeds available in macro mode (Quarter through Quadruple).
-    pub fn macro_speeds() -> &'static [PlaybackSpeed] {
+    pub(crate) fn macro_speeds() -> &'static [PlaybackSpeed] {
         &[
             PlaybackSpeed::Quarter,
             PlaybackSpeed::Half,
@@ -275,7 +275,7 @@ impl PlaybackSpeed {
     /// Micro walks the realtime-multiple rungs people actually use; Macro walks
     /// the fps rungs. Wraps at the end. Returns the next speed after `self`,
     /// snapping to the first rung if `self` isn't on the ladder.
-    pub fn mobile_cycle(self, mode: PlaybackMode) -> PlaybackSpeed {
+    pub(crate) fn mobile_cycle(self, mode: PlaybackMode) -> PlaybackSpeed {
         let ladder: &[PlaybackSpeed] = match mode {
             PlaybackMode::Micro => &[
                 PlaybackSpeed::Realtime,
@@ -293,7 +293,7 @@ impl PlaybackSpeed {
     }
 
     /// Returns how many seconds of timeline time pass per real second.
-    pub fn timeline_seconds_per_real_second(&self) -> f64 {
+    pub(crate) fn timeline_seconds_per_real_second(&self) -> f64 {
         match self {
             PlaybackSpeed::Realtime => 1.0,
             PlaybackSpeed::RealtimeDouble => 2.0,
@@ -311,7 +311,7 @@ impl PlaybackSpeed {
     /// nearness, so doublings read symmetrically). Used by cadence
     /// preservation entering Macro. Defaults to the slowest macro speed when
     /// the target is non-positive.
-    pub fn nearest_macro_fps(target_fps: f64) -> PlaybackSpeed {
+    pub(crate) fn nearest_macro_fps(target_fps: f64) -> PlaybackSpeed {
         Self::nearest_by_log(target_fps, Self::macro_speeds(), |s| {
             s.macro_frames_per_second()
         })
@@ -320,7 +320,7 @@ impl PlaybackSpeed {
     /// The variant whose timeline multiple is nearest `target_multiple`
     /// (log-scale nearness). Used by cadence preservation entering Micro;
     /// considers all variants since every one is a valid micro multiple.
-    pub fn nearest_micro_multiple(target_multiple: f64) -> PlaybackSpeed {
+    pub(crate) fn nearest_micro_multiple(target_multiple: f64) -> PlaybackSpeed {
         Self::nearest_by_log(target_multiple, Self::all(), |s| {
             Some(s.timeline_seconds_per_real_second())
         })
@@ -353,7 +353,7 @@ impl PlaybackSpeed {
 /// Format a "behind live" lag (seconds) for the LIVE button readout (spec §7,
 /// e.g. "2:14 behind"). `m:ss` under an hour, `h:mm:ss` at/above one hour.
 /// Negative or sub-second lags clamp to `0:00`.
-pub fn format_lag(secs: f64) -> String {
+pub(crate) fn format_lag(secs: f64) -> String {
     let total = secs.max(0.0) as u64;
     let h = total / 3600;
     let m = (total % 3600) / 60;
@@ -368,13 +368,13 @@ pub fn format_lag(secs: f64) -> String {
 /// Default loop-window size when a pinned/preset loop is created without an
 /// explicit choice (alignment §7: "last 6 frames"). Replaces the old
 /// compile-time `LOOKBACK_FRAMES = 5` so the window size is user-driven state.
-pub const DEFAULT_LOOP_FRAMES: u32 = 6;
+pub(crate) const DEFAULT_LOOP_FRAMES: u32 = 6;
 
 /// How a loop window's extent is measured. Frame-count windows ("last 6
 /// frames") are preferred in Micro since scan spacing varies; duration windows
 /// ("last 30 min") are the alternative offered in presets (spec §8).
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum LoopBasis {
+pub(crate) enum LoopBasis {
     /// The last `n` matching frames (sweeps of the selected product + tilt).
     FrameCount(u32),
     /// The last `secs` seconds of timeline time.
@@ -389,7 +389,7 @@ impl Default for LoopBasis {
 
 impl LoopBasis {
     /// A short menu label for the basis (e.g. "6 frames", "30 min").
-    pub fn label(&self) -> String {
+    pub(crate) fn label(&self) -> String {
         match self {
             LoopBasis::FrameCount(n) => format!("{n} frames"),
             LoopBasis::Duration(secs) => {
@@ -408,7 +408,7 @@ impl LoopBasis {
     /// that bound the macro frame list to recent data rather than all history.
     /// Frame-count bases assume the typical volume interval per frame (plus a
     /// volume of slack); duration bases use their own span.
-    pub fn fallback_span_secs(&self) -> f64 {
+    pub(crate) fn fallback_span_secs(&self) -> f64 {
         match self {
             LoopBasis::FrameCount(n) => (*n as f64 + 1.0) * FALLBACK_FRAME_SPACING_SECS,
             LoopBasis::Duration(secs) => *secs,
@@ -426,7 +426,7 @@ impl LoopBasis {
 ///   sweeps arrive (the "loop the last N while still streaming" gesture).
 /// - **fixed** (custom range): a static range that does not follow now.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub struct LoopWindow {
+pub(crate) struct LoopWindow {
     /// How the window's extent is measured (frame-count or duration).
     pub basis: LoopBasis,
     /// Whether the window slides forward with the live edge (`true`) or is a
@@ -439,7 +439,7 @@ pub struct LoopWindow {
 /// concrete [`LoopWindow`] + the right playhead transition (alignment #7:
 /// menu offers 4/6/10 frames, 30 min / 1 h, and "pin to live").
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum LoopPreset {
+pub(crate) enum LoopPreset {
     /// Enter the pinned sliding loop at the default frame count.
     PinToLive,
     /// A loop of the last `n` matching frames.
@@ -450,7 +450,7 @@ pub enum LoopPreset {
 
 impl LoopPreset {
     /// The presets offered in the menu, in display order.
-    pub fn menu() -> &'static [LoopPreset] {
+    pub(crate) fn menu() -> &'static [LoopPreset] {
         &[
             LoopPreset::PinToLive,
             LoopPreset::LastFrames(4),
@@ -462,7 +462,7 @@ impl LoopPreset {
     }
 
     /// Menu label.
-    pub fn label(&self) -> String {
+    pub(crate) fn label(&self) -> String {
         match self {
             LoopPreset::PinToLive => "Pin to live".to_string(),
             LoopPreset::LastFrames(n) => format!("Last {n} frames"),
@@ -478,7 +478,7 @@ impl LoopPreset {
     }
 
     /// The loop-window basis this preset resolves to.
-    pub fn basis(&self) -> LoopBasis {
+    pub(crate) fn basis(&self) -> LoopBasis {
         match self {
             LoopPreset::PinToLive => LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES),
             LoopPreset::LastFrames(n) => LoopBasis::FrameCount(*n),
@@ -489,7 +489,7 @@ impl LoopPreset {
 
 /// Loop behavior when playback bounds are set.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
-pub enum LoopMode {
+pub(crate) enum LoopMode {
     /// Play forward, jump to start when reaching end
     #[default]
     Loop,
@@ -500,7 +500,7 @@ pub enum LoopMode {
 }
 
 impl LoopMode {
-    pub fn label(&self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self {
             LoopMode::Loop => "Loop",
             LoopMode::PingPong => "Ping-Pong",
@@ -508,14 +508,14 @@ impl LoopMode {
         }
     }
 
-    pub fn all() -> &'static [LoopMode] {
+    pub(crate) fn all() -> &'static [LoopMode] {
         &[LoopMode::Loop, LoopMode::PingPong, LoopMode::Once]
     }
 }
 
 /// Playback direction for ping-pong mode.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
-pub enum PlaybackDirection {
+pub(crate) enum PlaybackDirection {
     #[default]
     Forward,
     Backward,
@@ -530,7 +530,7 @@ pub enum PlaybackDirection {
 /// stream keeps running across `PinnedToNow` ↔ `LookbackLoop`, and the
 /// `playing` flag keeps its ordinary meaning in `Free`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum PlayheadMode {
+pub(crate) enum PlayheadMode {
     /// Archive: free seeking; `playing` drives `advance()`.
     #[default]
     Free,
@@ -545,7 +545,7 @@ pub enum PlayheadMode {
 
 /// Where the playhead lands when leaving live ([`PlaybackState::exit_live`]).
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum FreezeAt {
+pub(crate) enum FreezeAt {
     /// Snap to the given wall-clock now (predictable stop on the live edge).
     Now(f64),
     /// Keep the current position (seek/jog paths set it themselves).
@@ -556,7 +556,7 @@ pub enum FreezeAt {
 /// bounds, the live replay window, and event ranges. Replaces the old
 /// `selection_start`/`selection_end`/`selection_in_progress` field triple.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub struct TimeSelection {
+pub(crate) struct TimeSelection {
     /// First-placed endpoint (drag origin). Unordered relative to `b`.
     pub a: f64,
     /// Second endpoint — the one a drag moves.
@@ -572,7 +572,7 @@ pub struct TimeSelection {
 
 impl TimeSelection {
     /// A plain static selection between two timestamps.
-    pub fn between(a: f64, b: f64) -> Self {
+    pub(crate) fn between(a: f64, b: f64) -> Self {
         Self {
             a,
             b,
@@ -583,19 +583,19 @@ impl TimeSelection {
 
     /// Normalized `(start, end)`, or `None` until the selection has
     /// meaningful width (> 1 second).
-    pub fn range(&self) -> Option<(f64, f64)> {
+    pub(crate) fn range(&self) -> Option<(f64, f64)> {
         let (start, end) = (self.a.min(self.b), self.a.max(self.b));
         ((end - start).abs() > 1.0).then_some((start, end))
     }
 
     /// Whether a timestamp falls inside the (normalized) selection.
-    pub fn contains(&self, ts: f64) -> bool {
+    pub(crate) fn contains(&self, ts: f64) -> bool {
         self.range().is_some_and(|(s, e)| ts >= s && ts <= e)
     }
 
     /// Slide the later edge to `end` (live-anchored follow). The earlier
     /// edge keeps its place so the window's extent grows/slides naturally.
-    pub fn slide_end_to(&mut self, end: f64) {
+    pub(crate) fn slide_end_to(&mut self, end: f64) {
         if self.a <= self.b {
             self.b = end;
         } else {
@@ -609,7 +609,7 @@ impl TimeSelection {
 /// Separates playback position (the moment in radar time being displayed)
 /// from wall-clock time (current real-world time).
 #[derive(Clone)]
-pub struct TimeModel {
+pub(crate) struct TimeModel {
     /// Playback position - the moment in radar time being displayed.
     /// This is independent of wall-clock time during archive playback.
     /// Unix seconds with sub-second precision.
@@ -631,17 +631,17 @@ pub struct TimeModel {
 
 impl TimeModel {
     /// Whether the playhead is pinned to "now" (LIVE-NOW).
-    pub fn is_pinned(&self) -> bool {
+    pub(crate) fn is_pinned(&self) -> bool {
         self.mode == PlayheadMode::PinnedToNow
     }
 
     /// Whether the playhead is replaying the lookback window (LIVE-LOOKBACK).
-    pub fn is_lookback(&self) -> bool {
+    pub(crate) fn is_lookback(&self) -> bool {
         self.mode == PlayheadMode::LookbackLoop
     }
 
     /// Advance playback position by delta time, respecting bounds and loop mode.
-    pub fn advance(&mut self, delta_secs: f64, speed: PlaybackSpeed) {
+    pub(crate) fn advance(&mut self, delta_secs: f64, speed: PlaybackSpeed) {
         if self.is_pinned() {
             // LIVE-NOW: the position is owned by the per-frame pin_tick;
             // nothing to advance.
@@ -691,7 +691,7 @@ impl TimeModel {
     }
 
     /// Set bounds from a selection range.
-    pub fn set_bounds_from_selection(&mut self, start: f64, end: f64) {
+    pub(crate) fn set_bounds_from_selection(&mut self, start: f64, end: f64) {
         let (s, e) = if start <= end {
             (start, end)
         } else {
@@ -705,7 +705,7 @@ impl TimeModel {
     }
 
     /// Clear playback bounds.
-    pub fn clear_bounds(&mut self) {
+    pub(crate) fn clear_bounds(&mut self) {
         self.playback_bounds = None;
         self.direction = PlaybackDirection::Forward;
     }
@@ -716,7 +716,7 @@ impl TimeModel {
     /// progression — `apply_bounds` re-contains the position on the next
     /// advance. Contrast [`set_bounds_from_selection`], which resets a fresh
     /// selection.
-    pub fn set_bounds_preserving(&mut self, start: f64, end: f64) {
+    pub(crate) fn set_bounds_preserving(&mut self, start: f64, end: f64) {
         let (s, e) = if start <= end {
             (start, end)
         } else {
@@ -727,7 +727,7 @@ impl TimeModel {
 }
 
 /// State for playback controls.
-pub struct PlaybackState {
+pub(crate) struct PlaybackState {
     /// Whether playback is currently active
     pub playing: bool,
 
@@ -782,7 +782,7 @@ pub struct PlaybackState {
 
 impl PlaybackState {
     /// Get the current playback position (convenience accessor).
-    pub fn playback_position(&self) -> f64 {
+    pub(crate) fn playback_position(&self) -> f64 {
         self.time_model.playback_position
     }
 
@@ -790,7 +790,7 @@ impl PlaybackState {
     /// go through a transition out of `PinnedToNow`/`LookbackLoop` first
     /// (`exit_live`) — every UI seek path does, and this assert keeps it
     /// that way.
-    pub fn set_playback_position(&mut self, position: f64) {
+    pub(crate) fn set_playback_position(&mut self, position: f64) {
         debug_assert!(
             self.time_model.mode == PlayheadMode::Free,
             "seek while {:?} — exit live first",
@@ -808,7 +808,7 @@ impl PlaybackState {
     /// → LIVE-NOW. Pins the playhead to `now`; the per-frame live tick
     /// keeps it there via [`Self::pin_tick`]. Drops any bounds (live owns
     /// its own constraints).
-    pub fn enter_pinned_live(&mut self, now: f64) {
+    pub(crate) fn enter_pinned_live(&mut self, now: f64) {
         self.time_model.playback_bounds = None;
         self.loop_window = None;
         self.pending_loop_window = None;
@@ -820,7 +820,7 @@ impl PlaybackState {
     /// selection + window if one was active; a user's static shift-drag
     /// selection (only settable in `Free`) is untouched. `freeze` picks the
     /// landing position. Idempotent when already `Free`.
-    pub fn exit_live(&mut self, freeze: FreezeAt) {
+    pub(crate) fn exit_live(&mut self, freeze: FreezeAt) {
         if self.time_model.mode == PlayheadMode::LookbackLoop {
             self.clear_anchored_selection();
             self.loop_window = None;
@@ -844,7 +844,7 @@ impl PlaybackState {
     /// `basis` records the pinned window's measure (frame-count / duration) so
     /// `tick_live` and the backfill pump can size the sliding window; it is
     /// stored as a pinned [`LoopWindow`].
-    pub fn enter_lookback(&mut self, seed: Option<f64>, basis: LoopBasis) {
+    pub(crate) fn enter_lookback(&mut self, seed: Option<f64>, basis: LoopBasis) {
         debug_assert!(
             self.time_model.mode == PlayheadMode::PinnedToNow,
             "lookback starts from pinned live, not {:?}",
@@ -867,7 +867,7 @@ impl PlaybackState {
     /// LIVE-LOOKBACK → LIVE-NOW (pause during replay): drop the loop window
     /// (its anchored selection included) and re-pin to `now`. The stream is
     /// untouched.
-    pub fn exit_lookback_to_now(&mut self, now: f64) {
+    pub(crate) fn exit_lookback_to_now(&mut self, now: f64) {
         self.clear_anchored_selection();
         self.loop_window = None;
         self.pending_loop_window = None;
@@ -878,7 +878,7 @@ impl PlaybackState {
 
     /// Per-frame position pin while LIVE-NOW (called from the live tick,
     /// independent of the `playing` flag).
-    pub fn pin_tick(&mut self, now: f64) {
+    pub(crate) fn pin_tick(&mut self, now: f64) {
         debug_assert!(
             self.time_model.mode == PlayheadMode::PinnedToNow,
             "pin_tick outside PinnedToNow ({:?})",
@@ -888,7 +888,7 @@ impl PlaybackState {
     }
 
     /// Visible time width in seconds, using the real timeline widget width.
-    pub fn view_width_secs(&self) -> f64 {
+    pub(crate) fn view_width_secs(&self) -> f64 {
         if self.timeline_zoom > 0.0 {
             self.timeline_width_px / self.timeline_zoom
         } else {
@@ -897,7 +897,7 @@ impl PlaybackState {
     }
 
     /// Center the timeline view on a given timestamp.
-    pub fn center_view_on(&mut self, ts: f64) {
+    pub(crate) fn center_view_on(&mut self, ts: f64) {
         self.timeline_view_start = ts - self.view_width_secs() / 2.0;
     }
 
@@ -923,7 +923,7 @@ impl PlaybackState {
     /// Deterministically classify zoom+width into a tier with NO hysteresis
     /// memory, using the nominal boundaries. For boot / URL restore, where
     /// there is no prior tier to bias the decision.
-    pub fn seed_tier(zoom: f64, width_px: f64) -> TimelineTier {
+    pub(crate) fn seed_tier(zoom: f64, width_px: f64) -> TimelineTier {
         if Self::visible_span_secs(zoom, width_px) > tier::ARCHIVE_NOMINAL_SPAN_SECS {
             TimelineTier::Archive
         } else if zoom >= MICRO_ZOOM_THRESHOLD {
@@ -935,7 +935,7 @@ impl PlaybackState {
 
     /// Reseed the tier from the current zoom+width without hysteresis. Used at
     /// boot / URL restore once `timeline_zoom` is set.
-    pub fn seed_tier_from_state(&mut self) {
+    pub(crate) fn seed_tier_from_state(&mut self) {
         self.timeline_tier = Self::seed_tier(self.timeline_zoom, self.timeline_width_px);
     }
 
@@ -1010,7 +1010,7 @@ impl PlaybackState {
     /// tier renders, and this floor keeps even the calendar's widest reach to a
     /// readable multi-month span (spec §6.4 DECIDED). Width-aware so the ceiling
     /// holds whether the strip is a phone sliver or a wide desktop.
-    pub fn min_zoom_for_width(width_px: f64) -> f64 {
+    pub(crate) fn min_zoom_for_width(width_px: f64) -> f64 {
         let w = width_px.max(1.0);
         (w / MAX_VIEW_SPAN_SECS).max(TIMELINE_ZOOM_MIN)
     }
@@ -1024,7 +1024,12 @@ impl PlaybackState {
     /// The minimum is width-aware ([`Self::min_zoom_for_width`]) so the widest
     /// view stays a readable calendar span instead of the deprecated year-wide
     /// strip.
-    pub fn set_timeline_zoom(&mut self, zoom: f64, width_px: f64, median_frame_spacing: f64) {
+    pub(crate) fn set_timeline_zoom(
+        &mut self,
+        zoom: f64,
+        width_px: f64,
+        median_frame_spacing: f64,
+    ) {
         let min = Self::min_zoom_for_width(width_px);
         self.timeline_zoom = zoom.clamp(min, TIMELINE_ZOOM_MAX);
         let next = self.next_tier(self.timeline_zoom, width_px);
@@ -1035,7 +1040,7 @@ impl PlaybackState {
     /// even when zoom is untouched, which moves the Archive span boundary.
     /// Re-evaluate the tier against the current width with hysteresis. Cheap
     /// and idempotent when nothing moved.
-    pub fn reconcile_tier(&mut self, width_px: f64, median_frame_spacing: f64) {
+    pub(crate) fn reconcile_tier(&mut self, width_px: f64, median_frame_spacing: f64) {
         let next = self.next_tier(self.timeline_zoom, width_px);
         self.apply_tier(next, median_frame_spacing);
     }
@@ -1044,19 +1049,19 @@ impl PlaybackState {
     /// the Micro tier — i.e. the hysteresis-aware "zoomed out far enough to
     /// detach" gesture. Pure; lets the interaction layer decide to detach
     /// before committing the zoom.
-    pub fn zoom_would_exit_micro(&self, new_zoom: f64, width_px: f64) -> bool {
+    pub(crate) fn zoom_would_exit_micro(&self, new_zoom: f64, width_px: f64) -> bool {
         self.timeline_tier == TimelineTier::Micro
             && self.next_tier(new_zoom, width_px) != TimelineTier::Micro
     }
 
     /// Check if playback is allowed at the current tier. The Archive tier is a
     /// navigator only (spec §6.4); every other tier permits playback.
-    pub fn is_playback_allowed(&self) -> bool {
+    pub(crate) fn is_playback_allowed(&self) -> bool {
         self.timeline_tier != TimelineTier::Archive
     }
 
     /// Derive the current playback mode from the stored tier.
-    pub fn playback_mode(&self) -> PlaybackMode {
+    pub(crate) fn playback_mode(&self) -> PlaybackMode {
         mode_of_tier(self.timeline_tier, false)
     }
 
@@ -1064,7 +1069,7 @@ impl PlaybackState {
     /// frame-steps (Macro) regardless of tier so it snaps between the recent
     /// sweeps as frames; otherwise this is the tier-derived
     /// [`Self::playback_mode`].
-    pub fn effective_playback_mode(&self) -> PlaybackMode {
+    pub(crate) fn effective_playback_mode(&self) -> PlaybackMode {
         mode_of_tier(self.timeline_tier, self.time_model.is_lookback())
     }
 
@@ -1072,7 +1077,7 @@ impl PlaybackState {
     /// cadence conversion. Derived from consecutive `sweep_frames` deltas when
     /// ≥2 frames exist; otherwise the typical volume interval. Tiny lists are
     /// fine — the median of one delta is that delta.
-    pub fn median_frame_spacing(&self) -> f64 {
+    pub(crate) fn median_frame_spacing(&self) -> f64 {
         let frames = &self.macro_playback.sweep_frames;
         if frames.len() < 2 {
             return FALLBACK_FRAME_SPACING_SECS;
@@ -1125,14 +1130,14 @@ impl PlaybackState {
     }
 
     /// Advance playback by delta time (micro/continuous mode).
-    pub fn advance(&mut self, delta_secs: f64) {
+    pub(crate) fn advance(&mut self, delta_secs: f64) {
         if self.playing {
             self.time_model.advance(delta_secs, self.speed);
         }
     }
 
     /// Advance playback in macro mode: step through frames at constant fps.
-    pub fn advance_macro(&mut self, delta_secs: f64) {
+    pub(crate) fn advance_macro(&mut self, delta_secs: f64) {
         if !self.playing {
             return;
         }
@@ -1159,7 +1164,7 @@ impl PlaybackState {
 
     /// Step the macro frame index by `delta` (+1 = forward, -1 = backward).
     /// Snaps playback_position to the frame's timestamp.
-    pub fn step_macro_frame(&mut self, delta: isize) {
+    pub(crate) fn step_macro_frame(&mut self, delta: isize) {
         let frames = &self.macro_playback.sweep_frames;
         if frames.is_empty() {
             return;
@@ -1223,7 +1228,7 @@ impl PlaybackState {
     }
 
     /// Snap playback position to the current macro frame's timestamp.
-    pub fn snap_playback_to_macro_frame(&mut self) {
+    pub(crate) fn snap_playback_to_macro_frame(&mut self) {
         if let Some(&ts) = self
             .macro_playback
             .sweep_frames
@@ -1234,7 +1239,7 @@ impl PlaybackState {
     }
 
     /// Sync the macro frame index to the nearest frame matching the current playback position.
-    pub fn sync_macro_frame_index(&mut self) {
+    pub(crate) fn sync_macro_frame_index(&mut self) {
         let frames = &self.macro_playback.sweep_frames;
         if frames.is_empty() {
             self.macro_playback.current_frame_index = 0;
@@ -1259,27 +1264,27 @@ impl PlaybackState {
     }
 
     /// Get the normalized selection range (start <= end), if any.
-    pub fn selection_range(&self) -> Option<(f64, f64)> {
+    pub(crate) fn selection_range(&self) -> Option<(f64, f64)> {
         self.selection.as_ref().and_then(|s| s.range())
     }
 
     /// Whether a shift-drag selection is currently being drawn.
-    pub fn selection_in_progress(&self) -> bool {
+    pub(crate) fn selection_in_progress(&self) -> bool {
         self.selection.as_ref().is_some_and(|s| s.in_progress)
     }
 
     /// Whether a timestamp falls inside the current selection.
-    pub fn selection_contains(&self, ts: f64) -> bool {
+    pub(crate) fn selection_contains(&self, ts: f64) -> bool {
         self.selection.as_ref().is_some_and(|s| s.contains(ts))
     }
 
     /// Replace the selection with a static range (event jump, shift+click).
-    pub fn set_selection(&mut self, a: f64, b: f64) {
+    pub(crate) fn set_selection(&mut self, a: f64, b: f64) {
         self.selection = Some(TimeSelection::between(a, b));
     }
 
     /// Start a shift-drag selection at `ts` (both endpoints collapsed).
-    pub fn begin_selection_drag(&mut self, ts: f64) {
+    pub(crate) fn begin_selection_drag(&mut self, ts: f64) {
         self.selection = Some(TimeSelection {
             a: ts,
             b: ts,
@@ -1289,7 +1294,7 @@ impl PlaybackState {
     }
 
     /// Move the dragged endpoint while a shift-drag is in progress.
-    pub fn update_selection_drag(&mut self, ts: f64) {
+    pub(crate) fn update_selection_drag(&mut self, ts: f64) {
         if let Some(sel) = self.selection.as_mut() {
             if sel.in_progress {
                 sel.b = ts;
@@ -1299,7 +1304,7 @@ impl PlaybackState {
 
     /// Finish a shift-drag. Returns true when the settled selection has a
     /// meaningful range (callers then apply it as bounds / anchor it).
-    pub fn end_selection_drag(&mut self) -> bool {
+    pub(crate) fn end_selection_drag(&mut self) -> bool {
         match self.selection.as_mut() {
             Some(sel) if sel.in_progress => {
                 sel.in_progress = false;
@@ -1312,7 +1317,7 @@ impl PlaybackState {
     /// Anchor the selection's later edge to the live edge (it slides
     /// forward with now while streaming). Mirrors the pin into the loop window
     /// so the band reads as pinned.
-    pub fn anchor_selection_to_live(&mut self) {
+    pub(crate) fn anchor_selection_to_live(&mut self) {
         if let Some(sel) = self.selection.as_mut() {
             sel.anchored_to_live = true;
         }
@@ -1324,7 +1329,7 @@ impl PlaybackState {
     /// Un-anchor the selection (a dragged right handle moved off the live
     /// edge): the loop becomes a fixed range. Mirrors the un-pin into the loop
     /// window. The selection keeps its current bounds.
-    pub fn unanchor_selection_from_live(&mut self) {
+    pub(crate) fn unanchor_selection_from_live(&mut self) {
         if let Some(sel) = self.selection.as_mut() {
             sel.anchored_to_live = false;
         }
@@ -1336,7 +1341,7 @@ impl PlaybackState {
     /// Per-frame follow for a live-anchored selection: slide its later edge
     /// to `end` and keep playback bounds in step (without resetting the
     /// loop's direction or clamping the position).
-    pub fn slide_anchored_selection(&mut self, end: f64) {
+    pub(crate) fn slide_anchored_selection(&mut self, end: f64) {
         let Some(sel) = self.selection.as_mut() else {
             return;
         };
@@ -1353,14 +1358,14 @@ impl PlaybackState {
 
     /// Drop a live-anchored selection (stream stopped / re-pinned to now).
     /// A static user selection is left untouched.
-    pub fn clear_anchored_selection(&mut self) {
+    pub(crate) fn clear_anchored_selection(&mut self) {
         if self.selection.is_some_and(|s| s.anchored_to_live) {
             self.clear_selection();
         }
     }
 
     /// Clear the current selection.
-    pub fn clear_selection(&mut self) {
+    pub(crate) fn clear_selection(&mut self) {
         self.selection = None;
         self.loop_window = None;
         self.pending_loop_window = None;
@@ -1373,7 +1378,7 @@ impl PlaybackState {
     /// streaming reads as a pinned loop). The anchored-selection slide path
     /// owns its own bounds tracking — the basis here is descriptive, not a
     /// re-derivation source for these selection-driven loops.
-    pub fn apply_selection_as_bounds(&mut self) {
+    pub(crate) fn apply_selection_as_bounds(&mut self) {
         if let Some((start, end)) = self.selection_range() {
             self.time_model.set_bounds_from_selection(start, end);
             let pinned = self.selection.is_some_and(|s| s.anchored_to_live);
@@ -1403,7 +1408,11 @@ impl PlaybackState {
     ///   (first frame of the loop has nothing to disrupt).
     /// - **Playing, target differs from committed**: park the target and keep
     ///   returning the committed window until the wrap flushes it.
-    pub fn commit_pinned_window(&mut self, target_start: f64, target_end: f64) -> (f64, f64) {
+    pub(crate) fn commit_pinned_window(
+        &mut self,
+        target_start: f64,
+        target_end: f64,
+    ) -> (f64, f64) {
         let target = order_pair(target_start, target_end);
         if !self.playing {
             self.pending_loop_window = None;

@@ -28,7 +28,7 @@ use crate::core::{AlertsState, Effect, GpsState, MpingState};
 /// [`AlertSeverity::rank`] wins; ties break to the **first** alert encountered in
 /// list order (strict `>`), matching the original behavior. Returns the alert id
 /// or `None` if the click missed every visible alert.
-pub fn select_alert_at(
+pub(crate) fn select_alert_at(
     alerts: &[Alert],
     lon: f64,
     lat: f64,
@@ -63,7 +63,7 @@ pub fn select_alert_at(
 /// where (if anywhere) to center the 2D view. Pure; the shell applies it to the
 /// camera/layer state.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AlertFocus {
+pub(crate) struct AlertFocus {
     /// Whether this alert is a warning (enable warnings layer) vs other
     /// (enable watches/advisories layer).
     pub is_warning: bool,
@@ -73,7 +73,7 @@ pub struct AlertFocus {
 }
 
 /// Compute the focus target for "Show on map" (the alert detail modal action).
-pub fn compute_alert_focus(alert: &Alert) -> AlertFocus {
+pub(crate) fn compute_alert_focus(alert: &Alert) -> AlertFocus {
     let center = alert
         .geometry
         .bbox
@@ -89,7 +89,7 @@ pub fn compute_alert_focus(alert: &Alert) -> AlertFocus {
 /// Whether the mPING layer toggle should be interactable: only when live data is
 /// showing *and* an API key is configured. (Was an inline `live && has_key` in
 /// the right panel.)
-pub fn mping_layer_available(is_live: bool, has_api_key: bool) -> bool {
+pub(crate) fn mping_layer_available(is_live: bool, has_api_key: bool) -> bool {
     is_live && has_api_key
 }
 
@@ -100,7 +100,7 @@ pub fn mping_layer_available(is_live: bool, has_api_key: bool) -> bool {
 /// An intent to change the diagnostics overlays' state (alerts / mPING / GPS).
 /// The only channel by which the UI mutates these overlays.
 #[derive(Debug, Clone, PartialEq)]
-pub enum DiagnosticsIntent {
+pub(crate) enum DiagnosticsIntent {
     // ── Alerts ──
     /// Open the detail modal for this alert id.
     SelectAlert(String),
@@ -140,7 +140,7 @@ pub enum DiagnosticsIntent {
 /// [`reduce`] keeps the `(state, intent) -> (state, effects)` shape with one
 /// argument. `gps_layer_active` is the `layer_state.geo.gps_location` toggle,
 /// which the GPS-failure path auto-clears.
-pub struct DiagnosticsStateMut<'a> {
+pub(crate) struct DiagnosticsStateMut<'a> {
     pub alerts: &'a mut AlertsState,
     pub mping: &'a mut MpingState,
     pub gps: &'a mut GpsState,
@@ -150,7 +150,7 @@ pub struct DiagnosticsStateMut<'a> {
 /// Apply a [`DiagnosticsIntent`] to the diagnostics state, returning any effects
 /// for the shell to perform. Pure: in-memory mutation only; the only effect is
 /// [`Effect::StartGeolocation`] (browser I/O), executed by the shell.
-pub fn reduce(state: DiagnosticsStateMut<'_>, intent: DiagnosticsIntent) -> Vec<Effect> {
+pub(crate) fn reduce(state: DiagnosticsStateMut<'_>, intent: DiagnosticsIntent) -> Vec<Effect> {
     use DiagnosticsIntent as I;
     match intent {
         // ── Alerts ──
@@ -214,7 +214,7 @@ pub fn reduce(state: DiagnosticsStateMut<'_>, intent: DiagnosticsIntent) -> Vec<
 /// One alert as projected for the chip / list modal: just the fields they render,
 /// pre-sorted by severity (high first).
 #[derive(Debug, Clone, PartialEq)]
-pub struct VisibleAlert {
+pub(crate) struct VisibleAlert {
     pub id: String,
     pub event: String,
     pub area_desc: String,
@@ -228,7 +228,7 @@ pub struct VisibleAlert {
 /// list (the one genuine UI-side computation, `AlertsState::visible_in`), so the
 /// top-bar chip and the list modal read it instead of each recomputing.
 #[derive(Debug, Clone, Default)]
-pub struct DiagnosticsVm {
+pub(crate) struct DiagnosticsVm {
     /// Alerts whose bbox intersects the current view, severity-sorted. Empty in
     /// 3D / before the first canvas frame (no bounds), or when none match.
     pub visible_alerts: Vec<VisibleAlert>,
@@ -237,7 +237,7 @@ pub struct DiagnosticsVm {
 impl DiagnosticsVm {
     /// Build the view-model from the diagnostics state and this frame's visible
     /// bounds (`None` in 3D globe mode / before the canvas has rendered).
-    pub fn build(alerts: &AlertsState, bounds: Option<(f64, f64, f64, f64)>) -> Self {
+    pub(crate) fn build(alerts: &AlertsState, bounds: Option<(f64, f64, f64, f64)>) -> Self {
         let visible_alerts = match bounds {
             Some(b) => alerts
                 .visible_in(b)

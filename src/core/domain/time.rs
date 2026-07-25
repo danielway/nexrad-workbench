@@ -13,16 +13,16 @@
 /// The wall-clock capture itself (`FrameNow::capture`) lives in the shell
 /// layer (`src/state/frame_clock.rs`) — it touches the browser clock.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct FrameNow(pub f64);
+pub(crate) struct FrameNow(pub f64);
 
 impl FrameNow {
     /// Unix seconds.
-    pub fn secs(&self) -> f64 {
+    pub(crate) fn secs(&self) -> f64 {
         self.0
     }
 
     /// Unix milliseconds (JS `Date.now()` convention).
-    pub fn millis(&self) -> f64 {
+    pub(crate) fn millis(&self) -> f64 {
         self.0 * 1000.0
     }
 }

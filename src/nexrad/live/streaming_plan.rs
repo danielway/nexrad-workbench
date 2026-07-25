@@ -31,7 +31,7 @@ use crate::nexrad::{ChunkProjectedTimes, ChunkProjectionInfo};
 /// needs to know "what comes next" — the loop's sleep target, the timeline's
 /// countdown, the VCP forecast panel — reads from this object.
 #[derive(Clone, Debug)]
-pub struct StreamingPlan {
+pub(crate) struct StreamingPlan {
     /// Active filter at plan-build time. Diagnostic only — consumers
     /// already know the active filter via the streaming channel; this
     /// is preserved so a captured plan (e.g. for a per-chunk arrival
@@ -183,7 +183,7 @@ impl StreamingPlan {
     ///
     /// The returned chunk's `forecast` is always `Some` (next-target by
     /// definition points to a chunk the projector emitted timing for).
-    pub fn next_target(&self) -> Option<&ChunkProjectionInfo> {
+    pub(crate) fn next_target(&self) -> Option<&ChunkProjectionInfo> {
         let (vol_offset, seq) = self.next_target_key?;
         let chunks: &[ChunkProjectionInfo] = match vol_offset {
             0 => &self.current_volume_chunks,
@@ -198,14 +198,14 @@ impl StreamingPlan {
     /// no remaining match in the current volume (so the projection extended
     /// into the next volume). Lets the timeline attach the "next chunk"
     /// countdown to the next-volume ghost instead of a current-volume sweep.
-    pub fn next_target_in_next_volume(&self) -> bool {
+    pub(crate) fn next_target_in_next_volume(&self) -> bool {
         matches!(self.next_target_key, Some((1, _)))
     }
 
     /// Elevation number (1-based) of the immediate next download target, or
     /// `None` for a Start chunk / when no target exists. Used to highlight
     /// the matching sweep in the next-volume ghost.
-    pub fn next_target_elevation(&self) -> Option<u8> {
+    pub(crate) fn next_target_elevation(&self) -> Option<u8> {
         self.next_target()
             .and_then(|c| c.elevation_number)
             .map(|n| n as u8)
@@ -214,7 +214,7 @@ impl StreamingPlan {
     /// Convenience: seconds from `now_secs` until the next target becomes
     /// available in S3 (drives the UI's "next in Xs" countdown). Returns
     /// `None` when no next target exists.
-    pub fn next_available_in_secs(&self, now_secs: f64) -> Option<f64> {
+    pub(crate) fn next_available_in_secs(&self, now_secs: f64) -> Option<f64> {
         self.next_target()
             .and_then(|t| t.projected.as_ref())
             .map(|f| (f.available_at_secs - now_secs).max(0.0))
@@ -223,7 +223,7 @@ impl StreamingPlan {
     /// Convenience: seconds from `now_secs` until the streaming loop's next
     /// poll fires (the sleep target).
     #[allow(dead_code)] // Public-surface accessor; UI debug overlay consumes it.
-    pub fn next_poll_in_secs(&self, now_secs: f64) -> Option<f64> {
+    pub(crate) fn next_poll_in_secs(&self, now_secs: f64) -> Option<f64> {
         self.next_target()
             .and_then(|t| t.projected.as_ref())
             .map(|f| (f.poll_at_secs - now_secs).max(0.0))

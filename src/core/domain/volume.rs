@@ -22,7 +22,7 @@
 /// Combined view of expected vs received elevations for the in-progress
 /// live volume.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct VolumeElevationRoster {
+pub(crate) struct VolumeElevationRoster {
     /// Total elevations claimed by the VCP message-type-5 payload.
     /// `None` until the VCP arrives. NEXRAD VCPs are 1..=count contiguous,
     /// so the expected elevation *numbers* are implicit.
@@ -34,7 +34,7 @@ pub struct VolumeElevationRoster {
 }
 
 impl VolumeElevationRoster {
-    pub fn new(expected_count: Option<usize>, received: Vec<u8>) -> Self {
+    pub(crate) fn new(expected_count: Option<usize>, received: Vec<u8>) -> Self {
         Self {
             expected_count,
             received,
@@ -42,13 +42,13 @@ impl VolumeElevationRoster {
     }
 
     /// Number of expected elevations per the VCP, or `None` pre-VCP.
-    pub fn expected_count(&self) -> Option<usize> {
+    pub(crate) fn expected_count(&self) -> Option<usize> {
         self.expected_count
     }
 
     /// Number of distinct elevations observed so far.
     #[allow(dead_code)] // Public API; production callers iterate `received` directly.
-    pub fn received_count(&self) -> usize {
+    pub(crate) fn received_count(&self) -> usize {
         self.received.len()
     }
 
@@ -57,7 +57,7 @@ impl VolumeElevationRoster {
     /// distinguish "incomplete because still streaming" from "incomplete
     /// because unknown" via `expected_count().is_some()`.
     #[allow(dead_code)] // Public API; reserved for diagnostics overlays.
-    pub fn is_complete(&self) -> bool {
+    pub(crate) fn is_complete(&self) -> bool {
         match self.expected_count {
             Some(n) => self.received.len() >= n,
             None => false,
@@ -65,14 +65,14 @@ impl VolumeElevationRoster {
     }
 
     /// Whether the given elevation number has been received.
-    pub fn is_received(&self, elev_num: u8) -> bool {
+    pub(crate) fn is_received(&self, elev_num: u8) -> bool {
         self.received.contains(&elev_num)
     }
 
     /// Elevation numbers expected per the VCP but not yet received.
     /// Empty before the VCP arrives, or once the volume is complete.
     #[allow(dead_code)] // Public API; reserved for diagnostics overlays.
-    pub fn expected_but_not_received(&self) -> Vec<u8> {
+    pub(crate) fn expected_but_not_received(&self) -> Vec<u8> {
         let Some(count) = self.expected_count else {
             return Vec::new();
         };
@@ -87,7 +87,7 @@ impl VolumeElevationRoster {
     /// drift. Useful for diagnostics — surfacing this to a debug overlay
     /// would catch a class of bugs that's currently silent.
     #[allow(dead_code)] // Public API; reserved for diagnostics overlays.
-    pub fn received_but_not_expected(&self) -> Vec<u8> {
+    pub(crate) fn received_but_not_expected(&self) -> Vec<u8> {
         let Some(count) = self.expected_count else {
             return Vec::new();
         };
@@ -101,7 +101,7 @@ impl VolumeElevationRoster {
     /// Short label suitable for status text: "5 of 7" when the VCP is
     /// known, "5" when it isn't.
     #[allow(dead_code)] // Public API; reserved for status-bar surfaces.
-    pub fn status_label(&self) -> String {
+    pub(crate) fn status_label(&self) -> String {
         match self.expected_count {
             Some(n) => format!("{} of {}", self.received.len(), n),
             None => format!("{}", self.received.len()),

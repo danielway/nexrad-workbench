@@ -15,7 +15,7 @@
 /// VCP's `ElevationChunkMapper` and the physics-based timing model to wait
 /// through chunks that don't match.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum StreamingFilter {
+pub(crate) enum StreamingFilter {
     #[default]
     All,
     Elevation(u8),
@@ -24,7 +24,7 @@ pub enum StreamingFilter {
 impl StreamingFilter {
     /// Whether the filter accepts a chunk for the given elevation number.
     /// `None` (Start chunk) is always accepted.
-    pub fn accepts(self, elevation_number: Option<usize>) -> bool {
+    pub(crate) fn accepts(self, elevation_number: Option<usize>) -> bool {
         match (self, elevation_number) {
             (StreamingFilter::All, _) => true,
             (StreamingFilter::Elevation(_), None) => true,

@@ -5,7 +5,7 @@ use crate::geo::{Camera, Flat2DState, ViewMode};
 use eframe::egui::Vec2;
 
 /// Visualization state including view controls.
-pub struct VizState {
+pub(crate) struct VizState {
     /// The camera state machine — the single source of truth for the view
     /// mode and all 2D/3D camera state. [`ViewMode`] is derived from the
     /// active variant via [`VizState::view_mode`] (no separate stored
@@ -123,7 +123,7 @@ pub struct VizState {
 /// merely because the playhead moved away in time). This enum tells the overlay
 /// which caption, if any, to render to keep the time honest.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub enum CanvasCaption {
+pub(crate) enum CanvasCaption {
     /// No caption — the displayed frame covers the playhead, or live owns the
     /// canvas.
     #[default]
@@ -155,7 +155,7 @@ pub enum CanvasCaption {
 ///   covering it). When true there's no discrepancy — the resolver/render path
 ///   is repainting; when false the held frame is stale relative to the playhead.
 /// - `fetch_covers_playhead`: whether a download/ingest covers the playhead.
-pub fn derive_canvas_caption(
+pub(crate) fn derive_canvas_caption(
     attached: bool,
     displayed: Option<(f64, f64, f64)>,
     playhead: f64,
@@ -227,23 +227,23 @@ impl Default for VizState {
 
 impl VizState {
     /// The active [`ViewMode`], derived from the camera variant.
-    pub fn view_mode(&self) -> ViewMode {
+    pub(crate) fn view_mode(&self) -> ViewMode {
         self.camera.view_mode()
     }
 
     /// Whether the flat 2D view is active.
-    pub fn is_2d(&self) -> bool {
+    pub(crate) fn is_2d(&self) -> bool {
         self.camera.is_2d()
     }
 
     /// Current 2D zoom level (1.0 = 100%). Falls back to the default zoom in
     /// 3D modes (the 2D pan/zoom is only meaningful in the Flat2D variant).
-    pub fn zoom(&self) -> f32 {
+    pub(crate) fn zoom(&self) -> f32 {
         self.camera.flat_2d().map(|s| s.zoom).unwrap_or(1.0)
     }
 
     /// Current 2D pan offset. `ZERO` in 3D modes.
-    pub fn pan_offset(&self) -> Vec2 {
+    pub(crate) fn pan_offset(&self) -> Vec2 {
         self.camera
             .flat_2d()
             .map(|s| s.pan_offset)
@@ -251,14 +251,14 @@ impl VizState {
     }
 
     /// Set the 2D zoom level. No-op in 3D modes.
-    pub fn set_zoom(&mut self, zoom: f32) {
+    pub(crate) fn set_zoom(&mut self, zoom: f32) {
         if let Some(s) = self.camera.flat_2d_mut() {
             s.zoom = zoom;
         }
     }
 
     /// Set the 2D pan offset. No-op in 3D modes.
-    pub fn set_pan_offset(&mut self, pan_offset: Vec2) {
+    pub(crate) fn set_pan_offset(&mut self, pan_offset: Vec2) {
         if let Some(s) = self.camera.flat_2d_mut() {
             s.pan_offset = pan_offset;
         }
@@ -266,26 +266,26 @@ impl VizState {
 
     /// Mutable access to the 2D pan offset, if the flat view is active.
     /// Used by the WASD pan path that increments each axis.
-    pub fn flat_pan_mut(&mut self) -> Option<&mut Vec2> {
+    pub(crate) fn flat_pan_mut(&mut self) -> Option<&mut Vec2> {
         self.camera.flat_2d_mut().map(|s| &mut s.pan_offset)
     }
 
     /// Switch the camera into the given 3D mode and remember it as the
     /// mode to return to when toggling 2D → 3D.
-    pub fn switch_camera_mode(&mut self, mode: crate::geo::CameraMode) {
+    pub(crate) fn switch_camera_mode(&mut self, mode: crate::geo::CameraMode) {
         self.last_3d_mode = mode;
         self.camera.switch_to_3d(mode);
     }
 
     /// Switch the camera to the flat 2D view (default pan/zoom).
-    pub fn switch_to_2d(&mut self) {
+    pub(crate) fn switch_to_2d(&mut self) {
         self.camera.switch_to_flat_2d(Flat2DState::default());
     }
 
     /// Toggle between the flat 2D view and the last-used 3D mode. Mirrors
     /// the historical `T` shortcut: 2D → the remembered 3D mode, any 3D
     /// mode → 2D.
-    pub fn toggle_2d_3d(&mut self) {
+    pub(crate) fn toggle_2d_3d(&mut self) {
         if self.camera.is_2d() {
             self.switch_camera_mode(self.last_3d_mode);
         } else {
@@ -299,7 +299,13 @@ impl VizState {
     /// reformats it the same frame (spec §11.4). Sweep start/end times live on
     /// `displayed` (set by the decode handler); staleness is recomputed each
     /// frame from there. `now_secs` is the frame clock (`AppState::frame_now`).
-    pub fn update_overlay(&mut self, start: f64, end: f64, elevation_deg: f32, now_secs: f64) {
+    pub(crate) fn update_overlay(
+        &mut self,
+        start: f64,
+        end: f64,
+        elevation_deg: f32,
+        now_secs: f64,
+    ) {
         self.elevation = format!("{:.1}\u{00B0}", elevation_deg);
 
         // Seed staleness for immediate display; the per-frame recompute
@@ -314,7 +320,7 @@ impl VizState {
     /// seconds, or `None` when the canvas holds no frame. This is the raw time
     /// the primary readout and overlay format live each frame — never the
     /// playhead (the canvas-honesty invariant).
-    pub fn displayed_midpoint_secs(&self) -> Option<f64> {
+    pub(crate) fn displayed_midpoint_secs(&self) -> Option<f64> {
         self.displayed
             .as_ref()
             .map(|d| (d.start_time + d.end_time) / 2.0)

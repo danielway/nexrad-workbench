@@ -3,19 +3,19 @@
 //! This module provides functionality for loading and rendering geographic
 //! features such as state boundaries, county lines, and city markers.
 
-pub mod camera;
+pub(crate) mod camera;
 pub(crate) mod cities;
-pub mod geo_line_renderer;
-pub mod globe_renderer;
+pub(crate) mod geo_line_renderer;
+pub(crate) mod globe_renderer;
 mod layer;
 mod projection;
 mod renderer;
 
 #[allow(unused_imports)] // GlobeProjection is the 3D Projection adapter.
-pub use camera::GlobeProjection;
-pub use camera::{Camera, CameraMode, Flat2DState, UrlCameraSnapshot, ViewMode};
-pub use geo_line_renderer::GeoLineRenderer;
-pub use globe_renderer::GlobeRenderer;
-pub use layer::{GeoFeature, GeoLayer, GeoLayerSet, GeoLayerType, GeoLayerVisibility};
-pub use projection::{MapProjection, Projection, ProjectionFingerprint};
-pub use renderer::{render_geo_layers, text_with_halo, GeoPass};
+pub(crate) use camera::GlobeProjection;
+pub(crate) use camera::{Camera, CameraMode, Flat2DState, UrlCameraSnapshot, ViewMode};
+pub(crate) use geo_line_renderer::GeoLineRenderer;
+pub(crate) use globe_renderer::GlobeRenderer;
+pub(crate) use layer::{GeoFeature, GeoLayer, GeoLayerSet, GeoLayerType, GeoLayerVisibility};
+pub(crate) use projection::{MapProjection, Projection, ProjectionFingerprint};
+pub(crate) use renderer::{render_geo_layers, text_with_halo, GeoPass};

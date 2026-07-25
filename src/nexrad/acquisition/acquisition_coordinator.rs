@@ -13,7 +13,7 @@ use crate::nexrad::ListingResult;
 use crate::nexrad::ScanBoundary;
 
 /// Owns the download pipeline: channels, queue, archive index.
-pub struct AcquisitionCoordinator {
+pub(crate) struct AcquisitionCoordinator {
     /// Channel for async NEXRAD download operations.
     pub(crate) download_channel: DownloadChannel,
     /// Channel for async cache metadata loading.
@@ -28,7 +28,7 @@ pub struct AcquisitionCoordinator {
 
 #[allow(dead_code)]
 impl AcquisitionCoordinator {
-    pub fn new(data_facade: DataFacade) -> Self {
+    pub(crate) fn new(data_facade: DataFacade) -> Self {
         let download_channel = DownloadChannel::new();
         let cache_load_channel = CacheLoadChannel::new();
 
@@ -42,59 +42,59 @@ impl AcquisitionCoordinator {
     }
 
     /// Get the download channel stats (for realtime/backfill channel init).
-    pub fn download_stats(&self) -> NetworkStats {
+    pub(crate) fn download_stats(&self) -> NetworkStats {
         self.download_channel.stats()
     }
 
     /// Get network stats for session stat updates.
-    pub fn network_stats(&self) -> NetworkStats {
+    pub(crate) fn network_stats(&self) -> NetworkStats {
         self.download_channel.stats()
     }
 
     /// Try to receive a cache load result.
-    pub fn try_recv_cache_load(&mut self) -> Option<CacheLoadResult> {
+    pub(crate) fn try_recv_cache_load(&mut self) -> Option<CacheLoadResult> {
         self.cache_load_channel.try_recv()
     }
 
     /// Try to receive a download result.
-    pub fn try_recv_download(&mut self) -> Option<DownloadResult> {
+    pub(crate) fn try_recv_download(&mut self) -> Option<DownloadResult> {
         self.download_channel.try_recv()
     }
 
     /// Try to receive a listing result.
-    pub fn try_recv_listing(&mut self) -> Option<ListingResult> {
+    pub(crate) fn try_recv_listing(&mut self) -> Option<ListingResult> {
         self.download_channel.try_recv_listing()
     }
 
     /// Whether the cache load channel is currently loading.
-    pub fn is_cache_loading(&self) -> bool {
+    pub(crate) fn is_cache_loading(&self) -> bool {
         self.cache_load_channel.is_loading()
     }
 
     /// Load site timeline from cache.
-    pub fn load_site_timeline(&self, ctx: eframe::egui::Context, site_id: String) {
+    pub(crate) fn load_site_timeline(&self, ctx: eframe::egui::Context, site_id: String) {
         self.cache_load_channel
             .load_site_timeline(ctx, self.data_facade.clone(), site_id);
     }
 
     /// Clear the record cache.
-    pub fn clear_cache(&self, ctx: eframe::egui::Context) {
+    pub(crate) fn clear_cache(&self, ctx: eframe::egui::Context) {
         self.cache_load_channel
             .clear_cache(ctx, self.data_facade.clone());
     }
 
     /// Get the data facade (for worker ingest, downloads, etc.).
-    pub fn facade(&self) -> &DataFacade {
+    pub(crate) fn facade(&self) -> &DataFacade {
         &self.data_facade
     }
 
     /// Get all scan boundaries for a site from the archive index.
-    pub fn all_boundaries_for_site(&self, site_id: &str) -> Vec<ScanBoundary> {
+    pub(crate) fn all_boundaries_for_site(&self, site_id: &str) -> Vec<ScanBoundary> {
         self.archive_index.all_boundaries_for_site(site_id)
     }
 
     /// Insert a listing into the archive index.
-    pub fn insert_listing(
+    pub(crate) fn insert_listing(
         &mut self,
         site_id: &str,
         date: chrono::NaiveDate,

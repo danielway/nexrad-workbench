@@ -19,7 +19,7 @@ const POLL_INTERVAL_MS: f64 = 120_000.0;
 /// so transient errors recover quickly.
 const RETRY_INTERVAL_MS: f64 = 30_000.0;
 
-pub struct AlertsManager {
+pub(crate) struct AlertsManager {
     channel: AlertsChannel,
     /// True while a fetch future is in flight and we're waiting on it.
     fetch_in_flight: bool,
@@ -34,7 +34,7 @@ impl Default for AlertsManager {
 }
 
 impl AlertsManager {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             channel: AlertsChannel::new(),
             fetch_in_flight: false,
@@ -52,7 +52,7 @@ impl AlertsManager {
     /// `errors` is the app-wide error collector; failures encountered
     /// while polling are pushed here in addition to landing in
     /// `alerts.last_error` (which the chip still reads for its color).
-    pub fn tick(
+    pub(crate) fn tick(
         &mut self,
         ctx: &egui::Context,
         alerts: &mut AlertsState,

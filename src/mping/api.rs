@@ -24,7 +24,7 @@ const PAGE_SIZE: u32 = 200;
 
 /// Parameters for a single fetch request.
 #[derive(Clone, Debug, PartialEq)]
-pub struct FetchParams {
+pub(crate) struct FetchParams {
     /// Center longitude (degrees) for the radius filter.
     pub center_lon: f64,
     /// Center latitude (degrees) for the radius filter.
@@ -38,7 +38,7 @@ pub struct FetchParams {
 }
 
 /// Spawn a background fetch. Results are pushed into `channel` when done.
-pub fn spawn_fetch(
+pub(crate) fn spawn_fetch(
     ctx: eframe::egui::Context,
     channel: MpingChannel,
     api_key: String,
