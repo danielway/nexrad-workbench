@@ -17,13 +17,22 @@
 //! - Scroll: zoom or speed
 //! - WASD / arrows: directional movement
 //!
-//! [`ViewMode`](crate::state::ViewMode) is a *derived* view of the active
-//! variant ([`Camera::view_mode`]); it is not an independent toggle to
-//! keep in sync.
+//! [`ViewMode`] is a *derived* view of the active variant
+//! ([`Camera::view_mode`]); it is not an independent toggle to keep in
+//! sync.
 
-use crate::state::ViewMode;
 use eframe::egui::{Pos2, Rect, Vec2};
 use glam::{Mat4, Vec3, Vec4};
+
+/// Map view mode — derived from the active [`Camera`] variant.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViewMode {
+    /// Classic flat equirectangular map.
+    #[default]
+    Flat2D,
+    /// 3D globe.
+    Globe3D,
+}
 
 /// 3D camera movement mode (the three orbit variants).
 ///

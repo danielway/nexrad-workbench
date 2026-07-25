@@ -17,7 +17,7 @@ impl super::Overlay for CompassOverlay {
     }
 
     fn visible(&self, ctx: &super::OverlayContext) -> bool {
-        ctx.state.viz_state.view_mode() == crate::state::ViewMode::Globe3D
+        ctx.state.viz_state.view_mode() == crate::geo::ViewMode::Globe3D
     }
 
     fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {

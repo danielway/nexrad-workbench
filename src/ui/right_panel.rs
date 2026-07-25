@@ -429,7 +429,7 @@ pub(super) fn render_rendering_section(
 }
 
 fn render_volume_section(ui: &mut egui::Ui, state: &mut AppState) {
-    use crate::state::ViewMode;
+    use crate::geo::ViewMode;
 
     // Only show volume controls in 3D mode
     if !matches!(state.viz_state.view_mode(), ViewMode::Globe3D) {

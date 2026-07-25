@@ -33,7 +33,6 @@ pub(crate) mod vcp_forecast;
 mod viz;
 mod volume_elevation_roster;
 
-pub use crate::geo::camera::CameraMode;
 pub use acquisition::{
     AcquisitionState, DrawerTab, NetworkGroupKey, OperationId, OperationKind, OperationStatus,
 };
@@ -43,7 +42,7 @@ pub use calendar::{aggregate_day_buckets, day_tap_macro_view, DayBucket, DAY_SEC
 pub use errors::{AppError, ErrorContext};
 pub use frame_clock::FrameNow;
 pub use gps::GpsState;
-pub use layer::{GeoLayerVisibility, LayerState};
+pub use layer::LayerState;
 pub use live_mode::{should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase};
 pub use live_radar_model::LiveRadarModel;
 pub use mping::MpingState;
@@ -74,8 +73,7 @@ pub use vcp_forecast::{
 };
 pub use viz::{
     derive_canvas_caption, CanvasCaption, DisplayedSweep, ElevationListEntry, ElevationSelection,
-    InterpolationMode, RadarProduct, RenderProcessing, StormCellInfo, SweepIdentity, ViewMode,
-    VizState,
+    InterpolationMode, RadarProduct, RenderProcessing, StormCellInfo, SweepIdentity, VizState,
 };
 pub use volume_elevation_roster::VolumeElevationRoster;
 

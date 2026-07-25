@@ -301,9 +301,9 @@ fn apply_url_params(
     // 3D mode so a later 2D → 3D toggle re-enters it.
     let v = &url_params.view;
     let restored_mode = v.cm.map(|cm| match cm {
-        1 => state::CameraMode::SiteOrbit,
-        2 => state::CameraMode::FreeLook,
-        _ => state::CameraMode::PlanetOrbit,
+        1 => geo::CameraMode::SiteOrbit,
+        2 => geo::CameraMode::FreeLook,
+        _ => geo::CameraMode::PlanetOrbit,
     });
     if let Some(mode) = restored_mode {
         state.viz_state.last_3d_mode = mode;

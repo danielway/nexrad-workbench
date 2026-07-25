@@ -15,7 +15,8 @@
 //! and live-mode interactions there don't generalize; its entry in the
 //! help overlay still lives here so users see the full set in one place.
 
-use crate::state::{AppState, PlaybackSpeed, RadarProduct, ViewMode};
+use crate::geo::ViewMode;
+use crate::state::{AppState, PlaybackSpeed, RadarProduct};
 use eframe::egui::{self, RichText};
 
 // ---------------------------------------------------------------------------

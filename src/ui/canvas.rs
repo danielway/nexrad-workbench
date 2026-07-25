@@ -10,9 +10,10 @@ use super::canvas_overlays::{
     AlertRenderPhase, OverlayContext, RadarCutout,
 };
 use super::colors::canvas as canvas_colors;
+use crate::geo::ViewMode;
 use crate::geo::{GeoLayerSet, MapProjection};
 use crate::nexrad::RadarGpuRenderer;
-use crate::state::{AppState, RenderProcessing, ViewMode};
+use crate::state::{AppState, RenderProcessing};
 use eframe::egui::{self, Color32, Rect, Sense, Stroke};
 use geo_types::Coord;
 use std::sync::{Arc, Mutex};

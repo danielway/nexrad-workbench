@@ -1,7 +1,7 @@
 //! Visualization state (canvas, zoom/pan, product selection).
 
 use crate::data::ScanKey;
-use crate::geo::{Camera, Flat2DState};
+use crate::geo::{Camera, Flat2DState, ViewMode};
 use eframe::egui::Vec2;
 
 /// Available radar products for display.
@@ -277,16 +277,6 @@ impl Default for RenderProcessing {
             data_age_desaturation: true,
         }
     }
-}
-
-/// Map view mode.
-#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ViewMode {
-    /// Classic flat equirectangular map.
-    #[default]
-    Flat2D,
-    /// 3D globe.
-    Globe3D,
 }
 
 /// Lightweight storm cell info for rendering on the canvas.

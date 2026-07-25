@@ -103,11 +103,6 @@ const GRANDFATHERED: &[(&str, &str, &str)] = &[
         "core::panels uses nexrad::projection::ScanProjection — rehome per A1",
     ),
     (
-        "geo",
-        "state",
-        "ViewMode/GeoLayerVisibility live in state, consumed by geo — rehome per A1",
-    ),
-    (
         "nexrad",
         "state",
         "RenderProcessing/Scan/Sweep etc. live in state — rehome per A1",

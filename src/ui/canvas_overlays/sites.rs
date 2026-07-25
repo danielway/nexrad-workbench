@@ -9,8 +9,8 @@
 //! projector reports as not visible.
 
 use crate::data::{get_site, NEXRAD_SITES};
+use crate::geo::GeoLayerVisibility;
 use crate::geo::{text_with_halo, GeoPass, Projection};
-use crate::state::GeoLayerVisibility;
 use eframe::egui::{self, Painter, Stroke, Vec2};
 
 use super::super::colors::sites as site_colors;

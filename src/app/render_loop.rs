@@ -527,7 +527,7 @@ impl WorkbenchApp {
         }
         if !live_active
             && self.state.viz_state.volume_3d_enabled
-            && self.state.viz_state.view_mode() == state::ViewMode::Globe3D
+            && self.state.viz_state.view_mode() == crate::geo::ViewMode::Globe3D
         {
             self.request_worker_render_volume();
         }

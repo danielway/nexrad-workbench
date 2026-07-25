@@ -10,13 +10,13 @@
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
-/// URL wire code for a [`CameraMode`](super::CameraMode):
+/// URL wire code for a [`CameraMode`](crate::geo::CameraMode):
 /// 0 = PlanetOrbit, 1 = SiteOrbit, 2 = FreeLook.
-fn camera_mode_code(mode: super::CameraMode) -> u8 {
+fn camera_mode_code(mode: crate::geo::CameraMode) -> u8 {
     match mode {
-        super::CameraMode::PlanetOrbit => 0,
-        super::CameraMode::SiteOrbit => 1,
-        super::CameraMode::FreeLook => 2,
+        crate::geo::CameraMode::PlanetOrbit => 0,
+        crate::geo::CameraMode::SiteOrbit => 1,
+        crate::geo::CameraMode::FreeLook => 2,
     }
 }
 
@@ -99,8 +99,8 @@ impl ViewState {
             mz: Some(state.viz_state.zoom()),
             tz: Some(playback.timeline_zoom),
             vm: Some(match state.viz_state.view_mode() {
-                super::ViewMode::Flat2D => 0,
-                super::ViewMode::Globe3D => 1,
+                crate::geo::ViewMode::Flat2D => 0,
+                crate::geo::ViewMode::Globe3D => 1,
             }),
             // The 3D camera mode to restore. In 2D the camera variant carries
             // no 3D mode, so persist the remembered `last_3d_mode` (the mode a
@@ -274,9 +274,9 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn camera_mode_code_maps_each_variant() {
-        assert_eq!(camera_mode_code(crate::state::CameraMode::PlanetOrbit), 0);
-        assert_eq!(camera_mode_code(crate::state::CameraMode::SiteOrbit), 1);
-        assert_eq!(camera_mode_code(crate::state::CameraMode::FreeLook), 2);
+        assert_eq!(camera_mode_code(crate::geo::CameraMode::PlanetOrbit), 0);
+        assert_eq!(camera_mode_code(crate::geo::CameraMode::SiteOrbit), 1);
+        assert_eq!(camera_mode_code(crate::geo::CameraMode::FreeLook), 2);
     }
 
     #[wasm_bindgen_test]

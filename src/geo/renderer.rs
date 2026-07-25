@@ -7,7 +7,7 @@
 
 use super::layer::{FeatureProjection, GeoLayerType, LabelCacheToken, LabelEntry, LayerLabelCache};
 use super::{GeoFeature, GeoLayer, GeoLayerSet, MapProjection};
-use crate::state::GeoLayerVisibility;
+use crate::geo::GeoLayerVisibility;
 use eframe::egui::{Align2, Color32, FontId, Painter, Pos2, Stroke, Vec2};
 use eframe::epaint::Galley;
 use geo_types::Coord;

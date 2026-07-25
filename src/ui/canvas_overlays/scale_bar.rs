@@ -22,7 +22,7 @@ impl super::Overlay for ScaleBarOverlay {
     }
 
     fn visible(&self, ctx: &super::OverlayContext) -> bool {
-        ctx.state.viz_state.view_mode() == crate::state::ViewMode::Flat2D
+        ctx.state.viz_state.view_mode() == crate::geo::ViewMode::Flat2D
     }
 
     fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
