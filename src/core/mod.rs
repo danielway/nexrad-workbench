@@ -4,7 +4,7 @@
 //! functional-core / thin-shell architecture (see [`docs/CORE_SHELL.md`]):
 //!
 //! - [`Intent`] — the only way the UI shell changes anything. Today it is an
-//!   alias of [`crate::state::AppCommand`]; as direct `&mut` mutations in the UI
+//!   alias of [`crate::core::Intent`]; as direct `&mut` mutations in the UI
 //!   are folded into the command vocabulary it becomes the superset the roadmap
 //!   describes.
 //! - [`Effect`] — a *described* side effect the core returns for the shell to
@@ -66,7 +66,7 @@ pub use domain::volume::VolumeElevationRoster;
 pub use effect::{Effect, LocationResult};
 pub use live_mode::{should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase};
 pub use live_radar_model::LiveRadarModel;
-pub use persist::{decide_persist, PersistDecision};
+pub use persist::{decide_persist, persist_due, PersistDecision};
 pub use timeline_view::{
     FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView,
     SCAN_JOIN_TOLERANCE_SECS,

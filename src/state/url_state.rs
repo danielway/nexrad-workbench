@@ -71,6 +71,26 @@ impl ViewState {
     }
 }
 
+/// Assemble the full [`UrlPush`] payload from app state — the shell-side input
+/// builder for the pure [`crate::core::decide_persist`]. Kept beside
+/// [`ViewState::from_state`] so the whole state → URL field mapping lives in
+/// one place.
+pub fn build_url_push(
+    state: &super::AppState,
+    playback: &crate::core::PlaybackState,
+    is_live: bool,
+) -> crate::core::effect::UrlPush {
+    crate::core::effect::UrlPush {
+        site: state.viz_state.site_id.clone(),
+        time: playback.playback_position(),
+        product: state.viz_state.product.short_code().to_string(),
+        lat: state.viz_state.center_lat,
+        lon: state.viz_state.center_lon,
+        view: ViewState::from_state(state, playback, is_live),
+        dev: state.dev_mode,
+    }
+}
+
 /// Parsed URL parameters.
 pub struct UrlParams {
     pub site: Option<String>,
@@ -192,6 +212,48 @@ mod tests {
         // position rather than re-tethering and losing it.
         let detached = ViewState::from_state(&state, &playback, false);
         assert_eq!(detached.rt, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn url_push_carries_view_fields() {
+        let mut state = crate::state::AppState::default();
+        let playback = crate::core::PlaybackState::default();
+        state.viz_state.site_id = "KDMX".to_string();
+        state.dev_mode = true;
+        let p = build_url_push(&state, &playback, true);
+        assert_eq!(p.site, "KDMX");
+        assert!(p.dev);
+        // `is_live=true` is encoded into the view blob's `rt` flag.
+        assert_eq!(p.view.rt, Some(true));
+    }
+
+    #[wasm_bindgen_test]
+    fn url_push_carries_product_lat_lon_and_time() {
+        // Cover the scalar payload: product short_code, center coords, and the
+        // playback position threaded through as `time`.
+        let mut state = crate::state::AppState::default();
+        let mut playback = crate::core::PlaybackState::default();
+        state.viz_state.product = crate::core::RadarProduct::Velocity; // "VEL"
+        state.viz_state.center_lat = 41.25;
+        state.viz_state.center_lon = -93.75;
+        playback.set_playback_position(1_700_000_000.5);
+        let p = build_url_push(&state, &playback, false);
+        assert_eq!(p.product, "VEL");
+        assert_eq!(p.lat, 41.25);
+        assert_eq!(p.lon, -93.75);
+        assert_eq!(p.time, 1_700_000_000.5);
+    }
+
+    #[wasm_bindgen_test]
+    fn url_push_view_matches_from_state() {
+        // The view blob in the push must be exactly what ViewState::from_state
+        // produces for the same (state, playback, is_live) — the doc-comment
+        // contract that the whole state → URL mapping lives in one place.
+        let state = crate::state::AppState::default();
+        let playback = crate::core::PlaybackState::default();
+        let is_live = true;
+        let p = build_url_push(&state, &playback, is_live);
+        assert_eq!(p.view, ViewState::from_state(&state, &playback, is_live));
     }
 }
 

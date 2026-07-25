@@ -7,7 +7,7 @@
 //! throttle math and change-detection are tested headlessly in `core::persist`.
 
 use crate::core::UserPreferences;
-use crate::core::{decide_persist, Effect, PersistDecision, PlaybackState, TimeModel};
+use crate::core::{decide_persist, persist_due, Effect, PersistDecision, PlaybackState, TimeModel};
 use crate::state::AppState;
 
 /// Manages URL state persistence, preference saving, and site change detection.
@@ -64,17 +64,21 @@ impl PersistenceManager {
         mping_api_key: Option<String>,
         is_live: bool,
     ) -> Vec<Effect> {
+        // Gate first so suppressed frames do no snapshot work; then build the
+        // core's inputs from app state and let the pure decision emit effects.
+        if !persist_due(now_secs, self.last_url_push_secs) {
+            return Vec::new();
+        }
+        let url_push = crate::state::url_state::build_url_push(state, playback, is_live);
+        let current_prefs = UserPreferences::from_app_state(state, playback, mping_api_key);
         let PersistDecision {
             effects,
             last_url_push_secs,
             saved_preferences,
         } = decide_persist(
             now_secs,
-            self.last_url_push_secs,
-            state,
-            playback,
-            is_live,
-            mping_api_key,
+            url_push,
+            current_prefs,
             &self.last_saved_preferences,
         );
         if let Some(t) = last_url_push_secs {
