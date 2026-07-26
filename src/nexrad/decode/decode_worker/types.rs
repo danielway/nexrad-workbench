@@ -29,6 +29,35 @@ pub(super) enum RequestType {
 }
 
 impl RequestType {
+    /// Every variant, for the protocol-drift tests below.
+    ///
+    /// Kept complete by [`Self::exhaustiveness_guard`]: adding a variant without
+    /// adding it here fails to compile.
+    #[cfg(test)]
+    pub(crate) const ALL: &'static [Self] = &[
+        Self::Init,
+        Self::Ingest,
+        Self::IngestChunk,
+        Self::Render,
+        Self::RenderLive,
+        Self::RenderVolume,
+    ];
+
+    /// Compile-time completeness check for [`Self::ALL`]: this match must list
+    /// every variant, and `ALL.len()` must equal the number of arms.
+    #[cfg(test)]
+    #[allow(dead_code)] // Exists for its exhaustive match, never called.
+    const fn exhaustiveness_guard(self) -> usize {
+        match self {
+            Self::Init => 0,
+            Self::Ingest => 1,
+            Self::IngestChunk => 2,
+            Self::Render => 3,
+            Self::RenderLive => 4,
+            Self::RenderVolume => 5,
+        }
+    }
+
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Init => "init",
@@ -56,6 +85,34 @@ pub(super) enum ResponseType {
 }
 
 impl ResponseType {
+    /// Every variant, for the protocol-drift tests below. Kept complete by
+    /// [`Self::exhaustiveness_guard`].
+    #[cfg(test)]
+    pub(crate) const ALL: &'static [Self] = &[
+        Self::Ready,
+        Self::Ingested,
+        Self::ChunkIngested,
+        Self::Decoded,
+        Self::LiveDecoded,
+        Self::VolumeDecoded,
+        Self::Error,
+    ];
+
+    /// Compile-time completeness check for [`Self::ALL`].
+    #[cfg(test)]
+    #[allow(dead_code)] // Exists for its exhaustive match, never called.
+    const fn exhaustiveness_guard(self) -> usize {
+        match self {
+            Self::Ready => 0,
+            Self::Ingested => 1,
+            Self::ChunkIngested => 2,
+            Self::Decoded => 3,
+            Self::LiveDecoded => 4,
+            Self::VolumeDecoded => 5,
+            Self::Error => 6,
+        }
+    }
+
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Ready => "ready",
@@ -617,5 +674,119 @@ mod coverage_tests {
                 resp
             );
         }
+    }
+}
+
+/// Guards the Rust ⇄ `worker.js` protocol against silent drift.
+///
+/// The message vocabulary is defined twice — once as the enums above, once as
+/// string literals in `worker.js` — and nothing but these tests connects them.
+/// Before they existed, renaming a tag on the JS side compiled fine, passed the
+/// whole suite, and broke only at runtime in the browser.
+///
+/// `worker.js` is embedded with [`include_str!`], so the check runs in the
+/// ordinary headless suite with no node harness, and a stale path fails the
+/// build rather than skipping silently.
+#[cfg(test)]
+mod protocol_drift_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const WORKER_JS_RAW: &str = include_str!("../../../../worker.js");
+
+    /// `worker.js` with `//` line comments removed. The file's header documents
+    /// the whole protocol in prose (`{ type: 'init', ... }`), which the scans
+    /// below would otherwise read as real dispatch and emission sites.
+    fn worker_js() -> String {
+        WORKER_JS_RAW
+            .lines()
+            .map(|line| match line.find("//") {
+                Some(i) => &line[..i],
+                None => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Every `msg.type === '...'` dispatch guard in `worker.js`.
+    fn js_dispatched_requests() -> Vec<String> {
+        tags_after(&worker_js(), "msg.type === '")
+    }
+
+    /// Every `type: '...'` message-construction site in `worker.js`.
+    fn js_emitted_responses() -> Vec<String> {
+        tags_after(&worker_js(), "type: '")
+    }
+
+    /// Collect every single-quoted string that immediately follows `marker`.
+    fn tags_after(src: &str, marker: &str) -> Vec<String> {
+        src.match_indices(marker)
+            .filter_map(|(i, m)| {
+                let rest = &src[i + m.len()..];
+                rest.find('\'').map(|end| rest[..end].to_string())
+            })
+            .collect()
+    }
+
+    #[wasm_bindgen_test]
+    fn worker_js_dispatches_every_request_type() {
+        let dispatched = js_dispatched_requests();
+        for req in RequestType::ALL {
+            assert!(
+                dispatched.iter().any(|d| d == req.as_str()),
+                "worker.js has no `msg.type === '{}'` branch — the main thread \
+                 sends a request the worker will silently ignore",
+                req.as_str()
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn worker_js_dispatches_nothing_unknown() {
+        for tag in js_dispatched_requests() {
+            assert!(
+                RequestType::ALL.iter().any(|r| r.as_str() == tag),
+                "worker.js dispatches on '{tag}', which no RequestType sends — \
+                 a stale handler or a typo"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn worker_js_emits_every_response_type() {
+        let emitted = js_emitted_responses();
+        for resp in ResponseType::ALL {
+            assert!(
+                emitted.iter().any(|e| e == resp.as_str()),
+                "worker.js never emits `type: '{}'` — the main thread parses a \
+                 response the worker never sends",
+                resp.as_str()
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn worker_js_emits_nothing_unparseable() {
+        for tag in js_emitted_responses() {
+            assert!(
+                ResponseType::parse(&tag).is_some(),
+                "worker.js emits `type: '{tag}'`, which ResponseType::parse \
+                 rejects — the main thread would drop the message"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn the_embedded_worker_js_is_the_real_one() {
+        // Guards the include_str! path: if it ever resolved to something else,
+        // the assertions above would vacuously pass on an empty haystack.
+        assert!(
+            WORKER_JS_RAW.contains("onmessage"),
+            "embedded worker.js does not look like the worker entry point"
+        );
+        assert!(
+            WORKER_JS_RAW.len() > 1000,
+            "embedded worker.js is suspiciously small"
+        );
     }
 }
