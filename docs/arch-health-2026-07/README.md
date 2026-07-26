@@ -147,6 +147,42 @@ STREAMING.md were corrected — including a silent drift nobody had caught: the
 real-time scan key is now parsed from the Start chunk's volume header, not
 derived from upload time minus median lag.
 
+## Follow-up round (2026-07-26)
+
+Three of the four gaps named below were closed in a follow-up pass:
+
+- **Headless intent-dispatch harness.** `dispatch_state_only` in
+  `app/command_dispatch.rs` splits the 28 intents into 14 pure state
+  transitions and 14 that need the shell; **both** matches are exhaustive, so a
+  new variant must be classified in both halves before it compiles. 21 tests
+  assert observable outcomes per intent. The partition itself is pinned, so a
+  refactor can't silently drop an intent into the wrong half.
+  *Mutation-tested*: swapping each pair of look-alike intents
+  (`SkipFailed`/`RetryFailed`, `TogglePlayPause`/`StopLive`,
+  `CancelOperation`/`SkipFailed`) must fail the suite. The third pair initially
+  did **not** fail — the assertion was satisfied by both handlers — which is
+  precisely the hole this harness exists to close; the test was tightened until
+  the swap fails. No pre-existing mis-routing was found.
+- **Transient UI state now has one axis, not three homes.** `DateTimePickerState`
+  (an open flag plus six text buffers) moved off `AppState` into
+  `ui::ModalStates`. The rule is documented on both types: *what is on screen*
+  → `subsystem::Chrome`; *what the user has typed* → `ui::ModalStates`;
+  anything else is domain state. Threading the picker also surfaced three
+  parameters that no longer did anything.
+- **The live streaming loop is decomposed.** `streaming.rs` (2,044 lines) became
+  `streaming/` — nine submodules along the seams the review had already mapped.
+  `streaming_loop` went 884 → 550 lines by extracting 13 cohesive blocks; its
+  await ordering, control flow, and log strings are untouched, because the
+  timing is load-bearing and cannot be verified headlessly.
+
+Also closed a gate gap found along the way: `cargo clippy` never linted
+`#[cfg(test)]` code, leaving the majority of the tree unchecked. The pre-commit
+hook and CLAUDE.md now run `--all-targets`; the 40 findings that surfaced are
+fixed, including three touch-target design rules that became compile-time
+`const` assertions rather than runtime tests.
+
+Still open from the list below: `AppState`'s field count.
+
 ## Not done
 
 Named explicitly, because an unlisted gap is how the last round of entropy
