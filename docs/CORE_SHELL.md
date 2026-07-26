@@ -90,7 +90,17 @@ safety — the compiler already finds every site when state changes shape. Grow 
 view-model when a panel *computes*; not when it merely displays. Mutation is a
 different matter and stays forbidden.
 
-**2. Direct-manipulation gestures calling a subsystem command method.** Intents
+**2. A render function taking many narrow parameters** (`#[allow(clippy::too_many_arguments)]`, 57 sites — 30 in `ui`, 21 in `nexrad`). Two different
+things produce these, and both are deliberate. In `ui`, a layer unpacks
+`LayoutCtx` into exactly the pieces it touches rather than passing the whole
+bundle down — that is what makes the narrowed borrows meaningful and what lets
+you see a function's real dependencies in its signature. In `nexrad`, the GPU
+paint and worker-dispatch calls take genuinely distinct scalars (azimuths, gate
+values, counts, ranges, offset, scale); bundling them into a struct relocates
+the fields without removing them. Reach for a context struct when the arguments
+are *cohesive* — not to satisfy the lint.
+
+**3. Direct-manipulation gestures calling a subsystem command method.** Intents
 are drained at the top of `update()`, so an intent emitted while painting is
 applied on the *next* frame. That is invisible for a button press and wrong for a
 drag: scrub/jog gestures (`Live::detach_playhead` and friends) would trail the

@@ -181,36 +181,40 @@ hook and CLAUDE.md now run `--all-targets`; the 40 findings that surfaced are
 fixed, including three touch-target design rules that became compile-time
 `const` assertions rather than runtime tests.
 
-Still open from the list below: `AppState`'s field count.
+The worker protocol is also no longer double-defined by convention alone:
+`worker.js` is embedded with `include_str!` and five tests assert the request and
+response tags match the Rust enums in **both** directions, so a JS-side rename
+fails the suite instead of the browser. Mutation-verified by renaming a dispatch
+tag and confirming two tests fail.
+
+Everything the review raised is now either done or a recorded decision; see
+"Not done" below.
 
 ## Not done
 
 Named explicitly, because an unlisted gap is how the last round of entropy
-accumulated. None of these block feature work; the first two are the ones that
-will be *felt* while doing it.
+accumulated. Each of these is a *decision*, not an oversight.
 
-- **Transient UI state lives in three homes** (review finding #5, untouched):
-  `subsystem::Chrome` (12 visibility booleans), `AppState::datetime_picker` (a
-  modal's text buffers on the root struct), and `ui::ModalStates`. A new panel
-  or modal has no single obvious home — the exact "two live conventions" tax
-  this program existed to remove. `Chrome` is also the largest remaining source
-  of UI-side mutation (~60 sites), and its contents are arguably UI-local state
-  that landed in a subsystem; resolving placement may dissolve most of those
-  "violations" rather than migrate them.
-- **No test covers intent dispatch.** All 28 `Intent` variants are handled (the
-  `match` is exhaustive, so the compiler guarantees coverage) and every reducer
-  is unit-tested, but nothing asserts a variant reaches the *right* handler. A
-  mis-routed intent compiles and passes all 1,931 tests. This is the one defect
-  class the headless suite cannot see, which leaves the manual pass load-bearing
-  for wiring instead of once.
-- **`AppState` is still 34 fields** (review finding F4), roughly 40% per-frame
-  scratch and one-shot coordination flags.
-- **`streaming.rs`: 2,044 lines, one 884-line function.** Deliberately deferred
-  — a split reopens live-stream QA. Still the right call, and still the largest
-  single concentration of complexity in the tree. Decompose it *before*, not
-  during, the next substantial live-mode feature.
-- The optional Phase D leftovers: schema-first worker IPC, generators for the
-  hand-transcribed sites/cities tables, `too_many_arguments` bundling.
+- **`AppState` has 33 fields, and they stay flat.** The review counted the
+  per-frame scratch and one-shot coordination flags as a smell. Audited: there
+  is no correctness hazard — `UserPreferences::from_app_state` names its fields
+  explicitly, so scratch cannot leak into storage, and every one-shot handoff is
+  consumed with `mem::take` or an explicit reset. Grouping the fields into
+  sub-structs would have renamed ~114 call sites to buy labeling only, so the
+  labeling was done where it costs nothing: the declaration is now split into
+  six commented sections (per-frame scratch / one-shot handoffs / view / session
+  data / preferences / environment) and the call sites are untouched.
+- **`#[allow(clippy::too_many_arguments)]` (57 sites) stays.** These are a
+  consequence of a deliberate design, not debt — see CORE_SHELL.md, "What is
+  explicitly NOT a violation" #2.
+- **No generator for the sites/cities tables.** NEXRAD is static infrastructure;
+  a generator for data that does not change is speculative work. `data::sites`
+  already cites its NOAA/NCEI source. `geo::cities` cited nothing, so it now
+  carries an explicit "provenance undocumented" note telling a maintainer to
+  establish a citable source before editing — which is the actual gap.
+- **`streaming_loop` is 550 lines.** Its await ordering and control flow are
+  load-bearing and cannot be verified headlessly; the blocks with clean
+  boundaries were extracted and the rest deliberately left inline.
 
 ## Manual QA
 
