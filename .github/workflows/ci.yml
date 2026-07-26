@@ -40,7 +40,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run Clippy
-        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+        # --all-targets so #[cfg(test)] code is linted too; matches the
+        # pre-commit hook in .cargo-husky/hooks/pre-commit.
+        run: cargo clippy --target wasm32-unknown-unknown --all-targets -- -D warnings
 
   build:
     name: Build check
