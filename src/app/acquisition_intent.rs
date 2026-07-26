@@ -2,45 +2,38 @@
 //!
 //! PRODUCT.md §5 specifies that downloading is a *function of what the user
 //! looks at*, not a manual chore: the user navigates and acquisition reacts.
-//! This module computes, each frame, the set of archive scans that the settled
-//! playback position (plus a bounded lookahead, scoped by the active filter)
-//! ought to have cached, and enqueues them into the shared download queue.
+//! This module runs, each frame, the pumps that keep the shared download queue
+//! and the archive listings in step with the settled playback position (plus a
+//! bounded lookahead, scoped by the active filter).
 //!
-//! Guardrails against runaway fetching (PRODUCT.md §5.1):
-//! - **Debounce** — a prefetch only fires once the view has been stable for
-//!   [`crate::PREFETCH_DEBOUNCE_MS`], so transient scrub/zoom positions don't
-//!   trigger downloads. During playback the debounce collapses to zero and the
-//!   lookahead window scales with speed, so prefetch tracks the cursor.
-//! - **Concurrency cap** — inherited from the shared `DownloadQueueManager`.
-//! - **Volume cap** — [`crate::nexrad::download_queue::DEFAULT_MAX_AUTO_FETCH_BYTES`]
-//!   bounds total bytes fetched per session.
+//! Every pump is a thin shell: it assembles read-only inputs, calls the pure
+//! reducers in [`crate::core::acquisition`] (window computation, gating,
+//! dedup/churn guards, queue-shaping), then executes the described actions in
+//! field order — listing fetches, operation creation, and queue appends. All
+//! guardrails against runaway fetching (PRODUCT.md §5.1: the settle debounce,
+//! the concurrency cap, the session volume cap) are decided in the core.
 //!
-//! Dedup is layered: this module skips scans already cached (per active
+//! Dedup is layered: the reducers skip scans already cached (per active
 //! elevation) or already queued, and the download path itself makes the
 //! authoritative per-(elevation) cache-hit decision before any network call.
 
-use crate::core::acquisition::{dates_in_range, dates_spanning, reactive_prefetch_allowed};
+use crate::core::acquisition::{
+    self as acquisition_core, ListingSnapshot, ScanFetchIntent, WindowDayInput,
+    WindowIntentActions, WindowPlan,
+};
+use crate::nexrad::acquisition::archive_index::ArchiveListing;
 use crate::nexrad::download_queue::QueueItem;
 use crate::{state, WorkbenchApp};
-use chrono::NaiveDate;
 use eframe::egui;
-use std::hash::{Hash, Hasher};
 
-/// One archive scan the reactive pump wants cached, scoped to the active
-/// elevation filter (`None` = whole volume, for Latest mode).
-struct ScanFetchIntent {
-    date: NaiveDate,
-    file_name: String,
-    scan_start: i64,
-    scan_end: i64,
-    elevation_filter: Option<u8>,
+/// Snapshot a cached day listing into the core reducers' input form
+/// (file names + inferred scan boundaries, index-aligned).
+fn snapshot_listing(listing: &ArchiveListing) -> ListingSnapshot<'_> {
+    ListingSnapshot {
+        file_names: listing.files.iter().map(|f| f.name.as_str()).collect(),
+        boundaries: listing.scan_boundaries(),
+    }
 }
-
-/// Quantum (timeline seconds) for bucketing the playback position in the
-/// debounce signature. Small movements within a bucket don't reset the settle;
-/// during playback the bucket advances and re-triggers prefetch at a bounded
-/// rate regardless of speed.
-const PREFETCH_POS_QUANTUM_SECS: f64 = 30.0;
 
 impl WorkbenchApp {
     /// Reactive archive prefetch. Runs every frame (step 9.5) but is gated by a
@@ -51,15 +44,14 @@ impl WorkbenchApp {
         // playhead (while *attached* to the live edge the stream owns its
         // own acquisition and prefetching "ahead of now" is meaningless — a
         // detached background stream browses the archive and prefetches
-        // normally); the queue not paused.
+        // normally); the queue not paused; the data-saver
+        // `autofetch_while_scrubbing` policy on (explicit range selections
+        // and the inspector's tap-to-fetch still fetch — the user asked for
+        // those — but seeking/scrubbing does not).
         let playhead_attached = self.playback.state.time_model.is_pinned()
             || self.playback.state.time_model.is_lookback();
-        // Data-saver: with autofetch-while-scrubbing off, the playhead no longer
-        // drives downloads. Explicit range selections (`pump_selection_fetch`)
-        // and the inspector's tap-to-fetch still fetch — the user asked for
-        // those — but seeking/scrubbing does not.
         if !self.render.coordinator.has_worker()
-            || !reactive_prefetch_allowed(
+            || !acquisition_core::reactive_prefetch_allowed(
                 playhead_attached,
                 self.acquisition.state.is_paused(),
                 self.state.autofetch_while_scrubbing,
@@ -73,57 +65,41 @@ impl WorkbenchApp {
         // on this very frame instead of after the 300 ms settle.
         self.pump_anchor_fast_path();
 
-        let playing_micro = self.playback.state.playing
-            && self.playback.state.playback_mode() == crate::core::PlaybackMode::Micro;
-
-        // Debounce: require the view to settle, unless playing (then track the
-        // advancing cursor continuously — dedup keeps that idempotent).
-        let signature = self.prefetch_signature();
-        let now_ms = js_sys::Date::now();
-        let settle_ms = if playing_micro {
-            0.0
-        } else {
-            crate::PREFETCH_DEBOUNCE_MS
+        // Phase 1: debounce + volume-cap gate + window plan (pure; mutates
+        // only the settle state).
+        let env = acquisition_core::ReactivePrefetchEnv {
+            auto_fetch_cap_reached: self
+                .acquisition
+                .coordinator
+                .download_queue
+                .auto_fetch_cap_reached(),
+            now_ms: js_sys::Date::now(),
+            debounce_ms: crate::PREFETCH_DEBOUNCE_MS,
+            site_id: &self.state.viz_state.site_id,
+            product_worker_string: self.state.viz_state.product.to_worker_string(),
+            fallback_scan_duration_secs: crate::FALLBACK_SCAN_DURATION_SECS,
         };
-        if !self
-            .acquisition
-            .prefetch_settle
-            .poll(signature, now_ms, settle_ms)
-            || self.acquisition.prefetch_settle.already_resolved()
-        {
-            return;
-        }
-
-        // Stop adding background work once the session volume cap is hit. Mark
-        // resolved so we don't recompute until the view moves; surface it so an
-        // idle canvas isn't mistaken for breakage (PRODUCT.md §7.2).
-        if self
-            .acquisition
-            .coordinator
-            .download_queue
-            .auto_fetch_cap_reached()
-        {
-            self.acquisition.prefetch_settle.mark_resolved();
-            self.state.status_message =
-                "Auto-fetch limit reached — pausing background prefetch".to_string();
-            return;
-        }
-
-        // Compute what should be cached for the settled view.
-        let (intents, listing_pending) = self.compute_acquisition_intent(ctx);
-        if intents.is_empty() {
-            // Nothing to do. If no listing is still in flight, this view is
-            // fully handled — stop recomputing until it moves.
-            if !listing_pending {
-                self.acquisition.prefetch_settle.mark_resolved();
+        let plan = match acquisition_core::plan_reactive_prefetch(
+            &env,
+            &self.playback.state,
+            &self.state.viz_state.elevation_selection,
+            &mut self.acquisition.prefetch_settle,
+        ) {
+            acquisition_core::ReactivePrefetchPlan::Skip => return,
+            acquisition_core::ReactivePrefetchPlan::CapReached { status_message } => {
+                // Surface it so an idle canvas isn't mistaken for breakage
+                // (PRODUCT.md §7.2).
+                self.state.status_message = status_message;
+                return;
             }
-            return;
-        }
+            acquisition_core::ReactivePrefetchPlan::Window(plan) => plan,
+        };
 
-        // Create an acquisition operation per new scan (so prefetch surfaces in
-        // the acquisition drawer and completion is tracked), then append to the
-        // shared queue. The next frame's pump_download_queue dispatches them.
-        self.enqueue_intents(intents);
+        // Phase 2 on a fresh snapshot (the anchor fast path above may have
+        // just enqueued): reduce the settled window to concrete actions,
+        // then execute them.
+        let actions = self.reduce_window_plan(&plan);
+        let listing_pending = self.execute_window_actions(ctx, actions);
 
         // Listings may still be in flight for adjacent dates; only mark the
         // view resolved once everything is enqueued and nothing is pending.
@@ -132,63 +108,118 @@ impl WorkbenchApp {
         }
     }
 
-    /// The debounce-free remedy for "scrub into a shadow = blank canvas": if
-    /// the archive scan the playhead would render (at-or-before semantics,
-    /// matching the render side) is listed but neither cached for the active
-    /// scope nor queued, enqueue it immediately. Idempotent and cheap — the
-    /// satisfied check hits on every subsequent frame — so it runs every
-    /// frame ahead of the settle gate. Listings themselves are left to the
-    /// debounced pump and the visible-range pump.
+    /// The debounce-free remedy for "scrub into a shadow = blank canvas":
+    /// enqueue the listed-but-uncached scan under the playhead immediately.
+    /// Idempotent and cheap — the satisfied check hits on every subsequent
+    /// frame — so it runs every frame ahead of the settle gate. Listings
+    /// themselves are left to the debounced pump and the visible-range pump.
     fn pump_anchor_fast_path(&mut self) {
-        if self
-            .acquisition
-            .coordinator
-            .download_queue
-            .auto_fetch_cap_reached()
-        {
-            return;
-        }
         let pos = self.playback.state.playback_position() as i64;
         let Some(date) = chrono::DateTime::from_timestamp(pos, 0).map(|dt| dt.date_naive()) else {
             return;
         };
-        let elevation_filter = match &self.state.viz_state.elevation_selection {
-            crate::core::ElevationSelection::Fixed {
-                elevation_number, ..
-            } => Some(*elevation_number),
-            crate::core::ElevationSelection::Latest => None,
-        };
-        let site_id = self.state.viz_state.site_id.clone();
         let intent = {
-            let Some(listing) = self
+            let listing = self
                 .acquisition
                 .coordinator
                 .archive_index
-                .get(&site_id, &date)
-            else {
-                return;
-            };
-            let Some((file, b)) = listing.scan_at_or_before(pos) else {
-                return;
-            };
-            ScanFetchIntent {
+                .get(&self.state.viz_state.site_id, &date)
+                .map(snapshot_listing);
+            let queued_scan_starts = self
+                .acquisition
+                .coordinator
+                .download_queue
+                .queued_scan_starts();
+            let env = acquisition_core::AnchorFastPathEnv {
+                auto_fetch_cap_reached: self
+                    .acquisition
+                    .coordinator
+                    .download_queue
+                    .auto_fetch_cap_reached(),
+                playback_pos: pos,
                 date,
-                file_name: file.name.clone(),
-                scan_start: b.start,
-                scan_end: b.end,
-                elevation_filter,
-            }
+                elevation_filter: self.state.viz_state.elevation_selection.elevation_number(),
+                listing: listing.as_ref(),
+                queued_scan_starts: &queued_scan_starts,
+                cache_match_tolerance_secs: crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+            };
+            acquisition_core::decide_anchor_fast_path(&env, &self.timeline.scans)
         };
-        if self.prefetch_already_satisfied(&intent) {
-            return;
+        if let Some(intent) = intent {
+            self.enqueue_intents(vec![intent]);
         }
-        self.enqueue_intents(vec![intent]);
+    }
+
+    /// Assemble the per-date listing/backoff/pending inputs for a window plan
+    /// and reduce it to concrete actions. Read-only input assembly; the caller
+    /// executes the returned actions.
+    fn reduce_window_plan(&self, plan: &WindowPlan) -> WindowIntentActions {
+        let site_id = &self.state.viz_state.site_id;
+        let now_ms = js_sys::Date::now();
+        let days: Vec<WindowDayInput<'_>> = plan
+            .dates
+            .iter()
+            .map(|&date| WindowDayInput {
+                date,
+                listing: self
+                    .acquisition
+                    .coordinator
+                    .archive_index
+                    .get(site_id, &date)
+                    .map(snapshot_listing),
+                backoff_until_ms: self
+                    .acquisition
+                    .listing_backoff
+                    .get(&(site_id.clone(), date))
+                    .copied(),
+                listing_request_pending: self
+                    .acquisition
+                    .coordinator
+                    .download_channel
+                    .is_listing_pending(site_id, &date),
+            })
+            .collect();
+        let queued_scan_starts = self
+            .acquisition
+            .coordinator
+            .download_queue
+            .queued_scan_starts();
+        acquisition_core::reduce_window_intents(
+            plan,
+            &days,
+            now_ms,
+            &queued_scan_starts,
+            &self.timeline.scans,
+            crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+        )
+    }
+
+    /// Execute a window reduction's described actions in field order: fetch
+    /// the missing listings (they populate the index for a later frame), then
+    /// enqueue the wanted scans. Returns whether a needed listing is still
+    /// missing, so the caller can decide completion (resolve/disarm).
+    fn execute_window_actions(
+        &mut self,
+        ctx: &egui::Context,
+        actions: WindowIntentActions,
+    ) -> bool {
+        let site_id = self.state.viz_state.site_id.clone();
+        for date in actions.fetch_listings {
+            self.acquisition.coordinator.download_channel.fetch_listing(
+                ctx.clone(),
+                site_id.clone(),
+                date,
+            );
+        }
+        self.enqueue_intents(actions.enqueue);
+        actions.listing_pending
     }
 
     /// Create a tracked acquisition operation per intent and append the
     /// corresponding items to the shared download queue. The operation id
     /// rides on each queue item so priority dispatch and pruning stay
-    /// correlated with the drawer.
+    /// correlated with the drawer. The next frame's pump_download_queue
+    /// dispatches them.
     fn enqueue_intents(&mut self, intents: Vec<ScanFetchIntent>) {
         if intents.is_empty() {
             return;
@@ -218,185 +249,24 @@ impl WorkbenchApp {
         self.acquisition.coordinator.download_queue.enqueue(items);
     }
 
-    /// Hash of the inputs that determine *what* to prefetch: a quantized
-    /// playback position, the elevation filter, the product, and the site. A
-    /// change resets the settle timer; a stable value lets it fire.
-    fn prefetch_signature(&self) -> u64 {
-        let pos = self.playback.state.playback_position();
-        let bucket = (pos / PREFETCH_POS_QUANTUM_SECS).floor() as i64;
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        bucket.hash(&mut h);
-        match &self.state.viz_state.elevation_selection {
-            crate::core::ElevationSelection::Fixed {
-                elevation_number, ..
-            } => (1u8, *elevation_number).hash(&mut h),
-            crate::core::ElevationSelection::Latest => (0u8, 0u8).hash(&mut h),
-        }
-        self.state.viz_state.product.to_worker_string().hash(&mut h);
-        self.state.viz_state.site_id.hash(&mut h);
-        h.finish()
-    }
-
-    /// Determine which archive scans should be cached for the settled view
-    /// (the *forward* lookahead window around the playback cursor).
-    ///
-    /// Returns `(intents, listing_pending)`, where `listing_pending` is true
-    /// when a needed date's listing had to be fetched first — the caller keeps
-    /// re-evaluating until it arrives.
-    fn compute_acquisition_intent(&self, ctx: &egui::Context) -> (Vec<ScanFetchIntent>, bool) {
-        let pos = self.playback.state.playback_position();
-
-        // Elevation scope: a Fixed cut scopes ingest to that elevation; Latest
-        // may render any cut as the cursor advances, so fetch the whole volume.
-        let elevation_filter = match &self.state.viz_state.elevation_selection {
-            crate::core::ElevationSelection::Fixed {
-                elevation_number, ..
-            } => Some(*elevation_number),
-            crate::core::ElevationSelection::Latest => None,
-        };
-
-        // Prefetch window: direction-aware, speed-scaled while playing, with
-        // a short trail behind the cursor so small backward jogs stay warm.
-        // Shared with the queue's prune/priority logic so all three agree on
-        // what "near the playhead" means; the volume cap is the backstop.
-        let speed_mult = self.playback.state.speed.timeline_seconds_per_real_second();
-        let forward =
-            self.playback.state.time_model.direction == crate::core::PlaybackDirection::Forward;
-        let (win_start_i64, win_end_i64) = crate::nexrad::download_queue::prefetch_window(
-            pos,
-            speed_mult,
-            self.playback.state.playing,
-            forward,
-        );
-
-        let pos_i64 = pos as i64;
-        // Look slightly back so the listing for the prior date is fetched near a
-        // UTC midnight boundary; the render target is the `scan_at_or_before`
-        // anchor below.
-        let dates_start_i64 =
-            win_start_i64.min((pos - crate::FALLBACK_SCAN_DURATION_SECS as f64) as i64);
-
-        self.compute_intents_for_window(
-            dates_start_i64,
-            win_start_i64,
-            win_end_i64,
-            Some(pos_i64),
-            elevation_filter,
-            ctx,
-        )
-    }
-
-    /// Shared core: which archive scans intersect a window should be cached.
-    ///
-    /// `dates_start_i64..win_end_i64` bounds the *dates* whose listings we
-    /// consult; `intersect_start_i64..win_end_i64` bounds which scans within
-    /// those listings we want; `anchor_at_or_before` optionally adds the scan
-    /// covering that instant (the forward render target). Fetches any missing
-    /// listings, dedups, and drops already-cached/queued scans.
-    fn compute_intents_for_window(
-        &self,
-        dates_start_i64: i64,
-        intersect_start_i64: i64,
-        win_end_i64: i64,
-        anchor_at_or_before: Option<i64>,
-        elevation_filter: Option<u8>,
-        ctx: &egui::Context,
-    ) -> (Vec<ScanFetchIntent>, bool) {
-        let site_id = self.state.viz_state.site_id.clone();
-        let mut intents: Vec<ScanFetchIntent> = Vec::new();
-        let mut missing_dates: Vec<NaiveDate> = Vec::new();
-
-        for date in dates_spanning(dates_start_i64, win_end_i64) {
-            match self
-                .acquisition
-                .coordinator
-                .archive_index
-                .get(&site_id, &date)
-            {
-                Some(listing) => {
-                    let mut found: Vec<(String, i64, i64)> = listing
-                        .scans_intersecting(intersect_start_i64, win_end_i64)
-                        .into_iter()
-                        .map(|(file, b)| (file.name.clone(), b.start, b.end))
-                        .collect();
-                    if let Some(anchor) = anchor_at_or_before {
-                        if let Some((file, b)) = listing.scan_at_or_before(anchor) {
-                            found.push((file.name.clone(), b.start, b.end));
-                        }
-                    }
-                    for (file_name, scan_start, scan_end) in found {
-                        intents.push(ScanFetchIntent {
-                            date,
-                            file_name,
-                            scan_start,
-                            scan_end,
-                            elevation_filter,
-                        });
-                    }
-                }
-                None => missing_dates.push(date),
-            }
-        }
-
-        // Fetch any missing listings (the immutable archive_index borrow above
-        // is released here). They populate the index for a later frame.
-        let listing_pending = !missing_dates.is_empty();
-        let now_ms = js_sys::Date::now();
-        for date in missing_dates {
-            let backed_off = self
-                .acquisition
-                .listing_backoff
-                .get(&(site_id.clone(), date))
-                .is_some_and(|&until| now_ms < until);
-            if !backed_off
-                && !self
-                    .acquisition
-                    .coordinator
-                    .download_channel
-                    .is_listing_pending(&site_id, &date)
-            {
-                self.acquisition.coordinator.download_channel.fetch_listing(
-                    ctx.clone(),
-                    site_id.clone(),
-                    date,
-                );
-            }
-        }
-
-        // Collapse duplicate scans, then drop those already satisfied (cached
-        // for this elevation, or already queued).
-        intents.sort_by_key(|i| i.scan_start);
-        intents.dedup_by_key(|i| i.scan_start);
-        intents.retain(|i| !self.prefetch_already_satisfied(i));
-
-        (intents, listing_pending)
-    }
-
-    /// Maximum visible span (seconds) for which the visible-range listing
-    /// pump will fetch archive listings. Zoomed out past this (weeks/months),
-    /// listing every visible day would be an S3 request storm for shadows
-    /// too small to read anyway.
-    const VISIBLE_LISTING_MAX_SPAN_SECS: f64 = 4.0 * 86_400.0;
-
-    /// Rate limit between new listing requests issued by the visible pump.
-    const VISIBLE_LISTING_INTERVAL_MS: f64 = 400.0;
-
     /// Make the timeline the browsing surface: fetch archive listings for
     /// every UTC date the visible window touches, so shadow boundaries
     /// populate wherever the user pans/zooms — no date picker required.
     ///
     /// Bounded by: a max visible span (no listing storms at year zoom), one
-    /// new LIST per [`Self::VISIBLE_LISTING_INTERVAL_MS`], per-date session
-    /// caching with a freshness TTL for today (so the shadow track grows
-    /// near the live edge), per-(site,date) failure backoff, and the
-    /// channel's own pending-listing dedup.
+    /// new LIST per [`crate::core::acquisition::VISIBLE_LISTING_INTERVAL_MS`],
+    /// per-date session caching with a freshness TTL for today (so the shadow
+    /// track grows near the live edge), per-(site,date) failure backoff, and
+    /// the channel's own pending-listing dedup — all decided in
+    /// [`crate::core::acquisition::decide_visible_listing`].
     pub(crate) fn pump_visible_listings(&mut self, ctx: &egui::Context) {
         let span = self.playback.state.view_width_secs();
-        if span <= 0.0 || span > Self::VISIBLE_LISTING_MAX_SPAN_SECS {
-            return;
-        }
         let now_ms = js_sys::Date::now();
-        if now_ms < self.acquisition.visible_listing_next_ms {
+        if !acquisition_core::visible_listing_pump_due(
+            span,
+            now_ms,
+            self.acquisition.visible_listing_next_ms,
+        ) {
             return;
         }
 
@@ -407,43 +277,40 @@ impl WorkbenchApp {
         let view_start = self.playback.state.timeline_view_start;
         let site_id = self.state.viz_state.site_id.clone();
 
-        for date in dates_in_range(view_start as i64, (view_start + span) as i64) {
-            if date > today {
-                continue;
-            }
-            if self
-                .acquisition
-                .coordinator
-                .archive_index
-                .has_fresh(&site_id, &date, now_secs, today)
-            {
-                continue;
-            }
-            if self
-                .acquisition
+        let days: Vec<acquisition_core::VisibleListingDay> =
+            acquisition_core::dates_in_range(view_start as i64, (view_start + span) as i64)
+                .into_iter()
+                .map(|date| acquisition_core::VisibleListingDay {
+                    date,
+                    fresh: self
+                        .acquisition
+                        .coordinator
+                        .archive_index
+                        .has_fresh(&site_id, &date, now_secs, today),
+                    listing_request_pending: self
+                        .acquisition
+                        .coordinator
+                        .download_channel
+                        .is_listing_pending(&site_id, &date),
+                    backoff_until_ms: self
+                        .acquisition
+                        .listing_backoff
+                        .get(&(site_id.clone(), date))
+                        .copied(),
+                })
+                .collect();
+
+        let actions = acquisition_core::decide_visible_listing(&days, today, now_ms);
+        if let Some(date) = actions.fetch {
+            self.acquisition
                 .coordinator
                 .download_channel
-                .is_listing_pending(&site_id, &date)
-            {
-                continue;
-            }
-            if self
-                .acquisition
-                .listing_backoff
-                .get(&(site_id.clone(), date))
-                .is_some_and(|&until| now_ms < until)
-            {
-                continue;
-            }
-            self.acquisition.coordinator.download_channel.fetch_listing(
-                ctx.clone(),
-                site_id.clone(),
-                date,
-            );
+                .fetch_listing(ctx.clone(), site_id, date);
+        }
+        if let Some(next_allowed_ms) = actions.next_allowed_ms {
             // One new LIST per interval — the rest of the span fills in on
             // subsequent frames.
-            self.acquisition.visible_listing_next_ms = now_ms + Self::VISIBLE_LISTING_INTERVAL_MS;
-            return;
+            self.acquisition.visible_listing_next_ms = next_allowed_ms;
         }
     }
 
@@ -457,19 +324,19 @@ impl WorkbenchApp {
             return;
         };
         let now_secs = self.state.frame_now.secs();
-        match crate::core::acquisition::decide_selection_gate(
+        match acquisition_core::decide_selection_gate(
             start,
             end,
             crate::SELECTION_BULK_CONFIRM_SECS,
         ) {
-            crate::core::acquisition::SelectionGate::Arm => {
+            acquisition_core::SelectionGate::Arm => {
                 self.acquisition.selection_fetch_target =
                     Some(crate::subsystem::acquisition::SelectionFetchTarget {
                         range: (start, end),
                         armed_at_secs: now_secs,
                     });
             }
-            crate::core::acquisition::SelectionGate::Confirm => {
+            acquisition_core::SelectionGate::Confirm => {
                 self.chrome.range_download_modal = Some((start, end));
             }
         }
@@ -481,129 +348,55 @@ impl WorkbenchApp {
     ///
     /// Armed via `selection_fetch_target` (by `resolve_selection_fetch_gate` for
     /// short spans, or the confirm modal for long ones). Runs each frame while
-    /// armed and disarms on a bounded condition so it cannot loop forever:
-    /// - all touched dates' listings present → everything enqueued (normal);
-    /// - the session volume cap is hit;
-    /// - [`crate::SELECTION_FETCH_DEADLINE_SECS`] elapsed (a listing is stuck).
-    ///
-    /// Dedup is the same two-layer guard the reactive pump relies on
-    /// (`prefetch_already_satisfied` + `download_queue.enqueue`'s own skip), so
-    /// re-running while armed never queues a scan twice.
+    /// armed; the bounded disarm conditions (volume cap, degenerate span, the
+    /// listing deadline, and the everything-enqueued normal path) are decided
+    /// by [`crate::core::acquisition::plan_selection_fetch`] so it cannot loop
+    /// forever. Dedup is the same two-layer guard the reactive pump relies on
+    /// (the reducers' already-satisfied check + `download_queue.enqueue`'s own
+    /// skip), so re-running while armed never queues a scan twice.
     pub(crate) fn pump_selection_fetch(&mut self, ctx: &egui::Context) {
-        if !self.render.coordinator.has_worker() || self.acquisition.state.is_paused() {
-            return;
-        }
-        let Some(target) = self.acquisition.selection_fetch_target else {
-            return;
-        };
-
-        // Disarm: session volume cap reached.
-        if self
-            .acquisition
-            .coordinator
-            .download_queue
-            .auto_fetch_cap_reached()
-        {
-            self.acquisition.selection_fetch_target = None;
-            self.state.status_message =
-                "Auto-fetch limit reached — selected range not fully downloaded".to_string();
-            return;
-        }
-
-        let (start, end) = target.range;
-        // Degenerate selection — nothing to do.
-        if (end - start).abs() < 1.0 {
-            self.acquisition.selection_fetch_target = None;
-            return;
-        }
-
-        // Disarm: a listing is stuck (permanent 404 / network failure). The
-        // hard backstop that guarantees termination regardless of outcome.
         let now_secs = self.state.frame_now.secs();
-        if now_secs > target.armed_at_secs + crate::SELECTION_FETCH_DEADLINE_SECS {
-            self.acquisition.selection_fetch_target = None;
-            self.state.status_message =
-                "Couldn't list part of the selected range — download may be incomplete".to_string();
-            return;
-        }
-
-        let elevation_filter = match &self.state.viz_state.elevation_selection {
-            crate::core::ElevationSelection::Fixed {
-                elevation_number, ..
-            } => Some(*elevation_number),
-            crate::core::ElevationSelection::Latest => None,
-        };
-        let site_id = self.state.viz_state.site_id.clone();
         let today = chrono::DateTime::from_timestamp(now_secs as i64, 0)
             .map(|dt| dt.date_naive())
             .unwrap_or_else(|| chrono::Utc::now().date_naive());
-
-        let start_i64 = start as i64;
-        let end_i64 = end as i64;
-        let mut intents: Vec<ScanFetchIntent> = Vec::new();
-        let mut missing_dates: Vec<NaiveDate> = Vec::new();
-
-        // Walk every UTC date the range touches (day-by-day, so multi-day spans
-        // enumerate interior days — `dates_spanning` samples endpoints only).
-        for date in dates_in_range(start_i64, end_i64) {
-            match self
+        let env = acquisition_core::SelectionFetchEnv {
+            has_worker: self.render.coordinator.has_worker(),
+            queue_paused: self.acquisition.state.is_paused(),
+            target: self
+                .acquisition
+                .selection_fetch_target
+                .map(|t| (t.range, t.armed_at_secs)),
+            auto_fetch_cap_reached: self
                 .acquisition
                 .coordinator
-                .archive_index
-                .get(&site_id, &date)
-            {
-                Some(listing) => {
-                    for (file, b) in listing.scans_intersecting(start_i64, end_i64) {
-                        intents.push(ScanFetchIntent {
-                            date,
-                            file_name: file.name.clone(),
-                            scan_start: b.start,
-                            scan_end: b.end,
-                            elevation_filter,
-                        });
-                    }
+                .download_queue
+                .auto_fetch_cap_reached(),
+            now_secs,
+            deadline_secs: crate::SELECTION_FETCH_DEADLINE_SECS,
+            elevation_filter: self.state.viz_state.elevation_selection.elevation_number(),
+            today,
+        };
+        match acquisition_core::plan_selection_fetch(&env) {
+            acquisition_core::SelectionFetchPlan::Skip => {}
+            acquisition_core::SelectionFetchPlan::Disarm { status_message } => {
+                self.acquisition.selection_fetch_target = None;
+                if let Some(message) = status_message {
+                    self.state.status_message = message;
                 }
-                // Dates in the future have no archive; don't keep us armed for them.
-                None if date <= today => missing_dates.push(date),
-                None => {}
             }
-        }
+            acquisition_core::SelectionFetchPlan::Window(plan) => {
+                // A bulk request is explicit, so all missing dates' listings
+                // are fetched at once — the per-(site,date) backoff + channel
+                // pending-dedup (decided in the reducer) still prevent storms.
+                let actions = self.reduce_window_plan(&plan);
+                let listing_pending = self.execute_window_actions(ctx, actions);
 
-        // Fetch any missing listings (the immutable archive_index borrow above
-        // is released here); they populate the index for a later frame. A bulk
-        // request is explicit, so fetch all missing dates at once — the
-        // per-(site,date) backoff + channel pending-dedup still prevent storms.
-        let listing_pending = !missing_dates.is_empty();
-        let now_ms = js_sys::Date::now();
-        for date in missing_dates {
-            let backed_off = self
-                .acquisition
-                .listing_backoff
-                .get(&(site_id.clone(), date))
-                .is_some_and(|&until| now_ms < until);
-            if !backed_off
-                && !self
-                    .acquisition
-                    .coordinator
-                    .download_channel
-                    .is_listing_pending(&site_id, &date)
-            {
-                self.acquisition.coordinator.download_channel.fetch_listing(
-                    ctx.clone(),
-                    site_id.clone(),
-                    date,
-                );
+                // Disarm: every fetchable date is present and enqueued
+                // (normal path).
+                if !listing_pending {
+                    self.acquisition.selection_fetch_target = None;
+                }
             }
-        }
-
-        intents.sort_by_key(|i| i.scan_start);
-        intents.dedup_by_key(|i| i.scan_start);
-        intents.retain(|i| !self.prefetch_already_satisfied(i));
-        self.enqueue_intents(intents);
-
-        // Disarm: every fetchable date is present and enqueued (normal path).
-        if !listing_pending {
-            self.acquisition.selection_fetch_target = None;
         }
     }
 
@@ -615,31 +408,25 @@ impl WorkbenchApp {
     /// the forward pump. The live stream itself only fetches the in-progress
     /// volume, so previous volumes must come from the archive.
     pub(crate) fn pump_lookback_backfill(&mut self, ctx: &egui::Context) {
-        if !self.playback.state.time_model.is_lookback()
-            || !self.render.coordinator.has_worker()
-            || self.acquisition.state.is_paused()
-            || self
-                .acquisition
+        if !acquisition_core::lookback_backfill_due(
+            self.playback.state.time_model.is_lookback(),
+            self.render.coordinator.has_worker(),
+            self.acquisition.state.is_paused(),
+            self.acquisition
                 .coordinator
                 .download_queue
-                .auto_fetch_cap_reached()
-        {
+                .auto_fetch_cap_reached(),
+            js_sys::Date::now(),
+            &mut self.acquisition.lookback_backfill_next_ms,
+        ) {
             return;
         }
-
-        // Light 1 Hz throttle — the enqueue is idempotent, this just avoids
-        // recomputing the window every frame for the whole replay.
-        let now_ms = js_sys::Date::now();
-        if now_ms < self.acquisition.lookback_backfill_next_ms {
-            return;
-        }
-        self.acquisition.lookback_backfill_next_ms = now_ms + 1000.0;
 
         // Backfill the window the active pinned loop covers, sized from its
         // basis (frame-count or duration). The exact frame span is resolved by
-        // `resolve_pinned_window`; widen the *start* by the basis fallback span
-        // so a frame-count loop still backfills enough archive before its
-        // frames are cached (its resolved span collapses to near-zero then).
+        // `resolve_pinned_window`; the plan widens the *start* by the basis
+        // fallback span so a frame-count loop still backfills enough archive
+        // before its frames are cached.
         let now = crate::core::TimeModel::wall_clock_time();
         let basis = self
             .playback
@@ -648,49 +435,13 @@ impl WorkbenchApp {
             .map(|w| w.basis)
             .unwrap_or_default();
         let (resolved_start, _resolved_end) = self.resolve_pinned_window(basis, now);
-        let win_end_i64 = now as i64;
-        let win_start_i64 = resolved_start.min(now - basis.fallback_span_secs()) as i64;
-        let elevation_filter = match &self.state.viz_state.elevation_selection {
-            crate::core::ElevationSelection::Fixed {
-                elevation_number, ..
-            } => Some(*elevation_number),
-            crate::core::ElevationSelection::Latest => None,
-        };
-
-        let (intents, _listing_pending) = self.compute_intents_for_window(
-            win_start_i64,
-            win_start_i64,
-            win_end_i64,
-            None,
-            elevation_filter,
-            ctx,
+        let plan = acquisition_core::plan_lookback_backfill(
+            resolved_start,
+            now,
+            basis,
+            self.state.viz_state.elevation_selection.elevation_number(),
         );
-        self.enqueue_intents(intents);
-    }
-
-    /// Whether a candidate scan is already cached for the active scope or is
-    /// already in the download queue — a synchronous, in-memory check. The
-    /// download path makes the authoritative IDB-backed decision as a backstop.
-    fn prefetch_already_satisfied(&self, intent: &ScanFetchIntent) -> bool {
-        if self
-            .acquisition
-            .coordinator
-            .download_queue
-            .find_by_scan_start(intent.scan_start)
-            .is_some()
-        {
-            return true;
-        }
-        self.timeline.scans.scans.iter().any(|s| {
-            (s.start_time as i64 - intent.scan_start).abs() < crate::SCAN_CACHE_MATCH_TOLERANCE_SECS
-                && match intent.elevation_filter {
-                    // Fixed cut: satisfied once that elevation is stored.
-                    Some(elev) => s.sweeps.iter().any(|sw| sw.elevation_number == elev),
-                    // Whole volume (Latest): treat any cached sweep as enough —
-                    // Latest renders from whatever's present, and completing a
-                    // partial volume is left to the on-demand download path.
-                    None => !s.sweeps.is_empty(),
-                }
-        })
+        let actions = self.reduce_window_plan(&plan);
+        self.execute_window_actions(ctx, actions);
     }
 }

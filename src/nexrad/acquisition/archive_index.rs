@@ -89,21 +89,6 @@ impl ArchiveListing {
         boundaries
     }
 
-    /// Find all scans whose time span `[start, end)` intersects `[range_start, range_end]`.
-    pub(crate) fn scans_intersecting(
-        &self,
-        range_start: i64,
-        range_end: i64,
-    ) -> Vec<(&ArchiveFileMeta, ScanBoundary)> {
-        let boundaries = self.scan_boundaries();
-        self.files
-            .iter()
-            .zip(boundaries.iter())
-            .filter(|(_, b)| b.start < range_end && b.end > range_start)
-            .map(|(file, b)| (file, *b))
-            .collect()
-    }
-
     /// The most recent scan that starts at or before `timestamp`.
     ///
     /// This is the scan a playback cursor renders even when it sits in the
@@ -111,17 +96,15 @@ impl ArchiveListing {
     /// matching `find_recent_scan`'s "most recent started" semantics on the
     /// render side. `find_scan_containing` only matches when the cursor is
     /// *within* a scan's span; this also covers the after-the-end case.
+    /// Selection semantics live in the core
+    /// ([`crate::core::acquisition::at_or_before_index`]).
     pub(crate) fn scan_at_or_before(
         &self,
         timestamp: i64,
     ) -> Option<(&ArchiveFileMeta, ScanBoundary)> {
         let boundaries = self.scan_boundaries();
-        self.files
-            .iter()
-            .zip(boundaries.iter())
-            .filter(|(_, b)| b.start <= timestamp)
-            .max_by_key(|(_, b)| b.start)
-            .map(|(file, b)| (file, *b))
+        crate::core::acquisition::at_or_before_index(&boundaries, timestamp)
+            .map(|i| (&self.files[i], boundaries[i]))
     }
 }
 
@@ -323,15 +306,23 @@ mod tests {
         assert!(l.scan_at_or_before(500).is_none());
     }
 
-    // --- scans_intersecting ---
+    // --- listing boundaries × core window query (the reducers' composition) ---
 
-    #[test]
+    /// Names of the listed scans intersecting `[start, end]`, via the core
+    /// window predicate over this listing's inferred boundaries — exactly how
+    /// the prefetch reducers consume a listing snapshot.
+    fn intersecting_names(l: &ArchiveListing, start: i64, end: i64) -> Vec<String> {
+        let boundaries = l.scan_boundaries();
+        crate::core::acquisition::intersecting_indices(&boundaries, start, end)
+            .into_iter()
+            .map(|i| l.files[i].name.clone())
+            .collect()
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
     fn scans_intersecting_range() {
         let l = listing(vec![file("a", 1000), file("b", 1300), file("c", 1600)]);
-        let result = l.scans_intersecting(1200, 1400);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].0.name, "a");
-        assert_eq!(result[1].0.name, "b");
+        assert_eq!(intersecting_names(&l, 1200, 1400), vec!["a", "b"]);
     }
 
     /// Half-open boundary inclusivity: the filter is `b.start < range_end &&
@@ -345,20 +336,14 @@ mod tests {
 
         // range_end == b.start (1300): b is excluded (1300 < 1300 is false); only
         // a intersects.
-        let r = l.scans_intersecting(1100, 1300);
-        let names: Vec<&str> = r.iter().map(|(f, _)| f.name.as_str()).collect();
-        assert_eq!(names, vec!["a"]);
+        assert_eq!(intersecting_names(&l, 1100, 1300), vec!["a"]);
 
         // range_start == a.end (1300 == b.start, but a.end is also 1300): a is
         // excluded (a.end 1300 > 1300 is false); b is the first match.
-        let r = l.scans_intersecting(1300, 1500);
-        let names: Vec<&str> = r.iter().map(|(f, _)| f.name.as_str()).collect();
-        assert_eq!(names, vec!["b"]);
+        assert_eq!(intersecting_names(&l, 1300, 1500), vec!["b"]);
 
         // A range fully inside a single scan returns just that scan.
-        let r = l.scans_intersecting(1350, 1400);
-        let names: Vec<&str> = r.iter().map(|(f, _)| f.name.as_str()).collect();
-        assert_eq!(names, vec!["b"]);
+        assert_eq!(intersecting_names(&l, 1350, 1400), vec!["b"]);
     }
 
     /// The single-file zero-margin case: one file → boundary [start, start+300).
@@ -366,9 +351,9 @@ mod tests {
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn scans_intersecting_single_file_estimated_end() {
         let l = listing(vec![file("a", 1000)]); // [1000, 1300)
-        assert_eq!(l.scans_intersecting(1000, 1300).len(), 1); // overlaps start
-        assert_eq!(l.scans_intersecting(1300, 1400).len(), 0); // range_start==end
-        assert_eq!(l.scans_intersecting(500, 900).len(), 0); // entirely before
+        assert_eq!(intersecting_names(&l, 1000, 1300).len(), 1); // overlaps start
+        assert_eq!(intersecting_names(&l, 1300, 1400).len(), 0); // range_start==end
+        assert_eq!(intersecting_names(&l, 500, 900).len(), 0); // entirely before
     }
 
     // --- all_boundaries_for_site ---
@@ -622,7 +607,10 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn scans_intersecting_empty_listing() {
         let l = listing(vec![]);
-        assert!(l.scans_intersecting(0, 10_000).is_empty());
+        assert!(
+            crate::core::acquisition::intersecting_indices(&l.scan_boundaries(), 0, 10_000)
+                .is_empty()
+        );
     }
 
     #[wasm_bindgen_test]

@@ -100,31 +100,6 @@ pub(crate) fn playhead_priority(
     }
 }
 
-/// The `[start, end]` window (Unix seconds) of scans worth having queued for
-/// a playhead at `pos`. Ahead of the playback direction: the configured
-/// lookahead, scaled with speed while playing so fast playback buffers
-/// proportionally further. Behind: a fixed ~2-scan trail so a small backward
-/// jog doesn't hit a cold cache. `forward` flips the asymmetry.
-pub(crate) fn prefetch_window(
-    pos: f64,
-    speed_secs_per_sec: f64,
-    playing: bool,
-    forward: bool,
-) -> (i64, i64) {
-    let lead = if playing {
-        crate::PREFETCH_LOOKAHEAD_SECS_PAUSED
-            .max(speed_secs_per_sec * crate::PREFETCH_PLAY_LEAD_SECS)
-    } else {
-        crate::PREFETCH_LOOKAHEAD_SECS_PAUSED
-    };
-    let trail = 2.0 * crate::FALLBACK_SCAN_DURATION_SECS as f64;
-    if forward {
-        ((pos - trail) as i64, (pos + lead) as i64)
-    } else {
-        ((pos - lead) as i64, (pos + trail) as i64)
-    }
-}
-
 /// Action the caller should take after a queue operation.
 #[derive(Debug)]
 pub(crate) enum QueueAction {
@@ -336,6 +311,14 @@ impl DownloadQueueManager {
         self.queue.iter().find(|item| item.scan_start == scan_start)
     }
 
+    /// Every queued item's `scan_start`, in any state (a Done item still
+    /// suppresses re-enqueue). Snapshot for the core prefetch reducers'
+    /// already-satisfied guard — the in-memory mirror of
+    /// [`Self::find_by_scan_start`].
+    pub(crate) fn queued_scan_starts(&self) -> Vec<i64> {
+        self.queue.iter().map(|item| item.scan_start).collect()
+    }
+
     /// Append items to the existing queue (used by reactive prefetch, which
     /// adds to in-flight work rather than replacing it). Skips any scan_start
     /// already present so the same scan is never queued twice.
@@ -452,28 +435,6 @@ mod tests {
         assert_eq!(playhead_priority(100, 150, 200, false), 50);
         // Nearest-first: closer ahead beats farther ahead.
         assert!(playhead_priority(300, 600, 200, true) < playhead_priority(900, 1200, 200, true));
-    }
-
-    #[wasm_bindgen_test]
-    fn prefetch_window_shapes() {
-        let trail = 2.0 * crate::FALLBACK_SCAN_DURATION_SECS as f64;
-        // Paused forward: fixed lead, fixed trail.
-        let (s, e) = prefetch_window(10_000.0, 300.0, false, true);
-        assert_eq!(s, (10_000.0 - trail) as i64);
-        assert_eq!(e, (10_000.0 + crate::PREFETCH_LOOKAHEAD_SECS_PAUSED) as i64);
-        // Playing fast forward: lead scales with speed.
-        let (_, e_fast) = prefetch_window(10_000.0, 1200.0, true, true);
-        assert_eq!(
-            e_fast,
-            (10_000.0 + 1200.0 * crate::PREFETCH_PLAY_LEAD_SECS) as i64
-        );
-        // Backward play mirrors the asymmetry.
-        let (s_b, e_b) = prefetch_window(10_000.0, 300.0, false, false);
-        assert_eq!(
-            s_b,
-            (10_000.0 - crate::PREFETCH_LOOKAHEAD_SECS_PAUSED) as i64
-        );
-        assert_eq!(e_b, (10_000.0 + trail) as i64);
     }
 
     #[wasm_bindgen_test]
@@ -1046,34 +1007,36 @@ mod coverage_tests {
         assert_eq!(p, i64::MAX, "4x penalty saturates at i64::MAX");
     }
 
-    // ── prefetch_window: paused ignores speed; playing takes the max ─────────
+    // ── queued_scan_starts snapshot ─────────────────────────────────────────
 
+    /// The snapshot mirrors `find_by_scan_start` across every state: Pending,
+    /// Active, and Done items all appear.
     #[wasm_bindgen_test]
-    fn prefetch_window_paused_lead_independent_of_speed() {
-        let trail = 2.0 * crate::FALLBACK_SCAN_DURATION_SECS as f64;
-        // Huge speed but paused → lead is the fixed PAUSED constant, not scaled.
-        let (s, e) = prefetch_window(0.0, 1_000_000.0, false, true);
-        assert_eq!(s, (-trail) as i64);
-        assert_eq!(e, crate::PREFETCH_LOOKAHEAD_SECS_PAUSED as i64);
-    }
+    fn queued_scan_starts_includes_every_state() {
+        let mut q = DownloadQueueManager::new();
+        assert!(q.queued_scan_starts().is_empty());
+        q.enqueue([item(100, None), item(400, None), item(700, None)]);
+        // Activate 100, complete it; activate 400; leave 700 pending.
+        q.reprioritize(100, true);
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload {
+                scan_start: 100,
+                ..
+            }
+        ));
+        q.mark_active_done(100);
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload {
+                scan_start: 400,
+                ..
+            }
+        ));
 
-    #[wasm_bindgen_test]
-    fn prefetch_window_playing_slow_floors_at_paused_lead() {
-        // Playing but slow: speed*PLAY_LEAD < PAUSED, so .max() picks PAUSED.
-        // speed 1.0 * PREFETCH_PLAY_LEAD_SECS(4.0) = 4.0 < 600.0.
-        let (_, e) = prefetch_window(0.0, 1.0, true, true);
-        assert_eq!(e, crate::PREFETCH_LOOKAHEAD_SECS_PAUSED as i64);
-    }
-
-    #[wasm_bindgen_test]
-    fn prefetch_window_playing_fast_backward_mirrors_lead() {
-        let trail = 2.0 * crate::FALLBACK_SCAN_DURATION_SECS as f64;
-        let speed = 1000.0;
-        let expected_lead = speed * crate::PREFETCH_PLAY_LEAD_SECS; // 4000 > 600
-        let (s, e) = prefetch_window(50_000.0, speed, true, false);
-        // Backward: lead extends behind, trail ahead.
-        assert_eq!(s, (50_000.0 - expected_lead) as i64);
-        assert_eq!(e, (50_000.0 + trail) as i64);
+        let mut starts = q.queued_scan_starts();
+        starts.sort();
+        assert_eq!(starts, vec![100, 400, 700]);
     }
 
     // ── prune_pending: keep-all and drop-all extremes ───────────────────────

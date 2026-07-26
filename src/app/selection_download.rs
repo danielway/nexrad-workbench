@@ -30,7 +30,7 @@ impl WorkbenchApp {
         let speed = self.playback.state.speed.timeline_seconds_per_real_second();
         let playing = self.playback.state.playing;
         let (win_start, win_end) =
-            crate::nexrad::download_queue::prefetch_window(playhead, speed, playing, forward);
+            crate::core::acquisition::prefetch_window(playhead, speed, playing, forward);
         // Keep a generous 3x margin around the prefetch window so small
         // scrubs don't churn the queue.
         let span = win_end - win_start;
