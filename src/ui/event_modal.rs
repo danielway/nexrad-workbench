@@ -279,6 +279,9 @@ fn draw_event_modal(
             ui.horizontal(|ui| {
                 ui.label("Name:");
                 let response = ui.add(
+                    // two-way binding: the egui widget owns this value while
+                    // the user edits it (as does every field in the two date
+                    // rows below).
                     egui::TextEdit::singleline(&mut modal_state.name)
                         .hint_text("Event name...")
                         .desired_width(260.0),

@@ -81,36 +81,50 @@ impl WorkbenchApp {
         }
 
         // Detect site changes and clear volume ring
-        if self
+        self.sync_to_active_site();
+    }
+
+    /// Clear everything tied to the previous radar when the active site has
+    /// changed since the last call. Latching lives in
+    /// `PersistenceManager::detect_site_change`, so this is idempotent and safe
+    /// to call more than once per frame.
+    ///
+    /// Called from [`Self::apply_frame_setup`] (catching site changes that
+    /// arrive from deep links / restore) and directly from the `SelectSite`
+    /// handler, so a user-driven site switch tears down the old site's data in
+    /// the same step that retargets `viz_state` — never a frame later, which
+    /// would paint the old radar under the new site's projection.
+    pub(crate) fn sync_to_active_site(&mut self) {
+        if !self
             .persistence
             .detect_site_change(&self.state.viz_state.site_id)
         {
-            // A running stream targets the old site — stop it. If the user
-            // was actively live (playhead attached), restart on the new site
-            // so a site switch doesn't silently drop them out of live; the
-            // command dispatches later this same frame.
-            if self.live.mode_state.is_active() {
-                let was_attached = self.playback.state.time_model.is_pinned()
-                    || self.playback.state.time_model.is_lookback();
-                self.stop_live_mode(crate::core::LiveExitReason::UserStopped);
-                if was_attached {
-                    self.state.push_command(crate::core::Intent::StartLive);
-                }
-            }
-            if let Some(ref renderer) = self.gpu.gpu {
-                if let Ok(mut r) = renderer.lock() {
-                    r.clear_data();
-                }
-            }
-            self.render.playback_manager.clear_cache();
-            // `clear_for_site_change` is broader than `clear_active_scan`:
-            // it also wipes `available_elevations` and the per-render
-            // dedup cache. Pair it with the on-GPU `displayed` wipe so
-            // the timeline/canvas don't keep highlighting the old site.
-            self.render.coordinator.clear_for_site_change();
-            self.state.viz_state.displayed = None;
-            self.state.viz_state.previous_displayed = None;
-            self.timeline.shadow_scan_boundaries.clear();
+            return;
         }
+        // A running stream targets the old site — stop it. If the user
+        // was actively live (playhead attached), restart on the new site
+        // so a site switch doesn't silently drop them out of live.
+        if self.live.mode_state.is_active() {
+            let was_attached = self.playback.state.time_model.is_pinned()
+                || self.playback.state.time_model.is_lookback();
+            self.stop_live_mode(crate::core::LiveExitReason::UserStopped);
+            if was_attached {
+                self.state.push_command(crate::core::Intent::StartLive);
+            }
+        }
+        if let Some(ref renderer) = self.gpu.gpu {
+            if let Ok(mut r) = renderer.lock() {
+                r.clear_data();
+            }
+        }
+        self.render.playback_manager.clear_cache();
+        // `clear_for_site_change` is broader than `clear_active_scan`:
+        // it also wipes `available_elevations` and the per-render
+        // dedup cache. Pair it with the on-GPU `displayed` wipe so
+        // the timeline/canvas don't keep highlighting the old site.
+        self.render.coordinator.clear_for_site_change();
+        self.state.viz_state.displayed = None;
+        self.state.viz_state.previous_displayed = None;
+        self.timeline.shadow_scan_boundaries.clear();
     }
 }

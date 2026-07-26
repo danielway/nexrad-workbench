@@ -27,6 +27,7 @@ pub(crate) mod canvas;
 pub(crate) mod diagnostics;
 pub(crate) mod domain;
 pub(crate) mod effect;
+pub(crate) mod geo_layers;
 pub(crate) mod geocode;
 pub(crate) mod intent;
 pub(crate) mod live_mode;
@@ -41,6 +42,7 @@ pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;
 pub(crate) mod timeline_view;
 pub(crate) mod timing;
+pub(crate) mod transport;
 pub(crate) mod worker_decoded;
 pub(crate) mod worker_ingest;
 
@@ -81,6 +83,7 @@ pub(crate) use domain::worker::{
     IngestResult, RenderContext, VolumeData, VolumeSweepMeta,
 };
 pub(crate) use effect::{Effect, LocationResult};
+pub(crate) use geo_layers::GeoLayer;
 pub(crate) use live_mode::{
     should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase,
 };

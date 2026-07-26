@@ -51,7 +51,10 @@ impl WorkbenchApp {
     ) {
         use crate::core::Intent;
         match cmd {
-            // ---- Site selection ---------------------------------------
+            // ---- Site selection + external links ----------------------
+            Intent::SelectSite { site_id, lat, lon } => {
+                self.apply_site_selection(&site_id, lat, lon)
+            }
             Intent::OpenExternalUrl(url) => {
                 self.apply_effects(ctx, vec![crate::core::Effect::OpenUrl(url)])
             }
@@ -74,7 +77,29 @@ impl WorkbenchApp {
 
             // ---- Live mode --------------------------------------------
             Intent::StartLive => self.start_live_mode(ctx),
+            Intent::GoLive => {
+                // GO LIVE from any surface: drop the selection first (so the
+                // pinned playhead isn't fenced by stale bounds), open the
+                // stream, then pace at realtime.
+                self.playback.state.clear_selection();
+                self.start_live_mode(ctx);
+                self.playback.state.speed = crate::core::PlaybackSpeed::Realtime;
+            }
+            Intent::StopLive(placement) => {
+                self.handle_transport(|env, slices| {
+                    crate::core::transport::reduce_stop_live(env, slices, placement)
+                });
+            }
             Intent::ReturnToLive => self.return_to_live(ctx),
+            Intent::CenterTimelineOnNow => {
+                let now = self.state.frame_now.secs();
+                self.playback.state.center_view_on(now);
+            }
+
+            // ---- Transport --------------------------------------------
+            Intent::TogglePlayPause => {
+                self.handle_transport(crate::core::transport::reduce_toggle_play_pause)
+            }
 
             // ---- Loop presets -----------------------------------------
             Intent::ApplyLoopPreset(preset) => self.apply_loop_preset(preset, ctx),
@@ -114,7 +139,100 @@ impl WorkbenchApp {
             // ---- Diagnostics overlays (alerts / mPING / GPS) ----------
             Intent::Diagnostics(intent) => self.handle_diagnostics_intent(ctx, intent),
             Intent::ShowAlertOnMap(id) => self.handle_show_alert_on_map(id),
+
+            // ---- Canvas / map overlays --------------------------------
+            Intent::PlaceDistancePoint { lat, lon } => self.handle_place_distance_point(lat, lon),
+            Intent::SetGeoLayer(layer, on) => layer.set(&mut self.state.layer_state.geo, on),
         }
+    }
+
+    /// Run one pure transport reducer over the core state and execute the
+    /// [`crate::core::transport::TransportActions`] it describes.
+    ///
+    /// The reducers ([`crate::core::transport::reduce_toggle_play_pause`],
+    /// [`crate::core::transport::reduce_stop_live`]) share an Env/Slices/Actions
+    /// signature, so the shell side is this one adapter.
+    fn handle_transport(
+        &mut self,
+        reduce: impl FnOnce(
+            &crate::core::transport::TransportEnv,
+            crate::core::transport::TransportSlices<'_>,
+        ) -> crate::core::transport::TransportActions,
+    ) {
+        let actions = reduce(
+            &crate::core::transport::TransportEnv {
+                now_secs: self.state.frame_now.secs(),
+                pause_stream_while_reviewing: self.state.pause_stream_while_reviewing,
+            },
+            crate::core::transport::TransportSlices {
+                live_mode: &mut self.live.mode_state,
+                engine: &mut self.live.engine.borrow_mut(),
+                playback: &mut self.playback.state,
+            },
+        );
+        if actions.stop_channel {
+            self.live.channel.stop();
+        }
+        if let Some(msg) = actions.status_message {
+            self.state.status_message = msg;
+        }
+    }
+
+    /// Place the next distance-tool endpoint at `(lat, lon)`. Which endpoint
+    /// that is comes from the pure
+    /// [`crate::core::canvas::decide_distance_click`].
+    fn handle_place_distance_point(&mut self, lat: f64, lon: f64) {
+        let viz = &mut self.state.viz_state;
+        match crate::core::canvas::decide_distance_click(
+            viz.distance_start.is_some(),
+            viz.distance_end.is_some(),
+        ) {
+            crate::core::canvas::DistancePlacement::Start => {
+                viz.distance_start = Some((lat, lon));
+                viz.distance_end = None;
+            }
+            crate::core::canvas::DistancePlacement::End => {
+                viz.distance_end = Some((lat, lon));
+            }
+        }
+    }
+
+    /// Apply a site selection: retarget viz, center the camera, remember the
+    /// preference, close the modal, and queue the timeline/alerts refresh.
+    ///
+    /// Every site-picking surface (modal list, zip/geolocation result, canvas
+    /// marker click) routes here through [`Intent::SelectSite`], so this is the
+    /// single place a site change happens.
+    fn apply_site_selection(&mut self, site_id: &str, lat: f64, lon: f64) {
+        self.state.viz_state.site_id = site_id.to_string();
+        self.state.viz_state.center_lat = lat;
+        self.state.viz_state.center_lon = lon;
+        self.state
+            .viz_state
+            .set_pan_offset(eframe::egui::Vec2::ZERO);
+        self.state.viz_state.camera.center_on(lat, lon);
+        self.state
+            .push_command(crate::core::Intent::RefreshTimeline {
+                auto_position: true,
+            });
+        self.state.push_command(crate::core::Intent::Diagnostics(
+            crate::core::diagnostics::DiagnosticsIntent::RefreshAlerts,
+        ));
+        self.state.preferred_site = Some(site_id.to_string());
+        self.chrome.site_modal_open = false;
+
+        // Boot-tether deferred from a first visit (no site at launch): now that
+        // a site exists, open tethered to live (spec §7). One-shot — consumed
+        // here so later mid-session site re-selections don't auto-tether.
+        if std::mem::take(&mut self.state.start_live_on_site_select) {
+            self.state.push_command(crate::core::Intent::StartLive);
+        }
+
+        // Tear down the previous radar's stream/GPU/cache state now, in the
+        // same step that retargeted `viz_state` — otherwise the frame between
+        // here and the next `apply_frame_setup` would paint the old site's
+        // sweep under the new site's projection.
+        self.sync_to_active_site();
     }
 
     /// Apply a diagnostics overlay intent through the pure

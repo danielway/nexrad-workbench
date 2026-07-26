@@ -95,36 +95,6 @@ fn responsive_width(ctx: &egui::Context, desktop: f32) -> f32 {
     (viewport_w - 16.0).min(desktop).max(240.0)
 }
 
-/// Apply a site selection to app state: update viz, center camera, refresh timeline.
-pub(super) fn apply_site_selection(
-    state: &mut AppState,
-    chrome: &mut crate::subsystem::Chrome,
-    site_id: &str,
-    lat: f64,
-    lon: f64,
-) {
-    state.viz_state.site_id = site_id.to_string();
-    state.viz_state.center_lat = lat;
-    state.viz_state.center_lon = lon;
-    state.viz_state.set_pan_offset(Vec2::ZERO);
-    state.viz_state.camera.center_on(lat, lon);
-    state.push_command(crate::core::Intent::RefreshTimeline {
-        auto_position: true,
-    });
-    state.push_command(crate::core::Intent::Diagnostics(
-        crate::core::diagnostics::DiagnosticsIntent::RefreshAlerts,
-    ));
-    state.preferred_site = Some(site_id.to_string());
-    chrome.site_modal_open = false;
-
-    // Boot-tether deferred from a first visit (no site at launch): now that a
-    // site exists, open tethered to live (spec §7). One-shot — consumed here so
-    // later mid-session site re-selections don't auto-tether.
-    if std::mem::take(&mut state.start_live_on_site_select) {
-        state.push_command(crate::core::Intent::StartLive);
-    }
-}
-
 pub(super) struct SiteModalLayer;
 
 impl super::layout::Layer for SiteModalLayer {
@@ -144,11 +114,11 @@ impl super::layout::Layer for SiteModalLayer {
 
 /// Returns `true` if a site was selected (so the caller can trigger acquisition).
 ///
-/// Currently the caller ignores the return value — selection runs through
-/// `apply_site_selection`, which sets `viz_state.site_id`, centers the camera,
-/// and pushes `RefreshTimeline` + `RefreshAlerts` (plus `StartLive` when a
-/// boot-tether was deferred). Kept for the standalone-call-site path used by
-/// tests.
+/// Currently the caller ignores the return value — selection is emitted as
+/// [`crate::core::Intent::SelectSite`] and applied by the shell, which sets
+/// `viz_state.site_id`, centers the camera, closes this modal, and pushes
+/// `RefreshTimeline` + `RefreshAlerts` (plus `StartLive` when a boot-tether was
+/// deferred). Kept for the standalone-call-site path used by tests.
 fn draw_site_modal(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -160,7 +130,11 @@ fn draw_site_modal(
         match result {
             LocationResult::Success(lat, lon) => {
                 if let Some(site) = nearest_site(lat, lon) {
-                    apply_site_selection(state, chrome, site.id, site.lat, site.lon);
+                    state.push_command(crate::core::Intent::SelectSite {
+                        site_id: site.id.to_string(),
+                        lat: site.lat,
+                        lon: site.lon,
+                    });
                     modal_state.mode = SiteModalMode::Welcome;
                     modal_state.filter.clear();
                     modal_state.zip_input.clear();
@@ -402,6 +376,7 @@ fn render_site_list(
             ui.horizontal(|ui| {
                 ui.label("Search:");
                 let response = ui.add(
+                    // two-way binding: the egui widget owns this value while the user edits it.
                     egui::TextEdit::singleline(&mut modal_state.filter)
                         .hint_text("Site ID, name, or state...")
                         .desired_width(search_w),
@@ -439,7 +414,11 @@ fn render_site_list(
             if enter_pressed && filtered.len() == 1 {
                 let site = &filtered[0];
                 if site.id != state.viz_state.site_id {
-                    apply_site_selection(state, chrome, site.id, site.lat, site.lon);
+                    state.push_command(crate::core::Intent::SelectSite {
+                        site_id: site.id.to_string(),
+                        lat: site.lat,
+                        lon: site.lon,
+                    });
                     modal_state.filter.clear();
                     modal_state.mode = SiteModalMode::Welcome;
                     modal_state.is_first_visit = false;
@@ -473,7 +452,11 @@ fn render_site_list(
                         };
 
                         if ui.selectable_label(is_current, text).clicked() && !is_current {
-                            apply_site_selection(state, chrome, site.id, site.lat, site.lon);
+                            state.push_command(crate::core::Intent::SelectSite {
+                                site_id: site.id.to_string(),
+                                lat: site.lat,
+                                lon: site.lon,
+                            });
                             modal_state.filter.clear();
                             modal_state.mode = SiteModalMode::Welcome;
                             modal_state.is_first_visit = false;
@@ -537,6 +520,7 @@ fn render_zip_entry(
 
             ui.horizontal(|ui| {
                 let response = ui.add(
+                    // two-way binding: the egui widget owns this value while the user edits it.
                     egui::TextEdit::singleline(&mut modal_state.zip_input)
                         .hint_text("e.g. 50309")
                         .desired_width(120.0),

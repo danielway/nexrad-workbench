@@ -82,36 +82,32 @@ impl Live {
         self.engine.borrow_mut().reset_volume_observations();
     }
 
-    /// Detach the playhead from the live edge.
+    /// Detach the playhead from the live edge — the subsystem wrapper around
+    /// the pure [`crate::core::transport::detach_playhead`], which owns the
+    /// decision (including the data-saver policy). This layer only executes the
+    /// one described effect the core can't reach: stopping the worker channel.
     ///
     /// This is what every seek/jog/jump gesture does while live: the user goes
-    /// browsing. By default (`pause_stream_while_reviewing == false`) the stream
-    /// keeps ingesting at the right edge (the timeline keeps growing) and the
-    /// now-cap offers an instant return; it only stops on an explicit stop, an
-    /// error, a site change, or the detached idle timeout.
-    ///
-    /// When the data-saver policy (`pause_stream_while_reviewing`) is on,
-    /// detaching stops the background stream immediately — this is the ONE
-    /// place that policy is checked, so every seek/jog/jump call site routes
-    /// through it. No-op on the stream when already detached or not streaming.
+    /// browsing.
     pub(crate) fn detach_playhead(
         &mut self,
         playback: &mut PlaybackState,
         now: f64,
         pause_stream_while_reviewing: bool,
     ) {
-        playback.exit_live(crate::core::FreezeAt::Keep);
-        if !self.mode_state.is_active() {
-            return;
-        }
-        if pause_stream_while_reviewing {
-            // Data-saver: stop the moment the user starts reviewing.
-            self.stop(crate::core::LiveExitReason::UserStopped);
+        let actions = crate::core::transport::detach_playhead(
+            &crate::core::transport::TransportEnv {
+                now_secs: now,
+                pause_stream_while_reviewing,
+            },
+            crate::core::transport::TransportSlices {
+                live_mode: &mut self.mode_state,
+                engine: &mut self.engine.borrow_mut(),
+                playback,
+            },
+        );
+        if actions.stop_channel {
             self.channel.stop();
-            return;
-        }
-        if self.mode_state.detached_since.is_none() {
-            self.mode_state.detached_since = Some(now);
         }
     }
 

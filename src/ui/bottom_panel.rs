@@ -59,7 +59,7 @@ fn draw_bottom_panel(
     let space_pressed = ctx.input(|i| i.key_pressed(egui::Key::Space) && !i.modifiers.any());
     let has_focus = ctx.memory(|m| m.focused().is_some());
     if space_pressed && !has_focus {
-        super::transport::toggle_play_pause(state, timeline, live, playback);
+        state.push_command(crate::core::Intent::TogglePlayPause);
     }
 
     // Advance playback position when playing.

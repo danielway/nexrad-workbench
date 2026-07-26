@@ -422,7 +422,6 @@ pub(crate) fn render_canvas_with_geo(
                         &rect,
                         state,
                         playback,
-                        chrome,
                         diagnostics,
                         derived,
                         &projection,

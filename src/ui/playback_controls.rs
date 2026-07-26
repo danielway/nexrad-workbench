@@ -39,7 +39,9 @@ pub(super) fn render_datetime_picker_popup(
                     ui.heading(format!("Jump to Date/Time ({tz_label})"));
                     ui.add_space(8.0);
 
-                    // Date row
+                    // Date row. Every field in this form is a
+                    // two-way binding: the egui widget owns this value while
+                    // the user edits it.
                     ui.horizontal(|ui| {
                         ui.label("Date:");
                         ui.add(
@@ -235,7 +237,8 @@ pub(super) fn render_playback_controls(
     // PAUSE and pressing it FREEZES (drops to archive at the live edge,
     // detached). In archive it's ordinary play/pause; resuming after a freeze
     // plays from the pause point. All branching lives in
-    // `transport::toggle_play_pause`.
+    // `core::transport::reduce_toggle_play_pause`, reached via
+    // `Intent::TogglePlayPause`.
     let tethered = playback.state.time_model.is_pinned();
     // Show PAUSE when the live feed is running (tethered) or archive playback
     // is active; PLAY otherwise.
@@ -262,7 +265,7 @@ pub(super) fn render_playback_controls(
         .on_hover_text(play_hover)
         .clicked()
     {
-        super::transport::toggle_play_pause(state, timeline, live, playback);
+        state.push_command(crate::core::Intent::TogglePlayPause);
     }
 
     // Jog buttons step between sweeps. Stepping is a seek gesture, so while
@@ -602,9 +605,7 @@ fn render_live_button(
         .on_hover_text("Stream live from now")
         .clicked()
     {
-        playback.state.clear_selection();
-        state.push_command(crate::core::Intent::StartLive);
-        playback.state.speed = PlaybackSpeed::Realtime;
+        state.push_command(crate::core::Intent::GoLive);
     }
 }
 

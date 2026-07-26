@@ -259,6 +259,27 @@ pub(super) fn render_product_section(
         });
 }
 
+/// One map-overlay checkbox.
+///
+/// The panel never writes `layer_state` itself: the widget gets a per-frame
+/// local binding seeded from the current value (egui needs an `&mut bool` to
+/// draw the tick), and any change is emitted as
+/// [`crate::core::Intent::SetGeoLayer`] for the shell to apply. Returns the
+/// [`egui::Response`] so callers can chain hover text.
+fn layer_checkbox(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    layer: crate::core::GeoLayer,
+    label: &str,
+) -> egui::Response {
+    let mut on = layer.get(&state.layer_state.geo);
+    let resp = ui.checkbox(&mut on, label);
+    if resp.changed() {
+        state.push_command(crate::core::Intent::SetGeoLayer(layer, on));
+    }
+    resp
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_layers_section(
     ui: &mut egui::Ui,
@@ -272,24 +293,23 @@ pub(super) fn render_layers_section(
     egui::CollapsingHeader::new(RichText::new("Layers").strong())
         .default_open(true)
         .show(ui, |ui| {
+            use crate::core::GeoLayer;
+
             // Advanced-only: dense map clutter that casual viewers don't need.
             if advanced {
-                ui.checkbox(&mut state.layer_state.geo.nexrad_sites, "NEXRAD Sites");
+                layer_checkbox(ui, state, GeoLayer::NexradSites, "NEXRAD Sites");
             }
-            ui.checkbox(&mut state.layer_state.geo.states, "State Lines");
-            ui.checkbox(&mut state.layer_state.geo.counties, "County Lines");
-            ui.checkbox(&mut state.layer_state.geo.cities, "Cities");
+            layer_checkbox(ui, state, GeoLayer::States, "State Lines");
+            layer_checkbox(ui, state, GeoLayer::Counties, "County Lines");
+            layer_checkbox(ui, state, GeoLayer::Cities, "Cities");
             let live = derived.data_is_live;
             let stale_tip = "Live overlays are disabled while viewing archive data \
                              (more than 15 minutes behind real-time). Return to live to re-enable.";
 
             if advanced {
-                ui.checkbox(&mut state.layer_state.geo.labels, "Labels");
+                layer_checkbox(ui, state, GeoLayer::Labels, "Labels");
                 ui.add_enabled_ui(live, |ui| {
-                    ui.checkbox(
-                        &mut state.layer_state.geo.national_mosaic,
-                        "National Mosaic",
-                    )
+                    layer_checkbox(ui, state, GeoLayer::NationalMosaic, "National Mosaic")
                     .on_hover_text(
                         "Overlay the CONUS base-reflectivity composite (Iowa State Mesonet, ~2 min refresh)",
                     )
@@ -297,33 +317,33 @@ pub(super) fn render_layers_section(
                 });
             }
             ui.add_enabled_ui(live, |ui| {
-                ui.checkbox(&mut state.layer_state.geo.alerts_warnings, "Alert Warnings")
+                layer_checkbox(ui, state, GeoLayer::AlertsWarnings, "Alert Warnings")
                     .on_hover_text("NWS warnings (tornado, severe thunderstorm, flood, …). Click an area for details.")
                     .on_disabled_hover_text(stale_tip);
-                ui.checkbox(
-                    &mut state.layer_state.geo.alerts_other,
-                    "Alert Watches & Advisories",
-                )
+                layer_checkbox(ui, state, GeoLayer::AlertsOther, "Alert Watches & Advisories")
                 .on_hover_text("NWS watches, advisories, and statements. Click an area for details.")
                 .on_disabled_hover_text(stale_tip);
             });
 
-            let was_gps_on = state.layer_state.geo.gps_location;
-            ui.checkbox(&mut state.layer_state.geo.gps_location, "My Location")
-                .on_hover_text(
-                    "Show your device's GPS location as a dot on the map \
-                     (one-shot lookup; requires browser permission)",
-                );
-            // The enable/disable side effects (clear coords, start the one-shot
-            // geolocation) are decided by the diagnostics reducer.
-            if !was_gps_on && state.layer_state.geo.gps_location {
-                state.push_command(crate::core::Intent::Diagnostics(
-                    crate::core::diagnostics::DiagnosticsIntent::EnableGps,
+            // "My Location" is the one layer whose toggle carries a second
+            // intent: the enable/disable side effects (clear coords, start the
+            // one-shot geolocation) are decided by the diagnostics reducer,
+            // while the layer flag itself rides `SetGeoLayer` like its siblings.
+            let mut gps_on = GeoLayer::GpsLocation.get(&state.layer_state.geo);
+            let gps_resp = ui.checkbox(&mut gps_on, "My Location").on_hover_text(
+                "Show your device's GPS location as a dot on the map \
+                 (one-shot lookup; requires browser permission)",
+            );
+            if gps_resp.changed() {
+                state.push_command(crate::core::Intent::SetGeoLayer(
+                    GeoLayer::GpsLocation,
+                    gps_on,
                 ));
-            } else if was_gps_on && !state.layer_state.geo.gps_location {
-                state.push_command(crate::core::Intent::Diagnostics(
-                    crate::core::diagnostics::DiagnosticsIntent::DisableGps,
-                ));
+                state.push_command(crate::core::Intent::Diagnostics(if gps_on {
+                    crate::core::diagnostics::DiagnosticsIntent::EnableGps
+                } else {
+                    crate::core::diagnostics::DiagnosticsIntent::DisableGps
+                }));
             }
             if let Some(err) = diagnostics.gps.error.clone() {
                 ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
@@ -336,7 +356,7 @@ pub(super) fn render_layers_section(
                         crate::core::diagnostics::mping_layer_available(live, has_key);
                     ui.add_enabled_ui(mping_available, |ui| {
                         let resp =
-                            ui.checkbox(&mut state.layer_state.geo.mping, "Storm Reports (mPING)")
+                            layer_checkbox(ui, state, GeoLayer::Mping, "Storm Reports (mPING)")
                                 .on_hover_text(
                                     "Show crowd-sourced mPING storm reports near the active radar \
                                      (\u{00B1}30 min of the playback time, ~300 km radius)",
@@ -412,6 +432,7 @@ pub(super) fn render_rendering_section(
             ui.add_space(4.0);
 
             // Opacity
+            // two-way binding: the egui widget owns this value while the user edits it.
             let mut opacity_pct = proc.opacity * 100.0;
             if ui
                 .add(
@@ -446,6 +467,7 @@ fn render_volume_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             if state.viz_state.volume_3d_enabled {
                 ui.add_space(4.0);
+                // two-way binding: the egui widget owns this value while the user edits it.
                 ui.add(
                     egui::Slider::new(&mut state.viz_state.volume_density_cutoff, 0.0..=30.0)
                         .text("Min Value")
@@ -483,6 +505,7 @@ pub(super) fn render_tools_section(
                 .on_hover_text("Detect and display storm cells on the radar");
             if state.viz_state.storm_cells_visible {
                 ui.indent("storm_cell_indent", |ui| {
+                    // two-way binding: the egui widget owns this value while the user edits it.
                     let mut threshold = state.viz_state.storm_cell_threshold_dbz;
                     if ui
                         .add(
@@ -749,6 +772,7 @@ pub(super) fn render_storage_section(
             ui.label("Storage Quota:");
             let min_quota_mb = (StorageSettings::min_quota() / (1024 * 1024)) as f32;
             let max_quota_mb = (StorageSettings::max_quota() / (1024 * 1024)) as f32;
+            // two-way binding: the egui widget owns this value while the user edits it.
             let mut quota_mb = (state.storage_settings.quota_bytes / (1024 * 1024)) as f32;
 
             let slider = egui::Slider::new(&mut quota_mb, min_quota_mb..=max_quota_mb)

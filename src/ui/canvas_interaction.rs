@@ -10,8 +10,6 @@ use crate::state::AppState;
 use eframe::egui::{self, Rect, Vec2};
 use geo_types::Coord;
 
-use super::site_modal::apply_site_selection;
-
 /// Pixel radius around a site marker that counts as a click hit.
 const SITE_HIT_RADIUS_PX: f32 = 10.0;
 
@@ -146,23 +144,19 @@ pub(crate) fn handle_canvas_interaction(
     rect: &Rect,
     state: &mut AppState,
     playback: &crate::subsystem::Playback,
-    chrome: &mut crate::subsystem::Chrome,
-    diagnostics: &mut crate::subsystem::Diagnostics,
+    diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
     projection: &MapProjection,
 ) {
-    // Distance tool: click to place points
+    // Distance tool: click to place points. Which endpoint the click lands on
+    // is the core's call (`decide_distance_click`), applied by the shell.
     if state.viz_state.distance_tool_active && response.clicked() {
         if let Some(click_pos) = response.interact_pointer_pos() {
             let geo = projection.screen_to_geo(click_pos);
-            if state.viz_state.distance_start.is_none() || state.viz_state.distance_end.is_some() {
-                // First click or restart: set start, clear end
-                state.viz_state.distance_start = Some((geo.y, geo.x));
-                state.viz_state.distance_end = None;
-            } else {
-                // Second click: set end
-                state.viz_state.distance_end = Some((geo.y, geo.x));
-            }
+            state.push_command(crate::core::Intent::PlaceDistancePoint {
+                lat: geo.y,
+                lon: geo.x,
+            });
         }
     } else if response.clicked() {
         if let Some(click_pos) = response.interact_pointer_pos() {
@@ -170,7 +164,11 @@ pub(crate) fn handle_canvas_interaction(
             // polygons, so they hit-test first; alerts catch the rest.
             let mut handled = false;
             if let Some((site_id, lat, lon)) = pick_site_at(click_pos, projection, state) {
-                apply_site_selection(state, chrome, site_id, lat, lon);
+                state.push_command(crate::core::Intent::SelectSite {
+                    site_id: site_id.to_string(),
+                    lat,
+                    lon,
+                });
                 handled = true;
             }
             if !handled && state.layer_state.geo.mping {

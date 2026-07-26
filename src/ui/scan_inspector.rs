@@ -130,7 +130,6 @@ fn draw_scan_inspector(
     let use_local = state.use_local_time;
     let dark = state.is_dark;
     let now_secs = state.frame_now.secs();
-    let mut commands: Vec<Intent> = Vec::new();
     let mut close = false;
     let mut loop_from_here = false;
 
@@ -160,7 +159,7 @@ fn draw_scan_inspector(
 
             render_header(ui, container, use_local, dark);
             ui.separator();
-            render_sweep_table(ui, container, dark, scan_start, &mut commands);
+            render_sweep_table(ui, state, container, dark, scan_start);
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(4.0);
@@ -177,7 +176,7 @@ fn draw_scan_inspector(
                         .on_hover_text("Download the full volume (all tilts)")
                         .clicked()
                 {
-                    commands.push(Intent::FetchScan {
+                    state.push_command(Intent::FetchScan {
                         scan_start: scan_start.round() as i64,
                         elevation_filter: None,
                     });
@@ -199,13 +198,10 @@ fn draw_scan_inspector(
             });
         });
 
-    // Apply deferred intents (after the closure releases its borrows).
+    // Apply deferred actions (after the closure releases its borrows).
     if loop_from_here {
         apply_loop_from_here(live, playback, state, scan_start, now_secs);
         close = true;
-    }
-    for cmd in commands {
-        state.push_command(cmd);
     }
     if close {
         chrome.scan_inspector = None;
@@ -244,10 +240,10 @@ fn render_header(ui: &mut egui::Ui, container: &ScanContainer, use_local: bool, 
 /// either chunk progress (in-flight live) or a tap-to-fetch button (available).
 fn render_sweep_table(
     ui: &mut egui::Ui,
+    state: &mut AppState,
     container: &ScanContainer,
     dark: bool,
     scan_start: f64,
-    commands: &mut Vec<Intent>,
 ) {
     let value_color = super::colors::ui::value(dark);
     let label_color = super::colors::ui::label(dark);
@@ -312,7 +308,7 @@ fn render_sweep_table(
                                 let label =
                                     format!("{} Fetch", egui_phosphor::regular::DOWNLOAD_SIMPLE);
                                 if ui.small_button(label).clicked() {
-                                    commands.push(Intent::FetchScan {
+                                    state.push_command(Intent::FetchScan {
                                         scan_start: scan_start.round() as i64,
                                         elevation_filter: Some(cell.elevation_number),
                                     });

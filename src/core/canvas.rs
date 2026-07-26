@@ -407,6 +407,33 @@ pub(crate) fn cutout_lon_range_deg(center_lat: f64, range_km: f64) -> f64 {
     range_km / KM_PER_DEGREE / lat_correction
 }
 
+// ---------------------------------------------------------------------------
+// Distance tool
+// ---------------------------------------------------------------------------
+
+/// Which endpoint the next distance-tool click places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DistancePlacement {
+    /// Start a new measurement: set the start point and clear the end.
+    Start,
+    /// Complete the current measurement: set the end point.
+    End,
+}
+
+/// Decide which endpoint a distance-tool click places, given whether each
+/// endpoint is currently set.
+///
+/// The tool cycles start → end → start: with no start, or with a *finished*
+/// measurement on screen, the next click restarts from the beginning;
+/// otherwise it closes the open measurement.
+pub(crate) fn decide_distance_click(has_start: bool, has_end: bool) -> DistancePlacement {
+    if !has_start || has_end {
+        DistancePlacement::Start
+    } else {
+        DistancePlacement::End
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,6 +626,26 @@ mod tests {
         // Due east at the equator-ish: az ~90.
         let (az_e, _) = geo_to_polar(0.0, 1.0, 0.0, 0.0);
         assert!((az_e - 90.0).abs() < 1e-6, "az_e {az_e}");
+    }
+
+    #[wasm_bindgen_test]
+    fn distance_click_with_no_start_begins_a_measurement() {
+        assert_eq!(
+            decide_distance_click(false, false),
+            DistancePlacement::Start
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn distance_click_with_open_measurement_closes_it() {
+        assert_eq!(decide_distance_click(true, false), DistancePlacement::End);
+    }
+
+    #[wasm_bindgen_test]
+    fn distance_click_after_a_finished_measurement_restarts() {
+        assert_eq!(decide_distance_click(true, true), DistancePlacement::Start);
+        // Degenerate (end without start) also restarts rather than sticking.
+        assert_eq!(decide_distance_click(false, true), DistancePlacement::Start);
     }
 
     #[wasm_bindgen_test]

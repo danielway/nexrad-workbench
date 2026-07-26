@@ -82,7 +82,6 @@ fn draw_queue_sheet(
     }
 
     let dark = state.is_dark;
-    let mut commands: Vec<Intent> = Vec::new();
 
     egui::Window::new(format!("{} Downloads", icons::DOWNLOAD_SIMPLE))
         .collapsible(false)
@@ -116,19 +115,19 @@ fn draw_queue_sheet(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if acquisition.state.is_paused() {
                         if ui.small_button(format!("{} Resume", icons::PLAY)).clicked() {
-                            commands.push(Intent::ResumeQueue);
+                            state.push_command(Intent::ResumeQueue);
                         }
                     } else if acquisition.state.has_active_operations()
                         && ui.small_button(format!("{} Pause", icons::PAUSE)).clicked()
                     {
-                        commands.push(Intent::PauseQueue);
+                        state.push_command(Intent::PauseQueue);
                     }
                 });
             });
 
             ui.separator();
 
-            render_operation_list(ui, acquisition, dark, &mut commands);
+            render_operation_list(ui, state, acquisition, dark);
 
             ui.add_space(6.0);
             ui.separator();
@@ -147,18 +146,14 @@ fn draw_queue_sheet(
                 });
             });
         });
-
-    for cmd in commands {
-        state.push_command(cmd);
-    }
 }
 
 /// Render the scrollable list of archive-download operations, newest first.
 fn render_operation_list(
     ui: &mut egui::Ui,
-    acquisition: &mut Acquisition,
+    state: &mut AppState,
+    acquisition: &Acquisition,
     dark: bool,
-    commands: &mut Vec<Intent>,
 ) {
     let label_color = ui_colors::label(dark);
     let value_color = ui_colors::value(dark);
@@ -230,21 +225,21 @@ fn render_operation_list(
                             }
                             OperationStatus::Queued => {
                                 if ui.small_button(icons::X).on_hover_text("Cancel").clicked() {
-                                    commands.push(Intent::CancelOperation(op.id));
+                                    state.push_command(Intent::CancelOperation(op.id));
                                 }
                                 if ui
                                     .small_button(icons::CARET_DOWN)
                                     .on_hover_text("Move down")
                                     .clicked()
                                 {
-                                    commands.push(Intent::ReorderOperation(op.id, 1));
+                                    state.push_command(Intent::ReorderOperation(op.id, 1));
                                 }
                                 if ui
                                     .small_button(icons::CARET_UP)
                                     .on_hover_text("Move up")
                                     .clicked()
                                 {
-                                    commands.push(Intent::ReorderOperation(op.id, -1));
+                                    state.push_command(Intent::ReorderOperation(op.id, -1));
                                 }
                             }
                             OperationStatus::Failed { error } => {
@@ -252,10 +247,10 @@ fn render_operation_list(
                                     .small_button(format!("{} Retry", icons::ARROW_CLOCKWISE))
                                     .clicked()
                                 {
-                                    commands.push(Intent::RetryFailed(op.id));
+                                    state.push_command(Intent::RetryFailed(op.id));
                                 }
                                 if ui.small_button("Skip").clicked() {
-                                    commands.push(Intent::SkipFailed(op.id));
+                                    state.push_command(Intent::SkipFailed(op.id));
                                 }
                                 ui.label(
                                     RichText::new("failed").size(10.0).color(acq_colors::FAILED),

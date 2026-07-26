@@ -112,6 +112,7 @@ fn draw_mping_modal(
             ui.label(RichText::new("API key").strong());
             ui.add_space(2.0);
             ui.add(
+                // two-way binding: the egui widget owns this value while the user edits it.
                 egui::TextEdit::singleline(&mut modal_state.key_input)
                     .password(true)
                     .desired_width(f32::INFINITY)

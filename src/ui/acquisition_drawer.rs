@@ -150,9 +150,6 @@ fn render_queue_tab(
                 return;
             }
 
-            // Collect operations for display (newest at top for active/queued, then completed)
-            let mut commands_to_push: Vec<Intent> = Vec::new();
-
             // Display operations in reverse order (most recent first)
             let ops: Vec<_> = acquisition.state.operations.iter().rev().cloned().collect();
             for op in &ops {
@@ -220,21 +217,21 @@ fn render_queue_tab(
                         |ui| match &op.status {
                             OperationStatus::Queued => {
                                 if ui.small_button(icons::X).on_hover_text("Cancel").clicked() {
-                                    commands_to_push.push(Intent::CancelOperation(op.id));
+                                    state.push_command(Intent::CancelOperation(op.id));
                                 }
                                 if ui
                                     .small_button(icons::CARET_DOWN)
                                     .on_hover_text("Move down")
                                     .clicked()
                                 {
-                                    commands_to_push.push(Intent::ReorderOperation(op.id, 1));
+                                    state.push_command(Intent::ReorderOperation(op.id, 1));
                                 }
                                 if ui
                                     .small_button(icons::CARET_UP)
                                     .on_hover_text("Move up")
                                     .clicked()
                                 {
-                                    commands_to_push.push(Intent::ReorderOperation(op.id, -1));
+                                    state.push_command(Intent::ReorderOperation(op.id, -1));
                                 }
                             }
                             OperationStatus::Failed { .. } => {
@@ -242,24 +239,19 @@ fn render_queue_tab(
                                     .small_button(format!("{} Retry", icons::ARROW_CLOCKWISE))
                                     .clicked()
                                 {
-                                    commands_to_push.push(Intent::RetryFailed(op.id));
+                                    state.push_command(Intent::RetryFailed(op.id));
                                 }
                                 if ui
                                     .small_button(format!("{} Skip", icons::SKIP_FORWARD))
                                     .clicked()
                                 {
-                                    commands_to_push.push(Intent::SkipFailed(op.id));
+                                    state.push_command(Intent::SkipFailed(op.id));
                                 }
                             }
                             _ => {}
                         },
                     );
                 });
-            }
-
-            // Push any deferred commands
-            for cmd in commands_to_push {
-                state.push_command(cmd);
             }
         });
 }

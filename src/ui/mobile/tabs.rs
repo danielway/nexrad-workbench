@@ -12,7 +12,6 @@
 //!   2. Scrubber (~44px) — topmost. The coverage strip (faint=available,
 //!      solid=cached, red=now, neutral thumb, REJOIN pill, long-press→inspector).
 
-use crate::core::LiveExitReason;
 use crate::core::{LoopPreset, PlaybackMode};
 use crate::state::{AppState, MobileSettingsTab};
 use eframe::egui::{self, Color32, RichText};
@@ -124,7 +123,8 @@ fn render_transport_row(
         // Play/Pause — the primary control (spec §13). While tethered the feed
         // is conceptually playing, so this reads PAUSE and freezes; in archive
         // it's ordinary play/pause. All branching lives in
-        // `transport::toggle_play_pause`.
+        // `core::transport::reduce_toggle_play_pause`, reached via
+        // `Intent::TogglePlayPause`.
         let tethered = playback.state.time_model.is_pinned();
         let play_icon = if tethered || playback.state.playing {
             egui_phosphor::regular::PAUSE
@@ -139,7 +139,7 @@ fn render_transport_row(
             )
             .clicked()
         {
-            toggle_play(state, timeline, live, playback);
+            toggle_play(state);
         }
 
         // Step forward.
@@ -155,7 +155,7 @@ fn render_transport_row(
         }
 
         ui.add_space(2.0);
-        render_live_button(ui, state, live, playback, btn_h);
+        render_live_button(ui, state, live, btn_h);
         render_speed_button(ui, playback, btn_h);
         render_loop_button(ui, state, playback, interactive);
 
@@ -220,8 +220,7 @@ fn render_transport_row(
 fn render_live_button(
     ui: &mut egui::Ui,
     state: &mut AppState,
-    live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
+    live: &crate::subsystem::Live,
     btn_h: f32,
 ) {
     use crate::ui::colors::live;
@@ -251,9 +250,9 @@ fn render_live_button(
             .on_hover_text("Tethered to live — tap to freeze")
             .clicked()
         {
-            live.stop(LiveExitReason::UserStopped);
-            playback.state.exit_live(crate::core::FreezeAt::Keep);
-            playback.state.playing = false;
+            state.push_command(crate::core::Intent::StopLive(
+                crate::core::transport::LiveStopPlacement::InPlace,
+            ));
         }
         return;
     }
@@ -291,9 +290,7 @@ fn render_live_button(
         .on_hover_text("Stream live from now")
         .clicked()
     {
-        playback.state.clear_selection();
-        state.push_command(crate::core::Intent::StartLive);
-        playback.state.speed = crate::core::PlaybackSpeed::Realtime;
+        state.push_command(crate::core::Intent::GoLive);
     }
 }
 
@@ -372,15 +369,10 @@ fn render_loop_button(
 // Playback helpers (shared with the settings modal).
 // ---------------------------------------------------------------------------
 
-pub(super) fn toggle_play(
-    state: &mut AppState,
-    timeline: &crate::subsystem::Timeline,
-    live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
-) {
+pub(super) fn toggle_play(state: &mut AppState) {
     // Same decoupled play/pause as desktop: in live this freezes the feed;
     // stopping the stream is the LIVE button's job.
-    crate::ui::transport::toggle_play_pause(state, timeline, live, playback);
+    state.push_command(crate::core::Intent::TogglePlayPause);
 }
 
 pub(super) fn step_frame(

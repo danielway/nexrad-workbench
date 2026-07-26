@@ -18,8 +18,6 @@
 //! an invitation, bright pulsing red ([`LIVE_ACTIVE`]) while live.
 
 use crate::core::Intent;
-use crate::core::LiveExitReason;
-use crate::core::PlaybackSpeed;
 use crate::state::AppState;
 use crate::ui::colors::timeline::{LIVE_ACTIVE, NOW_IDLE};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Sense, Stroke, StrokeKind};
@@ -32,8 +30,8 @@ pub(super) fn render_now_affordance(
     ui: &mut egui::Ui,
     painter: &Painter,
     state: &mut AppState,
-    live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
+    live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
     frame: &super::TimelineFrame<'_>,
 ) -> Option<Rect> {
     let overlay_rect = &frame.rects.overlay;
@@ -49,32 +47,12 @@ pub(super) fn render_now_affordance(
     let pulse = live.mode_state.pulse_alpha();
 
     if now_x >= overlay_rect.left() && now_x <= overlay_rect.right() {
-        render_inline_now(
-            ui,
-            painter,
-            state,
-            live,
-            playback,
-            overlay_rect,
-            now_x,
-            live_state,
-            pulse,
-        )
+        render_inline_now(ui, painter, state, overlay_rect, now_x, live_state, pulse)
     } else {
         // "Now" is off-screen — pin a "jump to live" chip to the nearest edge,
         // pointing back toward now.
         let on_left = now_x < overlay_rect.left();
-        render_edge_chip(
-            ui,
-            painter,
-            state,
-            live,
-            playback,
-            overlay_rect,
-            now_ts,
-            live_state,
-            on_left,
-        )
+        render_edge_chip(ui, painter, state, live, overlay_rect, live_state, on_left)
     }
 }
 
@@ -101,8 +79,6 @@ fn render_inline_now(
     ui: &mut egui::Ui,
     painter: &Painter,
     state: &mut AppState,
-    live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
     overlay_rect: &Rect,
     now_x: f32,
     live_state: NowCapState,
@@ -165,12 +141,14 @@ fn render_inline_now(
     draw_cap(painter, cap_rect, &label, fill);
 
     if resp.clicked() {
-        match live_state {
-            NowCapState::Attached => stop_live(state, live, playback),
+        state.push_command(match live_state {
+            NowCapState::Attached => {
+                Intent::StopLive(crate::core::transport::LiveStopPlacement::LiveEdge)
+            }
             // Instant re-pin — the stream never stopped.
-            NowCapState::Detached => state.push_command(Intent::ReturnToLive),
-            NowCapState::Idle => go_live(state, playback),
-        }
+            NowCapState::Detached => Intent::ReturnToLive,
+            NowCapState::Idle => Intent::GoLive,
+        });
     }
 
     Some(cap_rect)
@@ -183,10 +161,8 @@ fn render_edge_chip(
     ui: &mut egui::Ui,
     painter: &Painter,
     state: &mut AppState,
-    live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
+    live: &crate::subsystem::Live,
     overlay_rect: &Rect,
-    now_ts: f64,
     live_state: NowCapState,
     on_left: bool,
 ) -> Option<Rect> {
@@ -241,10 +217,11 @@ fn render_edge_chip(
     if resp.clicked() {
         // Scroll the view to now, then attach — one action from anywhere in
         // the archive. Instant when a background stream is already running.
-        playback.state.center_view_on(now_ts);
+        // Intents drain in order, so the centering lands before the attach.
+        state.push_command(Intent::CenterTimelineOnNow);
         match live_state {
             NowCapState::Detached => state.push_command(Intent::ReturnToLive),
-            NowCapState::Idle => go_live(state, playback),
+            NowCapState::Idle => state.push_command(Intent::GoLive),
             NowCapState::Attached => {}
         }
     }
@@ -311,36 +288,6 @@ fn label_size(painter: &Painter, label: &str) -> (egui::Vec2, egui::FontId) {
     let font = egui::FontId::proportional(10.0);
     let galley = painter.layout_no_wrap(label.to_string(), font.clone(), Color32::WHITE);
     (galley.size(), font)
-}
-
-/// Enter live streaming from the current position. `start_live_mode` (run by
-/// the `StartLive` command) owns position/lock/playing and bumps zoom +
-/// re-centers as needed, so we only queue the command and set realtime speed.
-fn go_live(state: &mut AppState, playback: &mut crate::subsystem::Playback) {
-    playback.state.clear_selection();
-    state.push_command(Intent::StartLive);
-    playback.state.speed = PlaybackSpeed::Realtime;
-}
-
-/// Stop streaming and freeze on the current (last live) frame — drops to
-/// Archive. Mirrors the pause/seek exit used elsewhere.
-fn stop_live(
-    state: &mut AppState,
-    live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
-) {
-    live.stop(LiveExitReason::UserStopped);
-    playback.state.playing = false;
-    // Freeze on the latest (live-edge) frame for a predictable stop, whether we
-    // were pinned to now or mid-replay.
-    playback
-        .state
-        .exit_live(crate::core::FreezeAt::Now(state.frame_now.secs()));
-    state.status_message = live
-        .mode_state
-        .last_exit_reason
-        .map(|r| r.message().to_string())
-        .unwrap_or_default();
 }
 
 #[cfg(test)]
