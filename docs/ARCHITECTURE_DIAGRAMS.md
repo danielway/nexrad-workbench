@@ -195,7 +195,7 @@ flowchart TB
 
 **Migration status:** P0–P4 + P6 complete, P5 partial (pure logic extracted; the
 broad interactive `&mut`→intent rewrite is QA-gated). Carve-outs: GPU paint is
-irreducibly shell; camera/projection math is already pure; `realtime/streaming.rs`
+irreducibly shell; camera/projection math is already pure; `realtime/streaming/`
 is de-scoped. See [CORE_SHELL.md](CORE_SHELL.md) for the per-phase detail.
 
 ---

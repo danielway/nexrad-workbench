@@ -179,7 +179,7 @@ interactive spine it is not just unmigrated but **split mid-action**
   incremental"), `streaming_plan.rs`, `streaming_state.rs`. Three of these
   simultaneously "own" projection state. This is the largest unfinished
   migration by volume.
-- `realtime/streaming.rs`: 2,044 lines with an **883-line `streaming_loop`**;
+- `realtime/streaming/`: 2,044 lines with an **883-line `streaming_loop`**;
   the ~35 free functions around it already form clean seams (loop-state /
   acquire / backfill / poll / persist) — the split is pre-drawn.
 - Misfits: `persistence_manager.rs` (a thin shell over `core::decide_persist`,

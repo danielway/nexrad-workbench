@@ -71,7 +71,7 @@ averages across many samples wash this out.
 ### 1c. Wall clock
 
 `js_sys::Date::now() / 1000.0`, wrapped in:
-- `current_timestamp_f64() -> f64` (`nexrad/live/realtime/streaming.rs`)
+- `current_timestamp_f64() -> f64` (`nexrad/live/realtime/streaming/`)
 - `TimeModel::wall_clock_time()` (`state/playback.rs` — the shell half
   of the pure `core::TimeModel`)
 
@@ -159,7 +159,7 @@ RealtimeChannel (nexrad/live/realtime/mod.rs)
   └─ sends ProjectorObservation::CollectionEndSecs down the
      observations channel
 
-streaming loop (nexrad/live/realtime/streaming.rs)
+streaming loop (nexrad/live/realtime/streaming/)
   └─ drain_pending_observations at top of iteration (and in the sleep)
        └─ engine.set_collection_anchor(iter.current_id(), secs)
 
@@ -269,7 +269,7 @@ retries).
 
 The real-time scan identity is **parsed, not estimated**: when the
 Start chunk arrives, `volume_header_start_secs`
-(`nexrad/live/realtime/streaming.rs`) decodes its volume header and
+(`nexrad/live/realtime/streaming/`) decodes its volume header and
 takes `header.date_time()` truncated to whole seconds. No AWS upload
 time, filename string, or lag estimate is involved, and the archive
 path derives the exact same value — so an archive download and a

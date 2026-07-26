@@ -12,8 +12,8 @@ NEXRAD Workbench is a browser-based NEXRAD (WSR-88D) weather radar visualization
 # Type-check (fastest feedback loop — no bundling)
 cargo check
 
-# Lint (CI enforces zero warnings)
-cargo clippy -- -D warnings
+# Lint (CI enforces zero warnings). --all-targets lints test code too.
+cargo clippy --all-targets -- -D warnings
 
 # Format check
 cargo fmt -- --check

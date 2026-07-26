@@ -19,7 +19,7 @@ on top of those definitions and focuses on the operational flow.
 | Layer | Type | Role |
 | --- | --- | --- |
 | Channel | [`RealtimeChannel`](../src/nexrad/live/realtime/mod.rs) | The handle the egui update loop talks to. Owns three typed `futures_channel::mpsc` queues + an `active: Rc<Cell<bool>>` flag, and spawns the streaming task. Holds no shared mutable loop state. |
-| Async task | `streaming_loop` (in [`live/realtime/streaming.rs`](../src/nexrad/live/realtime/streaming.rs)) | The long-running future. One per active site. Owns the iteration, sleeping, polling, emit — and its own `LoopState` (stop flag, active filter, filter epoch) as local variables. |
+| Async task | `streaming_loop` (in [`live/realtime/streaming/`](../src/nexrad/live/realtime/streaming/)) | The long-running future. One per active site. Owns the iteration, sleeping, polling, emit — and its own `LoopState` (stop flag, active filter, filter epoch) as local variables. |
 | Iterator state | [`StreamingState`](../src/nexrad/live/streaming_state.rs) | Replaces `nexrad_data`'s `ChunkIterator`. Holds the current `ChunkIdentifier`, the VCP, and the elevation/chunk mapper. |
 | Projection engine | [`core/projection/`](../src/core/projection/) | Single owner of forward-looking timing. The loop feeds it arrivals, listings, observations, and the filter; each iteration it emits one [`StreamingPlan`](../src/core/streaming_plan.rs) that the sleep target, the UI countdown, and the diagnostics all read. |
 | Timing primitives | [`core/timing/`](../src/core/timing/) | Pure physics/statistics functions over `(chunk metadata, vcp, mapper, stats)` — the interval blend, projections, tuning knobs — composed by the projection engine. |

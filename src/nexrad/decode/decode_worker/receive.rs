@@ -714,13 +714,17 @@ mod coverage_tests {
 
     // --- cleanup_pending_by_id ---------------------------------------------
 
-    fn empty_maps() -> (
+    /// The three pending-request maps a receive dispatch reads, as the test
+    /// fixtures build them.
+    type PendingMaps = (
         Rc<RefCell<HashMap<RequestId, IngestContext>>>,
         Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
         Rc<RefCell<HashMap<RequestId, RenderContext>>>,
         Rc<RefCell<HashMap<RequestId, RenderContext>>>,
         Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
-    ) {
+    );
+
+    fn empty_maps() -> PendingMaps {
         (
             Rc::new(RefCell::new(HashMap::new())),
             Rc::new(RefCell::new(HashMap::new())),

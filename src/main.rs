@@ -1,5 +1,10 @@
 #![warn(clippy::all)]
 #![warn(unreachable_pub)]
+// Test fixtures routinely build a default and then set the two or three fields
+// the case is about. Struct-update syntax reads worse there — the point of the
+// fixture is *which fields this test changes* — and the lint's perf rationale
+// doesn't apply to a test. Production code is still held to it.
+#![cfg_attr(test, allow(clippy::field_reassign_with_default))]
 
 //! NEXRAD Workbench — a browser-based NEXRAD weather radar visualization tool.
 //!

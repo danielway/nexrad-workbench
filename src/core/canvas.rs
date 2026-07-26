@@ -497,7 +497,7 @@ mod tests {
         );
         let (az, _) = sweep_line_azimuth(&s, 5.0).unwrap();
         // Halfway: 350 + 20*0.5 = 360 → 0.
-        assert!(az < 1.0 || az > 359.0, "az was {az}");
+        assert!(!(1.0..=359.0).contains(&az), "az was {az}");
     }
 
     #[wasm_bindgen_test]

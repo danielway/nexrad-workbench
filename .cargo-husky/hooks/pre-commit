@@ -18,8 +18,10 @@ set -e
 echo '+cargo fmt -- --check'
 cargo fmt -- --check
 
-echo '+cargo clippy -- -D warnings'
-cargo clippy -- -D warnings
+# `--all-targets` so `#[cfg(test)]` code is linted too. Test code is the
+# majority of this tree by line count; leaving it unlinted was a real gap.
+echo '+cargo clippy --all-targets -- -D warnings'
+cargo clippy --all-targets -- -D warnings
 
 # `cargo test --bin nexrad-workbench` runs only the bin's inline
 # `#[wasm_bindgen_test]` tests (~50 ms, no browser). The integration

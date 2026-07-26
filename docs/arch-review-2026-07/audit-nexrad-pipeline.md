@@ -6,7 +6,7 @@ Scope: 55 `.rs` files under `src/nexrad/` (~28 top-level entries, 26,755 LOC per
 
 ## Summary of significance
 1. The **projection/timing concern is fragmented across 5 sibling locations** (~9,900 LOC) mid-refactor — the dominant cohesion problem, larger than the module's own docs acknowledge.
-2. **`realtime/streaming.rs` is 2,044 lines with an 883-line `streaming_loop`** — the single largest decomposition debt; explicitly deferred in `CORE_SHELL.md`.
+2. **`realtime/streaming/` is 2,044 lines with an 883-line `streaming_loop`** — the single largest decomposition debt; explicitly deferred in `CORE_SHELL.md`.
 3. **Worker protocol is stringly-typed and triple-defined** (Rust send struct → `worker.js` remap → Rust receive struct); drift is guarded only by convention + unit tests.
 4. **Two misfit modules** (`network_monitor.rs`, `persistence_manager.rs`) are not data-pipeline code and are owned by non-pipeline subsystems.
 5. **Three GPU renderers share no abstraction** and have inconsistent constructors/update APIs.
@@ -93,7 +93,7 @@ The god-object is not any coordinator — it is what `RealtimeChannel::start` sp
 
 ---
 
-## 5. `realtime/streaming.rs` — 2,044 lines, one 883-line function
+## 5. `realtime/streaming/` — 2,044 lines, one 883-line function
 
 The file holds ~35 free functions plus `streaming_loop` (`:366-1249` = **883 lines** in a single `async fn`). Distinct responsibilities co-located, at clear seams:
 
@@ -140,7 +140,7 @@ Only `paint` is common by name (signatures differ). The constructor contract is 
 The docs the audit was told to trust as "intent" are materially out of date with the tree:
 
 - `ARCHITECTURE.md:88` lists `streaming_manager.rs` — **no such file** (`grep StreamingManager` = 0 hits).
-- `ARCHITECTURE.md:96` lists `realtime.rs` as a single file — it is `realtime/mod.rs` + `realtime/streaming.rs`. `STREAMING.md:157` and `TIMING.md:71-73,253` still cite `realtime.rs::current_timestamp` / `::provisional_scan_start_secs`; those now live in `realtime/streaming.rs` (e.g. `current_timestamp_f64` at `streaming.rs:1574`).
+- `ARCHITECTURE.md:96` lists `realtime.rs` as a single file — it is `realtime/mod.rs` + `realtime/streaming/`. `STREAMING.md:157` and `TIMING.md:71-73,253` still cite `realtime.rs::current_timestamp` / `::provisional_scan_start_secs`; those now live in `realtime/streaming/` (e.g. `current_timestamp_f64` at `streaming.rs:1574`).
 - The `ARCHITECTURE.md` nexrad table (`:70-105`) **omits the entire `projection/` module (4,025 LOC)**, plus `streaming_filter.rs`, `streaming_plan.rs`, `timing/interval_estimate.rs`, and `timing/config.rs`.
 - **The two timing docs disagree on a live constant.** `TIMING.md:232` states the first-poll pad is `POLL_DELAY_AFTER_PREDICTED_MS (400 ms)` with `CHUNK_POLL_INTERVAL_MS (500 ms)` / `CHUNK_POLL_MAX_RETRIES (25)`; `STREAMING.md:256-262` states **750 ms** (`POLL_DELAY_AFTER_PREDICTED_MS`) with a `REALTIME_CHUNK_POLICY` (`max_attempts 6`, `total_budget 15 s`). The code agrees with STREAMING.md: `timing/config.rs:42` `poll_bias_secs: 0.750`. `TIMING.md` §3b is stale.
 

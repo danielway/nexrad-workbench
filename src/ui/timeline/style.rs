@@ -127,12 +127,11 @@ mod coverage_tests {
 
     // ---- loop-handle hit/touch sizing -----------------------------------
 
-    #[wasm_bindgen_test]
-    fn loop_handle_hit_target_meets_44px_minimum() {
-        // Spec §12: touch targets must be >= 44px in both axes, and the hit
-        // rect must be wider than the thin painted glyph.
-        assert!(LOOP_HANDLE_HIT_H >= 44.0);
-        assert!(LOOP_HANDLE_HIT_W >= 44.0);
-        assert!(LOOP_HANDLE_HIT_W > LOOP_HANDLE_GLYPH_W);
-    }
+    // Spec §12: touch targets must be >= 44px in both axes, and the hit rect
+    // must be wider than the thin painted glyph. These are constants, so the
+    // rule is enforced at compile time — a violating edit fails the build
+    // rather than a test run.
+    const _: () = assert!(LOOP_HANDLE_HIT_H >= 44.0);
+    const _: () = assert!(LOOP_HANDLE_HIT_W >= 44.0);
+    const _: () = assert!(LOOP_HANDLE_HIT_W > LOOP_HANDLE_GLYPH_W);
 }

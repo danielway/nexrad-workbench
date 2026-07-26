@@ -15,7 +15,7 @@ Meanwhile the store's write path (`upsert_scan`, `mod.rs:458`), render read path
 - writes: `src/nexrad/worker_api/ingest.rs:135` and `:545` `store.upsert_scan(...)`
 - reads: `src/nexrad/worker_api/render.rs:33` and `:209` `store.get_sweep(...)`
 
-`DataFacade` callers are all main-thread orchestration: `main.rs:474`, `nexrad/download.rs:138`, `nexrad/acquisition_coordinator.rs:26`, `nexrad/cache_channel.rs:54`, `nexrad/realtime/streaming.rs:113`, `subsystem/acquisition.rs:70`. No `state/` or `ui/` code touches either the facade or the store directly — that boundary is clean.
+`DataFacade` callers are all main-thread orchestration: `main.rs:474`, `nexrad/download.rs:138`, `nexrad/acquisition_coordinator.rs:26`, `nexrad/cache_channel.rs:54`, `nexrad/realtime/streaming/:113`, `subsystem/acquisition.rs:70`. No `state/` or `ui/` code touches either the facade or the store directly — that boundary is clean.
 
 **Verdict:** there are two parallel entry points to the same DB — `DataFacade` (main thread, query + eviction) and raw `IndexedDbStore` (worker, write + render-read). The worker bypass is *justified* (the worker holds a persistent connection to avoid open-time overhead — `INDEXEDDB.md` §intro, `worker_api/mod.rs:226-231`), but the consequence is that "facade" oversells: it is a main-thread read/eviction wrapper, not the single storage gateway the layering diagram implies. `keys → idb primitive` is a real layer; `idb → facade → all callers` is only half-true.
 
@@ -87,7 +87,7 @@ Every outbound path is under `with_retry` or its sanctioned per-attempt primitiv
 - `nexrad/download.rs` — `archive_list` (`:248`, `:351`) and `archive_download` (`:384`), all `DEFAULT_POLICY`, wrapping `nexrad_data` `archive::list_files`/`download_file`.
 - `national_mosaic.rs:125` — `with_retry(&DEFAULT_POLICY, "national_mosaic", …)` wrapping `fetch_and_decode` (which loads via `HtmlImageElement`, not `window.fetch`, but is still inside the policy).
 - `ui/site_modal.rs:214` — `with_retry(&DEFAULT_POLICY, "zip_lookup", …)` (geocoding).
-- `realtime/streaming.rs:922-958` — an **inlined** retry loop using `attempt_with_timeout` + `REALTIME_CHUNK_POLICY`, not `with_retry`. This is a documented, sanctioned exception, not a bypass: the closure must borrow `iter` mutably across attempts, which `with_retry`'s `FnMut(u32)->Fut` signature forbids (`streaming.rs:911-913`, and the escape hatch is called out in `retry.rs:82-85`). It is the only user of `REALTIME_CHUNK_POLICY`.
+- `realtime/streaming/:922-958` — an **inlined** retry loop using `attempt_with_timeout` + `REALTIME_CHUNK_POLICY`, not `with_retry`. This is a documented, sanctioned exception, not a bypass: the closure must borrow `iter` mutably across attempts, which `with_retry`'s `FnMut(u32)->Fut` signature forbids (`streaming.rs:911-913`, and the escape hatch is called out in `retry.rs:82-85`). It is the only user of `REALTIME_CHUNK_POLICY`.
 - `archive_index.rs` — **does no I/O at all**; it is a pure in-memory `HashMap` listing cache (`archive_index.rs:1-4`), so it is correctly absent from the retry callers. The listing fetch it caches happens in `download.rs` under `with_retry`.
 
 No unguarded HTTP call site was found outside these. The claim is accurate.

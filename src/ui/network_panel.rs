@@ -285,18 +285,18 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn shorten_url_strips_https_when_short() {
         // Under MAX_LEN, the https:// scheme is removed and the rest kept verbatim.
-        assert!(shorten_url("https://example.com/path") == "example.com/path".to_string());
+        assert!(shorten_url("https://example.com/path") == "example.com/path");
     }
 
     #[wasm_bindgen_test]
     fn shorten_url_strips_http_when_short() {
-        assert!(shorten_url("http://example.com/path") == "example.com/path".to_string());
+        assert!(shorten_url("http://example.com/path") == "example.com/path");
     }
 
     #[wasm_bindgen_test]
     fn shorten_url_keeps_unknown_scheme_intact() {
         // Only http:// and https:// are stripped; other schemes pass through.
-        assert!(shorten_url("ftp://x.com/a") == "ftp://x.com/a".to_string());
+        assert!(shorten_url("ftp://x.com/a") == "ftp://x.com/a");
     }
 
     #[wasm_bindgen_test]

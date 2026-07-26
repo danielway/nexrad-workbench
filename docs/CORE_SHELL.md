@@ -288,8 +288,10 @@ selected; mPING toggle gating; GPS toggle → `Effect::StartGeolocation`.
 - **Worker dispatch is async + stateful (dedup)** — model the decision as pure
   (`should_dispatch(params, last) -> Option<RenderRequest>`); keep the queue and
   dispatch in the shell.
-- **`streaming.rs` (~2050 lines) — deferred** (a split reopens live QA; see related
-  cleanups).
+- **The live streaming loop** was decomposed in 2026-07 into
+  `src/nexrad/live/realtime/streaming/` (nine focused submodules); the loop
+  function itself keeps its await ordering intact, since the timing is
+  load-bearing and unverifiable headlessly.
 - **`LayoutCtx` still hands four subsystems as `&mut`** (`live`, `playback`,
   `acquisition`, `chrome`, plus `modals` for widget buffers). `diagnostics` was
   narrowed to `&` in 2026-07 as a compiler-checked proof that no layer mutates
@@ -320,6 +322,4 @@ recoverable from git history if expanded):
 - **Declarative data-flow canvas overlays** — extend the S3 `Overlay` registry
   (corner chrome) to the data-flow overlays in `canvas.rs`; low value, pipeline-
   inherent order, real visual-regression risk — do only if that code is reworked.
-- **`streaming.rs` decomposition** — split the ~2050-line live-streaming loop
-  (`src/nexrad/live/realtime/streaming.rs`) into focused submodules; behavior-preserving
-  but reopens live-stream QA, so do it when that file next needs substantial change.
+- ~~**`streaming.rs` decomposition**~~ — done (2026-07); see the carve-out above.
