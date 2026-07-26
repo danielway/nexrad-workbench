@@ -6,6 +6,7 @@
 //! preflight failure is possible and is surfaced verbatim to the user
 //! through `MpingEvent::Error`.
 
+use crate::net::err_text;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -182,16 +183,6 @@ async fn fetch_attempt(url: &str, auth_header: &str) -> Verdict<String> {
         Some(s) => Verdict::Ok(s),
         None => Verdict::Terminal("body not a string".into()),
     }
-}
-
-fn err_text(v: JsValue) -> String {
-    v.as_string()
-        .or_else(|| {
-            js_sys::Reflect::get(&v, &JsValue::from_str("message"))
-                .ok()
-                .and_then(|m| m.as_string())
-        })
-        .unwrap_or_else(|| format!("{:?}", v))
 }
 
 #[cfg(test)]
