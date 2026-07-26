@@ -234,6 +234,12 @@ Net test growth: **510 → 555 (+45 headless tests)**. New core surface:
 
 ## 2. MANUAL-QA CHECKLIST (the only human touchpoint)
 
+> **Superseded (2026-07-26).** This checklist has been merged with the
+> architecture-health program's items into one pass:
+> [docs/arch-health-2026-07/QA_CHECKLIST.md](arch-health-2026-07/QA_CHECKLIST.md).
+> Run that one; it covers everything below plus the later changes. The list here
+> is kept for provenance.
+
 Run `trunk serve` and verify the following. Bisect any regression to the phase
 commit above. Deep-link recipe: `?site=KDMX&t=<unix_seconds>` opens a detached
 archive view at that moment; add `&rt=true` for live; `&dev=true` for dev chrome.

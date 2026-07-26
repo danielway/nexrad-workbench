@@ -76,6 +76,29 @@ mobile), or any egui/web-sys/GPU code:
 In the core: ❌ any `egui::`, `web_sys::`, `js_sys::`, GPU, or `.await`-on-I/O in
 decision logic. Pure in, pure out; effects are values.
 
+### What is explicitly NOT a violation
+
+Two patterns look like violations at a glance and are sanctioned. Both were
+decided deliberately (2026-07, arch-health); treat them as settled rather than
+as debt to burn down.
+
+**1. A render leaf reading `AppState` to paint.** The view-model exists to carry
+*derivations*, and every derivation belongs in the core (`core::panels`,
+`DiagnosticsVm`, `core::canvas`). A panel that reads a field and draws it has no
+decision to test, so wrapping that read in a per-panel struct buys ceremony, not
+safety — the compiler already finds every site when state changes shape. Grow a
+view-model when a panel *computes*; not when it merely displays. Mutation is a
+different matter and stays forbidden.
+
+**2. Direct-manipulation gestures calling a subsystem command method.** Intents
+are drained at the top of `update()`, so an intent emitted while painting is
+applied on the *next* frame. That is invisible for a button press and wrong for a
+drag: scrub/jog gestures (`Live::detach_playhead` and friends) would trail the
+cursor by a frame. Those gestures call the subsystem method synchronously — but
+the *decision* still lives in the core (`core::transport::detach_playhead`), and
+the subsystem method only executes what the core returned. The rule is therefore
+"the decision is pure and testable", not "the call is deferred".
+
 ## How to test (the recipe)
 
 The whole point. A feature test never touches egui or a browser (sketch — the
@@ -267,6 +290,12 @@ selected; mPING toggle gating; GPS toggle → `Effect::StartGeolocation`.
   dispatch in the shell.
 - **`streaming.rs` (~2050 lines) — deferred** (a split reopens live QA; see related
   cleanups).
+- **`LayoutCtx` still hands four subsystems as `&mut`** (`live`, `playback`,
+  `acquisition`, `chrome`, plus `modals` for widget buffers). `diagnostics` was
+  narrowed to `&` in 2026-07 as a compiler-checked proof that no layer mutates
+  it; each surviving `&mut` carries an inline doc naming the mutation that keeps
+  it, so the next narrowing attempt starts with the answer. `chrome` is the
+  largest (~60 sites) and is arguably UI-local state that landed in a subsystem.
 
 ### Honest note on current structure
 As of 2026-07 the layers match the intent: `src/core/` owns the domain types and
