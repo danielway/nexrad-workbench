@@ -9,7 +9,7 @@
 //!   describes.
 //! - [`Effect`] — a *described* side effect the core returns for the shell to
 //!   execute (URL push, localStorage write, geolocation, …). Modeled on the
-//!   existing [`crate::state::playback_manager::PrevSweepAction`] "effect as
+//!   existing [`crate::core::playback_manager::PrevSweepAction`] "effect as
 //!   data" enum. Heavy, per-decision effects (GPU buffer uploads, worker
 //!   dispatch) keep using their own local action enums — that *is* the
 //!   PrevSweepAction idiom — while [`Effect`] carries the simple cross-cutting
@@ -32,8 +32,10 @@ pub(crate) mod live_mode;
 pub(crate) mod live_radar_model;
 pub(crate) mod panels;
 pub(crate) mod persist;
+pub(crate) mod playback_manager;
 pub(crate) mod projection;
 pub(crate) mod render;
+pub(crate) mod render_loop;
 pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;
 pub(crate) mod timeline_view;

@@ -303,13 +303,6 @@ impl WorkbenchApp {
         }
     }
 
-    /// Build the elevation list from a scan's VCP data.
-    pub(crate) fn build_elevation_list(
-        scan: &crate::core::Scan,
-    ) -> Vec<crate::core::ElevationListEntry> {
-        state::playback_manager::build_elevation_list(scan)
-    }
-
     /// Update the canvas overlay text with sweep timing and elevation info.
     pub(crate) fn update_overlay_from_sweep(&mut self, start: f64, end: f64, elevation_deg: f32) {
         self.state
@@ -329,9 +322,9 @@ impl WorkbenchApp {
     /// user picks 5° and the resolved scan only has 1°/3°/7°, the canvas blanks
     /// rather than snapping to a neighbor.
     pub(crate) fn request_worker_render(&mut self) {
-        use state::playback_manager::DesiredDisplay;
+        use crate::core::playback_manager::DesiredDisplay;
 
-        let desired = state::playback_manager::resolve_desired_display(
+        let desired = crate::core::playback_manager::resolve_desired_display(
             &self.state.viz_state.site_id,
             self.playback.state.playback_position(),
             &self.state.viz_state.elevation_selection,
@@ -381,7 +374,7 @@ impl WorkbenchApp {
         }
     }
 
-    /// The live cut feeding [`state::playback_manager::resolve_desired_display`]:
+    /// The live cut feeding [`crate::core::playback_manager::resolve_desired_display`]:
     /// `Some((collecting_elevation, anchor_key_ms))` while streaming with a
     /// fully-known volume AND the playhead attached to the live edge, else
     /// `None` (which collapses the resolver to the cache path — a detached

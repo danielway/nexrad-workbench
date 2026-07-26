@@ -80,7 +80,7 @@ impl Sweep {
 /// Whether `sweep` has a cached blob for `product` (worker-string name).
 /// Empty `cached_products` means "nothing stored / unknown" and is treated as
 /// not-available — matching the render resolver
-/// ([`crate::state::playback_manager::resolve_active_sweep_target`]) so the
+/// ([`crate::core::playback_manager::resolve_active_sweep_target`]) so the
 /// macro frame list never lists a frame the canvas would blank.
 fn sweep_has_product(sweep: &Sweep, product: &str) -> bool {
     sweep.cached_products.iter().any(|p| p == product)
@@ -499,7 +499,7 @@ impl RadarTimeline {
     /// Index of the scan that `ts` resolves into: the last scan whose
     /// `start_time <= ts`. Matches the render resolver's "most recent scan at or
     /// before the playhead" (see
-    /// [`crate::state::playback_manager::resolve_active_sweep_target`]). Returns
+    /// [`crate::core::playback_manager::resolve_active_sweep_target`]). Returns
     /// `None` when `ts` is before every scan.
     fn scan_index_at(&self, ts: f64) -> Option<usize> {
         let idx = self.scans.partition_point(|s| s.start_time <= ts);

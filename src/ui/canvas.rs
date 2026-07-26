@@ -763,18 +763,18 @@ fn format_hhmm(ts: f64, use_local: bool) -> String {
 /// Render the canvas honesty caption (spec §11.2). Centered, low-key text:
 /// "Acquiring data…" on a blank canvas, or "showing X · fetching Y…" /
 /// "showing X · no data at Y" when a held frame's time has drifted from the
-/// playhead. No-op for [`CanvasCaption::None`].
+/// playhead. No-op for [`crate::core::canvas::CanvasCaption::None`].
 fn render_canvas_caption(
     painter: &egui::Painter,
     rect: &Rect,
     color: Color32,
-    caption: crate::state::CanvasCaption,
+    caption: crate::core::canvas::CanvasCaption,
     use_local: bool,
 ) {
     let text = match caption {
-        crate::state::CanvasCaption::None => return,
-        crate::state::CanvasCaption::Acquiring => "Acquiring data…".to_string(),
-        crate::state::CanvasCaption::Discrepancy {
+        crate::core::canvas::CanvasCaption::None => return,
+        crate::core::canvas::CanvasCaption::Acquiring => "Acquiring data…".to_string(),
+        crate::core::canvas::CanvasCaption::Discrepancy {
             showing,
             target,
             fetching,

@@ -1,7 +1,11 @@
 //! Playback sweep cache and previous-sweep resolution logic.
 //!
-//! Extracted from `main.rs` to reduce the size of `WorkbenchApp` and group
-//! sweep-cache / sweep-animation helpers in one place.
+//! Pure in-memory decision vocabulary: the sweep-data LRU, the
+//! previous-sweep resolution state machine ([`PrevSweepAction`]), the
+//! canvas display resolver ([`resolve_desired_display`]), and the
+//! elevation-list builder. Originally extracted from `main.rs`; moved from
+//! `state` into `core` so the render-loop reducer
+//! ([`crate::core::render_loop`]) can compose these decisions.
 
 use std::collections::HashMap;
 

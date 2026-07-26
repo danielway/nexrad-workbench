@@ -5,7 +5,7 @@
 //! - [`crate::nexrad::RenderCoordinator`] (held as `WorkbenchApp.render`)
 //!   owned the worker pool, the current scan/elevation tracking, and
 //!   the per-frame render dedup cache.
-//! - [`crate::state::playback_manager::PlaybackManager`] (held as
+//! - [`crate::core::playback_manager::PlaybackManager`] (held as
 //!   `WorkbenchApp.playback_manager`) owned the previous-sweep cache
 //!   and the resolution logic that drives sweep-animation crossfade.
 //!
@@ -19,24 +19,9 @@
 //! lifecycle — eframe wires them up at startup from the creation
 //! context and they're never re-created.
 
+use crate::core::playback_manager::PlaybackManager;
+use crate::core::render_loop::ScrubCache;
 use crate::nexrad::RenderCoordinator;
-use crate::state::playback_manager::PlaybackManager;
-
-/// Per-frame inputs the scrub-detection cache compares against.
-///
-/// `advance_playback` skips the O(scans) timeline search when none of
-/// these have changed since the last frame; that's the whole point of
-/// the cache. The active scan timestamp catches ingest-driven scan
-/// changes that happen without playback movement.
-#[derive(Default)]
-pub(crate) struct ScrubCache {
-    pub last_playback_ts: Option<f64>,
-    pub last_elevation_selection: Option<crate::core::ElevationSelection>,
-    pub last_scan_count: usize,
-    /// Active scan timestamp (sub-second Unix seconds) from
-    /// `RenderCoordinator::scan_key`.
-    pub last_active_scan_ts: Option<f64>,
-}
 
 /// Owner of the worker render pipeline + the sweep-animation cache.
 pub(crate) struct Render {

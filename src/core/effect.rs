@@ -10,7 +10,7 @@
 //! executor (URL/history, localStorage, geolocation, …). Heavy per-decision
 //! effects that carry large payloads or live handles — GPU texture uploads,
 //! worker render dispatch — keep using their own local action enums
-//! ([`crate::state::playback_manager::PrevSweepAction`] is the prototype): that
+//! ([`crate::core::playback_manager::PrevSweepAction`] is the prototype): that
 //! is the same "effect as data" idiom at a granularity that suits a buffer or a
 //! `postMessage`, rather than forcing every effect through one type.
 //!

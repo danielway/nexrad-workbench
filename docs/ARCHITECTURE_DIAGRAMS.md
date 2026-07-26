@@ -191,7 +191,7 @@ flowchart TB
 | `AppCommand` (→ `Intent`) | intents in | `state::AppCommand`, `core::intent` |
 | `subsystem::Derived` + `*Vm` | view-model out | `subsystem::derived`, `core::diagnostics::DiagnosticsVm` |
 | 7 subsystems + `AppState` | state owners | `subsystem/**`, `state/**` |
-| `core::Effect` + local action enums | effects out | `core::effect`, `state::playback_manager::PrevSweepAction` |
+| `core::Effect` + local action enums | effects out | `core::effect`, `core::playback_manager::PrevSweepAction` |
 
 **Migration status:** P0–P4 + P6 complete, P5 partial (pure logic extracted; the
 broad interactive `&mut`→intent rewrite is QA-gated). Carve-outs: GPU paint is

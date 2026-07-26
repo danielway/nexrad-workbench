@@ -15,7 +15,6 @@ pub(crate) mod calendar;
 mod frame_clock;
 mod layer;
 mod playback;
-pub(crate) mod playback_manager;
 mod preferences;
 pub(crate) mod recency;
 pub(crate) mod render_cache;
@@ -39,7 +38,7 @@ pub(crate) use stats::{
     DownloadPhase, DownloadProgress, IngestTimingDetail, RenderTimingDetail, SessionStats,
 };
 pub(crate) use theme::ThemeMode;
-pub(crate) use viz::{derive_canvas_caption, CanvasCaption, VizState};
+pub(crate) use viz::VizState;
 
 /// Cap on the recent-network-requests ring used by the UI log.
 pub(crate) const MAX_RECENT_NETWORK_REQUESTS: usize = 100;
@@ -560,7 +559,7 @@ impl AppState {
     ) -> Vec<ElevationListEntry> {
         let ts = playback.playback_position();
         if let Some(scan) = timeline.find_scan_at_timestamp(ts) {
-            return playback_manager::build_elevation_list(scan);
+            return crate::core::playback_manager::build_elevation_list(scan);
         }
         if let Some(vcp) = live_vcp_pattern {
             if !vcp.elevations.is_empty() {

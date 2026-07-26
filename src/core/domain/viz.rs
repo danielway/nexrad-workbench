@@ -236,7 +236,7 @@ pub(crate) struct ElevationListEntry {
 /// that as "unknown — allow" so all products are selectable until a
 /// completed sweep narrows it down.
 ///
-/// (Moved from `state::playback_manager` so the chunk-ingest reducer in
+/// (Moved from `core::playback_manager` so the chunk-ingest reducer in
 /// [`crate::core::worker_ingest`] can resolve the elevation selection
 /// without core importing `state`.)
 pub(crate) fn build_elevation_list_from_vcp(

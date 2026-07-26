@@ -57,7 +57,7 @@ effect boundary is the new piece.
 | `AppCommand` | **Intents in** | Exists but thin — ~20 variants, mostly *effect* triggers (`ClearCache`, `StartLive`, `FetchScan`); most ordinary state changes bypass it via direct `&mut`. Goal: it (as a renamed/superset `Intent`) becomes the *only* way the UI changes anything. |
 | `subsystem::Derived` ([derived.rs](../src/subsystem/derived.rs)) | **View-model out** | Exists but minimal — a 4-field per-frame cache, read ~14×; panels read subsystem internals directly at scale. Goal: a *complete* per-panel view-model the panels read exclusively. |
 | The 7 subsystems + `AppState` | **State owners** | Exist (S1) and are thin/clean. The decision+effect *tangle* lives mostly in `src/app/*` (the `update()` orchestration `impl WorkbenchApp` methods). Goal: that logic becomes pure `(state, intent) -> effects`. |
-| `Effect` (an enum the core returns) | **Effects out** | **New.** Replaces inline IDB/HTTP/worker/GPU/localStorage/etc. calls in decision logic with described values an effect runtime executes. The pattern already exists in one place — `resolve_prev_sweep -> PrevSweepAction` ([playback_manager.rs](../src/state/playback_manager.rs)) — **imitate it.** |
+| `Effect` (an enum the core returns) | **Effects out** | **New.** Replaces inline IDB/HTTP/worker/GPU/localStorage/etc. calls in decision logic with described values an effect runtime executes. The pattern already exists in one place — `resolve_prev_sweep -> PrevSweepAction` ([playback_manager.rs](../src/core/playback_manager.rs)) — **imitate it.** |
 
 ## What counts as a violation
 
@@ -163,7 +163,7 @@ the consolidated MANUAL-QA checklist: [CORE_SHELL_MIGRATION_LOG.md](CORE_SHELL_M
   no runnable QA).
 - **P4 — GPU & worker effects as data (L). ✅ DONE.** The render path's
   effect-as-data was largely already realized via local action enums
-  ([`PrevSweepAction`](../src/state/playback_manager.rs) for the prev-sweep
+  ([`PrevSweepAction`](../src/core/playback_manager.rs) for the prev-sweep
   texture, [`DesiredDisplay`] for the main sweep) — that *is* the PrevSweepAction
   idiom the standard endorses, at a granularity that suits buffer uploads /
   `postMessage` (heavy payloads stay out of a monolithic `Effect`, per D1). P4

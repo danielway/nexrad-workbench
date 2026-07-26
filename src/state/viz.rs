@@ -1,5 +1,6 @@
 //! Visualization state (canvas, zoom/pan, product selection).
 
+use crate::core::canvas::CanvasCaption;
 use crate::core::{DisplayedSweep, ElevationSelection, RadarProduct, StormCellInfo};
 use crate::geo::{Camera, Flat2DState, ViewMode};
 use eframe::egui::Vec2;
@@ -114,83 +115,6 @@ pub(crate) struct VizState {
     /// canvas, or a "showing X · fetching/​no-data Y" discrepancy caption when a
     /// stale frame is held while the playhead has drifted past it.
     pub canvas_caption: CanvasCaption,
-}
-
-/// Honesty caption for the canvas (spec §11.2 / alignment §3 — caption only).
-///
-/// The canvas keeps showing the most recent successfully displayed frame when
-/// the playhead drifts into an undownloaded region or gap (it never blanks
-/// merely because the playhead moved away in time). This enum tells the overlay
-/// which caption, if any, to render to keep the time honest.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub(crate) enum CanvasCaption {
-    /// No caption — the displayed frame covers the playhead, or live owns the
-    /// canvas.
-    #[default]
-    None,
-    /// Blank canvas with a reactive fetch in flight: show "Acquiring data…" so
-    /// an empty view reads as loading, not broken.
-    Acquiring,
-    /// A stale frame is held while the playhead sits past it. `showing` is the
-    /// displayed frame's representative (midpoint) time; `target` is the
-    /// playhead time. `fetching` distinguishes "fetching Y…" (a download covers
-    /// the playhead) from "no data at Y" (nothing is, or is coming).
-    Discrepancy {
-        showing: f64,
-        target: f64,
-        fetching: bool,
-    },
-}
-
-/// Pure derivation of the canvas honesty caption (spec §11.2). Kept separate
-/// from `advance_playback` so the decision is unit-testable.
-///
-/// - `attached`: the playhead is tethered to the live edge (pinned/lookback) or
-///   a live stream owns the canvas — then live's partial path owns the caption,
-///   so we emit `None`.
-/// - `displayed`: the on-screen frame's `(start, end, midpoint)`, if any.
-/// - `playhead`: the playback position (seconds).
-/// - `scan_covers_playhead`: whether a cached scan exists at-or-before the
-///   playhead within the recency window (i.e. the resolver could pick a frame
-///   covering it). When true there's no discrepancy — the resolver/render path
-///   is repainting; when false the held frame is stale relative to the playhead.
-/// - `fetch_covers_playhead`: whether a download/ingest covers the playhead.
-pub(crate) fn derive_canvas_caption(
-    attached: bool,
-    displayed: Option<(f64, f64, f64)>,
-    playhead: f64,
-    scan_covers_playhead: bool,
-    fetch_covers_playhead: bool,
-) -> CanvasCaption {
-    // Live (or any attached) state: the live partial path owns the canvas.
-    if attached {
-        return CanvasCaption::None;
-    }
-    match displayed {
-        // A frame is held. If no scan covers the playhead, the held frame is
-        // stale relative to where the playhead sits — surface the discrepancy
-        // (the canvas keeps showing it rather than blanking).
-        Some((_start, _end, midpoint)) => {
-            if scan_covers_playhead {
-                CanvasCaption::None
-            } else {
-                CanvasCaption::Discrepancy {
-                    showing: midpoint,
-                    target: playhead,
-                    fetching: fetch_covers_playhead,
-                }
-            }
-        }
-        // Blank canvas: the legacy "Acquiring…" hint when a fetch covers the
-        // playhead, else nothing.
-        None => {
-            if fetch_covers_playhead {
-                CanvasCaption::Acquiring
-            } else {
-                CanvasCaption::None
-            }
-        }
-    }
 }
 
 impl Default for VizState {
@@ -332,11 +256,6 @@ mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    // A displayed frame [100, 200], midpoint 150.
-    fn frame() -> Option<(f64, f64, f64)> {
-        Some((100.0, 200.0, 150.0))
-    }
-
     #[wasm_bindgen_test]
     fn view_mode_and_zoom_pan_derive_from_camera() {
         let mut viz = VizState::default();
@@ -377,70 +296,6 @@ mod tests {
         viz.toggle_2d_3d();
         assert!(viz.is_2d());
     }
-
-    #[wasm_bindgen_test]
-    fn caption_suppressed_while_attached() {
-        // Live owns the canvas while attached — never caption, even with a
-        // drifted playhead and no covering scan.
-        assert_eq!(
-            derive_canvas_caption(true, frame(), 9999.0, false, false),
-            CanvasCaption::None
-        );
-        // Also suppressed on a blank canvas while attached.
-        assert_eq!(
-            derive_canvas_caption(true, None, 9999.0, false, true),
-            CanvasCaption::None
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn caption_none_when_scan_covers_playhead() {
-        // A frame is held and a scan covers the playhead: the resolver/render
-        // path is repainting, so no discrepancy.
-        assert_eq!(
-            derive_canvas_caption(false, frame(), 180.0, true, false),
-            CanvasCaption::None
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn caption_discrepancy_fetching_vs_no_data() {
-        // Held frame, playhead drifted past it, no covering scan, fetch in
-        // flight → "fetching" discrepancy carrying the displayed midpoint and
-        // the playhead.
-        assert_eq!(
-            derive_canvas_caption(false, frame(), 700.0, false, true),
-            CanvasCaption::Discrepancy {
-                showing: 150.0,
-                target: 700.0,
-                fetching: true,
-            }
-        );
-        // Same but nothing is being fetched → "no data" discrepancy.
-        assert_eq!(
-            derive_canvas_caption(false, frame(), 700.0, false, false),
-            CanvasCaption::Discrepancy {
-                showing: 150.0,
-                target: 700.0,
-                fetching: false,
-            }
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn caption_blank_canvas_acquiring_hint() {
-        // No frame on screen + a fetch covering the playhead → the legacy
-        // centered "Acquiring data…" hint.
-        assert_eq!(
-            derive_canvas_caption(false, None, 700.0, false, true),
-            CanvasCaption::Acquiring
-        );
-        // No frame and nothing fetching → no caption (a plain empty canvas).
-        assert_eq!(
-            derive_canvas_caption(false, None, 700.0, false, false),
-            CanvasCaption::None
-        );
-    }
 }
 
 #[cfg(test)]
@@ -461,7 +316,6 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn enum_defaults() {
         assert_eq!(ViewMode::default(), ViewMode::Flat2D);
-        assert_eq!(CanvasCaption::default(), CanvasCaption::None);
     }
 
     // ---- VizState::update_overlay & displayed_midpoint_secs ---------------

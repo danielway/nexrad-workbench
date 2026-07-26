@@ -5,297 +5,99 @@
 //! latest decoded sweep is visible) and before UI panels render (so the
 //! canvas reflects the new frame).
 
+use crate::core::playback_manager::{PlaybackManager, PrevSweepAction};
+use crate::core::render_loop::{
+    decide_prefetch_and_caption, reduce_advance_playback, ActiveScanSync, AdvancePlaybackActions,
+    AdvancePlaybackEnv, AdvancePlaybackSlices, FrameFollowupEnv,
+};
 use crate::core::SweepIdentity;
-use crate::state::playback_manager::{PlaybackManager, PrevSweepAction};
 use crate::{data, state, WorkbenchApp, MAX_SCAN_AGE_SECS, PREFETCH_LOOKAHEAD_SECS};
 
 impl WorkbenchApp {
-    /// Auto-load scans when scrubbing the timeline and prefetch upcoming sweeps.
+    /// Auto-load scans when scrubbing the timeline and prefetch upcoming
+    /// sweeps. Thin shell over two pure decision points (see
+    /// [`crate::core::render_loop`]): assemble → [`reduce_advance_playback`]
+    /// → execute, then re-snapshot → [`decide_prefetch_and_caption`] →
+    /// execute. The re-snapshot matters: the executed render request can
+    /// blank `viz_state.displayed` and the active-scan sync moves the
+    /// coordinator key, and the follow-up decision must see both.
     pub(crate) fn advance_playback(&mut self) {
-        // Live mode no longer skips playback-driven renders: the unified
-        // resolver (`request_worker_render`) runs in both modes so a cached
-        // cut paints while streaming. Live still owns *acquisition* (the
-        // archive "acquiring" hint never applies) and the active-scan tracking
-        // + prefetch-next-sweep path below stay archive-only.
-        let live_active = self.live.mode_state.is_active();
-        // Rebuild macro frame list when dirty (elevation selection, bounds, or
-        // scan count changed). Uses the *effective* mode so the list is also
-        // built during a lookback replay (which frame-steps regardless of zoom).
-        if self.playback.state.effective_playback_mode() == crate::core::PlaybackMode::Macro {
-            let product = self.state.viz_state.product.to_worker_string();
-            let inputs = crate::core::MacroFrameInputs {
-                elevation: self.state.viz_state.elevation_selection.clone(),
-                product,
-                bounds: self.playback.state.time_model.playback_bounds,
-                scan_count: self.timeline.scans.scans.len(),
-            };
-
-            if let Some(cause) = self.playback.state.macro_playback.rebuild_cause(&inputs) {
-                let frames = match &inputs.elevation {
-                    crate::core::ElevationSelection::Fixed {
-                        elevation_number, ..
-                    } => self.timeline.scans.matching_sweep_end_times_by_number(
-                        *elevation_number,
-                        product,
-                        inputs.bounds,
-                    ),
-                    crate::core::ElevationSelection::Latest => self
-                        .timeline
-                        .scans
-                        .all_sweep_end_times(product, inputs.bounds),
-                };
-                self.playback
-                    .state
-                    .macro_playback
-                    .store_rebuilt(inputs, frames);
-                self.playback.state.sync_macro_frame_index();
-                // When the elevation filter changes, snap playback_position
-                // to the resolved frame so the canvas resolver picks a sweep
-                // at the new elevation. Frames are sweep end-times and a
-                // higher elevation's sweep starts after the previous one
-                // ends — without snapping, the resolver's
-                // `start_time <= playback_position` filter rejects every
-                // sweep at the new elevation in the current scan, blanking
-                // the canvas. Skip on bounds/scan_count changes so
-                // streaming and selection edits don't teleport the cursor.
-                if cause == crate::core::RebuildCause::ElevationChanged {
-                    self.playback.state.snap_playback_to_macro_frame();
-                }
-            }
-
-            // Detect manual seek: if playback position changed externally
-            // (user clicked timeline, jog, etc.) re-sync frame index.
-            let pos = self.playback.state.playback_position();
-            let last_pos = self.playback.state.macro_playback.last_seen_position;
-            if (pos - last_pos).abs() > 0.5 {
-                self.playback.state.sync_macro_frame_index();
-                self.playback.state.macro_playback.frame_accumulator = 0.0;
-            }
-            self.playback.state.macro_playback.last_seen_position = pos;
-        }
-
-        // Auto-load scan when scrubbing: find the most recent scan within 15 minutes.
-        // In the worker architecture, this sends a render request directly —
-        // the worker reads records from IDB, decodes the target elevation, and renders.
-        //
-        // In FixedTilt mode, we also detect intra-scan sweep changes: a scan may
-        // contain multiple sweeps at the target elevation (e.g. VCP 215 has 0.5°
-        // at both elevation_number 1 and 3). As playback advances past a new
-        // sweep's start_time, we re-render with that sweep's elevation_number.
-        // Uses module-level MAX_SCAN_AGE_SECS constant.
-        {
-            let playback_ts = self.playback.state.playback_position();
-
-            // Skip the timeline walk when nothing that feeds the scrub
-            // decision has moved since last frame. The O(scans) search
-            // below used to run every frame even while paused; this lets
-            // the idle case cost only a few comparisons.
-            let scan_count = self.timeline.scans.scans.len();
-            let elev_sel = &self.state.viz_state.elevation_selection;
-            let active_ts = self
-                .render
-                .coordinator
-                .scan_key()
-                .map(|k| k.scan_start.as_secs_f64());
-            let scrub_cache_hit = self.render.scrub_cache.last_playback_ts == Some(playback_ts)
-                && self.render.scrub_cache.last_scan_count == scan_count
-                && self.render.scrub_cache.last_active_scan_ts == active_ts
-                && self
-                    .render
-                    .scrub_cache
-                    .last_elevation_selection
-                    .as_ref()
-                    .is_some_and(|cached| cached == elev_sel);
-
-            if !scrub_cache_hit {
-                self.render.scrub_cache.last_playback_ts = Some(playback_ts);
-                self.render.scrub_cache.last_scan_count = scan_count;
-                self.render.scrub_cache.last_active_scan_ts = active_ts;
-                self.render.scrub_cache.last_elevation_selection = Some(elev_sel.clone());
-            }
-
-            if !scrub_cache_hit {
-                // Identify the scan covering the playback position. The
-                // resolver in `request_worker_render` then decides which
-                // sweep within it to actually fetch — advance_playback's
-                // job is just to keep `RenderCoordinator.current_scan_key`
-                // (and the elevation list / VCP-resolution) in sync.
-                let scrub_action = self
-                    .timeline
-                    .scans
-                    .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
-                    .map(|scan| {
-                        let scan_ts: f64 = scan.key_timestamp;
-                        let mut elev_nums: Vec<u8> =
-                            scan.sweeps.iter().map(|s| s.elevation_number).collect();
-                        elev_nums.sort_unstable();
-                        elev_nums.dedup();
-                        let elev_list = Self::build_elevation_list(scan);
-                        (scan_ts, elev_nums, elev_list)
-                    });
-
-                match scrub_action {
-                    Some((scan_ts, elev_nums, elev_list)) => {
-                        if self.render.coordinator.has_worker() {
-                            let scan_key = data::ScanKey::from_secs_f64(
-                                &self.state.viz_state.site_id,
-                                scan_ts,
-                            );
-                            let scan_changed = active_ts != Some(scan_ts);
-                            // The live ingest path owns active-scan tracking
-                            // while streaming; only archive playback mutates it
-                            // here (and `force_fresh_render` would fight live
-                            // dedup). The unified `request_worker_render` below
-                            // still runs in both modes.
-                            if scan_changed && !live_active {
-                                if !elev_nums.is_empty() {
-                                    self.set_active_scan(scan_key, elev_nums, scan_ts);
-                                } else {
-                                    self.advance_active_scan_chunk(scan_key, &[], scan_ts);
-                                }
-                                self.state
-                                    .viz_state
-                                    .elevation_selection
-                                    .resolve_for_vcp(&elev_list);
-                                self.render.coordinator.force_fresh_render();
-                                // Active scan moved — refresh the cache snapshot.
-                                self.render.scrub_cache.last_active_scan_ts = self
-                                    .render
-                                    .coordinator
-                                    .scan_key()
-                                    .map(|k| k.scan_start.as_secs_f64());
-                            }
-                            self.request_worker_render();
-                            if self.state.viz_state.volume_3d_enabled && !live_active {
-                                self.request_worker_render_volume();
-                            }
-                        }
-                    }
-                    None => {
-                        // The playhead drifted into an undownloaded region or
-                        // gap. Per spec §11.2 (alignment §3) we DON'T blank on
-                        // age — keep showing the most recent frame and surface
-                        // the discrepancy via the canvas caption (computed at
-                        // the end of this function). Blanking stays correct only
-                        // for site/product/elevation changes and cache wipes,
-                        // which clear `displayed` on their own paths.
-                        //
-                        // Still drop the stale active-scan key so the resolver
-                        // and prefetch don't keep targeting a scan the playhead
-                        // has left — without re-clearing the GPU frame.
-                        if active_ts.is_some() && !live_active {
-                            self.clear_active_scan();
-                        }
-                    }
-                }
-            }
-        }
-
-        // Pre-render next sweep: when playing and near the end of the current sweep,
-        // preemptively send a render request for the upcoming sweep so the result
-        // is ready when the boundary is crossed, reducing perceived stutter.
-        // Skip in macro mode — frame jumps are instant and the frame list handles sequencing.
-        if self.playback.state.playing
-            && !live_active
-            && self.render.coordinator.has_worker()
-            && self.playback.state.playback_mode() == crate::core::PlaybackMode::Micro
-        {
-            let playback_ts = self.playback.state.playback_position();
-            let speed = self.playback.state.speed.timeline_seconds_per_real_second();
-            let prefetch_lookahead = PREFETCH_LOOKAHEAD_SECS * speed;
-
-            if let Some(scan) = self.timeline.scans.find_scan_at_timestamp(playback_ts) {
-                if let Some((sweep_idx, sweep)) = scan.find_sweep_at_timestamp(playback_ts) {
-                    let sweep_end = sweep.end_time;
-                    let cur_elev = self
-                        .state
-                        .viz_state
-                        .displayed
-                        .as_ref()
-                        .map(|d| d.identity.elevation_number);
-                    // Only the last-sweep-in-scan case consults the next scan;
-                    // mirror that so we don't do an extra timeline walk.
-                    let future_scan = if sweep_idx + 1 < scan.sweeps.len() {
-                        None
-                    } else {
-                        self.timeline
-                            .scans
-                            .find_scan_at_timestamp(playback_ts + prefetch_lookahead)
-                    };
-                    let next_elev = crate::core::render::decide_prefetch_next_elevation(
-                        scan,
-                        sweep_idx,
-                        sweep_end,
-                        playback_ts,
-                        prefetch_lookahead,
-                        future_scan,
-                        cur_elev,
-                    );
-
-                    if let Some(next_en) = next_elev {
-                        if let Some(scan_key) = self.render.coordinator.scan_key().cloned() {
-                            let product =
-                                self.state.viz_state.product.to_worker_string().to_string();
-                            let prefetch_identity =
-                                SweepIdentity::new(scan_key.clone(), next_en, product.clone());
-                            log::debug!(
-                                "Prefetching next sweep: elev_num={} ({:.1}s ahead)",
-                                next_en,
-                                sweep_end - playback_ts,
-                            );
-                            self.render.coordinator.set_last_render(prefetch_identity);
-                            self.render
-                                .coordinator
-                                .render_direct(&scan_key, next_en, product);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Canvas honesty caption (spec §11.2). Derived here where the displayed
-        // identity, playhead, and download-progress ranges are all in scope. The
-        // live partial path owns the canvas while the playhead is attached
-        // (pinned/lookback), so the caption is suppressed there — but a detached
-        // background stream resolves the cached frame at the cursor, so the
-        // caption applies just like ordinary archive browsing.
-        let pos = self.playback.state.playback_position();
-        let attached = self.playback.state.time_model.is_pinned()
-            || self.playback.state.time_model.is_lookback();
-        let displayed = self
-            .state
-            .viz_state
-            .displayed
-            .as_ref()
-            .map(|d| (d.start_time, d.end_time, (d.start_time + d.end_time) / 2.0));
-        let scan_covers_playhead = self
-            .timeline
-            .scans
-            .find_recent_scan(pos, MAX_SCAN_AGE_SECS)
-            .is_some();
-        let fetch_covers_playhead = self.position_is_being_acquired(pos);
-        self.state.viz_state.canvas_caption = state::derive_canvas_caption(
-            attached,
-            displayed,
-            pos,
-            scan_covers_playhead,
-            fetch_covers_playhead,
+        let actions = reduce_advance_playback(
+            AdvancePlaybackEnv {
+                live_active: self.live.mode_state.is_active(),
+                has_worker: self.render.coordinator.has_worker(),
+                site_id: &self.state.viz_state.site_id,
+                product: self.state.viz_state.product,
+                volume_3d_enabled: self.state.viz_state.volume_3d_enabled,
+                coordinator_scan_key: self.render.coordinator.scan_key(),
+                max_scan_age_secs: MAX_SCAN_AGE_SECS,
+            },
+            AdvancePlaybackSlices {
+                playback: &mut self.playback.state,
+                elevation_selection: &mut self.state.viz_state.elevation_selection,
+                scrub_cache: &mut self.render.scrub_cache,
+            },
+            &self.timeline.scans,
         );
+        self.execute_advance_playback_actions(actions);
+
+        let followup = decide_prefetch_and_caption(
+            FrameFollowupEnv {
+                live_active: self.live.mode_state.is_active(),
+                has_worker: self.render.coordinator.has_worker(),
+                product: self.state.viz_state.product,
+                displayed: self.state.viz_state.displayed.as_ref(),
+                coordinator_scan_key: self.render.coordinator.scan_key(),
+                active_download_ranges: &self.state.download_progress.active_scans,
+                in_flight_download_ranges: &self.state.download_progress.in_flight_scans,
+                pending_download_ranges: &self.state.download_progress.pending_scans,
+                max_scan_age_secs: MAX_SCAN_AGE_SECS,
+                prefetch_lookahead_secs: PREFETCH_LOOKAHEAD_SECS,
+            },
+            &self.playback.state,
+            &self.timeline.scans,
+        );
+        if let Some(prefetch) = followup.prefetch {
+            log::debug!(
+                "Prefetching next sweep: elev_num={} ({:.1}s ahead)",
+                prefetch.identity.elevation_number,
+                prefetch.lead_secs,
+            );
+            let identity = prefetch.identity;
+            self.render.coordinator.set_last_render(identity.clone());
+            self.render.coordinator.render_direct(
+                &identity.scan_key,
+                identity.elevation_number,
+                identity.product.clone(),
+            );
+        }
+        self.state.viz_state.canvas_caption = followup.canvas_caption;
     }
 
-    /// Whether an archive fetch covering `playback_secs` is in flight or being
-    /// ingested — drives the canvas "Acquiring…" hint when the position has no
-    /// cached scan yet. Checks the download-progress ghost ranges, which mirror
-    /// the active and just-completed-but-still-ingesting downloads.
-    fn position_is_being_acquired(&self, playback_secs: f64) -> bool {
-        let pos = playback_secs as i64;
-        let progress = &self.state.download_progress;
-        progress
-            .active_scans
-            .iter()
-            .chain(progress.in_flight_scans.iter())
-            .chain(progress.pending_scans.iter())
-            .any(|&(start, end)| pos >= start && pos <= end)
+    /// Execute the effects described by [`reduce_advance_playback`], in
+    /// field order.
+    fn execute_advance_playback_actions(&mut self, actions: AdvancePlaybackActions) {
+        match actions.active_scan {
+            Some(ActiveScanSync::Set {
+                scan_key,
+                elevations,
+                scan_ts,
+            }) => self.set_active_scan(scan_key, elevations, scan_ts),
+            Some(ActiveScanSync::AdvanceChunkEmpty { scan_key, scan_ts }) => {
+                self.advance_active_scan_chunk(scan_key, &[], scan_ts)
+            }
+            Some(ActiveScanSync::Clear) => self.clear_active_scan(),
+            None => {}
+        }
+        if actions.force_fresh_render {
+            self.render.coordinator.force_fresh_render();
+        }
+        if actions.request_render {
+            self.request_worker_render();
+        }
+        if actions.request_volume_render {
+            self.request_worker_render_volume();
+        }
     }
 
     /// Stateless sweep animation: ensure the previous-sweep GPU texture matches

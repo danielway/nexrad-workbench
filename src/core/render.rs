@@ -5,7 +5,7 @@
 //! deciding — which sweep to prefetch next, and whether a request duplicates the
 //! last one — so those live here and are unit-tested. The prev-sweep texture
 //! decision already uses this pattern
-//! ([`crate::state::playback_manager::PrevSweepAction`]); this module covers the
+//! ([`crate::core::playback_manager::PrevSweepAction`]); this module covers the
 //! main-sweep prefetch + dedup gates.
 
 use crate::core::Scan;

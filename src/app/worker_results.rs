@@ -6,12 +6,12 @@
 //! plus the small helpers (`set_active_scan`, `advance_active_scan_chunk`,
 //! `clear_active_scan`) that bridge worker output and `RenderCoordinator`.
 
+use crate::core::playback_manager::{sweep_cache_key, CachedSweepData};
 use crate::core::{
     CacheLoadResult, ChunkIngestResult, DecodeResult, IngestResult, RadarTimeline, SweepIdentity,
     VolumeData,
 };
-use crate::state::playback_manager::{sweep_cache_key, CachedSweepData};
-use crate::{data, nexrad, state, WorkbenchApp, MAX_SCAN_AGE_SECS};
+use crate::{data, nexrad, WorkbenchApp, MAX_SCAN_AGE_SECS};
 use eframe::egui;
 
 impl WorkbenchApp {
@@ -352,7 +352,7 @@ impl WorkbenchApp {
         // never clobbers the live partial. This precedence replaces the old
         // `skip_gpu_upload = is_active()` mode flag: completed cached cuts now
         // upload during live, the actively-collecting cut does not.
-        let desired = state::playback_manager::resolve_desired_display(
+        let desired = crate::core::playback_manager::resolve_desired_display(
             &self.state.viz_state.site_id,
             self.playback.state.playback_position(),
             &self.state.viz_state.elevation_selection,
@@ -361,8 +361,8 @@ impl WorkbenchApp {
             MAX_SCAN_AGE_SECS,
             self.live_render_sources(),
         );
-        let is_current_scan =
-            desired == state::playback_manager::DesiredDisplay::Cached(result_identity.clone());
+        let is_current_scan = desired
+            == crate::core::playback_manager::DesiredDisplay::Cached(result_identity.clone());
         if self.state.effective_sweep_animation(&self.playback.state) && !is_current_scan {
             log::debug!("[sweep-anim] cached bg decode: {}", result_sweep_id);
             // Clear pending tracker so sync_prev_sweep_texture can load from cache
