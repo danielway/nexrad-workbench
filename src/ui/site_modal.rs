@@ -7,12 +7,9 @@
 
 use crate::core::LocationResult;
 use crate::data::{all_sites_sorted, get_site, nearest_site};
-use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
 use crate::state::AppState;
 use eframe::egui::{self, Color32, RichText, Vec2};
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
 
 /// Which view the modal is currently showing.
 #[derive(Default, Clone, PartialEq)]
@@ -53,6 +50,19 @@ impl SiteModalState {
     }
 
     /// Drain all location results that have arrived since the last call.
+    /// Enter the "waiting for an async location result" state, clearing any
+    /// previous error. Called by the shell when it starts a lookup.
+    pub(crate) fn begin_pending(&mut self) {
+        self.mode = SiteModalMode::Pending;
+        self.error_message = None;
+    }
+
+    /// Surface a message on the welcome screen (validation or lookup failure).
+    pub(crate) fn show_error(&mut self, message: String) {
+        self.mode = SiteModalMode::Welcome;
+        self.error_message = Some(message);
+    }
+
     pub(crate) fn drain_location_results(&mut self) -> Vec<LocationResult> {
         let mut out = Vec::new();
         while let Ok(r) = self.location_rx.try_recv() {
@@ -85,25 +95,6 @@ fn responsive_width(ctx: &egui::Context, desktop: f32) -> f32 {
     (viewport_w - 16.0).min(desktop).max(240.0)
 }
 
-/// Open the site modal in `Pending` mode and start browser geolocation.
-///
-/// Used by the mobile bottom bar's location button to bypass the welcome
-/// screen and go straight to "finding nearest site". The polling loop in
-/// `SiteModalLayer` handles the result — success closes the modal after
-/// applying the selection, failure drops back to the welcome screen with
-/// the error visible.
-pub(crate) fn trigger_geolocation(
-    ctx: &egui::Context,
-    _state: &mut AppState,
-    chrome: &mut crate::subsystem::Chrome,
-    modal_state: &mut SiteModalState,
-) {
-    chrome.site_modal_open = true;
-    modal_state.mode = SiteModalMode::Pending;
-    modal_state.error_message = None;
-    start_geolocation(modal_state.location_sender(), ctx.clone());
-}
-
 /// Apply a site selection to app state: update viz, center camera, refresh timeline.
 pub(super) fn apply_site_selection(
     state: &mut AppState,
@@ -132,171 +123,6 @@ pub(super) fn apply_site_selection(
     if std::mem::take(&mut state.start_live_on_site_select) {
         state.push_command(crate::core::Intent::StartLive);
     }
-}
-
-/// Start browser geolocation lookup.
-///
-/// `results` is an unbounded mpsc sender that the success/error callbacks
-/// push their outcome into. The caller is responsible for draining the
-/// corresponding receiver each frame.
-pub(crate) fn start_geolocation(
-    results: futures_channel::mpsc::UnboundedSender<LocationResult>,
-    ctx: egui::Context,
-) {
-    let window = match web_sys::window() {
-        Some(w) => w,
-        None => {
-            let _ = results.unbounded_send(LocationResult::Error("No browser window".into()));
-            return;
-        }
-    };
-
-    let navigator = window.navigator();
-    let geolocation = match navigator.geolocation() {
-        Ok(g) => g,
-        Err(_) => {
-            let _ =
-                results.unbounded_send(LocationResult::Error("Geolocation not available".into()));
-            return;
-        }
-    };
-
-    let results_ok = results.clone();
-    let ctx_ok = ctx.clone();
-    let success_cb = Closure::once(move |position: JsValue| {
-        let coords = js_sys::Reflect::get(&position, &"coords".into()).unwrap();
-        let lat = js_sys::Reflect::get(&coords, &"latitude".into())
-            .unwrap()
-            .as_f64()
-            .unwrap_or(0.0);
-        let lon = js_sys::Reflect::get(&coords, &"longitude".into())
-            .unwrap()
-            .as_f64()
-            .unwrap_or(0.0);
-        let _ = results_ok.unbounded_send(LocationResult::Success(lat, lon));
-        ctx_ok.request_repaint();
-    });
-
-    let results_err = results;
-    let ctx_err = ctx;
-    let error_cb = Closure::once(move |error: JsValue| {
-        let msg = js_sys::Reflect::get(&error, &"message".into())
-            .ok()
-            .and_then(|v| v.as_string())
-            .unwrap_or_else(|| "Location access denied".into());
-        let _ = results_err.unbounded_send(LocationResult::Error(msg));
-        ctx_err.request_repaint();
-    });
-
-    let _ = geolocation.get_current_position_with_error_callback(
-        success_cb.as_ref().unchecked_ref(),
-        Some(error_cb.as_ref().unchecked_ref()),
-    );
-
-    // Prevent closures from being dropped (they need to live until the callback fires).
-    success_cb.forget();
-    error_cb.forget();
-}
-
-/// Start zip code geocoding via the Zippopotam.us API.
-fn start_zip_lookup(zip: &str, results: UnboundedSender<LocationResult>, ctx: egui::Context) {
-    let url = format!("https://api.zippopotam.us/us/{}", zip);
-
-    wasm_bindgen_futures::spawn_local(async move {
-        let result: Result<(f64, f64), String> =
-            with_retry(&DEFAULT_POLICY, "zip_lookup", |_attempt| {
-                let url = url.clone();
-                async move { zip_lookup_attempt(&url).await }
-            })
-            .await
-            .map_err(|msg| {
-                // Zippopotam returns 404 for invalid zips; surface a friendlier
-                // message than the raw HTTP status.
-                if msg.contains("HTTP 404") {
-                    "Zip code not found".to_string()
-                } else {
-                    msg
-                }
-            });
-
-        let payload = match result {
-            Ok((lat, lon)) => LocationResult::Success(lat, lon),
-            Err(e) => LocationResult::Error(e),
-        };
-        let _ = results.unbounded_send(payload);
-        ctx.request_repaint();
-    });
-}
-
-/// One attempt against the Zippopotam.us API. Network errors and 5xx are
-/// retryable; 404 (invalid zip) and parse failures are terminal.
-async fn zip_lookup_attempt(url: &str) -> Verdict<(f64, f64)> {
-    let window = match web_sys::window() {
-        Some(w) => w,
-        None => return Verdict::Terminal("No browser window".into()),
-    };
-
-    let resp_value = match wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(url)).await {
-        Ok(v) => v,
-        Err(_) => return Verdict::Retry { after: None },
-    };
-    let resp: web_sys::Response = match resp_value.dyn_into() {
-        Ok(r) => r,
-        Err(_) => return Verdict::Terminal("Invalid response".into()),
-    };
-
-    let status = resp.status();
-    if status == 408 || status == 429 || (500..=599).contains(&status) {
-        return Verdict::Retry { after: None };
-    }
-    if !resp.ok() {
-        return Verdict::Terminal(format!("HTTP {}", status));
-    }
-
-    let json_promise = match resp.json() {
-        Ok(p) => p,
-        Err(_) => return Verdict::Terminal("Failed to parse response".into()),
-    };
-    let json = match wasm_bindgen_futures::JsFuture::from(json_promise).await {
-        Ok(v) => v,
-        Err(_) => return Verdict::Retry { after: None },
-    };
-
-    // Zippopotam response: { "places": [{ "latitude": "...", "longitude": "..." }] }
-    let places = match js_sys::Reflect::get(&json, &"places".into()) {
-        Ok(p) => p,
-        Err(_) => return Verdict::Terminal("Invalid response format".into()),
-    };
-    let first = match js_sys::Reflect::get_u32(&places, 0) {
-        Ok(f) => f,
-        Err(_) => return Verdict::Terminal("No location data for zip code".into()),
-    };
-
-    let lat_str = match js_sys::Reflect::get(&first, &"latitude".into()) {
-        Ok(v) => match v.as_string() {
-            Some(s) => s,
-            None => return Verdict::Terminal("Invalid latitude".into()),
-        },
-        Err(_) => return Verdict::Terminal("Missing latitude".into()),
-    };
-    let lon_str = match js_sys::Reflect::get(&first, &"longitude".into()) {
-        Ok(v) => match v.as_string() {
-            Some(s) => s,
-            None => return Verdict::Terminal("Invalid longitude".into()),
-        },
-        Err(_) => return Verdict::Terminal("Missing longitude".into()),
-    };
-
-    let lat: f64 = match lat_str.parse() {
-        Ok(v) => v,
-        Err(_) => return Verdict::Terminal("Invalid latitude value".into()),
-    };
-    let lon: f64 = match lon_str.parse() {
-        Ok(v) => v,
-        Err(_) => return Verdict::Terminal("Invalid longitude value".into()),
-    };
-
-    Verdict::Ok((lat, lon))
 }
 
 pub(super) struct SiteModalLayer;
@@ -422,7 +248,7 @@ fn draw_site_modal(
 /// Render the selection method screen with three paths (location, zip, browse).
 fn render_welcome_screen(
     ctx: &egui::Context,
-    _state: &mut AppState,
+    state: &mut AppState,
     chrome: &mut crate::subsystem::Chrome,
     modal_state: &mut SiteModalState,
 ) -> bool {
@@ -470,9 +296,7 @@ fn render_welcome_screen(
                 .min_size(Vec2::new(btn_w, 44.0));
 
                 if ui.add(btn).clicked() {
-                    modal_state.error_message = None;
-                    modal_state.mode = SiteModalMode::Pending;
-                    start_geolocation(modal_state.location_sender(), ctx.clone());
+                    state.push_command(crate::core::Intent::LocateMeForSite);
                 }
             });
 
@@ -665,7 +489,7 @@ fn render_site_list(
 /// Render the zip code entry view.
 fn render_zip_entry(
     ctx: &egui::Context,
-    _state: &mut AppState,
+    state: &mut AppState,
     chrome: &mut crate::subsystem::Chrome,
     modal_state: &mut SiteModalState,
 ) -> bool {
@@ -725,15 +549,9 @@ fn render_zip_entry(
             });
 
             if submit {
-                let zip = modal_state.zip_input.trim();
-                if zip.len() == 5 && zip.chars().all(|c| c.is_ascii_digit()) {
-                    modal_state.error_message = None;
-                    modal_state.mode = SiteModalMode::Pending;
-                    start_zip_lookup(zip, modal_state.location_sender(), ctx.clone());
-                } else {
-                    modal_state.error_message =
-                        Some("Please enter a valid 5-digit zip code".into());
-                }
+                state.push_command(crate::core::Intent::SubmitZip(
+                    modal_state.zip_input.clone(),
+                ));
             }
 
             ui.add_space(8.0);

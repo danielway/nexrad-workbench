@@ -853,17 +853,11 @@ impl eframe::App for WorkbenchApp {
         let derived = subsystem::Derived::for_frame(&self.state, &self.playback);
 
         // 19. Consume any deferred geolocation request raised by the
-        // mobile action bar. Handled before layout dispatch because the
-        // site-modal state lives outside AppState and the handler needs
-        // unique access to both `chrome` and `modals.site`.
+        // mobile action bar. Handled before layout dispatch so the modal
+        // opens pending in the same frame the button was pressed.
         if self.state.is_mobile && self.chrome.mobile_geolocate_requested {
             self.chrome.mobile_geolocate_requested = false;
-            ui::trigger_geolocation(
-                ctx,
-                &mut self.state,
-                &mut self.chrome,
-                &mut self.modals.site,
-            );
+            self.begin_site_geolocation(ctx);
         }
 
         // 19b. Resolve mobile chrome auto-hide for this frame (spec §13 phone:

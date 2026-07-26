@@ -27,6 +27,7 @@ pub(crate) mod canvas;
 pub(crate) mod diagnostics;
 pub(crate) mod domain;
 pub(crate) mod effect;
+pub(crate) mod geocode;
 pub(crate) mod intent;
 pub(crate) mod live_mode;
 pub(crate) mod live_radar_model;

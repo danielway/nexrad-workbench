@@ -53,4 +53,14 @@ pub(crate) enum Effect {
     /// The shell supplies the result sink (a `GpsState` channel) and `egui`
     /// context, so the effect itself carries no payload.
     StartGeolocation,
+    /// Begin a one-shot browser geolocation lookup for *site selection*.
+    /// Distinct from [`Effect::StartGeolocation`] only in its sink: the result
+    /// lands in the site modal's own [`LocationResult`] channel, which the
+    /// modal drains to pick the nearest site.
+    LocateForSite,
+    /// Geocode a validated 5-digit US zip code (see
+    /// [`decide_zip_submission`](crate::core::geocode::decide_zip_submission))
+    /// and deliver the coordinates to the site modal's [`LocationResult`]
+    /// channel.
+    GeocodeZip(String),
 }

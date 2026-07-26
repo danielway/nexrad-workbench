@@ -63,6 +63,13 @@ pub(crate) enum Intent {
     /// main loop applies them through the pure
     /// [`crate::core::diagnostics::reduce`].
     Diagnostics(crate::core::diagnostics::DiagnosticsIntent),
+    /// The site modal's "Use My Location" button (and the mobile action
+    /// bar's location button): open the modal pending and geolocate.
+    LocateMeForSite,
+    /// The site modal's zip form was submitted with this raw field text.
+    /// Validation is the core's ([`crate::core::geocode::decide_zip_submission`]);
+    /// the shell either starts the lookup or shows the message.
+    SubmitZip(String),
     /// "Show on map" for an alert: enable its overlay class and center the 2D
     /// view on its bbox. Cross-cuts diagnostics + viz, so it's handled in the
     /// shell (with viz access) via the pure `compute_alert_focus`.

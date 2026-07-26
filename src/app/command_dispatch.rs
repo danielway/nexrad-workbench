@@ -51,6 +51,14 @@ impl WorkbenchApp {
     ) {
         use crate::core::Intent;
         match cmd {
+            // ---- Site selection ---------------------------------------
+            Intent::LocateMeForSite => {
+                self.apply_effects(ctx, vec![crate::core::Effect::LocateForSite])
+            }
+            Intent::SubmitZip(raw) => {
+                self.apply_effects(ctx, vec![crate::core::Effect::GeocodeZip(raw)])
+            }
+
             // ---- Storage lifecycle ------------------------------------
             Intent::ClearCache => self.handle_clear_cache(ctx),
             Intent::WipeAll => self.handle_wipe_all(),

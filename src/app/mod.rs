@@ -10,6 +10,7 @@ pub(crate) mod command_dispatch;
 pub(crate) mod download;
 pub(crate) mod effects;
 pub(crate) mod frame_setup;
+pub(crate) mod geolocation;
 pub(crate) mod live_mode;
 pub(crate) mod persistence_manager;
 pub(crate) mod render_loop;

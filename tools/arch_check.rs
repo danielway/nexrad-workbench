@@ -90,11 +90,12 @@ const ALLOWED: &[(&str, &str)] = &[
 /// Known violations of the intended layering, kept only until burned down.
 /// Removing the last occurrence of an edge REQUIRES deleting its row here
 /// (the build fails on stale rows). Never add to this list.
-const GRANDFATHERED: &[(&str, &str, &str)] = &[(
-    "app",
-    "ui",
-    "geolocation effect executor lives in ui — move executor into app, Phase C2",
-)];
+///
+/// **Empty since 2026-07-26** — every inherited violation has been burned
+/// down and the dependency graph matches the intended layering exactly. An
+/// entry here is a debt marker, so this table staying empty is the goal;
+/// a new violation belongs in the code's fix, not in this list.
+const GRANDFATHERED: &[(&str, &str, &str)] = &[];
 
 pub fn run() {
     println!("cargo:rerun-if-changed=src");

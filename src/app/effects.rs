@@ -30,8 +30,13 @@ impl WorkbenchApp {
             }
             Effect::SavePreferences(prefs) => prefs.save(),
             Effect::StartGeolocation => {
-                crate::ui::start_geolocation(self.diagnostics.gps.result_sender(), ctx.clone());
+                crate::app::geolocation::start_geolocation(
+                    self.diagnostics.gps.result_sender(),
+                    ctx.clone(),
+                );
             }
+            Effect::LocateForSite => self.begin_site_geolocation(ctx),
+            Effect::GeocodeZip(zip) => self.begin_site_zip_lookup(ctx, zip),
         }
     }
 }

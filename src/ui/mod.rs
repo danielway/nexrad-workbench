@@ -56,5 +56,4 @@ pub(crate) use mobile::resolve_mobile_auto_hide;
 pub(crate) use modal_states::ModalStates;
 pub(crate) use mping_modal::MpingModalState;
 pub(crate) use shortcuts::handle_shortcuts;
-pub(crate) use site_modal::start_geolocation;
-pub(crate) use site_modal::{trigger_geolocation, SiteModalState};
+pub(crate) use site_modal::SiteModalState;
