@@ -52,12 +52,12 @@ state)`.
 We are not starting from scratch — three of the four seams already exist; the
 effect boundary is the new piece.
 
-| Seam | Role | Today (per the 2026-06-14 coupling audit) |
+| Seam | Role | Today (2026-07) |
 |---|---|---|
-| `AppCommand` | **Intents in** | Exists but thin — ~20 variants, mostly *effect* triggers (`ClearCache`, `StartLive`, `FetchScan`); most ordinary state changes bypass it via direct `&mut`. Goal: it (as a renamed/superset `Intent`) becomes the *only* way the UI changes anything. |
-| `subsystem::Derived` ([derived.rs](../src/subsystem/derived.rs)) | **View-model out** | Exists but minimal — a 4-field per-frame cache, read ~14×; panels read subsystem internals directly at scale. Goal: a *complete* per-panel view-model the panels read exclusively. |
-| The 7 subsystems + `AppState` | **State owners** | Exist (S1) and are thin/clean. The decision+effect *tangle* lives mostly in `src/app/*` (the `update()` orchestration `impl WorkbenchApp` methods). Goal: that logic becomes pure `(state, intent) -> effects`. |
-| `Effect` (an enum the core returns) | **Effects out** | **New.** Replaces inline IDB/HTTP/worker/GPU/localStorage/etc. calls in decision logic with described values an effect runtime executes. The pattern already exists in one place — `resolve_prev_sweep -> PrevSweepAction` ([playback_manager.rs](../src/core/playback_manager.rs)) — **imitate it.** |
+| `Intent` ([intent.rs](../src/core/intent.rs)) | **Intents in** | Defined in the core (the old `AppCommand` name is gone). UI code pushes intents via `AppState::push_command`; the main loop drains and dispatches them. Remaining gap: the interactive panels' direct `&mut` writes (the deferred P5 batch below). Goal: `Intent` becomes the *only* way the UI changes anything. |
+| `subsystem::Derived` ([derived.rs](../src/subsystem/derived.rs)) | **View-model out** | Exists but minimal — a small per-frame cache; panels still read subsystem internals directly at scale. `DiagnosticsVm` is the one complete per-panel view-model (the pattern to propagate). Goal: a *complete* per-panel view-model the panels read exclusively. |
+| The subsystems + `AppState` | **State owners** | Exist (S1) and are thin/clean. The decision mass that used to live in `src/app/*` has been extracted into pure core reducers (see the status note below); `src/app/*` is now assemble → reduce → execute shells. |
+| `Effect` ([effect.rs](../src/core/effect.rs)) | **Effects out** | Exists; executed by the shell runtime [`WorkbenchApp::apply_effects`](../src/app/effects.rs). Carries the simple cross-cutting effects (URL push, prefs save, geolocation). Heavy per-decision effects use local action enums — the `resolve_prev_sweep -> PrevSweepAction` idiom ([playback_manager.rs](../src/core/playback_manager.rs)) — now generalized into the Env/Slices/Actions reducer pattern (see ARCHITECTURE.md). |
 
 ## What counts as a violation
 
@@ -67,7 +67,7 @@ mobile), or any egui/web-sys/GPU code:
 - ❌ Business logic, math, or state derivation (sweep matching, geometry,
   thresholds, formatting decisions). → move to the core; expose the result on the
   view-model.
-- ❌ Mutating `AppState`/subsystem state directly. → emit an `AppCommand`.
+- ❌ Mutating `AppState`/subsystem state directly. → emit an `Intent`.
 - ❌ Reading `AppState`/subsystem internals to compute what to show. → read the
   view-model (`Derived`); add a field if it's missing.
 - ❌ Performing I/O (fetch, IDB, `postMessage`, GPU upload, `localStorage`,
@@ -78,18 +78,19 @@ decision logic. Pure in, pure out; effects are values.
 
 ## How to test (the recipe)
 
-The whole point. A feature test never touches egui or a browser:
+The whole point. A feature test never touches egui or a browser (sketch — the
+real seams are the per-decision reducers and `reduce` functions in `src/core/`):
 
 ```rust
 let mut core = Core::new(/* fixture state */);
-let effects = core.handle(AppCommand::SeekTo(ts));      // send an intent
+let effects = core.handle(Intent::SeekTo(ts));          // send an intent
 assert_eq!(core.view_model().displayed_frame_ts, ts);   // assert the projection
 assert!(effects.contains(&Effect::RenderSweep { .. })); // assert the I/O it asked for
 // the effect is NOT executed — we assert the *decision*, not the side effect
 ```
 
 For effect *results*, feed them back as intents (`Effect::Fetch` → runtime →
-`AppCommand::FetchCompleted(..)`) and assert the next state. The egui layer gets
+`Intent::FetchCompleted(..)`) and assert the next state. The egui layer gets
 only shallow visual QA, because by construction it is a 1:1 projection of
 `view_model()`.
 
@@ -114,16 +115,51 @@ needs eyes.
 Grounded in the 2026-06-14 coupling audit. Build on the existing seams,
 lowest-risk-first, behavior-preserving; each phase establishes a concrete headless
 test seam. Effort S/M/L = relative size. **Status: P0–P4 + P6 complete; P5 partial
-(pure logic extracted, broad mutation→intent rewrite QA-gated). +45 headless
-tests; pending one manual-QA pass.** Decisions log, per-phase commit hashes, and
-the consolidated MANUAL-QA checklist: [CORE_SHELL_MIGRATION_LOG.md](CORE_SHELL_MIGRATION_LOG.md).
+(pure logic extracted, broad mutation→intent rewrite QA-gated).** Decisions log,
+per-phase commit hashes, and the consolidated MANUAL-QA checklist:
+[CORE_SHELL_MIGRATION_LOG.md](CORE_SHELL_MIGRATION_LOG.md).
 
-- **P0 — Contract types (S). ✅ DONE.** Introduced `Intent` (alias of today's
-  `AppCommand`, to grow into the superset) and an `Effect` enum, modeled on
-  `PrevSweepAction`, in the new `src/core/` module. No behavior change. The
-  vocabulary exists; heavy per-decision effects keep their own local action
-  enums (the `PrevSweepAction` idiom), `core::Effect` carries simple
-  cross-cutting effects.
+**Status update (2026-07, branch `arch-health`).** The 2026-07 architecture
+review (docs/arch-review-2026-07/) Phases A+B completed the non-UI half of this
+migration:
+
+- **Type rehoming done** — the domain data model lives below everything in
+  [`core/domain/`](../src/core/domain/) (`Scan`/`Sweep`/`Radial`/`RadarTimeline`,
+  playback time model, viz types, `UserPreferences`, errors, feeds, telemetry,
+  worker outcomes). `state → core` is the arrow now; `core → state` is gone.
+- **`Intent` is defined in the core** ([`core/intent.rs`](../src/core/intent.rs));
+  the `AppCommand` name no longer exists anywhere.
+- **The `src/app/` decision mass moved into pure reducers** — the completion of
+  B1: [`core::worker_ingest`](../src/core/worker_ingest.rs),
+  [`core::worker_decoded`](../src/core/worker_decoded.rs),
+  [`core::render_loop`](../src/core/render_loop.rs) (advance-playback), and the
+  acquisition pump reducers in [`core::acquisition`](../src/core/acquisition.rs).
+  `src/app/*` files are now assemble → reduce → execute shells. The reducer shape
+  (Env/Slices/Actions) is documented in ARCHITECTURE.md.
+- **Projection + timing consolidated in the core** (B2) —
+  [`core/projection/`](../src/core/projection/) (`ProjectionEngine` sole owner,
+  `projector.rs` demoted to its private kernel) and
+  [`core/timing/`](../src/core/timing/) (the upstream fork, moved intact).
+- **`playback_manager` moved into the core**
+  ([`core/playback_manager.rs`](../src/core/playback_manager.rs)) so the
+  render-loop reducer can compose it.
+- **The layering is now enforced** by the build-time ratchet
+  (`tools/arch_check.rs`, run from `build.rs`) — see ARCHITECTURE.md
+  "Architecture Enforcement".
+
+**Still deferred (the one QA-gated UI batch — review Phase C):** P5's broad
+`&mut` → intent rewrite for the interactive panels, the `LayoutCtx` →
+`&ViewModel` + intent-sink reshape, and moving `site_modal`'s I/O (geocode
+fetch, geolocation) behind effects. These remain pending exactly as documented
+in the P5 entry below and CORE_SHELL_MIGRATION_LOG.md §4.
+
+- **P0 — Contract types (S). ✅ DONE.** Introduced `Intent` (initially an alias
+  of the then-`AppCommand`; since 2026-07 the definition itself lives in
+  [`core/intent.rs`](../src/core/intent.rs) and the alias is gone) and an
+  `Effect` enum, modeled on `PrevSweepAction`, in the new `src/core/` module.
+  No behavior change. The vocabulary exists; heavy per-decision effects keep
+  their own local action enums (the `PrevSweepAction` idiom), `core::Effect`
+  carries simple cross-cutting effects.
 - **P1 — Effect boundary + injectable clock (S→M). ✅ DONE.** Established the
   effect boundary: the core returns `Vec<Effect>` and the shell's effect runtime
   ([`WorkbenchApp::apply_effects`](../src/app/effects.rs)) executes them.
@@ -201,12 +237,12 @@ the consolidated MANUAL-QA checklist: [CORE_SHELL_MIGRATION_LOG.md](CORE_SHELL_M
   and the `dates_spanning` / `dates_in_range` span utilities re-homed from
   `app::acquisition_intent`. 6 headless tests (prefetch policy, gate arm/confirm
   boundary, single/midnight/interior date spans). The download-queue state
-  machine (`nexrad::download_queue`) was already pure + tested and stays put. The
-  pump bodies keep their I/O orchestration (listing fetch / enqueue) in the shell
-  — extracting those into a full decide→effect rewrite carries the same
-  ordering/one-frame risk as P5's interactive surface with no runnable QA, so the
-  pure gates are extracted and the I/O sequencing stays. `streaming.rs` stays
-  de-scoped per the carve-out.
+  machine (`nexrad::download_queue`) was already pure + tested and stays put.
+  *(Superseded 2026-07: the pump I/O sequencing that P6 left in the shell has
+  since been extracted too — the pump reducers now live in
+  [`core::acquisition`](../src/core/acquisition.rs) and
+  `app/acquisition_intent.rs` is a thin execute-in-field-order shell.)*
+  `streaming.rs` stays de-scoped per the carve-out.
 
 **Reference slice (do first): Diagnostics overlays — NWS alerts + mPING + GPS.**
 Cleanest existing seams, off the render hot path, high QA value. Steps: define
@@ -229,15 +265,17 @@ selected; mPING toggle gating; GPS toggle → `Effect::StartGeolocation`.
 - **Worker dispatch is async + stateful (dedup)** — model the decision as pure
   (`should_dispatch(params, last) -> Option<RenderRequest>`); keep the queue and
   dispatch in the shell.
-- **`streaming.rs` (~1850 lines) — deferred** (a split reopens live QA; see related
+- **`streaming.rs` (~2050 lines) — deferred** (a split reopens live QA; see related
   cleanups).
 
 ### Honest note on current structure
-There are three overlapping "state" layers today: `src/state/` (data + already-pure
-decision fns, well covered — ~533 pure tests), `src/subsystem/` (7 thin owners),
-and `src/app/` (the `update()` orchestration, where most of the untested
-decision+effect tangle lives). The migration consolidates decision logic —
-especially out of `src/app/*` — into the pure core.
+As of 2026-07 the layers match the intent: `src/core/` owns the domain types and
+the decision logic (the densest test coverage), `src/state/` is a slim container
+layer plus the shell halves of core types (localStorage/clock impls),
+`src/subsystem/` holds the thin bounded owners, and `src/app/` is
+assemble → reduce → execute shells over the core reducers plus the `Effect`
+runtime. What remains shell-heavy by choice is the interactive UI surface (the
+deferred P5 batch) and the carve-outs above.
 
 ## Related deferred cleanups
 
@@ -253,6 +291,6 @@ recoverable from git history if expanded):
 - **Declarative data-flow canvas overlays** — extend the S3 `Overlay` registry
   (corner chrome) to the data-flow overlays in `canvas.rs`; low value, pipeline-
   inherent order, real visual-regression risk — do only if that code is reworked.
-- **`streaming.rs` decomposition** — split the ~1850-line live-streaming loop
-  (`src/nexrad/realtime/streaming.rs`) into focused submodules; behavior-preserving
+- **`streaming.rs` decomposition** — split the ~2050-line live-streaming loop
+  (`src/nexrad/live/realtime/streaming.rs`) into focused submodules; behavior-preserving
   but reopens live-stream QA, so do it when that file next needs substantial change.

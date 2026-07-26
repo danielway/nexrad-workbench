@@ -46,9 +46,11 @@ pub struct LiveVolumeAnchor {
 
 impl LiveVolumeAnchor {
     /// Construct an anchor for a freshly-arrived volume. The `scan_key`
-    /// must already encode the provisional start (it's the IDB key the
-    /// streaming loop has been using all along — see
-    /// `realtime.rs::provisional_scan_start_secs`).
+    /// must already encode the provisional start — the IDB key the
+    /// streaming loop has been using all along, seeded from the Start
+    /// chunk's parsed volume-header time (see the `ProvisionalStart`
+    /// assignments in `nexrad::live::realtime::streaming`); adopted via
+    /// `LiveModeState::set_or_confirm_volume`.
     pub fn new(scan_key: ScanKey, provisional: ProvisionalStart) -> Self {
         Self {
             scan_key,

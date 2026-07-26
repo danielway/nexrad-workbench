@@ -18,162 +18,44 @@ roadmap in [CORE_SHELL.md](docs/CORE_SHELL.md); the agent/build guide in
 
 ```
 src/
-├── main.rs              # Application entry, event loop, channel orchestration
-├── state/               # Application state management
-├── nexrad/              # NEXRAD data pipeline (download, decode, cache, render, timing)
-├── ui/                  # egui panels and rendering (incl. mobile chrome)
-├── geo/                 # Geographic projections and layer rendering
-├── data/                # Static data (sites, VCPs), IndexedDB storage, keys
-├── alerts/              # NWS active-alerts polling and types
+├── main.rs              # WorkbenchApp, eframe update loop, frame orchestration
+├── lib.rs               # Thin lib facade exposing `data` for tests/idb.rs
+├── core/                # Headless functional core: domain types, Intent/Effect,
+│                        #   pure decision fns + reducers, projection engine, timing
+├── state/               # AppState root container + shell-side impls for core types
+├── subsystem/           # Bounded state owners (Acquisition, Render, Live, …)
+├── app/                 # Imperative shell: assemble → reduce → execute over the
+│                        #   core reducers; the Effect runtime
+├── nexrad/              # Data pipeline: acquisition/, live/, decode/, render/,
+│                        #   detection/
+├── ui/                  # egui panels, canvas, overlays, mobile chrome (thin shell)
+├── geo/                 # Camera, map projection, geographic feature rendering
+├── data/                # Leaf: sites, VCPs, keys, blob format, IndexedDB, quota
+├── alerts/              # NWS active-alerts polling feed
+├── mping/               # mPING storm-report polling feed
 └── net/                 # Shared HTTP retry policy
 ```
 
+The dependency direction between these modules is **enforced at build time** —
+see [Architecture enforcement](#architecture-enforcement) below.
+
 ### Module Responsibilities
 
-| Module | Purpose |
-|--------|---------|
-| `state` | Centralized state tree (`AppState`) with sub-states for playback, visualization, layers, live mode, acquisition, alerts, preferences, session stats; per-frame derived models (`AppMode`, `LiveRadarModel`, `RenderCache`, `VcpPositionModel`, `VolumeForecastSnapshot`) |
-| `nexrad` | Data acquisition (download, realtime streaming, parallel volume discovery), Web Worker pool, GPU rendering, 3D globe/volume rendering, real-time chunk timing model, storm cell detection, national mosaic overlay, coordination managers |
-| `ui` | Desktop panel layout, timeline, canvas with overlays, playback controls, modals (alerts/events/site/wipe/stats/VCP forecast), keyboard shortcuts, mobile chrome and gestures |
-| `geo` | Map projection, camera system, geographic feature rendering (states, counties, cities), globe rendering |
-| `data` | NEXRAD site definitions, VCP pattern definitions, storage key types, IndexedDB abstraction, sweep storage facade |
-| `alerts` | NWS active-alerts API polling, polygon geometry, severity types, alerts manager |
-| `net` | Unified retry policy (`with_retry`) applied to every outbound HTTP request |
+Coarse, module-level map with a few anchor files each. Per-file inventories rot
+fastest, so this table names *responsibilities*; find the file with `grep`.
 
-### Source Files
-
-#### `state/`
-| File | Purpose |
-|------|---------|
-| `mod.rs` | Root `AppState` definition, `AppCommand` enum, re-exports |
-| `app_mode.rs` | Derived top-level mode (`Idle` / `Archive` / `Live`), recomputed each frame |
-| `playback.rs` | Playback controls — timestamp, speed, loop mode, selection range |
-| `playback_manager.rs` | Sweep cache, previous-sweep resolution, animation helpers |
-| `radar_data.rs` | `RadarTimeline` — scan/sweep/radial timeline representation |
-| `viz.rs` | Visualization state — product, palette, zoom, pan, render mode, view mode |
-| `live_mode.rs` | Live streaming state machine (`LivePhase`) and phase transitions |
-| `live_radar_model.rs` | Per-frame derived snapshot of live radar state for consistent UI consumption |
-| `vcp_position.rs` | Unified `VcpPositionModel` — sweep timing/position usable for archive and live |
-| `vcp_forecast.rs` | Diagnostic snapshot of VCP-based sweep forecasts vs. observed reality |
-| `render_cache.rs` | Per-frame render caches (camera-motion settle, prev-sweep memoization, theme-gating) |
-| `acquisition.rs` | Unified acquisition tracking — operation queue, status, network correlation |
-| `alerts.rs` | NWS alert list mirror plus modal selection state |
-| `layer.rs` | Geographic layer visibility toggles |
-| `preferences.rs` | User preferences persistence (localStorage) |
-| `saved_events.rs` | User-saved weather event bookmarks (localStorage) |
-| `settings.rs` | Storage quotas and eviction targets |
-| `stats.rs` | Session metrics — download, ingest, and render timing |
-| `theme.rs` | Dark/light theme mode |
-| `url_state.rs` | URL parameter parsing for deep linking |
-| `vcp.rs` | Re-export of canonical VCP definitions in `data::vcp` |
-
-#### `nexrad/`
-
-Directory modules (split into sub-files):
-
-| Directory | Sub-files | Purpose |
-|-----------|-----------|---------|
-| `gpu_renderer/` | `mod.rs`, `shaders.rs`, `textures.rs`, `inspect.rs` | WebGL2 radar rendering with OKLab color interpolation, polar→Cartesian shader, LUT textures, CPU-side value lookups |
-| `decode_worker/` | `mod.rs`, `pool.rs`, `send.rs`, `receive.rs`, `types.rs` | Web Worker pool lifecycle, message send/receive, typed payloads, result polling |
-| `worker_api/` | `mod.rs`, `ingest.rs`, `render.rs`, `render_live.rs` | WASM exports called from worker.js — ingest, render, live render implementations |
-| `timing/` | `mod.rs`, `chunk_timing_model.rs`, `chunk_timing_stats.rs`, `elevation_chunk_mapper.rs`, `estimate_next_chunk_time.rs`, `scan_timing_projection.rs` | Local fork of real-time chunk timing prediction (physics + statistics blending) intended to be contributed back to `nexrad-data` upstream |
-| `detection/` | `mod.rs`, `components.rs`, `features.rs` | Storm cell detection — connected-component analysis on reflectivity gates plus per-cell feature extraction |
-
-Single-file modules:
-
-| File | Purpose |
-|------|---------|
-| `acquisition_coordinator.rs` | Owns download pipeline, archive index, cache load channel, download queue |
-| `render_coordinator.rs` | Owns decode worker, request deduplication via `last_render_params` |
-| `streaming_manager.rs` | Live streaming and backfill lifecycle, unified polling API |
-| `streaming_state.rs` | Replacement for `nexrad_data` `ChunkIterator` that uses our parallel volume discovery |
-| `volume_discovery.rs` | Fast (parallel) discovery of the current real-time S3 volume directory |
-| `persistence_manager.rs` | URL state pushing (throttled ~1/sec) and preference saving |
-| `network_monitor.rs` | Service worker network metric collection and aggregate stats |
-| `national_mosaic.rs` | CONUS composite reflectivity overlay (NOAA MRMS WMS) — fetch, decode, GPU texture |
-| `download.rs` | AWS S3 download pipeline with async channels and progress tracking |
-| `archive_index.rs` | Archive file listing and caching |
-| `realtime.rs` | Real-time chunk streaming pipeline |
-| `record_decode.rs` | Archive2 record parsing and sweep data extraction |
-| `ingest_phases.rs` | Core decode pipeline: decompress, VCP extract, radial grouping, sweep blob generation |
-| `render_request.rs` | Render parameter types for request deduplication |
-| `types.rs` | `DownloadResult`, `ScanMetadata` types |
-| `cache_channel.rs` | IndexedDB metadata loading channel |
-| `color_table.rs` | Product color scales and value ranges |
-| `download_queue.rs` | Serial download queue state machine |
-| `globe_radar_renderer.rs` | Radar data projection onto 3D globe surface |
-| `volume_ray_renderer.rs` | 3D volumetric ray-marching renderer |
-
-#### `ui/`
-
-Directory modules:
-
-| Directory | Sub-files | Purpose |
-|-----------|-----------|---------|
-| `timeline/` | `mod.rs`, `ruler.rs`, `scan_track.rs`, `sweep_track.rs`, `interaction.rs`, `overlays.rs`, `strokes.rs`, `tooltips.rs` | Zoomable timeline with time ruler, scan/sweep tracks, scrubbing, download ghosts, saved event markers; `strokes.rs` batches dashed/hatched borders into single paint calls |
-| `canvas_overlays/` | `mod.rs`, `alerts.rs`, `color_scale.rs`, `compass.rs`, `globe.rs`, `info.rs`, `national_mosaic.rs`, `scale_bar.rs`, `sites.rs`, `sweep.rs` | Visual overlays drawn on top of the radar canvas (alert polygons, color scale, compass, globe, info text, CONUS mosaic, scale bar, NEXRAD site markers, sweep line/donut) |
-| `mobile/` | `mod.rs`, `gestures.rs`, `scrubber.rs`, `settings_modal.rs`, `tabs.rs`, `top_bar.rs` | Mobile chrome that replaces the desktop panel layout when `AppState::is_mobile` is true; multi-touch gesture digestion for the 2D canvas |
-
-Single-file modules:
-
-| File | Purpose |
-|------|---------|
-| `canvas.rs` | Central radar visualization canvas with geographic layers |
-| `canvas_inspector.rs` | Hover tooltip (lat/lon, value), crosshair, distance measurement, storm cells |
-| `canvas_interaction.rs` | Pan/zoom/click input handling for 2D and globe views |
-| `playback_controls.rs` | Play/pause, speed, loop mode, step controls |
-| `left_panel.rs` | Radar operations panel (VCP, elevation, scan info) |
-| `right_panel.rs` | Product, palette, layers, processing, 3D options |
-| `top_bar.rs` | Site context, status messages, mode selector |
-| `bottom_panel.rs` | Playback controls, stats, and acquisition drawer toggle |
-| `acquisition_drawer.rs` | Expandable drawer showing download queue and network activity |
-| `network_panel.rs` | Network request log with aggregate statistics |
-| `colors.rs` | Color definitions for products and UI elements |
-| `shortcuts.rs` | Keyboard shortcut handling and help overlay |
-| `site_modal.rs` | Site selection modal |
-| `stats_modal.rs` | Session statistics detail modal |
-| `event_modal.rs` | Saved event create/edit/delete modal |
-| `alerts_modal.rs` | NWS alerts list and detail modals |
-| `vcp_forecast_modal.rs` | Diagnostics modal comparing predicted vs. observed sweep timing |
-| `wipe_modal.rs` | Cache wipe confirmation modal |
-| `modal_helper.rs` | Shared backdrop pattern for modal overlays |
-
-#### `geo/`
-| File | Purpose |
-|------|---------|
-| `camera.rs` | Map projection camera system (2D flat, SiteOrbit, PlanetOrbit, FreeLook) |
-| `layer.rs` | Geographic feature types (states, counties, cities) |
-| `renderer.rs` | Geographic feature rendering on 2D canvas |
-| `projection.rs` | Map projection transformations |
-| `globe_renderer.rs` | 3D globe sphere rendering |
-| `geo_line_renderer.rs` | Geographic line rendering on the 3D globe |
-| `cities.rs` | Built-in US cities data (~300 cities) |
-
-#### `data/`
-| File | Purpose |
-|------|---------|
-| `sites.rs` | All NEXRAD site definitions (~200 sites) |
-| `keys.rs` | Storage key types (`ScanKey`, `SweepDataKey`, `SweepMeta`, `ExtractedVcp`, `PrecomputedSweep`, `ScanIndexEntry`, `ScanCompleteness`) |
-| `vcp.rs` | Volume Coverage Pattern definitions (canonical home; `state::vcp` re-exports) |
-| `indexeddb.rs` | IndexedDB browser storage abstraction |
-| `facade.rs` | Sweep storage facade with cache eviction logic |
-
-#### `alerts/`
-| File | Purpose |
-|------|---------|
-| `mod.rs` | Module entry point and public re-exports |
-| `api.rs` | NWS alerts API client (`https://api.weather.gov/alerts/active`) |
-| `channel.rs` | Async channel that drives polling and surfaces results to the UI |
-| `geometry.rs` | Polygon helpers (`bbox_intersects`, `contains_point`) |
-| `manager.rs` | `AlertsManager` — poll cadence, dedup, viewport intersection |
-| `parse.rs` | GeoJSON parsing for alert polygons |
-| `types.rs` | `Alert`, `AlertSeverity` |
-
-#### `net/`
-| File | Purpose |
-|------|---------|
-| `mod.rs` | Module entry point |
-| `retry.rs` | Unified retry policy (`with_retry`, `Verdict`, `DEFAULT_POLICY`) used by every outbound request |
+| Module | Purpose | Anchors |
+|--------|---------|---------|
+| `core` | The pure, headless core. `core/domain/` holds the domain vocabulary shared by every layer (radar model `Scan`/`Sweep`/`Radial`/`RadarTimeline`/`ScanMetadata`, playback time model, viz types incl. `RenderProcessing`/`SweepIdentity`/`StormCellInfo`, `UserPreferences`, `ViewState`, errors, feed states, telemetry records, worker result types). `core` also owns the contract types (`Intent`, `Effect`), the pure decision modules (`persist`, `diagnostics`, `canvas`, `render`, `panels`, `acquisition`), the worker/frame **reducers** (`worker_ingest`, `worker_decoded`, `render_loop`), the live-mode state machine (`live_mode`, `live_radar_model`), playback sweep-cache logic (`playback_manager`), the timeline view model (`timeline_view`), streaming vocabulary (`streaming_plan`, `streaming_filter`), the projection engine (`projection/` — single owner of forward-looking radar timing; `projector.rs` is its private kernel), and the chunk-timing physics fork (`timing/`, upstream-contribution candidate). No I/O, no egui, no web_sys in decision logic. | `core/mod.rs`, `core/intent.rs`, `core/effect.rs`, `core/projection/engine.rs`, `core/timing/config.rs` |
+| `state` | `AppState` root container (frame scratch, status, command queue, settings) plus focused state containers (`viz`, `acquisition`, `calendar`, `url_state`, `recency`, `render_cache`, `saved_events`, `settings`, `stats`, `theme`, `app_mode`, `layer`) and the **shell halves** of core types — the impls that touch the browser (`preferences` load/save, `frame_clock` capture, `playback` wall-clock constructors). | `state/mod.rs`, `state/viz.rs`, `state/url_state.rs` |
+| `subsystem` | Bounded state owners with typed APIs, each owning a coherent slice of state + channels: `Acquisition`, `Render`, `Timeline`, `Playback`, `Live`, `Chrome`, `Diagnostics`, `NetworkMonitor`, plus the per-frame `Derived` view-model cache. | `subsystem/mod.rs` |
+| `app` | The imperative shell over the core reducers: each frame-loop concern assembles read-only inputs, calls the pure core, then executes the described actions (`worker_results`, `render_loop`, `acquisition_intent`, `command_dispatch`, `live_mode`, `download`, `selection_download`, `frame_setup`). Also the `Effect` runtime (`effects.rs`) and the persistence shell (`persistence_manager.rs`). | `app/mod.rs`, `app/effects.rs` |
+| `nexrad` | The data pipeline, grouped by phase: `acquisition/` (S3 download, download queue, archive index, cache-load channel, coordinator), `live/` (realtime streaming loop + channel, `StreamingState`), `decode/` (record decode, ingest phases, `worker_api` WASM exports, `decode_worker` pool), `render/` (GPU renderer, globe/volume renderers, color tables, national mosaic, `RenderCoordinator`), `detection/` (storm cells). | `nexrad/mod.rs`, `nexrad/live/realtime/streaming.rs`, `nexrad/decode/ingest_phases.rs` |
+| `ui` | Desktop panel layout, timeline, canvas + overlays, playback controls, modals, keyboard shortcuts, mobile chrome and gestures. Thin render shell per the core/shell standard. | `ui/layout.rs`, `ui/canvas.rs`, `ui/timeline/` |
+| `geo` | Camera system (2D flat, SiteOrbit, PlanetOrbit, FreeLook — pure math), map projection, geographic feature types + rendering (`ViewMode`, `GeoLayerVisibility` live here), 3D globe/line renderers, built-in cities. | `geo/camera.rs`, `geo/projection.rs` |
+| `data` | True leaf. Static data (`sites`, `vcp`), storage key vocabulary (`keys`), the sweep-blob wire format (`blob_format`), VCP sweep-duration physics (`vcp_timing`), the live-volume anchor state machine (`live_anchor`), the IndexedDB store (`indexeddb/`), quota policy (`quota`), and the main-thread eviction facade (`facade`). | `data/mod.rs`, `data/indexeddb/mod.rs` |
+| `alerts` / `mping` | Polling feed modules: API client, parse, async channel, manager (cadence/dedup/viewport policy). Their pure state containers live in `core/domain/feeds.rs`. | `alerts/manager.rs`, `mping/manager.rs` |
+| `net` | Unified retry policy (`with_retry`, `Verdict`, per-context policies) applied to every outbound HTTP request. | `net/retry.rs` |
 
 ### JavaScript / HTML
 
@@ -182,7 +64,29 @@ Single-file modules:
 | `worker.js` | ES module Web Worker — dispatches `postMessage` commands to WASM exports |
 | `service-worker.js` | Cross-origin isolation headers (COOP/COEP) and network metric collection |
 | `index.html` | WASM entry point with Trunk build directives, service worker registration |
-| `build.rs` | Build script for compile-time asset preparation |
+| `build.rs` | Version stamping + invokes the architecture ratchet (`tools/arch_check.rs`) |
+
+## Architecture Enforcement
+
+The module dependency graph is enforced by a **build-time ratchet**:
+[`tools/arch_check.rs`](tools/arch_check.rs), invoked from `build.rs`, runs on
+every `cargo check`/`cargo build`. It scans every `crate::<module>` reference in
+`src/` (comments stripped) and fails the build when a cross-module edge appears
+that is neither:
+
+- **ALLOWED** — the intended layering (leaves `net`/`data`/`geo` import nothing;
+  `core` may use the data/geo vocabulary and pure feed types; `nexrad` sits on
+  `core`+leaves; `state` on the domain modules; `subsystem` on `state` and
+  below; `app` on everything except `ui`; `ui` may read every layer), nor
+- **GRANDFATHERED** — a known violation being burned down. Each row carries a
+  reason and a burn-down pointer. Currently one edge remains:
+  `app → ui` (the geolocation effect executor lives in ui; moves in Phase C2).
+
+Reading a failure: the panic lists the offending edge (`from -> to`) with up to
+8 `file:line` sites. Fix the dependency direction, or — only with a real
+architectural justification — add the edge to `ALLOWED`. **Never add to
+GRANDFATHERED.** The ratchet also fails when a grandfathered edge no longer
+occurs, forcing its row to be deleted — the table only shrinks.
 
 ## Data Flow
 
@@ -191,9 +95,9 @@ Single-file modules:
 User selects site/date
   → AcquisitionCoordinator fetches AWS S3 listing
   → ArchiveIndex caches listing
-  → User selects scan (or range queued in DownloadQueueManager)
+  → User selects scan (or range queued in the download queue)
   → Worker ingest: split records → decompress → decode → extract sweep blobs
-  → Store pre-computed sweep blobs + metadata in IndexedDB
+  → upsert_scan: pre-computed sweep blobs + scan-index entry into IndexedDB
   → Return sweep metadata to main thread
   → RenderCoordinator sends worker.render(scan_key, elevation, product)
   → Worker reads single sweep blob from IDB → marshals for transfer
@@ -204,59 +108,87 @@ User selects site/date
 ### Real-time Streaming
 ```
 Start live mode
-  → StreamingManager spawns RealtimeChannel (chunk iterator)
+  → subsystem::Live starts RealtimeChannel, which spawns streaming_loop
+    (nexrad/live/realtime/streaming.rs)
+  → Loop: predict next chunk poll time (core ProjectionEngine) → sleep → fetch
   → Each chunk → worker.ingest_chunk → decode + accumulate radials
-  → Completed elevations → sweep blobs stored to IDB
+  → Completed elevations → sweep blobs stored to IDB (upsert_scan)
   → Partial elevations → worker.render_live (reads in-memory accumulator)
+  → Main thread: core::worker_ingest reducer applies the outcome, describes
+    GPU/render/status actions the shell executes
   → GPU texture updated per chunk → sweep line extrapolated between chunks
-  → Timeline updated, UI refreshed
 ```
 
 ### Playback / Scrubbing
 ```
 Timeline position changes
-  → RadarTimeline.find_recent_scan(timestamp)
-  → RenderCoordinator detects param change vs last_render_params
+  → core::render_loop::reduce_advance_playback (pure) decides the sweep to show
+  → RenderCoordinator dedup gate (core::render::should_dispatch vs SweepIdentity)
   → Worker.render(scan_key, elevation, product)
   → Reads pre-computed sweep blob from IDB (near-zero decode cost)
   → GPU texture upload → immediate re-render
 ```
 
-### Elevation / Product Change
-```
-User changes elevation or product
-  → RenderCoordinator detects param change
-  → Worker.render(same scan_key, new elevation/product)
-  → Same flow as scrubbing
-```
+Elevation / product changes take the same path — the dedup gate sees the
+changed parameter and dispatches a fresh worker render.
+
+## The Reducer Pattern (Env / Slices / Actions)
+
+The decision mass that used to live inline in `src/app/` methods is extracted
+into pure **reducers** in `core`, all following one shape. Using
+[`core::worker_ingest`](src/core/worker_ingest.rs) as the exemplar:
+
+1. The shell (`app/worker_results.rs`) assembles a read-only **Env** snapshot
+   (`ChunkIngestEnv`: is_live, site, product string, frame time, coordinator
+   elevations, frame projection) — everything the decision reads but doesn't
+   own.
+2. It passes mutable **Slices** over the core-owned state
+   (`ChunkIngestSlices`: live-mode state, projection engine, elevation
+   selection, playback) — the reducer mutates these in memory only.
+3. The reducer (`reduce_chunk_ingested`) returns an **Actions** struct
+   (`ChunkIngestActions`) *describing* every side effect: channel records, the
+   live render dispatch, GPU texture promotion, status text, intents to queue,
+   render-request flags.
+4. The shell executes the actions **in field order**.
+
+The same pattern backs `core::worker_decoded` (decode outcomes → GPU upload
+decisions), `core::render_loop` (`reduce_advance_playback` +
+`decide_prefetch_and_caption`, two decision points separated by effects), and
+`core::acquisition` (the prefetch/listing pump reducers). Reducers are
+unit-tested headlessly; the shells are mechanical assemble→call→execute
+wrappers.
 
 ## Key Types
 
 ### Data Types
-| Type | Description |
-|------|-------------|
-| `ScanKey` | Unique identifier: `SITE\|SCAN_START_MS` |
-| `SweepDataKey` | Pre-computed sweep: `SITE\|SCAN_START_MS\|ELEV_NUM\|PRODUCT` |
-| `SweepMeta` | Lightweight sweep metadata (time span, elevation, azimuth) |
-| `ExtractedVcp` | VCP pattern data extracted from Message Type 5 |
-| `ScanMetadata` | Lightweight (~100 bytes) scan metadata for fast timeline queries |
+| Type | Where | Description |
+|------|-------|-------------|
+| `ScanKey` | `data/keys.rs` | Unique identifier: `SITE\|SCAN_START_MS` |
+| `SweepDataKey` | `data/keys.rs` | Pre-computed sweep: `SITE\|SCAN_START_MS\|ELEV_NUM\|PRODUCT` |
+| `ScanIndexEntry` / `CachedSweep` | `data/keys.rs` | Per-scan IDB metadata: VCP plan + realized cached sweeps |
+| `ScanHeader` / `ElevationUpload` | `data/keys.rs` | Inputs to the `upsert_scan` write contract |
+| `PrecomputedSweep` | `data/blob_format.rs` | The 72-byte-header sweep blob wire format |
+| `ExtractedVcp` | `data/vcp_timing.rs` | VCP pattern data extracted from Message Type 5 |
+| `ScanMetadata` | `core/domain/radar.rs` | Lightweight scan metadata for fast timeline queries |
+| `Scan` / `Sweep` / `Radial` / `RadarTimeline` | `core/domain/radar.rs` | The in-memory radar timeline model |
 
 ### Rendering Types
-| Type | Description |
-|------|-------------|
-| `RadarGpuRenderer` | WebGL2 renderer: polar data texture + LUT + fragment shader |
-| `GlobeRadarRenderer` | Radar projection onto 3D globe surface mesh |
-| `VolumeRayRenderer` | 3D volumetric ray-marching through all elevations |
-| `RenderRequest` | Parameters for deduplication (scan_key + elevation + product) |
+| Type | Where | Description |
+|------|-------|-------------|
+| `RadarGpuRenderer` | `nexrad/render/gpu_renderer/` | WebGL2 renderer: polar data texture + LUT + fragment shader |
+| `GlobeRadarRenderer` | `nexrad/render/globe_radar_renderer.rs` | Radar projection onto 3D globe surface mesh |
+| `VolumeRayRenderer` | `nexrad/render/volume_ray_renderer.rs` | 3D volumetric ray-marching through all elevations |
+| `SweepIdentity` / `VolumeRenderRequest` | `core/domain/viz.rs`, `nexrad/render/render_request.rs` | Dedup identities checked by `core::render::should_dispatch` |
 
 ### Coordination Types
-| Type | Description |
-|------|-------------|
-| `AcquisitionCoordinator` | Owns download pipeline, archive index, cache load, download queue |
-| `RenderCoordinator` | Owns decode worker, request deduplication, scan/elevation state |
-| `StreamingManager` | Owns realtime + backfill channels, unified polling |
-| `PersistenceManager` | URL state pushing (throttled) and preference saving |
-| `NetworkMonitor` | Service worker metric listener, ring buffer, aggregate stats |
+| Type | Where | Description |
+|------|-------|-------------|
+| `AcquisitionCoordinator` | `nexrad/acquisition/` | Owns download pipeline, archive index, cache load, download queue |
+| `RenderCoordinator` | `nexrad/render/` | Owns decode worker dispatch; dedup via the pure `should_dispatch` gate |
+| `RealtimeChannel` | `nexrad/live/realtime/` | Typed mailboxes + lifecycle of the live `streaming_loop` |
+| `ProjectionEngine` | `core/projection/` | Single owner of forward-looking radar timing (plans, forecasts) |
+| `PersistenceManager` | `app/persistence_manager.rs` | Shell over `core::decide_persist` — URL push throttle + prefs save |
+| `NetworkMonitor` | `subsystem/network_monitor.rs` | Service worker metric listener (record types in `core/domain/telemetry.rs`) |
 
 ## Async Architecture
 
@@ -285,6 +217,10 @@ Heavy computation (bzip2 decompression, NEXRAD decoding, sweep extraction, IDB I
 | `render` | Main → Worker | Read pre-computed sweep from IDB, marshal for GPU upload |
 | `render_volume` | Main → Worker | Pack all elevations for 3D ray-marching |
 | `render_live` | Main → Worker | Read partial sweep from in-memory accumulator (synchronous) |
+
+The Rust side of this protocol lives in `nexrad/decode/worker_api/` (the
+`#[wasm_bindgen]` exports worker.js calls) and `nexrad/decode/decode_worker/`
+(the main-thread pool + typed send/receive).
 
 ### GPU Raw Decode Pipeline
 
@@ -315,7 +251,8 @@ Database `nexrad-workbench`, schema version 5, with three string-keyed object
 stores: `sweeps` (pre-computed sweep blobs, the primary render path), `scan_index`
 (per-scan metadata for fast timeline queries), and `scan_touches` (per-scan
 last-access timestamps for LRU eviction, isolated so fire-and-forget touch bumps
-don't race index writes). Schema upgrades are destructive.
+don't race index writes). All writes go through the single `upsert_scan`
+create-or-merge entry point. Schema upgrades are destructive.
 
 The full store layout, payload byte formats, concurrency model, and key-range
 query rules are documented in [INDEXEDDB.md](docs/INDEXEDDB.md) — the single
@@ -349,46 +286,29 @@ source of truth for the schema.
 
 ## State Management
 
-Single `AppState` struct passed by mutable reference through the application.
+`WorkbenchApp` (in `main.rs`) is a thin coordinator: it owns `AppState` plus the
+bounded subsystems, and its `update()` runs the frame sequence — frame setup,
+channel drains (via the core reducers), command dispatch, effect execution,
+then UI layout.
 
-```rust
-AppState {
-    playback_state: PlaybackState,       // timestamp, speed, selection, loop mode
-    radar_timeline: RadarTimeline,       // scans with sweeps and radials
-    viz_state: VizState,                 // site, zoom, pan, product, palette, render/view mode
-    layer_state: LayerState,             // geographic layer visibility
-    live_mode_state: LiveModeState,      // streaming state machine
-    app_mode: AppMode,                   // derived: Idle / Archive / Live
-    live_radar_model: LiveRadarModel,    // per-frame derived live snapshot
-    acquisition: AcquisitionState,       // download queue, operation tracking
-    alerts: AlertsState,                 // NWS alert list and modal state
-    national_mosaic: NationalMosaic,     // CONUS composite overlay state
-    saved_events: SavedEvents,           // user bookmarks
-    session_stats: SessionStats,         // download/ingest/render metrics
-    download_progress: DownloadProgress, // active download tracking
-    storage_settings: StorageSettings,   // quota and eviction targets
-    render_processing: RenderProcessing, // interpolation, smoothing options
-    render_cache: RenderCache,           // per-frame caches (camera-motion, prev-sweep)
-    theme_mode: ThemeMode,               // dark/light/system
-    is_mobile: bool,                     // resolved mobile layout for the frame
-    dev_mode: bool,                      // diagnostic UI / perf timings
-    commands: VecDeque<AppCommand>,      // command queue drained each frame
-    // ... UI flags, modal toggles, tool state
-}
-```
+- **`AppState`** (`state/mod.rs`) holds cross-cutting state: the per-frame
+  clock (`frame_now`), viz/layer state, status message, session stats, storage
+  settings, saved events, theme, mobile/width-tier resolution, the recent-error
+  ring, and the **command queue** (`VecDeque<Intent>`).
+- **Subsystems** (`subsystem/`) own their domains: `Acquisition` (download
+  pipeline + operation tracking), `Render` (worker pool + scan/elevation
+  tracking), `Timeline` (scan inventory), `Playback` (cursor/speed/mode),
+  `Live` (streaming channel + live-mode state + per-frame derived models),
+  `Chrome` (UI visibility flags + modal booleans), `Diagnostics` (alerts,
+  mPING, GPS, network monitor), and `Derived` (the per-frame view-model cache).
 
-### Command Pattern
-State mutations from UI actions are expressed as `AppCommand` variants, processed
-in the main update loop. This keeps the UI code declarative (emit commands) and
-the mutation logic centralized.
-
-### Coordination Flags
-State changes are coordinated via boolean flags checked each frame:
-- `timeline_needs_refresh`
-- `clear_cache_requested`
-- `download_selection_requested`
-- `start_live_requested`
-- `check_eviction_requested`
+### Intent Pattern
+State mutations from UI actions are expressed as `Intent` variants
+(`core/intent.rs` — defined in the core; there is no separate `AppCommand`
+anymore). UI code pushes intents via `AppState::push_command`; the main update
+loop drains and dispatches them (`app/command_dispatch.rs`). Decisions the
+dispatch needs are pure core functions; the side effects they describe are
+executed by the `Effect` runtime (`app/effects.rs`).
 
 ## UI Layout
 
@@ -409,21 +329,13 @@ State changes are coordinated via boolean flags checked each frame:
 └──────────────────────────────────────────────────────────┘
 ```
 
-### Canvas Overlays (drawn in order)
-1. National mosaic (CONUS composite, with site cutout, when enabled)
-2. Geographic layers (states, counties, highways, lakes, cities)
-3. Radar texture (GPU-rendered polar data)
-4. Range rings and radial lines
-5. NWS alert polygon footprints (when enabled, 2D only)
-6. Sweep animation line and donut chart
-7. NEXRAD site markers
-8. Info overlay (top-left: site, time, elevation, age)
-9. Color scale legend (right edge)
-10. Map scale bar (bottom-left, 2D only)
-11. Inspector tooltip and crosshair (on hover)
-12. Distance measurement line (when tool active)
-13. Storm cell bounding boxes (when detected)
-14. Compass rose (3D globe mode only)
+When `AppState::is_mobile` is true, `ui/mobile/` replaces this desktop layout
+with dedicated mobile chrome (tabs, scrubber, gesture handling, auto-hide).
+
+Canvas overlays live in `ui/canvas_overlays/` — one module per overlay
+(national mosaic, alerts, mPING reports, GPS location, sweep line/donut, site
+markers, info text, color scale, scale bar, compass, globe). `ui/canvas.rs`
+owns the draw order and the radar texture pass.
 
 ## Platform Support
 
@@ -450,8 +362,11 @@ trunk serve
 # Production build
 trunk build --release
 
-# Check only (no bundle)
+# Check only (no bundle) — also runs the architecture ratchet
 cargo check
 ```
 
-Pre-commit hooks enforce `cargo fmt` and `cargo clippy -D warnings` via cargo-husky.
+Pre-commit hooks enforce `cargo fmt`, `cargo clippy -D warnings`, and the fast
+headless test suite (`cargo test --bin nexrad-workbench`) via cargo-husky.
+`#![warn(unreachable_pub)]` is enabled crate-wide (the `data` module is
+exempted as the lib facade consumed by `tests/idb.rs`).

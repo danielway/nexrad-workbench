@@ -18,10 +18,11 @@ on top of those definitions and focuses on the operational flow.
 
 | Layer | Type | Role |
 | --- | --- | --- |
-| Channel | [`RealtimeChannel`](../src/nexrad/realtime/mod.rs) | The handle the egui update loop talks to. Owns three typed `futures_channel::mpsc` queues + an `active: Rc<Cell<bool>>` flag, and spawns the streaming task. Holds no shared mutable loop state. |
-| Async task | `streaming_loop` (in [`realtime/streaming.rs`](../src/nexrad/realtime/streaming.rs)) | The long-running future. One per active site. Owns the iteration, sleeping, polling, emit — and its own `LoopState` (stop flag, active filter, filter epoch) as local variables. |
-| Iterator state | [`StreamingState`](../src/nexrad/streaming_state.rs) | Replaces `nexrad_data`'s `ChunkIterator`. Holds the current `ChunkIdentifier`, the VCP, the elevation/chunk mapper, and the rolling timing stats. |
-| Predictor | [`timing/`](../src/nexrad/timing/) | Pure functions over `(current_chunk, vcp, mapper, stats)` that return either a wait duration (scheduler) or a per-chunk projection (timeline). |
+| Channel | [`RealtimeChannel`](../src/nexrad/live/realtime/mod.rs) | The handle the egui update loop talks to. Owns three typed `futures_channel::mpsc` queues + an `active: Rc<Cell<bool>>` flag, and spawns the streaming task. Holds no shared mutable loop state. |
+| Async task | `streaming_loop` (in [`live/realtime/streaming.rs`](../src/nexrad/live/realtime/streaming.rs)) | The long-running future. One per active site. Owns the iteration, sleeping, polling, emit — and its own `LoopState` (stop flag, active filter, filter epoch) as local variables. |
+| Iterator state | [`StreamingState`](../src/nexrad/live/streaming_state.rs) | Replaces `nexrad_data`'s `ChunkIterator`. Holds the current `ChunkIdentifier`, the VCP, and the elevation/chunk mapper. |
+| Projection engine | [`core/projection/`](../src/core/projection/) | Single owner of forward-looking timing. The loop feeds it arrivals, listings, observations, and the filter; each iteration it emits one [`StreamingPlan`](../src/core/streaming_plan.rs) that the sleep target, the UI countdown, and the diagnostics all read. |
+| Timing primitives | [`core/timing/`](../src/core/timing/) | Pure physics/statistics functions over `(chunk metadata, vcp, mapper, stats)` — the interval blend, projections, tuning knobs — composed by the projection engine. |
 
 The async task drives the streaming. The channels are just typed mailboxes
 between it and the UI thread.
@@ -118,9 +119,9 @@ the worker would treat re-flushes as no-ops, so the bandwidth would be
 wasted. Each survivor is downloaded in parallel via `join_all` on
 `download_chunk` and emitted in sequence order via `emit_backfill_chunks`.
 
-The provisional scan-start timestamp for the volume is
-`upload_date_time(start_chunk) − median_lag` — see
-[TIMING.md §3c](TIMING.md#3c-the-scankey-provisional-timestamp).
+The scan-start timestamp for the volume is parsed from the Start
+chunk's volume header (`volume_header_start_secs`; a chunk with no
+readable header is a fatal stream error) — see TIMING.md §3c.
 
 ### 2c. Steady state
 
@@ -133,8 +134,9 @@ loop {
     if filter changed:
         run mid-stream backfill, advance epoch, clear per-chunk diagnostics
 
-    predict wait until next chunk available
-    sleep that wait + 750 ms pad (interruptible by stop / filter change)
+    build the canonical StreamingPlan from the projection engine
+    sleep to the plan's next-target poll_at (750 ms poll bias + retry
+        budget already folded in; interruptible by stop / filter change)
 
     fetch (try_next), retrying on 404 / transient under REALTIME_CHUNK_POLICY
     if filter excludes everything remaining: synthesize volume end
@@ -155,27 +157,38 @@ overwritten.
 
 ## 3. Predicting "next chunk available at"
 
-There are two prediction paths in this codebase, answering related but
-distinct questions. The streaming loop uses the **scheduler** path; the
-timeline UI uses the **projector** path. Both are detailed in
-[TIMING.md §2 and §3](TIMING.md). Briefly:
+All forward-looking timing now comes from **one computation**: each
+iteration the projection engine builds a [`StreamingPlan`](../src/core/streaming_plan.rs)
+(via the projector kernel's `project_scan_timing_with_next`,
+[`core/timing/scan_timing_projection.rs`](../src/core/timing/scan_timing_projection.rs)) —
+per-chunk collection / availability / poll times for every remaining
+chunk. The loop sleeps to the plan's `next_target().poll_at_secs`; the
+UI countdown and diagnostics read the same plan, so they cannot drift
+apart. (Historically the scheduler and the UI projector were separate
+paths — `time_until_next()` vs. `project_remaining_scan` — that did
+drift; the plan replaced both.) The cases the old paths handled are
+now facets of the one plan:
 
-| Path | Function | What it returns | When the loop uses it |
-| --- | --- | --- | --- |
-| Scheduler (single-hop) | [`estimate_chunk_processing_diagnostics`](../src/nexrad/timing/estimate_next_chunk_time.rs) → `iter.time_until_next()` | Duration until the **next** chunk's S3 availability. | `StreamingFilter::All` |
-| Scheduler (multi-hop) | [`estimate_chunk_processing_time_to_target`](../src/nexrad/timing/estimate_next_chunk_time.rs) → `iter.next_matching_chunk_diagnostics()` | Duration until the next chunk **matching the filter predicate**, summing physics across every skipped hop. | `StreamingFilter::Elevation(_)` |
-| Cross-volume | `iter.time_until_next_filtered_chunk_across_volumes()` | Duration until the user's elevation reappears in the **next volume**: projected end-of-current-volume + 8.5 s inter-volume gap + intra-next-volume hops + median lag. | Filter excludes everything remaining in the current volume. |
-| Projector | [`project_scan_timing`](../src/nexrad/timing/scan_timing_projection.rs) | Per-chunk collection + availability times for **all remaining chunks**. | UI (timeline placeholders, forecast modal, `ChunkProjectionInfo`). |
+| Case | How the plan handles it | When it applies |
+| --- | --- | --- |
+| Next sequential chunk | The next target is `current + 1` in the current volume. | `StreamingFilter::All` |
+| Filtered target (multi-hop) | The next target is the next sequence whose elevation matches the filter; the projection sums the same blended intervals across every skipped hop. | `StreamingFilter::Elevation(_)` |
+| Cross-volume | When the filter excludes everything remaining, the projection extends into the **next volume** (`next_volume_chunks`, `next_target_in_next_volume()`): projected end-of-current-volume + 8.5 s inter-volume gap + intra-next-volume hops + lag. | Filter excludes the rest of the current volume. |
+| Timeline placeholders | The same plan's `ChunkProjectionInfo` list feeds the timeline placeholders and the forecast modal. | Always. |
 
-### 3a. Scheduler decision tree
+The semantic time categories behind these numbers are detailed in
+[TIMING.md §2 and §3](TIMING.md).
 
-`estimate_chunk_processing_diagnostics`:
+### 3a. The per-hop interval decision
+
+For each projected hop (tagged per chunk on the plan as
+`SchedulerPath`, [`core/timing/estimate_next_chunk_time.rs`](../src/core/timing/estimate_next_chunk_time.rs)):
 
 1. **Start chunk** → constant 1.5 s (`START_TO_FIRST_INTERMEDIATE_GAP_SECS`).
    Tagged `SchedulerPath::StartConstant`. The Start chunk lands almost
    immediately, the first M chunk follows by a measured 1.5 s.
 2. **Have metadata for both chunks** → call the shared
-   [`estimate_interval`](../src/nexrad/timing/interval_estimate.rs)
+   [`estimate_interval`](../src/core/timing/interval_estimate.rs)
    primitive, which returns a 70/30 physics/historical blend when stats
    are available for the bucket and pure physics otherwise. The
    scheduler then adds a `(avg_attempts − 1) seconds` retry budget when
@@ -187,32 +200,32 @@ timeline UI uses the **projector** path. Both are detailed in
    keyed by waveform/channel-config. Tagged `Legacy`.
 
 The bucket lookup is keyed on the **arriving** chunk's characteristics,
-not the anchor's. Writes (`StreamingState::update_timing_stats`) record
-under the arriving chunk's bucket; reading under the anchor's would
-silently miss and fall back to physics. See `chunk_timing_stats.rs` and
-the fixed-bug commentary in TIMING.md §2.
+not the anchor's. Writes (`ProjectionEngine::record_inter_chunk_duration`)
+record under the arriving chunk's bucket; reading under the anchor's
+would silently miss and fall back to physics. See
+`chunk_timing_stats.rs` and the fixed-bug commentary in TIMING.md §2.
 
-The shared [`estimate_interval`](../src/nexrad/timing/interval_estimate.rs)
-primitive is also used by the projector (§3 below) and the multi-hop
-filter path (§3b), so all three predict-the-interval call sites apply
-the same blend formula and a regression in one is observable in all.
+The shared [`estimate_interval`](../src/core/timing/interval_estimate.rs)
+primitive backs every hop the plan projects — single-hop, multi-hop,
+and cross-volume alike — so all interval predictions apply the same
+blend formula and a regression in one is observable in all.
 
-### 3b. Multi-hop diagnostics (filter mode)
+### 3b. Multi-hop targets (filter mode)
 
 When the user has selected a single elevation, the loop's "next chunk"
-is rarely sequence `current+1`. `next_matching_chunk_diagnostics`:
+is rarely sequence `current+1`. The plan's target selection:
 
 1. Walks the mapper for the next sequence whose elevation matches the
-   filter predicate.
-2. Sums `estimate_interval(prev, next, bucket, stats).seconds` for
-   every hop from `current+1` up to `target` — every hop uses the same
-   blended primitive as the single-hop scheduler, so each step is
-   either pure physics (no stats yet) or a 70/30 physics/historical
-   blend.
-3. Adds `(avg_attempts − 1) seconds` retry budget on top, keyed on the
-   target chunk's bucket.
-4. Returns `(target_sequence, EstimatedChunkProcessing)` with `path =
-   Blended` when any hop pulled in historical samples, else `Physics`.
+   filter predicate; that becomes `next_target_key`.
+2. The projection sums `estimate_interval(prev, next, bucket, stats)`
+   for every hop from `current+1` up to the target — every hop uses
+   the same blended primitive, so each step is either pure physics (no
+   stats yet) or a 70/30 physics/historical blend.
+3. The target's poll time additionally carries the
+   `(avg_attempts − 1) seconds` retry budget, keyed on the target
+   chunk's bucket.
+4. The target's `scheduler_path` reads `Blended` when historical
+   samples contributed, else `Physics`.
 
 This collapses what would otherwise be N successive predict-sleep-fetch
 cycles (for chunks the user does not want) into a single sleep of
@@ -222,24 +235,23 @@ cycles (for chunks the user does not want) into a single sleep of
 
 When the filter excludes every remaining sequence in this volume — for
 example the user picked elevation 3 and we are mid-way through the last
-sweep at elevation 14 — the multi-hop diagnostic returns `None`. The
-loop falls through to `time_until_next_filtered_chunk_across_volumes`,
-which adds:
+sweep at elevation 14 — the plan extends into the next volume
+(`next_volume_chunks`), and the cross-volume target's timing sums:
 
 ```
-projected_volume_end_collection_secs                  (from the projector)
-+ ChunkTimingModel::inter_volume_gap_secs (8.5 s)
-+ start_to_first_intermediate_gap_secs (1.5 s)         (if target > 1)
-+ Σ physics from sequence 2 up to (target − 1)         (assuming same VCP)
-+ median_availability_lag_secs (or 5 s default)
+projected end of current volume                        (from the projection)
++ INTER_VOLUME_GAP_SECS (8.5 s)
++ START_TO_FIRST_INTERMEDIATE_GAP_SECS (1.5 s)         (if target > 1)
++ Σ intervals from sequence 2 up to (target − 1)       (assuming same VCP)
++ availability lag (median, or the 5 s cold-start default)
 ```
 
 The next-volume VCP assumption is fine in practice — VCP changes
 mid-stream are rare, and if one happens the estimate is just revised on
 the next iteration when the new mapper takes over. Without this, the
-loop would fall back to the legacy single-hop estimate, burn through
-its retry budget polling for a chunk that physically cannot exist for
-another 60 s, then fail and give up.
+loop would sleep for the next *sequential* chunk, burn through its
+retry budget polling for a chunk the filter will discard anyway, and
+stall the countdown for the entire inter-volume gap.
 
 When the cross-volume target is reached without an actual End chunk,
 the loop emits a synthetic `is_volume_end` `ChunkReceived` so the
@@ -249,26 +261,22 @@ timeline still draws the volume boundary — see §5b.
 
 ## 4. Waiting and polling
 
-### 4a. The first-poll pad
+### 4a. The first-poll bias
 
-The scheduler returns a duration based on either historical S3 deltas
-or pure physics. Before sleeping, the loop adds a 750 ms pad
-(`POLL_DELAY_AFTER_PREDICTED_MS`):
+The projector folds a 750 ms bias into each forecast's poll target
+(`poll_at_secs = available_at_secs + retry_budget + poll_bias_secs`,
+[`interval_estimate.rs`](../src/core/timing/interval_estimate.rs);
+the value is `TimingTuning::DEFAULT.poll_bias_secs` in
+[`config.rs`](../src/core/timing/config.rs)). The loop sleeps directly
+to `poll_at_secs` — there is no loop-side pad constant.
 
-```rust
-let mut wait_ms = wait_duration.as_millis() as u32;
-if is_first_iter_for_chunk && wait_ms > 0 {
-    wait_ms = wait_ms.saturating_add(POLL_DELAY_AFTER_PREDICTED_MS);
-}
-```
-
-Sized from observed prediction error: the scheduler's collection-space
-prediction is accurate, but the residual is S3 availability lag the
-projector under-estimates (~900 ms early in availability-space, with
-empty-poll wait clustering tightly at ~670 ms). 750 ms covers the
-typical case while leaving outliers (one-chunk lag spikes) to the retry
-path. The pad applies **only to the prediction-driven first poll**, not
-to retry waits, so each chunk eats it exactly once.
+Sized from observed prediction error: the collection-space prediction
+is accurate, but the residual is S3 availability lag the projector
+under-estimates (~900 ms early in availability-space, with empty-poll
+wait clustering tightly at ~670 ms). 750 ms covers the typical case
+while leaving outliers (one-chunk lag spikes) to the retry path. The
+bias applies **only to the prediction-driven first poll**, not to
+retry waits, so each chunk eats it exactly once.
 
 ### 4b. `interruptible_sleep`
 
@@ -295,9 +303,9 @@ retry loop driven by [`REALTIME_CHUNK_POLICY`](../src/net/retry.rs):
 | Knob | Value | Why |
 | --- | --- | --- |
 | `base` | 500 ms | Real-time chunks land seconds late, not milliseconds. |
-| `cap` | 4 s | Upper bound on the per-retry jitter window. |
-| `max_attempts` | 6 | Roughly matches the prior 25×500 ms + 2.5 s grace. |
-| `total_budget` | 15 s | Wall-clock fallback even if `max_attempts` would allow more. |
+| `cap` | 8 s | Lets a single backoff sleep span the upper tail of inter-volume gap variance (observed 7–10 s) without spinning through wasted 404s. |
+| `max_attempts` | 8 | Sized for robustness against prediction error. |
+| `total_budget` | 45 s | Leaves ~30 s of sleep budget after worst-case per-attempt waits; a genuinely failing endpoint takes longer to surface, which is the right trade for a live viewer. |
 | `per_attempt_timeout` | 5 s | A 404 round-trip is ~1 s; a stuck request gets cancelled. |
 
 Backoff is full-jitter exponential: the delay before retry N is drawn
@@ -348,13 +356,14 @@ and, if so, calls `try_fetch_volume_start(volume.next())`:
 On Start chunk receipt the loop also:
 
 - Resets `chunks_in_volume` to 0.
-- Re-derives `current_scan_start_secs = upload − median_lag`.
+- Re-derives `current_scan_start_secs` from the new Start chunk's
+  volume header (`volume_header_start_secs`).
 - Caches the volume number to localStorage (used as a hint by future
   acquire calls — currently disabled but the cache is kept warm).
 - Clears `emitted_sequences_this_volume` (the dedup set used by the
   mid-stream backfill).
-- Clears `iter.latest_chunk_collection_end_secs` so the next chunk's
-  collection time becomes the new anchor.
+- Resets the engine's collection anchor so the next chunk's collection
+  time becomes the new anchor.
 
 ### 5b. Synthetic volume end
 
@@ -415,23 +424,22 @@ message and clears `active` again on the way out as a backstop.
 
 ## 6. Learning from arrivals
 
-Every successful chunk fetch updates `ChunkTimingStats` in two places:
+Every successful chunk fetch updates the engine-owned
+`ChunkTimingStats` in two places:
 
-1. **`StreamingState::update_timing_stats`** — called inside
-   `try_fetch_chunk` and `try_fetch_volume_start`. Records the S3
-   `Last-Modified` delta (`upload − previous_upload`) and the attempt
-   count (1 here; the retry loop tracks attempts separately and records
-   them via the path described next), keyed on the arriving chunk's
-   characteristics.
+1. **`ProjectionEngine::record_inter_chunk_duration`** — called by the
+   loop for each arriving chunk. Records the S3 `Last-Modified` delta
+   (`upload − previous_upload`) and the attempt count, keyed on the
+   arriving chunk's characteristics.
 
-2. **`StreamingState::record_availability_lag_for_current`** — called
-   from the loop's `drain_pending_ingest_observations` after `main.rs`
-   pushes a freshly-parsed lag (S3 upload − latest radial collection
-   time) following each worker ingest. Attaches the lag to the most
-   recent sample of the current chunk's bucket.
+2. **`ProjectionEngine::record_availability_lag_for`** — applied when
+   the loop drains a `ProjectorObservation::AvailabilityLagSecs`
+   (pushed after each worker ingest: S3 upload − latest radial
+   collection time). Attaches the lag to the most recent sample of the
+   current chunk's bucket.
 
 Each `ChunkCharacteristics` bucket holds the last 10 samples
-(`MAX_TIMING_SAMPLES`). The bucket key is
+(`TimingTuning::max_timing_samples`). The bucket key is
 `(chunk_type, waveform_type, channel_configuration, is_first_in_sweep)` —
 keeping `is_first_in_sweep` separate is essential because
 first-chunks-in-sweep carry the inter-sweep transition penalty and
@@ -440,14 +448,14 @@ converging on either value.
 
 After every emit the loop calls `save_timing_stats(&site_id, …)` which
 writes the bucket map to `nexrad_timing_stats_<SITE>` in localStorage.
-Schema is `version: 2`; v1 payloads (which lacked the
-`availability_lag_ms` field) are dropped on load. On the next session
-`load_cached_timing_stats` reads it back so the very first prediction
-starts on warm stats.
+The payload carries a schema version (`PERSIST_SCHEMA_VERSION`,
+currently 3); payloads with a mismatched version are dropped on load.
+On the next session `load_cached_timing_stats` reads it back so the
+very first prediction starts on warm stats.
 
 ---
 
-## 7. Observations pushed in from `main.rs`
+## 7. Observations pushed in from the main thread
 
 Two observations the streaming loop cannot compute itself, because they
 require the worker to have decoded the chunk's radials. The UI sends them
@@ -455,13 +463,13 @@ down the **observations channel** as `ProjectorObservation` variants:
 
 | Observation | Source | Sent via | Used by |
 | --- | --- | --- | --- |
-| `CollectionEndSecs` — latest radial collection time in the chunk | Worker-decoded radials | `RealtimeChannel::record_chunk_collection_end_secs` → `observe` → `StreamingState::record_chunk_collection_end_secs` | Anchor for `project_scan_timing` (§3) |
-| `AvailabilityLagSecs` — `s3_last_modified − chunk_max_time` | Computed in `main.rs` from the matched arrival stat | `RealtimeChannel::record_availability_lag_secs` → `observe` → `StreamingState::record_availability_lag_for_current` | Most recent bucket sample's `availability_lag` field |
+| `CollectionEndSecs` — latest radial collection time in the chunk | Worker-decoded radials | `RealtimeChannel::record_chunk_collection_end_secs` → `observe` → `ProjectionEngine::set_collection_anchor` | Anchor for the plan's collection axis (§3) |
+| `AvailabilityLagSecs` — `s3_last_modified − chunk_max_time` | Computed by the chunk-ingest reducer (`core::worker_ingest`) from the matched arrival stat | `RealtimeChannel::record_availability_lag_secs` → `observe` → `ProjectionEngine::record_availability_lag_for` | Most recent bucket sample's `availability_lag` field |
 
-The loop drains the observations channel into `iter` at the top of each
-iteration (and inside the sleep). The collection anchor is also reset to
-`None` on every Start chunk (new volume) so a fresh anchor lands on the
-first M chunk.
+The loop drains the observations channel into the projection engine at
+the top of each iteration (and inside the sleep). The collection anchor
+is also reset on every Start chunk (new volume) so a fresh anchor lands
+on the first M chunk.
 
 The channel is unbounded and drained in order, so if `main.rs` pushes two
 collection times before the loop drains, both are applied and the later one
@@ -518,22 +526,22 @@ chunk list.
   de-duped in `drain_control` against the loop's current `active_filter`, or the
   sleep isn't draining control / reading `filter_epoch`. Add a log in
   `drain_control` to confirm the message arrives.
-- **Loop polls forever after a synthetic volume end** — the cross-
-  volume estimate returned `None` and the loop fell through to the
-  legacy single-hop. Check `projected_volume_end_collection_secs` —
-  cold-start with no projection means the estimator can't run.
+- **Loop polls forever after a synthetic volume end** — the plan has
+  no next-volume extension (`next_volume_chunks` is `None`), so there
+  is no cross-volume target. Check the projected end of the current
+  volume — cold-start with no projection means the extension can't be
+  built.
 - **`Blended` path never fires** — bucket lookup is keyed wrong.
-  `get_average_timing` keys on the **arriving** chunk's
-  characteristics, and `update_timing_stats` writes under the same
-  key. If a regression flips one of them to the anchor's
-  characteristics, the lookup will silently miss every time. See the
-  bucket-lookup comment in `estimate_next_chunk_time.rs` near the
-  `estimate_interval` call.
+  `estimate_interval` reads the **arriving** chunk's characteristics,
+  and `record_inter_chunk_duration` writes under the same key. If a
+  regression flips one of them to the anchor's characteristics, the
+  lookup will silently miss every time. See the bucket-lookup comment
+  in `estimate_next_chunk_time.rs` near the `estimate_interval` call.
 - **Predictions are systematically early or late** — inspect the
   diagnostics modal for path mix and `physics_breakdown` per chunk.
   Systematic bias on a specific waveform transition usually means
   `waveform_transition_penalty_secs` needs a bump for that pair (see
-  the table in `chunk_timing_model.rs` line 253-281).
+  the table in `chunk_timing_model.rs`).
 - **Resumes within a volume re-download cached sweeps** —
   `cached_elevations_for_scan` returned empty. Check the IDB
   `scan_index` entry for that scan and confirm `cached_sweeps` is

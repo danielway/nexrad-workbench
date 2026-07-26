@@ -3,8 +3,11 @@
 The browser-side cache. Holds pre-computed sweep blobs and per-scan
 metadata so that scrubbing, elevation changes, and timeline queries do
 not have to re-decompress and re-decode archive data on every render.
-Implemented in [`src/data/indexeddb.rs`](../src/data/indexeddb.rs);
-wrapped by `DataFacade` for cache-eviction policy.
+Implemented in [`src/data/indexeddb/`](../src/data/indexeddb/)
+(`mod.rs` = the store, `helpers.rs` = key ranges/transaction plumbing,
+`logic.rs` = the pure decision functions); wrapped by `DataFacade`
+([`src/data/facade.rs`](../src/data/facade.rs)) for cache-eviction
+policy.
 
 The store runs in both the main thread and the Web Worker (the worker
 holds a long-lived connection so ingest/render don't pay open-time
@@ -20,7 +23,7 @@ by string.
 | -------------- | ----------------------------------- | ---------------------------------------------------------------- |
 | `sweeps`       | `SITE\|SCAN_MS\|ELEV_NUM\|PRODUCT`  | `ArrayBuffer` (raw gate values + 72-byte header — see §2a)       |
 | `scan_index`   | `SITE\|SCAN_MS`                     | `ScanIndexEntry` (structured-cloned via `serde-wasm-bindgen`)    |
-| `scan_touches` | `SITE\|SCAN_MS`                     | `i64` Unix-millisecond timestamp; seeded by `create_scan` and bumped on each render |
+| `scan_touches` | `SITE\|SCAN_MS`                     | Unix-millisecond timestamp (stored as a JS number); seeded by a scan's first `upsert_scan` and bumped on each render |
 
 Schema upgrades are **destructive**: `onupgradeneeded` deletes every
 existing object store and recreates them. The cache is treated as
@@ -30,9 +33,10 @@ upgrade path is what lets us evolve the binary blob layout freely.
 ## 2. Payload contents
 
 The values in each store have specific shapes. The `sweeps` payload is a
-hand-rolled binary blob optimized for zero-copy GPU upload; the
+hand-rolled binary blob optimized for zero-copy GPU upload, defined in
+[`src/data/blob_format.rs`](../src/data/blob_format.rs); the
 `scan_index` payload is a serialized Rust struct holding the metadata
-the rest of the codebase reasons about. Both are defined in
+the rest of the codebase reasons about, defined in
 [`src/data/keys.rs`](../src/data/keys.rs).
 
 ### 2a. `sweeps` value: `PrecomputedSweep` blob
@@ -82,7 +86,7 @@ filters on the GPU operate on raw values.
 
 A `Serialize`/`Deserialize` Rust struct. Round-trips through
 `serde-wasm-bindgen` (no JSON detour) and IDB stores the result via
-the structured-clone algorithm. Six fields, two roles:
+the structured-clone algorithm. Five fields, two roles:
 
 - **Plan** (`vcp`): the full ordered elevation cuts the radar intends to
   scan. Static — comes from the Message Type 5 record. Carries waveform,
@@ -123,18 +127,20 @@ Derived (accessor methods, not stored):
 | `start_azimuth`    | `f32`         | Azimuth (degrees) of the chronologically first radial — used for VCP forecasts   |
 | `cached_products`  | `Vec<String>` | Product strings (e.g. `"reflectivity"`) whose sweep blobs were successfully stored under this scan key |
 
-`ExtractedVcp` and `ExtractedVcpElevation` carry the per-volume scan
-strategy (cuts, waveforms, azimuth rates) used by the timing model and
-forecast UI.
+`ExtractedVcp` and `ExtractedVcpElevation`
+([`src/data/vcp_timing.rs`](../src/data/vcp_timing.rs)) carry the
+per-volume scan strategy (cuts, waveforms, azimuth rates) used by the
+timing model and forecast UI.
 
-### 2c. `scan_touches` value: `i64`
+### 2c. `scan_touches` value: a timestamp
 
-A bare Unix-millisecond timestamp. Owns LRU bookkeeping end-to-end:
-seeded by `create_scan` at ingest time so freshly-cached scans have a
-place in the order, and bumped by `touch_scan` after every sweep
-render. `evict_to_size` joins this store with `scan_index` and sorts
-by the touch value. See §11 for why access tracking lives in its own
-store rather than as a field on `ScanIndexEntry`.
+A bare Unix-millisecond timestamp (a JS number). Owns LRU bookkeeping
+end-to-end: seeded by a scan's **first** `upsert_scan` at ingest time so
+freshly-cached scans have a place in the order, and bumped by
+`touch_scan` after every sweep render. `evict_to_size` joins this store
+with `scan_index` and sorts by the touch value. See §11 for why access
+tracking lives in its own store rather than as a field on
+`ScanIndexEntry`.
 
 ## 3. Why three stores
 
@@ -193,19 +199,23 @@ moves across await points in non-WASM contexts.
 The actual transaction-completion wait (`wait_for_transaction`) happens
 *after* the closure returns, which is the only safe place to await.
 
-### 3c. Read-modify-write is not atomic
+### 3c. Read-modify-write is not atomic — the `UpsertScanGuard`
 
 Because of (3b), no single transaction can read a value, mutate it,
 and write it back — the `await` between read and write would commit
-the read transaction. The IDB layer therefore exposes only `get` and
-`put`; callers compose them.
+the read transaction. The one RMW in the store is `upsert_scan`
+(§6), which does a readonly `scan_availability` lookup, merges in
+memory, then writes in a separate readwrite transaction.
 
-This is racy in principle. In practice, the only RMW caller is the
-real-time chunk ingest loop, which serializes per-scan via the
-per-worker `CHUNK_ACCUM` thread-local: each scan has at most one
-writer at a time. The invariant lives at the call site
-(`worker_api/ingest.rs`) where the developer can see it, rather than
-hidden inside the IDB module.
+That split is racy in principle, so `upsert_scan` acquires an
+**`UpsertScanGuard`** at entry — a per-scan-key RAII lock in a
+thread-local `HashSet` (WASM is single-threaded; the only contention
+is between concurrently-running async futures on the same worker). A
+second task upserting the same scan while one is in flight gets
+`DataError::ConcurrentUpsert` instead of silently racing. The ingest
+pipeline already serializes per-scan via the per-worker `CHUNK_ACCUM`
+thread-local (`decode/worker_api/ingest.rs`); the guard is the
+type-system backstop.
 
 ## 5. Key-range queries
 
@@ -229,7 +239,7 @@ Two range helpers cover the common cases:
 | Range                 | Bounds                                  | Used by                                              |
 | --------------------- | --------------------------------------- | ---------------------------------------------------- |
 | `site_prefix_range`   | `"KDMX\|"` .. `"KDMX\|\u{FFFF}"`         | `list_scans`                                         |
-| `scan_prefix_range`   | `"KDMX\|MS\|"` .. `"KDMX\|MS\|\u{FFFF}"`  | crate-private `delete_scan` (sweep-blob prefix delete) |
+| `scan_prefix_range`   | `"KDMX\|MS\|"` .. `"KDMX\|MS\|\u{FFFF}"`  | `delete_scan` (sweep-blob prefix delete) |
 
 `\u{FFFF}` sorts after any character that appears in real keys, giving
 a tight inclusive upper bound. `delete_scan` issues a single
@@ -253,29 +263,45 @@ inputs would degrade to "read more entries than necessary," not
 Construct with `IndexedDbStore::new()` (cheap — no I/O). Call `open()`
 once before use; subsequent calls are no-ops. All methods are `async`.
 
-### Combined writes
+### The combined write: `upsert_scan`
 
-| Method                                            | Purpose                                                                                                  |
-| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `create_scan(&entry, &[(key, bytes)])`            | Atomic first-time write: blobs + scan-index entry + initial `scan_touches` timestamp, in one transaction |
-| `put_scan(&entry, &[(key, bytes)])`               | Atomic update: blobs + scan-index entry. Leaves `scan_touches` alone                                     |
+| Method                                              | Purpose                                                                        |
+| --------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `upsert_scan(&ScanHeader, &[ElevationUpload])`      | The single write entry point: create-or-merge blobs + scan-index entry, atomic |
 
-The two-method split exists so chunk-ingest's repeated flushes don't
-keep refreshing `scan_touches` to "now" (which would conflate writes
-with reads and break LRU). Use `create_scan` for the first write of a
-scan key, `put_scan` for subsequent updates. The chunk-ingest path
-already branches on `scan_availability` returning `Some` vs `None`,
-which maps cleanly. Archive ingest always uses `create_scan`.
+`ScanHeader` carries the scan key plus the header-level metadata
+(`vcp`, `file_name`); each `ElevationUpload` carries one elevation's
+timing (`SweepTiming`) and its product blobs (`ProductBlob`s). All
+types live in [`src/data/keys.rs`](../src/data/keys.rs).
 
-Both write blobs + index atomically — a mid-write failure can't leave
-orphan blobs or a phantom entry. The browser-quota pre-check covers
-the blob batch; an empty `sweep_blobs` slice writes the entry alone
-(used by chunk-ingest flushes that don't produce new blobs).
+`upsert_scan` dispatches internally on `scan_availability`:
 
-Calling `put_scan` for a key that has no `scan_touches` entry leaves
-the scan with no LRU placement and it gets evicted on the next pass.
-This is by design — it cleans up any stranded data — but it means
-"create then put" is a correctness-critical contract.
+- **First write** (no existing entry): derive a fresh `ScanIndexEntry`
+  from the header and the uploads, then write blobs + index + an
+  initial `scan_touches = now` in one cross-store readwrite
+  transaction. The initial touch is what gives the scan its place in
+  the LRU order.
+- **Merge** (entry exists): fill in `vcp` / `file_name` only if
+  currently `None`, append the derived `CachedSweep`s to
+  `existing.cached_sweeps`, add the batch size to `total_size_bytes`.
+  **`scan_touches` is preserved** — a chunk-ingest flush doesn't
+  refresh the access timestamp (which would conflate writes with
+  reads and break LRU).
+
+Contract details:
+
+- Blobs + index are written atomically — a mid-write failure can't
+  leave orphan blobs or a phantom entry. The browser-quota pre-check
+  (§Quota) covers the blob batch.
+- `ElevationUpload`s with empty `blobs` are dropped silently: the
+  manifest is derived from the blobs actually being written, so no
+  `CachedSweep` can claim a sweep that doesn't exist in storage.
+- An empty `elevations` slice is permitted — the entry is written (or
+  its header fields merged) without any blob writes (used by
+  chunk-ingest flushes that don't produce new blobs).
+- The read-then-write split is guarded per scan key by
+  `UpsertScanGuard` (§3c); a concurrent upsert for the same scan gets
+  `DataError::ConcurrentUpsert`.
 
 ### Sweep blobs
 
@@ -298,9 +324,9 @@ of a stringified key lets the method extract the scan portion to fire
 | `list_scans(site, start, end) -> Vec<ScanIndexEntry>`             | Site-prefix range, then time filter, sorted by start     |
 
 There is no entry-only writer: every index update goes through
-`create_scan` or `put_scan` so the blobs and the metadata that
-describes them stay in lockstep. A `put_scan` call with an empty
-`sweep_blobs` slice covers the "metadata-only update" case.
+`upsert_scan` so the blobs and the metadata that describes them stay
+in lockstep. An `upsert_scan` call with an empty `elevations` slice
+covers the "metadata-only update" case.
 
 ### Cache management
 
@@ -308,6 +334,7 @@ describes them stay in lockstep. A `put_scan` call with an empty
 | ------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `total_cache_size() -> u64`           | Sum of `total_size_bytes` across all `scan_index` entries                                        |
 | `evict_to_size(target_bytes) -> u32`  | Read entries + touches, sort by `scan_touches` (absent ⇒ evict-first), delete oldest first |
+| `delete_scan(&ScanKey) -> u64`        | One cross-store transaction: range-delete blobs + drop index entry + drop touch. Used by eviction; public so integration tests can verify per-scan deletion |
 | `clear_all()`                         | `IdbObjectStore::clear` on all three stores; preserves schema and version                        |
 
 `clear_all` does **not** call `deleteDatabase`. `deleteDatabase` blocks
@@ -321,10 +348,12 @@ hang while the worker holds its long-lived connection.
 | `IndexedDbStore::estimate_storage_quota() -> Option<…>`   | Wraps `navigator.storage.estimate()`; works in Window and Worker         |
 
 Returned as `StorageQuotaEstimate { quota, usage }` (bytes); call
-`.remaining()` for available space. `put_scan` consults this before
+`.remaining()` for available space. `upsert_scan` consults this before
 writing and returns `DataError::QuotaExceeded` when the blob batch
-plus 5 MB headroom would not fit, instead of letting IDB fail
-mid-transaction.
+plus the ingest headroom (5 MB, `QuotaPolicy::DEFAULT` in
+[`src/data/quota.rs`](../src/data/quota.rs)) would not fit, instead of
+letting IDB fail mid-transaction. The decision itself is the pure
+`decide_quota` in `indexeddb/logic.rs` (unit-tested).
 
 ## 7. Errors
 
@@ -336,13 +365,20 @@ mid-transaction.
 | `TransactionFailed`  | Transaction-level failure (open, commit, scope)     |
 | `RequestFailed`      | Single-request failure inside a transaction         |
 | `QuotaExceeded`      | Browser storage estimate insufficient for the batch |
-| `NotFound`           | Reserved (currently unused — `Option` is preferred) |
 | `SerdeError`         | `serde-wasm-bindgen` round-trip failed              |
+| `ConcurrentUpsert`   | A second task tried to `upsert_scan` a scan mid-upsert (§3c) |
 
 Errors from `JsValue` are formatted via the `js_err` helper, which
 extracts `name`/`message` when the value looks like a `DOMException`,
 and falls back to `{:?}` otherwise. This gives readable strings like
 `"QuotaExceededError: ..."` instead of opaque `JsValue(...)` blobs.
+
+`DataError::kind()` classifies every error as `Transient` (retry may
+succeed: `NotOpen`, `ConcurrentUpsert`, aborted/timed-out
+transactions), `Quota` (succeeds only after eviction), or `Permanent`
+— so callers pick retry/give-up/evict behavior without matching every
+variant. IDB failures are classified by the DOMException name `js_err`
+puts at the front of the message.
 
 ## 8. Data flow
 
@@ -352,7 +388,7 @@ and falls back to `{:?}` otherwise. This gives readable strings like
   │ (main thread)      │  postMessage    │ decode + extract   │
   └────────────────────┘  (transferable) └─────────┬──────────┘
                                                    │
-                                       put_scan (atomic)
+                                       upsert_scan (atomic)
                                                    │
                                                    ▼
                                           ┌──────────────────┐
@@ -375,22 +411,22 @@ and falls back to `{:?}` otherwise. This gives readable strings like
 
 Two notable shapes:
 
-- **Per-chunk ingest** (`worker_ingest_chunk`) accumulates sweeps in a
-  thread-local until an elevation completes, then reads any existing
-  scan-index entry, runs `ScanIndexEntry::merge_chunk` in memory, and
-  hands the merged entry plus the new sweep blobs to `put_scan` for
-  one atomic write. The read-then-write spans two transactions and is
-  racy in principle, but the per-worker `CHUNK_ACCUM` thread-local
-  serializes per-scan so no concurrent writer exists in practice. The
-  Start chunk also reads any pre-existing entry for the scan key and
-  pre-populates `completed_elevations` so a resume doesn't reprocess
-  sweeps that are already cached.
+- **Per-chunk ingest** (`worker_ingest_chunk`,
+  `src/nexrad/decode/worker_api/ingest.rs`) accumulates sweeps in a
+  thread-local until an elevation completes, then hands a `ScanHeader`
+  plus the completed `ElevationUpload`s to `upsert_scan`, which does
+  the read-merge-write internally (guarded per scan key, §3c). The
+  per-worker `CHUNK_ACCUM` thread-local serializes per-scan so no
+  concurrent writer exists in practice. The Start chunk also reads any
+  pre-existing entry for the scan key and pre-populates
+  `completed_elevations` so a resume doesn't reprocess sweeps that are
+  already cached.
 
 - **Archive ingest** (`worker_ingest`) decodes the entire volume, then
-  writes the scan-index entry + all sweep blobs in a single `put_scan`
-  call. Archive and real-time entries for the same physical volume can
-  coexist in the cache when their `scan_start` keys differ; LRU
-  eviction reclaims space over time.
+  writes the scan-index entry + all sweep blobs in a single
+  `upsert_scan` call. Archive and real-time entries for the same
+  physical volume can coexist in the cache when their `scan_start`
+  keys differ; LRU eviction reclaims space over time.
 
 ## 9. Test coverage
 
@@ -408,12 +444,14 @@ nexrad-workbench`) and in the `tests` CI job.
 real IndexedDB in headless Chromium). Cover the orchestration that the
 pure-Rust mock can't model:
 
-- Cross-store atomicity: `create_scan` writes blobs + index +
-  `scan_touches` together; `delete_scan` clears all three; `clear_all`
-  empties everything.
-- Touch contract: `create_scan` seeds `scan_touches`; `put_scan` does
-  NOT (verified directly via the orphan-entry path); `get_sweep` bumps
-  it (verified by polling for the fire-and-forget write).
+- Cross-store atomicity: a first `upsert_scan` writes blobs + index +
+  `scan_touches` together (even with no uploads); `delete_scan` clears
+  all three; `clear_all` empties everything.
+- Upsert contract: a merge preserves the existing touch; header fields
+  fill in only when currently `None`; incremental flushes keep the
+  manifest and the blobs in agreement; phantom (blob-less) elevations
+  are dropped. `get_sweep` bumps the touch (verified by polling for
+  the fire-and-forget write).
 - Eviction integration: oldest-touch-first ordering against a real DB,
   and the "missing-touch evicts first" cleanup path that the
   pure-Rust eviction-order test claims.
@@ -451,16 +489,17 @@ Not part of pre-commit.
 LRU eviction wants the order "least recently *used*," and `scan_touches`
 is the single source of truth for that. Two writers feed it:
 
-- `create_scan` seeds an entry with `now` at first ingest, so freshly
-  cached scans have a place in the LRU order before any render.
+- `upsert_scan` seeds an entry with `now` on a scan's **first** write,
+  so freshly cached scans have a place in the LRU order before any
+  render.
 - `touch_scan(&ScanKey)` (fired fire-and-forget by `get_sweep` after a
   render) bumps the timestamp.
 
 **Why a separate store, not a field on `ScanIndexEntry`.**
-Chunk-ingest does a read-modify-write on the index entry to merge new
-chunk state in (`scan_availability` → mutate → `put_scan`). If a touch
-did the same RMW dance against the same entry, the two could
-interleave:
+Chunk-ingest is a read-modify-write on the index entry to merge new
+chunk state in (`upsert_scan`'s internal `scan_availability` → merge →
+write). If a touch did the same RMW dance against the same entry, the
+two could interleave:
 
 ```
 T1  ingest reads entry (3 sweeps)
@@ -475,13 +514,13 @@ single-field store (`scan_touches`) sidesteps the problem entirely:
 the touch path never reads or writes `scan_index`, so it cannot
 collide with merges.
 
-**Why two write methods.** `put_scan` deliberately does *not* touch
-`scan_touches`. Otherwise every chunk-ingest flush during a streaming
-volume would refresh the access timestamp on each `put_scan`,
-re-conflating "last write" with "last access" — the exact problem
-the split was supposed to fix. Callers use `create_scan` for first
-writes (which seeds the touch) and `put_scan` for subsequent updates
-(which preserves it).
+**Why merge writes don't refresh the touch.** `upsert_scan`'s merge
+path deliberately leaves `scan_touches` alone. Otherwise every
+chunk-ingest flush during a streaming volume would refresh the access
+timestamp, re-conflating "last write" with "last access" — the exact
+problem the split was supposed to fix. Only the first write for a
+scan key seeds the touch; the create-vs-merge dispatch is internal to
+`upsert_scan`, so callers can't get this contract wrong.
 
 **Throttle.** `IndexedDbStore` holds an in-memory
 `HashMap<ScanKey, UnixMillis>` of recent touches. A second touch for
@@ -504,7 +543,8 @@ timestamp, which is still correct LRU behaviour.
 entries.sort_by_key(|e| touches.get(&e.scan).copied().unwrap_or(UnixMillis(0)).0);
 ```
 
-A missing touch entry sorts to position 0 → evicted first. That's
-the intended cleanup path for any scan written via `put_scan` without
-a prior `create_scan` (a contract violation that strands data).
-Normal flows always seed the touch in `create_scan`.
+A missing touch entry sorts to position 0 → evicted first. With the
+single `upsert_scan` entry point a touch-less entry can no longer be
+produced by a caller mistake; it remains possible only anomalously
+(fresh schema upgrade, corrupted commit), and eviction cleans it up
+first.

@@ -333,3 +333,49 @@ migration in flight per layer, and "done" includes deleting the old convention
 and updating the doc. The five half-states above are where nearly all of this
 codebase's entropy lives; the discipline that produced the migration log is
 exactly the discipline that can close them.
+
+---
+
+## Outcome (2026-07-26)
+
+Recorded after the fact; the review body above is a historical record and is
+left as written. Phases A and B landed on branch `arch-health`:
+
+- **A1 — done.** Domain types rehomed into `src/core/domain/`
+  (`Scan`/`Sweep`/`Radial`, viz types, playback, prefs, errors, feeds,
+  telemetry, worker outcomes); `Intent` is defined in `core/intent.rs` and the
+  `AppCommand` name is gone; `LocationResult` moved to `core/effect.rs`;
+  `ViewMode`/`GeoLayerVisibility` live in `geo`. `core → state` no longer
+  exists.
+- **A2 — done (stronger than proposed).** A build-time ratchet
+  (`tools/arch_check.rs`, invoked from `build.rs` on every `cargo check`)
+  enforces ALLOWED/GRANDFATHERED module-edge tables and fails on stale
+  grandfathered rows. One grandfathered edge remains (`app → ui`, the
+  geolocation executor — C2).
+- **A3 — done.** `src/nexrad/` regrouped into `acquisition/`, `live/`,
+  `decode/`, `render/`, `detection/`; `persistence_manager` → `src/app/`;
+  `network_monitor` split (records → `core/domain/telemetry`, listener →
+  `subsystem/`).
+- **A4 — done.** `#![warn(unreachable_pub)]` crate-wide (`data/` exempted as
+  the lib facade for `tests/idb.rs`); `#[allow(dead_code)]` reduced 87 → 44,
+  each remaining site documented.
+- **A5 — done.** Docs resynced against the post-A/B tree (this change):
+  ARCHITECTURE.md rewritten with coarser module-level tables + ratchet +
+  reducer-pattern sections; INDEXEDDB.md on the `upsert_scan` contract;
+  TIMING.md/STREAMING.md poll-bias and moved-path fixes; CORE_SHELL.md status.
+- **B1 — done.** The `src/app/` decision mass extracted into pure, tested
+  reducers: `core::worker_ingest`, `core::worker_decoded`, `core::render_loop`,
+  and the acquisition pump reducers in `core::acquisition` (Env/Slices/Actions
+  shape); `src/app/*` is assemble → reduce → execute shells.
+- **B2 — done.** Projection consolidated under `core/projection/`
+  (`ProjectionEngine` sole owner, `projector.rs` its private kernel); the
+  `timing/` fork moved to `core/timing/` intact; the `StreamingPlan` unifies
+  the scheduler sleep target and the UI countdown.
+- **B3 — done.** `data/keys.rs` split into `keys` / `blob_format` /
+  `vcp_timing` / `live_anchor`.
+
+**Phase C — pending**, batched behind the one manual-QA pass (P5 `&mut`→intent
+rewrite, `LayoutCtx` reshape, `site_modal` I/O → effects; the `app → ui`
+grandfathered edge burns down with C2).
+
+**Phase D — open** (opportunistic, unscheduled).

@@ -6,7 +6,7 @@ Cartesian image; the fragment shader does the projection, the
 interpolation, the raw→physical conversion, and the color lookup —
 once per pixel, every frame.
 
-Module: [src/nexrad/gpu_renderer/](../src/nexrad/gpu_renderer/).
+Module: [src/nexrad/render/gpu_renderer/](../src/nexrad/render/gpu_renderer/).
 
 ## What the GPU does (and why)
 
@@ -50,17 +50,17 @@ maintaining a parallel "physical units" copy.
 
 | File | Role |
 | --- | --- |
-| [`mod.rs`](../src/nexrad/gpu_renderer/mod.rs) | `RadarGpuRenderer` struct, GL setup, uniform table, `paint()` |
-| [`shaders.rs`](../src/nexrad/gpu_renderer/shaders.rs) | All GLSL — vertex shader, fragment-shader builder, shared snippets |
-| [`textures.rs`](../src/nexrad/gpu_renderer/textures.rs) | Texture upload entry points: data, previous data, LUT |
-| [`inspect.rs`](../src/nexrad/gpu_renderer/inspect.rs) | CPU-side polar lookups (inspector hover, storm-cell detection) |
+| [`mod.rs`](../src/nexrad/render/gpu_renderer/mod.rs) | `RadarGpuRenderer` struct, GL setup, uniform table, `paint()` |
+| [`shaders.rs`](../src/nexrad/render/gpu_renderer/shaders.rs) | All GLSL — vertex shader, fragment-shader builder, shared snippets |
+| [`textures.rs`](../src/nexrad/render/gpu_renderer/textures.rs) | Texture upload entry points: data, previous data, LUT |
+| [`inspect.rs`](../src/nexrad/render/gpu_renderer/inspect.rs) | CPU-side polar lookups (inspector hover, storm-cell detection) — thin binders over the pure lookup math in [`core::canvas`](../src/core/canvas.rs) |
 
 Everything else under [src/nexrad/](../src/nexrad/) feeds this module
 or composes its output:
 
 - The decode worker pool produces the gate-value/azimuth/time arrays
   consumed by `update_data()`.
-- The globe-mode renderer ([`globe_radar_renderer.rs`](../src/nexrad/globe_radar_renderer.rs))
+- The globe-mode renderer ([`globe_radar_renderer.rs`](../src/nexrad/render/globe_radar_renderer.rs))
   reuses the GLSL snippets exported from `shaders.rs` (`FRAGMENT_PREAMBLE`,
   `SAMPLE_DATA_P`, `IS_VALID`, `FIND_NEAREST_AZ_P`, `FIND_BRACKET_AZ_P`,
   `RAW_TO_PHYSICAL`, `COLOR_LOOKUP`, `PREMULTIPLIED_ALPHA_OUTPUT`) so
@@ -73,7 +73,7 @@ or composes its output:
 
 - A linked GL program from `VERTEX_SHADER` and the dynamically
   assembled flat fragment shader (see `build_flat_fragment_shader`
-  in [shaders.rs](../src/nexrad/gpu_renderer/shaders.rs)).
+  in [shaders.rs](../src/nexrad/render/gpu_renderer/shaders.rs)).
 - A fullscreen-quad VBO + VAO. `paint()` always draws this quad; the
   fragment shader decides what's inside the radar disc and what's
   transparent.
@@ -181,7 +181,7 @@ These are the only mutators the orchestration layer calls:
 
 `update_color_table` builds a 1024-entry RGBA LUT. Reflectivity gets
 a custom OKLab-interpolated palette with an alpha ramp at low values
-([`color_table::build_reflectivity_lut`](../src/nexrad/color_table.rs));
+([`color_table::build_reflectivity_lut`](../src/nexrad/render/color_table.rs));
 other products use a continuous color scale evaluated at LUT positions.
 
 ## Painting
@@ -207,7 +207,7 @@ so the renderer doesn't need to. It does explicitly:
 
 ## CPU lookups
 
-[`inspect.rs`](../src/nexrad/gpu_renderer/inspect.rs) exposes:
+[`inspect.rs`](../src/nexrad/render/gpu_renderer/inspect.rs) exposes:
 
 - `value_at_polar(azimuth_deg, range_km, sweep_params)` — physical
   units, or `None` for sentinels / out-of-range / behind the sweep
@@ -219,10 +219,12 @@ so the renderer doesn't need to. It does explicitly:
   shadow data into a `DetectionInput`.
 
 The inspector path uses `find_nearest_azimuth_index` (the CPU twin of
-`FIND_NEAREST_AZ_P`) which applies the same `< spacing * 1.5` gap
-rule as the shader, so hover values match what's drawn. Negative
-azimuths in the array — padding slots from the live partial-sweep
-path — are skipped.
+`FIND_NEAREST_AZ_P`, in [`core::canvas`](../src/core/canvas.rs) — the
+pure lookup math lives there; `inspect.rs` binds it to the renderer's
+CPU shadow buffers) which applies the same `< spacing * 1.5` gap rule
+as the shader, so hover values match what's drawn. Negative azimuths
+in the array — padding slots from the live partial-sweep path — are
+skipped.
 
 The previous-sweep CPU lookups use evenly-spaced azimuth indexing
 rather than searching the array, mirroring the shader's prev-sweep
@@ -237,9 +239,9 @@ renderers that compose with the flat one:
 
 | Renderer | File | What it draws |
 | --- | --- | --- |
-| `RadarGpuRenderer` | [`gpu_renderer/`](../src/nexrad/gpu_renderer/) | Flat 2D radar disc (the default) |
-| `GlobeRadarRenderer` | [`globe_radar_renderer.rs`](../src/nexrad/globe_radar_renderer.rs) | Single-elevation radar patch on a 3D sphere |
-| `VolumeRayRenderer` | [`volume_ray_renderer.rs`](../src/nexrad/volume_ray_renderer.rs) | Full volumetric ray-march of all elevations |
+| `RadarGpuRenderer` | [`gpu_renderer/`](../src/nexrad/render/gpu_renderer/) | Flat 2D radar disc (the default) |
+| `GlobeRadarRenderer` | [`globe_radar_renderer.rs`](../src/nexrad/render/globe_radar_renderer.rs) | Single-elevation radar patch on a 3D sphere |
+| `VolumeRayRenderer` | [`volume_ray_renderer.rs`](../src/nexrad/render/volume_ray_renderer.rs) | Full volumetric ray-march of all elevations |
 
 In globe mode the paint callback in [`ui/canvas_overlays/globe.rs`](../src/ui/canvas_overlays/globe.rs)
 draws the sphere and geo lines first, then picks one of the two radar
@@ -252,7 +254,7 @@ truth for sweep data.
 
 This is the natural extension of the flat renderer to a curved surface.
 A spherical-cap mesh is generated once per site change in
-[`generate_radar_patch`](../src/nexrad/globe_radar_renderer.rs):
+[`generate_radar_patch`](../src/nexrad/render/globe_radar_renderer.rs):
 `PATCH_AZ_STEPS = 180` × `PATCH_RANGE_STEPS = 60` great-circle samples
 plus a center vertex. Each vertex carries five floats:
 `[x, y, z, azimuth_deg, range_km]`. The vertex shader passes
@@ -264,7 +266,7 @@ Everything else is shared. The fragment shader is built from the same
 GLSL snippets — `FRAGMENT_PREAMBLE`, `SAMPLE_DATA_P`, `IS_VALID`,
 `FIND_NEAREST_AZ_P`, `FIND_BRACKET_AZ_P`, `RAW_TO_PHYSICAL`,
 `COLOR_LOOKUP`, `PREMULTIPLIED_ALPHA_OUTPUT` — exported from
-[`gpu_renderer/shaders.rs`](../src/nexrad/gpu_renderer/shaders.rs).
+[`gpu_renderer/shaders.rs`](../src/nexrad/render/gpu_renderer/shaders.rs).
 Lookup, interpolation rules, sentinel handling, raw→physical
 conversion, and palette lookup are shared by construction; the flat
 and globe paths cannot drift on those rules.

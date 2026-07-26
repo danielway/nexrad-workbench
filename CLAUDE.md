@@ -19,14 +19,14 @@ cargo clippy -- -D warnings
 cargo fmt -- --check
 
 # Pure-Rust unit tests (runs on wasm32 in node via wasm-bindgen-test).
-# Covers data/keys.rs types + the IDB layer's pure decision functions
-# (key range bounds, eviction order, throttle math, quota math,
-# time-window filter, ScanIndexEntry accessors).
+# The full headless suite: core decision logic + data-layer types + the
+# IDB layer's pure decision functions (key range bounds, eviction order,
+# throttle math, quota math, time-window filter, ScanIndexEntry accessors).
 # Requires: `cargo install wasm-bindgen-cli --locked` and node.js installed.
 cargo test --bin nexrad-workbench
 
 # IDB orchestration tests (real IndexedDB in headless Chromium).
-# Covers cross-store atomicity, the create_scan/put_scan touch contract,
+# Covers cross-store atomicity, the upsert_scan touch/merge contract,
 # eviction order against a real DB, and full-entry round-tripping.
 # Requires chromium + chromedriver installed locally.
 CHROMEDRIVER=/usr/bin/chromedriver cargo test --test idb
@@ -51,7 +51,8 @@ Always commit at natural milestones — a self-contained fix, a completed featur
 
 - **WASM-only target**: The default build target is `wasm32-unknown-unknown` (set in `.cargo/config.toml`). All code must compile for this target. Native stubs exist but are minimal.
 - **Stable toolchain only**: No nightly, no `build-std`, no atomics. See `rust-toolchain.toml`.
-- **No `await` inside IndexedDB readwrite transactions**: In WASM, IDB transactions auto-commit when the event loop yields. Read first in a separate readonly transaction, then write synchronously in readwrite before calling `.await`. See `src/data/indexeddb.rs`.
+- **No `await` inside IndexedDB readwrite transactions**: In WASM, IDB transactions auto-commit when the event loop yields. Read first in a separate readonly transaction, then write synchronously in readwrite before calling `.await`. See `src/data/indexeddb/`.
+- **Module edges are build-enforced**: `tools/arch_check.rs` (run from `build.rs` on every `cargo check`) fails the build on any cross-module dependency edge that isn't in its ALLOWED table. Fix the direction, or add to ALLOWED only with a real architectural reason. Never add to GRANDFATHERED.
 - **`globalThis` not `window`**: IDB and other browser APIs accessed via `js_sys::global()` / `js_sys::Reflect::get("indexedDB")` so the same code works in both main thread and Web Worker contexts.
 - **Raw gate values on GPU**: NEXRAD gate values are raw u8/u16. Physical conversion (`physical = (raw - offset) / scale`) happens in the fragment shader. Values 0 (below threshold) and 1 (range folded) are sentinels checked via `v > 1.5`. This means bilinear interpolation works on raw values before conversion.
 
@@ -71,7 +72,7 @@ of existing code. Full pattern, seams, test recipe, and migration roadmap:
   into decision logic.
 - **The UI shell only renders a view-model and emits intents.** No business logic,
   no state mutation, no I/O anywhere under `src/ui/**` or in egui/canvas code.
-  Input becomes an intent (`AppCommand`); rendering reads a view-model snapshot.
+  Input becomes an intent (`core::Intent`); rendering reads a view-model snapshot.
 - **The contract is: intents in, view-model out — nothing else crosses.** Every
   feature is validated headlessly by `core + intents → assert view-model/state`;
   the egui layer is a trivial 1:1 projection you can eyeball.
@@ -107,9 +108,11 @@ The essentials to hold in mind:
   polar→Cartesian + raw→physical + color). Sweep blobs are pre-computed at ingest
   so scrubbing and elevation changes have near-zero render latency.
 - **State** — `WorkbenchApp` is a thin coordinator over bounded subsystems
-  (Acquisition, Render, Timeline, Playback, Live, Chrome, Diagnostics — see
-  ARCHITECTURE.md). UI actions emit `AppCommand` variants processed in the main
-  loop.
+  (Acquisition, Render, Timeline, Playback, Live, Chrome, Diagnostics,
+  NetworkMonitor — see ARCHITECTURE.md). UI actions emit `Intent` variants
+  (defined in `src/core/intent.rs`) processed in the main loop; decisions live
+  in pure `src/core/` reducers, and `src/app/` shells execute the described
+  effects.
 - **Async** — egui's update loop is synchronous; async tasks communicate via typed
   `futures_channel::mpsc` channels polled each frame, spawned with
   `wasm_bindgen_futures::spawn_local()`.
