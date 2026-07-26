@@ -24,6 +24,7 @@ impl Layer for MobileSettingsModalLayer {
     }
     fn render(&self, ctx: &mut LayoutCtx) {
         draw_mobile_settings_modal(
+            &mut ctx.modals.datetime,
             ctx.ctx,
             ctx.state,
             ctx.timeline,
@@ -38,6 +39,7 @@ impl Layer for MobileSettingsModalLayer {
 
 #[allow(clippy::too_many_arguments)]
 fn draw_mobile_settings_modal(
+    picker: &mut crate::ui::DateTimePickerState,
     ctx: &egui::Context,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
@@ -78,7 +80,9 @@ fn draw_mobile_settings_modal(
                 .max_height(body_h)
                 .auto_shrink([false, false])
                 .show(ui, |ui| match chrome.mobile_settings_tab {
-                    MobileSettingsTab::Playback => render_playback_body(ui, state, playback),
+                    MobileSettingsTab::Playback => {
+                        render_playback_body(ui, state, picker, playback)
+                    }
                     MobileSettingsTab::Product => {
                         render_product_body(ui, state, timeline, live, playback)
                     }
@@ -92,7 +96,7 @@ fn draw_mobile_settings_modal(
             // label in the Playback tab) renders as an Area, so it must be
             // spawned from within the window.
             super::super::playback_controls::render_datetime_picker_popup(
-                ui, state, live, playback,
+                ui, state, picker, live, playback,
             );
         });
 }
@@ -164,6 +168,7 @@ fn render_tab_strip(
 fn render_playback_body(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    picker: &mut crate::ui::DateTimePickerState,
     playback: &mut crate::subsystem::Playback,
 ) {
     ui.add_space(6.0);
@@ -183,9 +188,7 @@ fn render_playback_body(
             .add(egui::Button::new(RichText::new(&time_label).monospace().size(15.0)).frame(false))
             .clicked()
         {
-            state
-                .datetime_picker
-                .init_from_timestamp(selected_ts, use_local);
+            picker.init_from_timestamp(selected_ts, use_local);
         }
     });
 

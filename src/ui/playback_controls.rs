@@ -12,15 +12,16 @@ use eframe::egui::{self, Color32, RichText, Vec2};
 pub(super) fn render_datetime_picker_popup(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    picker: &mut super::DateTimePickerState,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
 ) {
-    if !state.datetime_picker.open {
+    if !picker.open {
         return;
     }
 
     if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
-        state.datetime_picker.close();
+        picker.close();
         return;
     }
 
@@ -45,19 +46,19 @@ pub(super) fn render_datetime_picker_popup(
                     ui.horizontal(|ui| {
                         ui.label("Date:");
                         ui.add(
-                            egui::TextEdit::singleline(&mut state.datetime_picker.year)
+                            egui::TextEdit::singleline(&mut picker.year)
                                 .desired_width(45.0)
                                 .hint_text("YYYY"),
                         );
                         ui.label("-");
                         ui.add(
-                            egui::TextEdit::singleline(&mut state.datetime_picker.month)
+                            egui::TextEdit::singleline(&mut picker.month)
                                 .desired_width(25.0)
                                 .hint_text("MM"),
                         );
                         ui.label("-");
                         ui.add(
-                            egui::TextEdit::singleline(&mut state.datetime_picker.day)
+                            egui::TextEdit::singleline(&mut picker.day)
                                 .desired_width(25.0)
                                 .hint_text("DD"),
                         );
@@ -69,19 +70,19 @@ pub(super) fn render_datetime_picker_popup(
                     ui.horizontal(|ui| {
                         ui.label("Time:");
                         ui.add(
-                            egui::TextEdit::singleline(&mut state.datetime_picker.hour)
+                            egui::TextEdit::singleline(&mut picker.hour)
                                 .desired_width(25.0)
                                 .hint_text("HH"),
                         );
                         ui.label(":");
                         ui.add(
-                            egui::TextEdit::singleline(&mut state.datetime_picker.minute)
+                            egui::TextEdit::singleline(&mut picker.minute)
                                 .desired_width(25.0)
                                 .hint_text("MM"),
                         );
                         ui.label(":");
                         ui.add(
-                            egui::TextEdit::singleline(&mut state.datetime_picker.second)
+                            egui::TextEdit::singleline(&mut picker.second)
                                 .desired_width(25.0)
                                 .hint_text("SS"),
                         );
@@ -111,7 +112,7 @@ pub(super) fn render_datetime_picker_popup(
                     ui.add_space(8.0);
 
                     // Validation feedback
-                    let valid_ts = state.datetime_picker.to_timestamp(use_local);
+                    let valid_ts = picker.to_timestamp(use_local);
                     if valid_ts.is_none() {
                         ui.colored_label(Color32::from_rgb(255, 100, 100), "Invalid date/time");
                     }
@@ -125,7 +126,7 @@ pub(super) fn render_datetime_picker_popup(
                     // Buttons
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
-                            state.datetime_picker.close();
+                            picker.close();
                         }
 
                         ui.add_enabled_ui(valid_ts.is_some(), |ui| {
@@ -153,7 +154,7 @@ pub(super) fn render_datetime_picker_popup(
                         let view_width_secs = playback.state.view_width_secs();
                         playback.state.timeline_view_start = ts - view_width_secs * 0.05;
 
-                        state.datetime_picker.close();
+                        picker.close();
                         log::debug!("Jumped to timestamp: {}", ts);
                     }
                 });
@@ -167,9 +168,11 @@ pub(super) fn render_datetime_picker_popup(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_playback_controls(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    picker: &mut super::DateTimePickerState,
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
@@ -205,9 +208,7 @@ pub(super) fn render_playback_controls(
         if advanced {
             let timestamp_btn = ui.add(egui::Button::new(text).frame(false));
             if timestamp_btn.clicked() {
-                state
-                    .datetime_picker
-                    .init_from_timestamp(selected_ts, use_local);
+                picker.init_from_timestamp(selected_ts, use_local);
             }
             if timestamp_btn.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -221,7 +222,7 @@ pub(super) fn render_playback_controls(
     }
 
     // Datetime picker popup
-    render_datetime_picker_popup(ui, state, live, playback);
+    render_datetime_picker_popup(ui, state, picker, live, playback);
 
     // Persistent, stateful LIVE button (spec §7). Always present in the
     // transport row: solid "● LIVE" while tethered, hollow "● LIVE · m:ss

@@ -27,10 +27,10 @@ pub(in crate::ui) use top_bar::MobileTopBarLayer;
 /// mutate) the auto-hide timer.
 fn chrome_should_hide(
     ctx: &eframe::egui::Context,
-    state: &crate::state::AppState,
     playback: &crate::subsystem::Playback,
     chrome: &crate::subsystem::Chrome,
     diagnostics: &crate::subsystem::Diagnostics,
+    picker_open: bool,
 ) -> bool {
     let now_secs = ctx.input(|i| i.time);
     // "Playing" = archive playback advancing OR tethered to the live edge (the
@@ -42,7 +42,7 @@ fn chrome_should_hide(
         now_secs,
         last_interaction_secs: chrome.mobile_auto_hide.last_interaction_secs,
         is_playing,
-        modal_open: any_overlay_open(state, chrome, diagnostics),
+        modal_open: any_overlay_open(chrome, diagnostics, picker_open),
         gesture_active,
     })
 }
@@ -62,10 +62,10 @@ fn chrome_should_hide(
 ///    moment so the chrome slides away on time even if nothing else animates.
 pub(crate) fn resolve_mobile_auto_hide(
     ctx: &eframe::egui::Context,
-    state: &mut crate::state::AppState,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
     diagnostics: &crate::subsystem::Diagnostics,
+    picker_open: bool,
 ) {
     let now_secs = ctx.input(|i| i.time);
     let was_hidden = chrome.mobile_auto_hide.hidden;
@@ -79,7 +79,7 @@ pub(crate) fn resolve_mobile_auto_hide(
         chrome.mobile_auto_hide.revealed_this_frame = true;
     }
 
-    let hidden = chrome_should_hide(ctx, state, playback, chrome, diagnostics);
+    let hidden = chrome_should_hide(ctx, playback, chrome, diagnostics, picker_open);
     chrome.mobile_auto_hide.hidden = hidden;
 
     // Keep the idle countdown ticking toward the hide moment without spinning.
@@ -99,9 +99,9 @@ pub(crate) fn resolve_mobile_auto_hide(
 /// Whether any modal, sheet, or popup is open over the mobile chrome — any of
 /// these should suppress auto-hide so the user can finish what they opened.
 fn any_overlay_open(
-    state: &crate::state::AppState,
     chrome: &crate::subsystem::Chrome,
     diagnostics: &crate::subsystem::Diagnostics,
+    picker_open: bool,
 ) -> bool {
     chrome.mobile_settings_open
         || chrome.site_modal_open
@@ -114,7 +114,7 @@ fn any_overlay_open(
         || chrome.network_log_open
         || chrome.event_modal_open
         || chrome.shortcuts_help_visible
-        || state.datetime_picker.open
+        || picker_open
         || diagnostics.alerts.list_modal_open
         || diagnostics.alerts.selected_alert_id.is_some()
 }

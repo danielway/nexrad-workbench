@@ -6,11 +6,24 @@
 //! (sidebar layout, which modal to render) instead of reading scattered
 //! booleans off [`AppState`](crate::state::AppState).
 //!
-//! Fields here are deliberately limited to "what's open / visible".
-//! Theme, dev mode, mobile detection, advanced mode, and other
-//! preference-style state stays on `AppState` (or `UserPreferences`)
-//! because business logic reads them in many places that have nothing
-//! to do with chrome rendering.
+//! **Placement rule** (the other half is on [`crate::ui::ModalStates`]):
+//! transient UI state splits on one question — *is it "what is on screen"
+//! or "what has the user typed"?*
+//!
+//! - **What is on screen** — which panel/modal is open, which tab is
+//!   active, what a modal was opened *for* — lives here. Both the UI (a
+//!   toggle) and the shell (an effect opening the site modal) write it,
+//!   and the layout tree reads it to decide what to render. It sits in
+//!   `subsystem` rather than `ui` precisely so both layers can touch it
+//!   without an illegal `app → ui` edge.
+//! - **What the user has typed** — search filters, form fields, text
+//!   buffers two-way bound to egui widgets — lives on `ui::ModalStates`.
+//!   Nothing outside the owning widget reads it.
+//!
+//! Anything that is neither is domain state: theme, dev mode, mobile
+//! detection, advanced mode and other preference-style state stay on
+//! `AppState` (or `UserPreferences`), because business logic reads them
+//! in many places that have nothing to do with chrome rendering.
 
 /// Owner of UI chrome visibility + modal-open state.
 #[derive(Default)]

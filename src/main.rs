@@ -871,10 +871,10 @@ impl eframe::App for WorkbenchApp {
         if self.state.is_mobile {
             ui::resolve_mobile_auto_hide(
                 ctx,
-                &mut self.state,
                 &mut self.playback,
                 &mut self.chrome,
                 &self.diagnostics,
+                self.modals.datetime.open,
             );
         } else {
             self.chrome.mobile_auto_hide.hidden = false;

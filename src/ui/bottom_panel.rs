@@ -29,6 +29,7 @@ impl Layer for BottomPanelLayer {
         draw_bottom_panel(
             ctx.ctx,
             ctx.state,
+            &mut ctx.modals.datetime,
             ctx.timeline,
             ctx.live,
             ctx.playback,
@@ -43,6 +44,7 @@ impl Layer for BottomPanelLayer {
 fn draw_bottom_panel(
     ctx: &egui::Context,
     state: &mut AppState,
+    picker: &mut crate::ui::DateTimePickerState,
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
@@ -158,6 +160,7 @@ fn draw_bottom_panel(
                     render_playback_controls(
                         ui,
                         state,
+                        picker,
                         timeline,
                         live,
                         playback,

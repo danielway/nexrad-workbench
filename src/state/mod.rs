@@ -83,9 +83,6 @@ pub(crate) struct AppState {
     /// Set to true on initial startup and site changes; false for download-triggered refreshes.
     pub auto_position_on_timeline_load: bool,
 
-    /// State for the datetime picker popup.
-    pub datetime_picker: DateTimePickerState,
-
     /// Storage settings (quota, eviction targets).
     pub storage_settings: StorageSettings,
 
@@ -321,85 +318,6 @@ mod mobile_auto_hide_tests {
         assert!(h
             .secs_until_hide(10.0 + MOBILE_CHROME_IDLE_HIDE_SECS, true)
             .is_none());
-    }
-}
-
-/// State for the datetime jump picker popup.
-#[derive(Default)]
-pub(crate) struct DateTimePickerState {
-    /// Whether the picker popup is currently open.
-    pub open: bool,
-    /// Input values for the picker (as strings for text editing).
-    pub year: String,
-    pub month: String,
-    pub day: String,
-    pub hour: String,
-    pub minute: String,
-    pub second: String,
-}
-
-impl DateTimePickerState {
-    /// Initialize the picker with a timestamp, respecting the timezone setting.
-    pub(crate) fn init_from_timestamp(&mut self, ts: f64, use_local: bool) {
-        if use_local {
-            let d = js_sys::Date::new_0();
-            d.set_time(ts * 1000.0);
-            self.year = format!("{:04}", d.get_full_year());
-            self.month = format!("{:02}", d.get_month() + 1); // JS months are 0-based
-            self.day = format!("{:02}", d.get_date());
-            self.hour = format!("{:02}", d.get_hours());
-            self.minute = format!("{:02}", d.get_minutes());
-            self.second = format!("{:02}", d.get_seconds());
-        } else {
-            use chrono::{TimeZone, Utc};
-            let dt = Utc.timestamp_opt(ts as i64, 0).unwrap();
-            self.year = dt.format("%Y").to_string();
-            self.month = dt.format("%m").to_string();
-            self.day = dt.format("%d").to_string();
-            self.hour = dt.format("%H").to_string();
-            self.minute = dt.format("%M").to_string();
-            self.second = dt.format("%S").to_string();
-        }
-        self.open = true;
-    }
-
-    /// Try to parse the current input values into a UTC timestamp (seconds).
-    pub(crate) fn to_timestamp(&self, use_local: bool) -> Option<f64> {
-        let year: i32 = self.year.parse().ok()?;
-        let month: u32 = self.month.parse().ok()?;
-        let day: u32 = self.day.parse().ok()?;
-        let hour: u32 = self.hour.parse().ok()?;
-        let minute: u32 = self.minute.parse().ok()?;
-        let second: u32 = self.second.parse().ok()?;
-
-        if use_local {
-            // Construct a JS Date from local components and read back UTC millis
-            let d = js_sys::Date::new_0();
-            d.set_full_year(year as u32);
-            d.set_month(month.checked_sub(1)?); // JS months are 0-based
-            d.set_date(day);
-            d.set_hours(hour);
-            d.set_minutes(minute);
-            d.set_seconds(second);
-            d.set_milliseconds(0);
-            let ts = d.get_time(); // UTC milliseconds
-            if ts.is_nan() {
-                return None;
-            }
-            Some(ts / 1000.0)
-        } else {
-            use chrono::{TimeZone, Utc};
-            let dt = Utc.with_ymd_and_hms(year, month, day, hour, minute, second);
-            match dt {
-                chrono::LocalResult::Single(dt) => Some(dt.timestamp() as f64),
-                _ => None,
-            }
-        }
-    }
-
-    /// Close the picker and reset state.
-    pub(crate) fn close(&mut self) {
-        self.open = false;
     }
 }
 
@@ -667,95 +585,6 @@ mod coverage_tests {
         assert!(h
             .secs_until_hide(10.0 + MOBILE_CHROME_IDLE_HIDE_SECS + 5.0, true)
             .is_none());
-    }
-
-    // ---- DateTimePickerState ----
-
-    #[wasm_bindgen_test]
-    fn datetime_picker_default_is_closed_and_empty() {
-        let p = DateTimePickerState::default();
-        assert!(!p.open);
-        assert!(p.year.is_empty());
-        assert!(p.month.is_empty());
-        assert!(p.day.is_empty());
-        assert!(p.hour.is_empty());
-        assert!(p.minute.is_empty());
-        assert!(p.second.is_empty());
-    }
-
-    #[wasm_bindgen_test]
-    fn datetime_picker_close_clears_open() {
-        let mut p = DateTimePickerState {
-            open: true,
-            ..Default::default()
-        };
-        p.close();
-        assert!(!p.open);
-    }
-
-    #[wasm_bindgen_test]
-    fn datetime_picker_to_timestamp_utc_epoch() {
-        let p = DateTimePickerState {
-            year: "1970".to_string(),
-            month: "01".to_string(),
-            day: "01".to_string(),
-            hour: "00".to_string(),
-            minute: "00".to_string(),
-            second: "00".to_string(),
-            ..Default::default()
-        };
-        let ts = p.to_timestamp(false).expect("valid utc datetime");
-        assert!((ts - 0.0).abs() < 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn datetime_picker_to_timestamp_utc_known_value() {
-        // 2021-01-01 00:00:00 UTC == 1609459200 seconds since epoch.
-        let p = DateTimePickerState {
-            year: "2021".to_string(),
-            month: "1".to_string(),
-            day: "1".to_string(),
-            hour: "0".to_string(),
-            minute: "0".to_string(),
-            second: "0".to_string(),
-            ..Default::default()
-        };
-        let ts = p.to_timestamp(false).expect("valid utc datetime");
-        assert!((ts - 1_609_459_200.0).abs() < 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn datetime_picker_to_timestamp_utc_rejects_unparseable() {
-        // Default (all-empty) inputs cannot parse → None.
-        let p = DateTimePickerState::default();
-        assert!(p.to_timestamp(false).is_none());
-
-        // Garbage month also fails to parse.
-        let bad = DateTimePickerState {
-            year: "2021".to_string(),
-            month: "abc".to_string(),
-            day: "1".to_string(),
-            hour: "0".to_string(),
-            minute: "0".to_string(),
-            second: "0".to_string(),
-            ..Default::default()
-        };
-        assert!(bad.to_timestamp(false).is_none());
-    }
-
-    #[wasm_bindgen_test]
-    fn datetime_picker_to_timestamp_utc_rejects_invalid_date() {
-        // Month 13 is out of range → chrono returns non-Single → None.
-        let p = DateTimePickerState {
-            year: "2021".to_string(),
-            month: "13".to_string(),
-            day: "1".to_string(),
-            hour: "0".to_string(),
-            minute: "0".to_string(),
-            second: "0".to_string(),
-            ..Default::default()
-        };
-        assert!(p.to_timestamp(false).is_none());
     }
 
     // ---- AppState command queue / gating ----
