@@ -46,88 +46,38 @@ pub(crate) const MAX_RECENT_NETWORK_REQUESTS: usize = 100;
 /// Root application state containing all sub-states.
 #[derive(Default)]
 pub(crate) struct AppState {
+    // ------------------------------------------------------------------------
+    // Per-frame scratch — recomputed at the top of every frame in `app::frame_setup`.
+    // Never persisted, and never valid across frames: read it, don't cache it.
     /// Wall-clock "now" for this frame, captured once in
     /// `apply_frame_setup` before any consumer runs.
     pub frame_now: FrameNow,
+    /// Resolved dark mode flag for the current frame.
+    pub is_dark: bool,
+    /// Resolved mobile mode for the current frame. Computed by
+    /// [`AppState::refresh_mobile_mode`] from viewport width and touch history.
+    /// When true, panels collapse to the mobile chrome.
+    pub is_mobile: bool,
+    /// Resolved desktop width tier for the current frame. Computed alongside
+    /// [`AppState::is_mobile`] in [`AppState::refresh_mobile_mode`]. Drives
+    /// progressive collapse of low-priority chrome into overflow menus so the
+    /// top/bottom bars don't overlap when the window is narrow.
+    pub width_tier: WidthTier,
 
-    /// Visualization state (canvas, zoom/pan, product selection)
-    pub viz_state: VizState,
-
-    /// Layer visibility toggles
-    pub layer_state: LayerState,
-
-    /// Application status message displayed in top bar
-    pub status_message: String,
-
-    /// Timestamp (ms since epoch) when the status message was last set.
-    /// Used for auto-dismissal.
-    pub status_message_set_ms: f64,
-
-    /// Session and performance statistics
-    pub session_stats: SessionStats,
-
-    /// Download progress tracking for timeline ghost markers and pipeline display.
-    pub download_progress: DownloadProgress,
-
+    // ------------------------------------------------------------------------
+    // One-shot handoffs — written in one place and consumed-and-cleared in another
+    // (`mem::take` or an explicit reset). A handoff left set is a bug.
     /// Command queue for cross-component signaling.
     /// UI code pushes commands; the main update loop drains and dispatches them.
     pub commands: std::collections::VecDeque<Intent>,
-
     /// A timeline range selection finalized this frame (shift+click/drag),
     /// snapshotted as `(start, end)` seconds. The main update loop consumes it,
     /// applies the duration gate, and either arms the bulk-fetch pump or opens
     /// the confirm modal. `None` when no selection was just finalized.
     pub selection_just_finalized: Option<(f64, f64)>,
-
     /// Whether the next timeline load should auto-position the playback cursor.
     /// Set to true on initial startup and site changes; false for download-triggered refreshes.
     pub auto_position_on_timeline_load: bool,
-
-    /// Storage settings (quota, eviction targets).
-    pub storage_settings: StorageSettings,
-
-    /// Preferred NEXRAD site chosen during first visit. `Some` means the user
-    /// has already completed the first-visit flow and this site should be used
-    /// as the default on future visits.
-    pub preferred_site: Option<String>,
-
-    /// Theme mode selection (System, Dark, Light).
-    pub theme_mode: ThemeMode,
-
-    /// Resolved dark mode flag for the current frame.
-    pub is_dark: bool,
-
-    /// GPU rendering processing options (interpolation, smoothing, etc.).
-    pub render_processing: RenderProcessing,
-
-    /// Whether to display times in local timezone (false = UTC).
-    pub use_local_time: bool,
-
-    /// Developer mode: shows perf timings, FPS, network metrics, and the COI
-    /// badge in the status bar, and enables the code paths that feed them.
-    /// Mirrored to/from the `?dev=true` URL parameter.
-    pub dev_mode: bool,
-
-    /// Advanced UI mode: when `false` (Basic, default for new users), the
-    /// left panel and several right-panel sections are hidden. When `true`
-    /// (Advanced), all controls are visible regardless of operational mode.
-    /// Persisted in `UserPreferences`; existing users are migrated to `true`.
-    /// Override via `?ui=basic` or `?ui=advanced`.
-    pub advanced_mode: bool,
-
-    /// Data-saver policy: when `true`, detaching the playhead stops the live
-    /// stream immediately rather than letting it ingest in the background
-    /// (spec §7). Default off; persisted in `UserPreferences`. Read by
-    /// `Live::detach_playhead` (the single policy site).
-    pub pause_stream_while_reviewing: bool,
-
-    /// Acquisition policy: when `true` (default), playhead-driven reactive
-    /// prefetch + the anchor fast-path run as the user scrubs/seeks. When
-    /// `false` (data-saver), that automatic fetch is suppressed — explicit
-    /// range selections and the inspector's tap-to-fetch still work (spec §10).
-    /// Persisted in `UserPreferences`; read by `pump_implicit_prefetch`.
-    pub autofetch_while_scrubbing: bool,
-
     /// One-shot boot intent: when set, the app should open tethered to live as
     /// soon as a site is established. Set at boot (no deep-link time) when the
     /// first-visit site modal is open; consumed by the site modal's
@@ -135,56 +85,94 @@ pub(crate) struct AppState {
     /// (spec §7 / alignment §5 — open tethered on first visit too).
     pub start_live_on_site_select: bool,
 
-    /// User-saved weather event bookmarks.
-    pub saved_events: SavedEvents,
+    // ------------------------------------------------------------------------
+    // View and rendering state.
+    /// Visualization state (canvas, zoom/pan, product selection)
+    pub viz_state: VizState,
+    /// Layer visibility toggles
+    pub layer_state: LayerState,
+    /// GPU rendering processing options (interpolation, smoothing, etc.).
+    pub render_processing: RenderProcessing,
+    /// Per-frame render caches: camera-motion tracking for label-tier
+    /// debouncing, prev-sweep lookup memoization, and theme-gating state.
+    pub render_cache: RenderCache,
 
-    /// Aggregate network statistics from the service worker (all intercepted traffic).
-    pub network_aggregate: crate::core::NetworkAggregate,
-
-    /// Recent network requests from the service worker (ring buffer for UI log).
-    /// Bounded by [`MAX_RECENT_NETWORK_REQUESTS`].
-    pub recent_network_requests: std::collections::VecDeque<crate::core::NetworkRequest>,
-
-    /// Whether the browsing context is cross-origin isolated (SharedArrayBuffer available).
-    pub cross_origin_isolated: bool,
-
+    // ------------------------------------------------------------------------
+    // Session data — accumulated while the tab is open, not persisted.
+    /// Application status message displayed in top bar
+    pub status_message: String,
+    /// Timestamp (ms since epoch) when the status message was last set.
+    /// Used for auto-dismissal.
+    pub status_message_set_ms: f64,
+    /// Session and performance statistics
+    pub session_stats: SessionStats,
+    /// Download progress tracking for timeline ghost markers and pipeline display.
+    pub download_progress: DownloadProgress,
     /// Recent-errors ring buffer. Reporters across the codebase push
     /// into this; UI surfaces from it instead of inventing its own
     /// per-feature error indicators.
     pub errors: ErrorContext,
-
     /// Persistent worker initialization error message.
     /// When set, a non-dismissable error banner is shown in the top bar.
     pub worker_init_error: Option<String>,
-
+    /// Aggregate network statistics from the service worker (all intercepted traffic).
+    pub network_aggregate: crate::core::NetworkAggregate,
+    /// Recent network requests from the service worker (ring buffer for UI log).
+    /// Bounded by [`MAX_RECENT_NETWORK_REQUESTS`].
+    pub recent_network_requests: std::collections::VecDeque<crate::core::NetworkRequest>,
     /// National radar mosaic overlay — fetches the CONUS composite while
     /// the corresponding layer toggle is enabled.
     pub national_mosaic: crate::nexrad::NationalMosaic,
+    /// User-saved weather event bookmarks.
+    pub saved_events: SavedEvents,
 
-    /// Resolved mobile mode for the current frame. Computed by
-    /// [`AppState::refresh_mobile_mode`] from viewport width and touch history.
-    /// When true, panels collapse to the mobile chrome.
-    pub is_mobile: bool,
+    // ------------------------------------------------------------------------
+    // User preferences and settings — mirrored to `UserPreferences` (localStorage)
+    // and/or the URL. `UserPreferences::from_app_state` reads exactly these.
+    /// Theme mode selection (System, Dark, Light).
+    pub theme_mode: ThemeMode,
+    /// Whether to display times in local timezone (false = UTC).
+    pub use_local_time: bool,
+    /// Developer mode: shows perf timings, FPS, network metrics, and the COI
+    /// badge in the status bar, and enables the code paths that feed them.
+    /// Mirrored to/from the `?dev=true` URL parameter.
+    pub dev_mode: bool,
+    /// Advanced UI mode: when `false` (Basic, default for new users), the
+    /// left panel and several right-panel sections are hidden. When `true`
+    /// (Advanced), all controls are visible regardless of operational mode.
+    /// Persisted in `UserPreferences`; existing users are migrated to `true`.
+    /// Override via `?ui=basic` or `?ui=advanced`.
+    pub advanced_mode: bool,
+    /// Data-saver policy: when `true`, detaching the playhead stops the live
+    /// stream immediately rather than letting it ingest in the background
+    /// (spec §7). Default off; persisted in `UserPreferences`. Read by
+    /// `Live::detach_playhead` (the single policy site).
+    pub pause_stream_while_reviewing: bool,
+    /// Acquisition policy: when `true` (default), playhead-driven reactive
+    /// prefetch + the anchor fast-path run as the user scrubs/seeks. When
+    /// `false` (data-saver), that automatic fetch is suppressed — explicit
+    /// range selections and the inspector's tap-to-fetch still work (spec §10).
+    /// Persisted in `UserPreferences`; read by `pump_implicit_prefetch`.
+    pub autofetch_while_scrubbing: bool,
+    /// Preferred NEXRAD site chosen during first visit. `Some` means the user
+    /// has already completed the first-visit flow and this site should be used
+    /// as the default on future visits.
+    pub preferred_site: Option<String>,
+    /// Storage settings (quota, eviction targets).
+    pub storage_settings: StorageSettings,
+    /// User override for mobile mode. `None` = auto (default), `Some(true)` =
+    /// force mobile, `Some(false)` = force desktop. Persisted via preferences.
+    pub mobile_override: Option<bool>,
 
+    // ------------------------------------------------------------------------
+    // Environment and sticky session facts.
+    /// Whether the browsing context is cross-origin isolated (SharedArrayBuffer available).
+    pub cross_origin_isolated: bool,
     /// Sticky flag — set the first time any touch event is seen. Used by
     /// the auto-detection in [`AppState::refresh_mobile_mode`] so that a
     /// touch laptop (or phone rotated from portrait to landscape) doesn't
     /// flip back to desktop layout mid-session.
     pub touch_seen_ever: bool,
-
-    /// User override for mobile mode. `None` = auto (default), `Some(true)` =
-    /// force mobile, `Some(false)` = force desktop. Persisted via preferences.
-    pub mobile_override: Option<bool>,
-
-    /// Resolved desktop width tier for the current frame. Computed alongside
-    /// [`AppState::is_mobile`] in [`AppState::refresh_mobile_mode`]. Drives
-    /// progressive collapse of low-priority chrome into overflow menus so the
-    /// top/bottom bars don't overlap when the window is narrow.
-    pub width_tier: WidthTier,
-
-    /// Per-frame render caches: camera-motion tracking for label-tier
-    /// debouncing, prev-sweep lookup memoization, and theme-gating state.
-    pub render_cache: RenderCache,
 }
 
 /// Desktop horizontal-space tier, ordered narrowest → widest. Drives how much
