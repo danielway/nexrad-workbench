@@ -191,10 +191,14 @@ pub(crate) fn reduce_stop_live(
     });
 
     TransportActions {
-        // Both stop surfaces deliberately leave the worker channel alone (the
-        // shell's `stop_live_mode` is the path that also tears the channel
-        // down); preserved verbatim from the pre-intent handlers.
-        stop_channel: false,
+        // An explicit stop tears the worker channel down, matching
+        // `stop_live_mode` (the error / site-change path for the same intent).
+        // This is what separates STOP from DETACH: detaching keeps a *visible*
+        // background stream (the LIVE chip hollows and counts lag), whereas a
+        // stopped stream shows no live indicator at all — so leaving it running
+        // would download and store chunks the user asked to stop and has no way
+        // to see.
+        stop_channel: true,
         status_message: match placement {
             LiveStopPlacement::LiveEdge => Some(
                 live_mode
@@ -458,8 +462,8 @@ mod coverage_tests {
         assert!(!f.playback.time_model.is_pinned());
         // FreezeAt::Now snaps the cursor to the live edge.
         assert!((f.playback.playback_position() - 2500.0).abs() < 1e-9);
-        // The cap's stop leaves the worker channel alone.
-        assert!(!actions.stop_channel);
+        // An explicit stop tears down the stream (unlike a detach).
+        assert!(actions.stop_channel);
         assert_eq!(
             actions.status_message.as_deref(),
             Some(LiveExitReason::UserStopped.message())
@@ -495,6 +499,7 @@ mod coverage_tests {
         // FreezeAt::Keep: the playhead stays where the pin left it.
         assert!((f.playback.playback_position() - 1400.0).abs() < 1e-9);
         assert_eq!(actions.status_message, None);
-        assert!(!actions.stop_channel);
+        // Placement differs between surfaces; tearing the stream down does not.
+        assert!(actions.stop_channel);
     }
 }
