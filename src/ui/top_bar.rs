@@ -217,7 +217,7 @@ fn draw_top_bar(
                                 chrome.shortcuts_help_visible = !chrome.shortcuts_help_visible;
                             }
                             if !fit.version {
-                                render_version_link(ui);
+                                render_version_link(ui, state);
                             }
                         });
                     }
@@ -241,7 +241,7 @@ fn draw_top_bar(
                     }
 
                     if fit.version {
-                        render_version_link(ui);
+                        render_version_link(ui, state);
                     }
 
                     if fit.views {
@@ -581,7 +581,7 @@ fn decide_right_cluster(ui: &egui::Ui, advanced: bool, avail: f32) -> RightClust
 /// Version stamp — a frameless, clickable link that opens the GitHub releases
 /// page. Rendered inline in the top bar and, when space is tight, inside the
 /// overflow menu.
-fn render_version_link(ui: &mut egui::Ui) {
+fn render_version_link(ui: &mut egui::Ui, state: &mut AppState) {
     let full_version = env!("NEXRAD_VERSION_FULL");
     let display = version_display_text();
 
@@ -603,12 +603,9 @@ fn render_version_link(ui: &mut egui::Ui) {
     response.on_hover_text(format!("{} — click to view changelog", full_version));
 
     if clicked {
-        if let Some(window) = web_sys::window() {
-            let _ = window.open_with_url_and_target(
-                "https://github.com/danielway/nexrad-workbench/releases",
-                "_blank",
-            );
-        }
+        state.push_command(crate::core::Intent::OpenExternalUrl(
+            "https://github.com/danielway/nexrad-workbench/releases",
+        ));
     }
 }
 

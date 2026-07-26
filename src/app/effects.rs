@@ -35,6 +35,11 @@ impl WorkbenchApp {
                     ctx.clone(),
                 );
             }
+            Effect::OpenUrl(url) => {
+                if let Some(window) = web_sys::window() {
+                    let _ = window.open_with_url_and_target(url, "_blank");
+                }
+            }
             Effect::LocateForSite => self.begin_site_geolocation(ctx),
             Effect::GeocodeZip(zip) => self.begin_site_zip_lookup(ctx, zip),
         }

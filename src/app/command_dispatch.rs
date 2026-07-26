@@ -52,6 +52,9 @@ impl WorkbenchApp {
         use crate::core::Intent;
         match cmd {
             // ---- Site selection ---------------------------------------
+            Intent::OpenExternalUrl(url) => {
+                self.apply_effects(ctx, vec![crate::core::Effect::OpenUrl(url)])
+            }
             Intent::LocateMeForSite => {
                 self.apply_effects(ctx, vec![crate::core::Effect::LocateForSite])
             }

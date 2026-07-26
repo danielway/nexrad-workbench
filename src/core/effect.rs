@@ -58,6 +58,10 @@ pub(crate) enum Effect {
     /// lands in the site modal's own [`LocationResult`] channel, which the
     /// modal drains to pick the nearest site.
     LocateForSite,
+    /// Open an external URL in a new browser tab (the version link's
+    /// changelog). Carries the URL so the shell performs the only
+    /// `window.open` in the app.
+    OpenUrl(&'static str),
     /// Geocode a validated 5-digit US zip code (see
     /// [`decide_zip_submission`](crate::core::geocode::decide_zip_submission))
     /// and deliver the coordinates to the site modal's [`LocationResult`]

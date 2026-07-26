@@ -63,6 +63,8 @@ pub(crate) enum Intent {
     /// main loop applies them through the pure
     /// [`crate::core::diagnostics::reduce`].
     Diagnostics(crate::core::diagnostics::DiagnosticsIntent),
+    /// Open an external link (the version pill's changelog URL).
+    OpenExternalUrl(&'static str),
     /// The site modal's "Use My Location" button (and the mobile action
     /// bar's location button): open the modal pending and geolocate.
     LocateMeForSite,
