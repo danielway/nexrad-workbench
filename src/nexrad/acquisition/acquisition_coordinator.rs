@@ -7,7 +7,7 @@ use super::archive_index::ArchiveIndex;
 use super::cache_channel::CacheLoadChannel;
 use super::download::{DownloadChannel, NetworkStats};
 use super::download_queue::DownloadQueueManager;
-use crate::data::DataFacade;
+use crate::data::MainThreadStore;
 
 /// Owns the download pipeline: channels, queue, archive index.
 pub(crate) struct AcquisitionCoordinator {
@@ -20,11 +20,11 @@ pub(crate) struct AcquisitionCoordinator {
     /// Cache for archive file listings (by site/date).
     pub(crate) archive_index: ArchiveIndex,
     /// Record-based data facade.
-    pub(crate) data_facade: DataFacade,
+    pub(crate) data_facade: MainThreadStore,
 }
 
 impl AcquisitionCoordinator {
-    pub(crate) fn new(data_facade: DataFacade) -> Self {
+    pub(crate) fn new(data_facade: MainThreadStore) -> Self {
         let download_channel = DownloadChannel::new();
         let cache_load_channel = CacheLoadChannel::new();
 
@@ -43,7 +43,7 @@ impl AcquisitionCoordinator {
     }
 
     /// Get the data facade (for worker ingest, downloads, etc.).
-    pub(crate) fn facade(&self) -> &DataFacade {
+    pub(crate) fn facade(&self) -> &MainThreadStore {
         &self.data_facade
     }
 }

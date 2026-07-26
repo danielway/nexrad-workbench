@@ -5,7 +5,7 @@
 
 use super::archive_index::{current_timestamp_secs, ArchiveFileMeta, ArchiveListing};
 use super::types::{CachedScan, DownloadResult};
-use crate::data::{DataFacade, ScanCompleteness, ScanKey};
+use crate::data::{MainThreadStore, ScanCompleteness, ScanKey};
 use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
 use chrono::NaiveDate;
 use eframe::egui;
@@ -135,7 +135,7 @@ impl DownloadChannel {
         date: NaiveDate,
         file_name: String,
         timestamp: i64,
-        facade: DataFacade,
+        facade: MainThreadStore,
         elevation_filter: Option<u8>,
     ) -> bool {
         let storage_key = format!("{}_{}", site_id, timestamp);
@@ -322,7 +322,7 @@ async fn download_specific_file(
     date: NaiveDate,
     file_name: &str,
     timestamp: i64,
-    facade: DataFacade,
+    facade: MainThreadStore,
     stats: NetworkStats,
     elevation_filter: Option<u8>,
 ) -> DownloadResult {

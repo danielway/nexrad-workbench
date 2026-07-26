@@ -133,7 +133,7 @@ fn draw_mobile_top_bar(
     state: &mut AppState,
     live: &crate::subsystem::Live,
     acquisition: &crate::subsystem::Acquisition,
-    diagnostics: &mut crate::subsystem::Diagnostics,
+    diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
     diagnostics_vm: &crate::core::diagnostics::DiagnosticsVm,
     chrome: &mut crate::subsystem::Chrome,

@@ -9,7 +9,7 @@ use super::{ControlMessage, ProjectorObservation, RealtimeResult};
 use crate::core::projection::{ChunkCoord, KnownChunk, SharedProjectionEngine};
 use crate::core::StreamingFilter;
 use crate::core::StreamingPlan;
-use crate::data::facade::DataFacade;
+use crate::data::facade::MainThreadStore;
 use crate::net::retry::{
     attempt_with_timeout, compute_delay, sleep_duration, sleep_ms, Verdict, REALTIME_CHUNK_POLICY,
 };
@@ -110,7 +110,7 @@ fn volume_header_start_secs(start_chunk_bytes: &[u8]) -> Option<f64> {
 /// don't appear here, so on resume we still re-download chunks for sweeps
 /// that were interrupted mid-flight.
 async fn cached_elevations_for_scan(
-    facade: &DataFacade,
+    facade: &MainThreadStore,
     site_id: &str,
     scan_start_secs: f64,
 ) -> std::collections::HashSet<u8> {
@@ -242,7 +242,7 @@ async fn run_mid_stream_backfill(
     filter: StreamingFilter,
     iter: &mut StreamingState,
     engine: &SharedProjectionEngine,
-    facade: &DataFacade,
+    facade: &MainThreadStore,
     scan_start_secs: f64,
     loop_state: &mut LoopState,
     control_rx: &mut UnboundedReceiver<ControlMessage>,
@@ -368,7 +368,7 @@ pub(super) async fn streaming_loop(
     site_id: String,
     active: Rc<Cell<bool>>,
     stats: NetworkStats,
-    facade: DataFacade,
+    facade: MainThreadStore,
     results_tx: UnboundedSender<RealtimeResult>,
     mut observations_rx: UnboundedReceiver<ProjectorObservation>,
     mut control_rx: UnboundedReceiver<ControlMessage>,

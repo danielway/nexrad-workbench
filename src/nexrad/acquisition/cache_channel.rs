@@ -5,7 +5,7 @@
 //! for results each frame.
 
 use crate::core::{CacheLoadResult, ScanMetadata};
-use crate::data::{DataFacade, SiteId, UnixMillis};
+use crate::data::{MainThreadStore, SiteId, UnixMillis};
 use eframe::egui::Context;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -37,7 +37,12 @@ impl CacheLoadChannel {
     /// Initiates an async load of timeline metadata for a site.
     ///
     /// If a load is already in progress, this call is ignored.
-    pub(crate) fn load_site_timeline(&self, ctx: Context, facade: DataFacade, site_id: String) {
+    pub(crate) fn load_site_timeline(
+        &self,
+        ctx: Context,
+        facade: MainThreadStore,
+        site_id: String,
+    ) {
         if *self.loading.borrow() {
             log::debug!("Cache load already in progress, ignoring request");
             return;
@@ -116,7 +121,7 @@ impl CacheLoadChannel {
     }
 
     /// Clears all cached data.
-    pub(crate) fn clear_cache(&self, ctx: Context, facade: DataFacade) {
+    pub(crate) fn clear_cache(&self, ctx: Context, facade: MainThreadStore) {
         if *self.loading.borrow() {
             log::debug!("Cache operation in progress, ignoring clear request");
             return;

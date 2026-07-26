@@ -38,7 +38,7 @@ fn draw_right_panel(
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
-    diagnostics: &mut crate::subsystem::Diagnostics,
+    diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
 ) {
@@ -284,7 +284,7 @@ fn layer_checkbox(
 pub(super) fn render_layers_section(
     ui: &mut egui::Ui,
     state: &mut AppState,
-    diagnostics: &mut crate::subsystem::Diagnostics,
+    diagnostics: &crate::subsystem::Diagnostics,
     _playback: &crate::subsystem::Playback,
     derived: &crate::subsystem::Derived,
     _chrome: &mut crate::subsystem::Chrome,

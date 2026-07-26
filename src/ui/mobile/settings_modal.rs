@@ -43,7 +43,7 @@ fn draw_mobile_settings_modal(
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
-    diagnostics: &mut crate::subsystem::Diagnostics,
+    diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
 ) {
@@ -273,7 +273,7 @@ fn render_layers_body(
     ui: &mut egui::Ui,
     state: &mut AppState,
     playback: &crate::subsystem::Playback,
-    diagnostics: &mut crate::subsystem::Diagnostics,
+    diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
 ) {

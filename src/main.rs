@@ -24,7 +24,7 @@ mod state;
 mod subsystem;
 mod ui;
 
-use data::DataFacade;
+use data::MainThreadStore;
 use eframe::egui;
 use state::AppState;
 
@@ -473,7 +473,7 @@ impl WorkbenchApp {
         apply_url_params(&url_params, &mut state, &mut playback, &mut chrome);
 
         let initial_site_id = state.viz_state.site_id.clone();
-        let data_facade = DataFacade::new();
+        let data_facade = MainThreadStore::new();
         let acquisition = subsystem::Acquisition::new(data_facade.clone());
         let realtime_channel =
             nexrad::RealtimeChannel::with_stats(acquisition.coordinator.download_stats());
@@ -903,7 +903,7 @@ impl eframe::App for WorkbenchApp {
             playback: &mut self.playback,
             acquisition: &mut self.acquisition,
             chrome: &mut self.chrome,
-            diagnostics: &mut self.diagnostics,
+            diagnostics: &self.diagnostics,
             derived: &derived,
             diagnostics_vm: &diagnostics_vm,
             modals: &mut self.modals,

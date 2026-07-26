@@ -26,7 +26,7 @@
 //! `Rc<RefCell<_>>` anymore.
 
 use crate::core::StreamingFilter;
-use crate::data::facade::DataFacade;
+use crate::data::facade::MainThreadStore;
 use crate::nexrad::acquisition::download::NetworkStats;
 use eframe::egui;
 use futures_channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
@@ -259,7 +259,7 @@ impl RealtimeChannel {
         &self,
         ctx: egui::Context,
         site_id: String,
-        facade: DataFacade,
+        facade: MainThreadStore,
         engine: crate::core::projection::SharedProjectionEngine,
     ) {
         self.active.set(true);

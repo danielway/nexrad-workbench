@@ -1,5 +1,5 @@
 //! Storage-quota policy: every byte threshold the cache layer consults,
-//! plus the pure decision behind `DataFacade::check_and_evict`.
+//! plus the pure decision behind `MainThreadStore::check_and_evict`.
 //!
 //! The user-configurable cache size itself lives in `StorageSettings`;
 //! this module owns the *rules* applied around it so worker ingest, the
@@ -63,7 +63,7 @@ pub struct EvictionDecision {
     pub warning: Option<QuotaWarning>,
 }
 
-/// Pure decision for `DataFacade::check_and_evict`: evict when the cache
+/// Pure decision for `MainThreadStore::check_and_evict`: evict when the cache
 /// exceeds the app-level quota OR the browser's own storage is nearly
 /// full (the latter also produces a user-facing warning). When the
 /// browser estimate is unavailable only the app-level rule applies.

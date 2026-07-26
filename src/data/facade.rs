@@ -1,6 +1,23 @@
-//! Data facade providing a unified interface for IndexedDB storage.
+//! The main thread's handle on the IndexedDB cache.
 //!
-//! Wraps `IndexedDbStore` with cache eviction logic.
+//! Storage has exactly **two sanctioned entry points**, because the two
+//! contexts that touch IndexedDB have different lifetimes:
+//!
+//! 1. **[`MainThreadStore`] (this module)** — the main thread's read + cache
+//!    -management surface: availability lookups, timeline listings, size
+//!    accounting, wipe, and quota-driven eviction (the policy itself is the
+//!    pure [`decide_eviction`]). It owns no write path by design.
+//! 2. **`WORKER_IDB`** (a thread-local `IndexedDbStore` in
+//!    `nexrad::decode::worker_api`) — the worker's own handle. Ingest writes
+//!    (`upsert_scan`) and sweep-blob reads happen there, against a connection
+//!    that stays open for the worker's lifetime; routing them through a
+//!    main-thread object would mean re-opening the database per message and
+//!    crossing the `postMessage` boundary for every blob.
+//!
+//! Both wrap the same [`IndexedDbStore`] primitives, so the transaction rules
+//! (see `crate::data::indexeddb`) hold identically on either side. This type
+//! was previously named `DataFacade`, which implied it fronted all database
+//! traffic; it never did.
 
 use crate::data::indexeddb::{DataError, IndexedDbStore};
 use crate::data::keys::*;
@@ -9,26 +26,26 @@ use crate::data::quota::{decide_eviction, QuotaPolicy};
 /// Result type for cache operations.
 pub type CacheResult<T> = Result<T, DataError>;
 
-/// Data facade for accessing radar data in IndexedDB.
+/// The main thread's read + eviction handle on the radar cache.
 #[derive(Clone)]
-pub struct DataFacade {
+pub struct MainThreadStore {
     store: IndexedDbStore,
 }
 
-impl Default for DataFacade {
+impl Default for MainThreadStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl DataFacade {
+impl MainThreadStore {
     pub fn new() -> Self {
         Self {
             store: IndexedDbStore::new(),
         }
     }
 
-    /// Build a facade over a specific store. Only used from `tests/idb.rs`
+    /// Build a handle over a specific store. Only used from `tests/idb.rs`
     /// (which links the lib target) to run against a throwaway database —
     /// hence dead in the bin.
     #[doc(hidden)]

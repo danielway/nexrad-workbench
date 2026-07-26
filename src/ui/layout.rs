@@ -29,12 +29,19 @@
 //!
 //! ## Borrow contract
 //!
-//! [`LayoutCtx`] carries `&mut` references to every subsystem each panel
-//! or modal might touch. Each `Layer::render` impl destructures the ctx
-//! and reborrows only the fields it needs — Rust's disjoint-field-borrow
-//! support keeps this sound. Adding a new field to `LayoutCtx` is the
-//! only friction point; it ripples nowhere because impls already
-//! destructure by name.
+//! [`LayoutCtx`] carries one reference per subsystem each panel or modal
+//! might touch, and the mutability of each field is a *proof*, not a
+//! convenience: a field is `&` exactly when the compiler has verified
+//! that no layer mutates it. Each `Layer::render` impl destructures the
+//! ctx and reborrows only the fields it needs — Rust's
+//! disjoint-field-borrow support keeps this sound. Adding a new field to
+//! `LayoutCtx` is the only friction point; it ripples nowhere because
+//! impls already destructure by name.
+//!
+//! Narrowing a field from `&mut` to `&` is therefore the cheapest
+//! available behavior audit: if it still compiles, the layers were
+//! already read-only for that subsystem. The surviving `&mut` fields are
+//! documented on [`LayoutCtx`] with the mutation that keeps them.
 
 use super::alerts_modal::AlertsModalsLayer;
 use super::bottom_panel::BottomPanelLayer;
@@ -75,23 +82,45 @@ pub(crate) enum LayerKind {
 
 /// Per-frame context every layer can read.
 ///
-/// Mutable references throughout because layers update subsystem state
-/// (chrome toggles, playback transport, live filter sync). Disjoint
-/// field access is the borrow contract — impls destructure the ctx and
-/// reborrow individual fields.
+/// Field mutability is load-bearing documentation. The `&` fields are
+/// compiler-proven read-only across all 16 layers; each `&mut` field
+/// names the mutation that still holds it. Disjoint field access is the
+/// borrow contract — impls destructure the ctx and reborrow individual
+/// fields.
 pub(crate) struct LayoutCtx<'a> {
     pub ctx: &'a egui::Context,
+    /// Still `&mut`: layers push [`crate::core::Intent`]s onto the command
+    /// queue via `state.push_command`, and a few widgets remain two-way
+    /// bound to `viz_state`.
     pub state: &'a mut AppState,
+    /// Read-only: the scan index is projected, never edited, by the UI.
     pub timeline: &'a Timeline,
+    /// Still `&mut`: every seek/jog gesture calls `Live::detach_playhead`,
+    /// which mutates `mode_state` and can stop the worker channel
+    /// (playback controls, timeline interaction, mobile scrubber,
+    /// scan inspector, mobile tabs).
     pub live: &'a mut Live,
+    /// Still `&mut`: transport widgets write `playback.state` directly —
+    /// speed selection, selection bounds, and view centering.
     pub playback: &'a mut Playback,
+    /// Still `&mut`: the bottom-panel drawer resize handle writes
+    /// `acquisition.state.drawer_height`, and the range-download modal arms
+    /// `acquisition.selection_fetch_target`.
     pub acquisition: &'a mut Acquisition,
+    /// Still `&mut`: chrome *is* the UI's own visibility state — every modal
+    /// open/close flag, sidebar toggle, and mobile tab selection is written
+    /// here by the layer that owns the widget.
     pub chrome: &'a mut Chrome,
-    pub diagnostics: &'a mut Diagnostics,
+    /// Read-only: layers render alert/mPING/network state and emit
+    /// [`crate::core::diagnostics::DiagnosticsIntent`]s rather than writing it.
+    pub diagnostics: &'a Diagnostics,
     pub derived: &'a Derived,
     /// Read-only diagnostics projection (severity-sorted alerts in view) for the
     /// alerts chip + list modal — "view-model out" for the P2 reference slice.
     pub diagnostics_vm: &'a crate::core::diagnostics::DiagnosticsVm,
+    /// Still `&mut`, legitimately: these are transient egui form buffers
+    /// (site filter/zip entry, event form fields, mPING key input) that are
+    /// two-way bound to widgets and deliberately live outside `AppState`.
     pub modals: &'a mut ModalStates,
 }
 

@@ -671,15 +671,15 @@ async fn evict_to_size_no_op_when_already_under_target() {
 }
 
 // ---------------------------------------------------------------------------
-// DataFacade::check_and_evict (decision → execution orchestration)
+// MainThreadStore::check_and_evict (decision → execution orchestration)
 // ---------------------------------------------------------------------------
 
 #[wasm_bindgen_test]
 async fn check_and_evict_enforces_app_quota_over_real_db() {
-    use nexrad_workbench::data::facade::DataFacade;
+    use nexrad_workbench::data::facade::MainThreadStore;
 
     let store = fresh_store();
-    let facade = DataFacade::with_store(store.clone());
+    let facade = MainThreadStore::with_store(store.clone());
     let oldest = scan_key("KDMX", 1700000000000);
     let newest = scan_key("KDMX", 1700000060000);
     store

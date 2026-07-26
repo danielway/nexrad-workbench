@@ -21,7 +21,7 @@
 //! left visible so the move can happen incrementally.
 
 use crate::core::acquisition::PrefetchSettle;
-use crate::data::DataFacade;
+use crate::data::MainThreadStore;
 use crate::nexrad::AcquisitionCoordinator;
 use crate::state::AcquisitionState;
 
@@ -70,7 +70,7 @@ impl Acquisition {
     /// `data_facade` is shared with whatever else needs to talk to
     /// IndexedDB (workers, eviction tasks); the coordinator clones it
     /// per request as it dispatches downloads.
-    pub(crate) fn new(data_facade: DataFacade) -> Self {
+    pub(crate) fn new(data_facade: MainThreadStore) -> Self {
         Self {
             state: AcquisitionState::default(),
             coordinator: AcquisitionCoordinator::new(data_facade),

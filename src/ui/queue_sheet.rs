@@ -73,7 +73,7 @@ fn shows_in_queue_sheet(kind: &OperationKind) -> bool {
 fn draw_queue_sheet(
     ctx: &egui::Context,
     state: &mut AppState,
-    acquisition: &mut Acquisition,
+    acquisition: &Acquisition,
     chrome: &mut Chrome,
 ) {
     if super::modal_helper::modal_backdrop(ctx, "queue_sheet_backdrop", 150) {

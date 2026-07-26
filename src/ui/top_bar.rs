@@ -40,9 +40,9 @@ fn draw_top_bar(
     ctx: &egui::Context,
     state: &mut AppState,
     _timeline: &crate::subsystem::Timeline,
-    live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
-    diagnostics: &mut crate::subsystem::Diagnostics,
+    live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
+    diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
     diagnostics_vm: &crate::core::diagnostics::DiagnosticsVm,
     chrome: &mut crate::subsystem::Chrome,
@@ -842,7 +842,7 @@ fn format_age(age_ms: f64) -> String {
 /// preserved.
 pub(super) fn render_mode_badge(
     ui: &mut egui::Ui,
-    live: &mut crate::subsystem::Live,
+    live: &crate::subsystem::Live,
     playback: &crate::subsystem::Playback,
 ) {
     let mode = live.app_mode;
