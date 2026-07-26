@@ -18,6 +18,61 @@
 //! The `Compaction` ladder lets a narrow readout drop seconds, then the zone
 //! suffix, rather than dropping the time entirely — the time is primary.
 
+/// A timestamp broken into calendar + clock components in one zone.
+///
+/// The zone branch (`js_sys::Date` for local, chrono for UTC) used to be
+/// re-implemented at every site that wanted a 24-hour or ISO-ish readout —
+/// canvas overlays, the alerts modal, the saved-events list. Extracting the
+/// split leaves those sites as a single `format!` over these fields.
+pub(crate) struct TimeParts {
+    pub year: i32,
+    /// 1-based, unlike `Date::get_month`.
+    pub month: u32,
+    pub day: u32,
+    pub hour: u32,
+    pub minute: u32,
+    pub second: u32,
+    pub millis: u32,
+}
+
+/// Split `ts` (Unix seconds, sub-second ok) into components, in the user's
+/// local zone or UTC. Local goes through the browser so DST is the browser's
+/// problem; UTC goes through chrono so it stays deterministic under test.
+pub(crate) fn parts(ts: f64, use_local: bool) -> TimeParts {
+    if use_local {
+        let d = js_sys::Date::new_0();
+        d.set_time(ts * 1000.0);
+        TimeParts {
+            year: d.get_full_year() as i32,
+            month: d.get_month() + 1,
+            day: d.get_date(),
+            hour: d.get_hours(),
+            minute: d.get_minutes(),
+            second: d.get_seconds(),
+            millis: d.get_milliseconds(),
+        }
+    } else {
+        use chrono::{Datelike, TimeZone, Timelike, Utc};
+        let secs = ts.floor() as i64;
+        let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
+        // A timestamp outside chrono's range can't be rendered; fall back to
+        // the epoch rather than blanking a readout.
+        let dt = Utc
+            .timestamp_opt(secs, 0)
+            .single()
+            .unwrap_or_else(|| Utc.timestamp_opt(0, 0).unwrap());
+        TimeParts {
+            year: dt.year(),
+            month: dt.month(),
+            day: dt.day(),
+            hour: dt.hour(),
+            minute: dt.minute(),
+            second: dt.second(),
+            millis,
+        }
+    }
+}
+
 /// How aggressively to compact a primary clock readout. Higher tiers shed
 /// detail (seconds, then the zone suffix) so the time survives at narrow widths
 /// instead of being demoted out of the bar.
@@ -130,6 +185,43 @@ pub(crate) fn format_updated_ago(age_secs: f64) -> String {
     } else {
         let d = (age_secs / 86_400.0).floor() as u32;
         format!("updated {d}d ago")
+    }
+}
+
+#[cfg(test)]
+mod parts_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // Node runs with TZ=UTC, so the local and UTC branches agree there; these
+    // pin the UTC branch's arithmetic (the deterministic half).
+    #[wasm_bindgen_test]
+    fn utc_parts_split_a_known_instant() {
+        // 2023-11-14T22:13:20.000Z
+        let p = parts(1_700_000_000.0, false);
+        assert_eq!((p.year, p.month, p.day), (2023, 11, 14));
+        assert_eq!((p.hour, p.minute, p.second), (22, 13, 20));
+        assert_eq!(p.millis, 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn utc_parts_carry_sub_second_millis() {
+        let p = parts(1_700_000_000.25, false);
+        assert_eq!(p.second, 20);
+        assert_eq!(p.millis, 250);
+    }
+
+    #[wasm_bindgen_test]
+    fn month_is_one_based() {
+        // Epoch is January — 1, not the JS Date convention of 0.
+        assert_eq!(parts(0.0, false).month, 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn pre_epoch_timestamps_still_split() {
+        // Negative seconds are valid; the readout must not blank.
+        let p = parts(-1.0, false);
+        assert_eq!(p.year, 1969);
     }
 }
 

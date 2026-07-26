@@ -647,87 +647,29 @@ fn compute_sweep_line_azimuth(
 }
 
 pub(super) fn format_time_short(ts: f64, use_local: bool) -> String {
-    if use_local {
-        let d = js_sys::Date::new_0();
-        d.set_time(ts * 1000.0);
-        format!(
-            "{:02}:{:02}:{:02}.{:03}",
-            d.get_hours(),
-            d.get_minutes(),
-            d.get_seconds(),
-            d.get_milliseconds()
-        )
-    } else {
-        use chrono::{TimeZone, Timelike, Utc};
-        let secs = ts.floor() as i64;
-        let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
-        match Utc.timestamp_opt(secs, millis * 1_000_000) {
-            chrono::LocalResult::Single(dt) => {
-                format!(
-                    "{:02}:{:02}:{:02}.{:03}",
-                    dt.hour(),
-                    dt.minute(),
-                    dt.second(),
-                    millis
-                )
-            }
-            _ => format!("{:.0}", ts),
-        }
-    }
+    let p = super::time_format::parts(ts, use_local);
+    format!(
+        "{:02}:{:02}:{:02}.{:03}",
+        p.hour, p.minute, p.second, p.millis
+    )
 }
 
 pub(super) fn format_unix_timestamp(ts: f64, use_local: bool) -> String {
-    if use_local {
-        let d = js_sys::Date::new_0();
-        d.set_time(ts * 1000.0);
-        let h = d.get_hours();
-        let m = d.get_minutes();
-        let s = d.get_seconds();
-        let ms = d.get_milliseconds();
-        format!("{h:02}:{m:02}:{s:02}.{ms:03} Local")
-    } else {
-        use chrono::{TimeZone, Utc};
-        let secs = ts.floor() as i64;
-        let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
-        match Utc.timestamp_opt(secs, millis * 1_000_000) {
-            chrono::LocalResult::Single(dt) => dt.format("%H:%M:%S%.3f UTC").to_string(),
-            _ => format!("{:.3}s", ts),
-        }
-    }
+    let p = super::time_format::parts(ts, use_local);
+    let zone = if use_local { "Local" } else { "UTC" };
+    format!(
+        "{:02}:{:02}:{:02}.{:03} {zone}",
+        p.hour, p.minute, p.second, p.millis
+    )
 }
 
 pub(super) fn format_unix_timestamp_with_date(ts: f64, use_local: bool) -> String {
-    if use_local {
-        let d = js_sys::Date::new_0();
-        d.set_time(ts * 1000.0);
-        format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
-            d.get_full_year(),
-            d.get_month() + 1,
-            d.get_date(),
-            d.get_hours(),
-            d.get_minutes(),
-            d.get_seconds(),
-            d.get_milliseconds()
-        )
-    } else {
-        use chrono::{Datelike, TimeZone, Timelike, Utc};
-        let secs = ts.floor() as i64;
-        let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
-        match Utc.timestamp_opt(secs, millis * 1_000_000) {
-            chrono::LocalResult::Single(dt) => format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03} UTC",
-                dt.year(),
-                dt.month(),
-                dt.day(),
-                dt.hour(),
-                dt.minute(),
-                dt.second(),
-                millis
-            ),
-            _ => format!("{:.3}s", ts),
-        }
-    }
+    let p = super::time_format::parts(ts, use_local);
+    let suffix = if use_local { "" } else { " UTC" };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}{suffix}",
+        p.year, p.month, p.day, p.hour, p.minute, p.second, p.millis
+    )
 }
 
 pub(super) fn format_age_compact(now_secs: f64, ts_secs: f64) -> Option<String> {

@@ -688,22 +688,11 @@ fn navigate_to_event(
 
 /// Format a timestamp for display in the events list.
 fn format_event_time(ts: f64, use_local: bool) -> String {
-    if use_local {
-        let d = js_sys::Date::new_0();
-        d.set_time(ts * 1000.0);
-        format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}",
-            d.get_full_year(),
-            d.get_month() + 1,
-            d.get_date(),
-            d.get_hours(),
-            d.get_minutes(),
-        )
-    } else {
-        use chrono::{TimeZone, Utc};
-        let dt = Utc.timestamp_opt(ts as i64, 0).unwrap();
-        dt.format("%Y-%m-%d %H:%M").to_string()
-    }
+    let p = super::time_format::parts(ts, use_local);
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        p.year, p.month, p.day, p.hour, p.minute
+    )
 }
 
 /// Get a distinguishing color for an event based on its ID.

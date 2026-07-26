@@ -351,14 +351,10 @@ fn truncate(s: &str, max: usize) -> String {
 
 fn format_absolute(ts_secs: f64) -> String {
     // Show as local date-time; the user can mentally convert if needed.
-    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ts_secs * 1000.0));
+    let p = super::time_format::parts(ts_secs, true);
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02} local",
-        d.get_full_year(),
-        d.get_month() + 1,
-        d.get_date(),
-        d.get_hours(),
-        d.get_minutes(),
+        p.year, p.month, p.day, p.hour, p.minute
     )
 }
 
