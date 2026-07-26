@@ -40,6 +40,7 @@ pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;
 pub(crate) mod timeline_view;
 pub(crate) mod timing;
+pub(crate) mod worker_decoded;
 pub(crate) mod worker_ingest;
 
 #[allow(unused_imports)]

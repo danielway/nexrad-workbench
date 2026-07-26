@@ -6,10 +6,8 @@
 //! plus the small helpers (`set_active_scan`, `advance_active_scan_chunk`,
 //! `clear_active_scan`) that bridge worker output and `RenderCoordinator`.
 
-use crate::core::playback_manager::{sweep_cache_key, CachedSweepData};
 use crate::core::{
-    CacheLoadResult, ChunkIngestResult, DecodeResult, IngestResult, RadarTimeline, SweepIdentity,
-    VolumeData,
+    CacheLoadResult, ChunkIngestResult, DecodeResult, IngestResult, RadarTimeline, VolumeData,
 };
 use crate::{data, nexrad, WorkbenchApp, MAX_SCAN_AGE_SECS};
 use eframe::egui;
@@ -283,98 +281,45 @@ impl WorkbenchApp {
     }
 
     fn handle_decoded_outcome(&mut self, result: DecodeResult) {
+        use crate::core::worker_decoded::{reduce_decoded, DecodedEnv, DecodedSlices};
+
         // Processing complete → transition to rendering.
         self.state.session_stats.pipeline.mark_processing_done();
         self.state.session_stats.pipeline.rendering = true;
 
-        log::debug!(
-            "Decode complete: {}x{} (az x gates), {} radials, product={}, {:.0}ms",
-            result.azimuth_count,
-            result.gate_count,
-            result.radial_count,
-            result.product,
-            result.total_ms,
-        );
+        // Assemble the frame context and run the pure reducer. All decisions
+        // (current-scan gate, cache entry, pending-prev clearing, display
+        // angle, ghost retention, overlay gate) happen in `reduce_decoded`;
+        // the shell executes the described actions below — the GPU upload
+        // block itself stays here.
+        let actions = {
+            let env = DecodedEnv {
+                dev_mode: self.state.dev_mode,
+                site_id: &self.state.viz_state.site_id,
+                playback_position: self.playback.state.playback_position(),
+                elevation_selection: &self.state.viz_state.elevation_selection,
+                product: self.state.viz_state.product,
+                max_scan_age_secs: MAX_SCAN_AGE_SECS,
+                live_cut: self.live_render_sources(),
+                sweep_animation: self.state.effective_sweep_animation(&self.playback.state),
+                storm_cells_visible: self.state.viz_state.storm_cells_visible,
+                in_flight_scans: &self.state.download_progress.in_flight_scans,
+                pending_scans_empty: self.state.download_progress.pending_scans.is_empty(),
+            };
+            let slices = DecodedSlices {
+                playback_manager: &mut self.render.playback_manager,
+            };
+            reduce_decoded(env, slices, &self.timeline.scans, &result)
+        };
 
-        if self.state.dev_mode {
-            self.state.session_stats.record_render_time(result.total_ms);
+        // Execute the described actions in the struct's field order.
+        if let Some(ms) = actions.record_render_time {
+            self.state.session_stats.record_render_time(ms);
         }
 
-        // Cache decoded data for stateless sweep animation
-        let result_sweep_id = sweep_cache_key(
-            &result.context.scan_key.to_storage_key(),
-            result.context.elevation_number,
-            &result.product,
-        );
-        self.render.playback_manager.cache_sweep(
-            result_sweep_id.clone(),
-            CachedSweepData {
-                gate_values: result.gate_values.clone(),
-                azimuths: result.azimuths.clone(),
-                azimuth_count: result.azimuth_count,
-                gate_count: result.gate_count,
-                first_gate_range_km: result.first_gate_range_km,
-                gate_interval_km: result.gate_interval_km,
-                max_range_km: result.max_range_km,
-                offset: result.offset,
-                scale: result.scale,
-                azimuth_spacing_deg: result.azimuth_spacing_deg,
-                radial_times: result.radial_times.clone(),
-                product: result.product.clone(),
-            },
-        );
-
-        // Upload decoded data to GPU renderer — but only if this
-        // result is for the currently displayed scan. Background
-        // prev-sweep decodes are cached but not uploaded here;
-        // sync_prev_sweep_texture picks them up next frame.
-        // Only upload to the primary GPU texture if this result
-        // matches what advance_playback intended: same scan key AND
-        // same elevation number. Without the elevation check, SAILS
-        // VCPs (duplicate 0.5° at elev 1 and 2) cause oscillation
-        // where prefetch/sync requests fight the main render path.
-        //
-        // Re-run the resolver against current playback state and compare
-        // identities: the result is for the main slot iff its identity
-        // exactly matches what the resolver would request right now.
-        // Stale results from rapid clicks or in-flight prefetches fail
-        // this check and stay cached (for prev-sweep upload) without
-        // clobbering the main GPU texture.
-        let result_identity = SweepIdentity::new(
-            result.context.scan_key.clone(),
-            result.context.elevation_number,
-            result.product.clone(),
-        );
-        // The result is for the main slot iff the unified resolver would
-        // currently ask for exactly this cached sweep. When live is collecting
-        // this cut the resolver returns `LivePartial`, so a cached `Decoded`
-        // for it is *not* current and stays cached for prev-sweep use — it
-        // never clobbers the live partial. This precedence replaces the old
-        // `skip_gpu_upload = is_active()` mode flag: completed cached cuts now
-        // upload during live, the actively-collecting cut does not.
-        let desired = crate::core::playback_manager::resolve_desired_display(
-            &self.state.viz_state.site_id,
-            self.playback.state.playback_position(),
-            &self.state.viz_state.elevation_selection,
-            self.state.viz_state.product,
-            &self.timeline.scans,
-            MAX_SCAN_AGE_SECS,
-            self.live_render_sources(),
-        );
-        let is_current_scan = desired
-            == crate::core::playback_manager::DesiredDisplay::Cached(result_identity.clone());
-        if self.state.effective_sweep_animation(&self.playback.state) && !is_current_scan {
-            log::debug!("[sweep-anim] cached bg decode: {}", result_sweep_id);
-            // Clear pending tracker so sync_prev_sweep_texture can load from cache
-            if self.render.playback_manager.pending_prev_sweep_key() == Some(&result_sweep_id) {
-                self.render
-                    .playback_manager
-                    .set_pending_prev_sweep_key(None);
-            }
-        }
         let t_gpu = web_time::Instant::now();
         let mut gpu_upload_succeeded = false;
-        if is_current_scan {
+        if actions.upload_to_gpu {
             if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
                 if let Ok(mut r) = renderer.lock() {
                     r.update_data(
@@ -391,12 +336,12 @@ impl WorkbenchApp {
                         result.azimuth_spacing_deg,
                         &result.radial_times,
                     );
-                    r.set_current_sweep_id(Some(result_sweep_id));
+                    r.set_current_sweep_id(Some(actions.gpu_sweep_id));
                     r.update_color_table(gl, &result.product);
                     gpu_upload_succeeded = true;
 
                     // Run storm cell detection if enabled
-                    if self.state.viz_state.storm_cells_visible {
+                    if actions.run_storm_cells {
                         self.state.viz_state.detected_storm_cells = r.detect_storm_cells(
                             self.state.viz_state.center_lat,
                             self.state.viz_state.center_lon,
@@ -408,34 +353,12 @@ impl WorkbenchApp {
         }
         let gpu_upload_ms = t_gpu.elapsed().as_secs_f64() * 1000.0;
 
-        // Capture the new on-GPU main-slot sweep identity. The
-        // *previous-slot* identity is owned by `sync_prev_sweep_texture`
-        // (archive) or `handle_live_decoded_outcome`'s promote branch
-        // (live) — those represent what's in the prev-sweep GPU texture,
-        // which is the time-ordered prior sweep, NOT the prior main upload.
-        // Don't conflate the two: scrubbing across non-adjacent times
-        // would otherwise mis-mark the timeline previous border.
-        // Display angle for the cut: prefer the VCP target ("commanded")
-        // angle so labels read 0.5° rather than 0.44° (the encoder
-        // average wobbles a few hundredths of a degree per spin).
-        let display_angle = self
-            .timeline
-            .scans
-            .find_scan_at_timestamp(result.context.scan_key.scan_start.as_secs_f64())
-            .and_then(|scan| scan.target_elevation_angle(result.context.elevation_number))
-            .unwrap_or(result.mean_elevation);
-
         if gpu_upload_succeeded {
-            self.state.viz_state.displayed = Some(crate::core::DisplayedSweep {
-                identity: result_identity.clone(),
-                start_time: result.sweep_start_secs,
-                end_time: result.sweep_end_secs,
-                elevation_deg: display_angle,
-            });
+            self.state.viz_state.displayed = actions.displayed_on_upload;
         }
 
         // Store detailed render timing for the detail modal (dev mode only).
-        if self.state.dev_mode {
+        if actions.record_render_detail {
             self.state.session_stats.last_render_detail = Some(crate::state::RenderTimingDetail {
                 fetch_ms: result.fetch_ms,
                 deser_ms: result.deser_ms,
@@ -447,189 +370,98 @@ impl WorkbenchApp {
         // GPU upload complete.
         self.state.session_stats.pipeline.mark_render_done();
 
-        // Remove this scan from in-flight ghost tracking. The queue is
-        // keyed by archive-derived i64 seconds; truncate the result's
-        // scan-start (millis) at the same boundary.
-        let result_scan_start_i64 = result.context.scan_key.scan_start.as_secs();
         self.state
             .download_progress
             .in_flight_scans
-            .retain(|&(start, _)| start != result_scan_start_i64);
-        // If no more in-flight or pending, fully clear progress.
-        if self.state.download_progress.in_flight_scans.is_empty()
-            && self.state.download_progress.pending_scans.is_empty()
-        {
+            .retain(|&(start, _)| start != actions.remove_in_flight_scan_start);
+        if actions.clear_download_progress {
             self.state.download_progress.clear();
         }
 
-        // Refine canvas overlay with precise decoded data
-        if result.sweep_start_secs > 0.0 {
-            self.update_overlay_from_sweep(
-                result.sweep_start_secs,
-                result.sweep_end_secs,
-                display_angle,
-            );
+        if let Some((start, end, angle)) = actions.update_overlay {
+            self.update_overlay_from_sweep(start, end, angle);
         }
     }
 
     fn handle_live_decoded_outcome(&mut self, result: DecodeResult) {
-        log::debug!(
-            "Live decode: {}x{}, {} radials, {}, {:.0}ms",
-            result.azimuth_count,
-            result.gate_count,
-            result.radial_count,
-            result.product,
-            result.total_ms,
-        );
+        use crate::core::worker_decoded::{
+            reduce_live_decoded, reduce_live_decoded_azimuths, LiveDecodedEnv,
+        };
 
-        // While the playhead is detached (browsing the archive with the
-        // stream ingesting in the background), the canvas belongs to the
-        // scrubbed position — skip the GPU upload, `displayed` mutation,
-        // and overlay refresh. The azimuth bookkeeping below still runs so
-        // sweep compositing is correct the instant the user re-pins.
-        let playhead_attached = !self.live.is_detached(&self.playback.state);
-
-        // VCP target angle for the cut (mirrors archived path).
-        let display_angle = self
-            .live
-            .radar_model
-            .volume
-            .as_ref()
-            .and_then(|v| v.target_elevation_angle(result.context.elevation_number))
-            .unwrap_or(result.mean_elevation);
-
-        if let (true, Some(ref renderer), Some(ref gl)) =
-            (playhead_attached, &self.gpu.gpu, &self.gpu.gl)
-        {
-            if let Ok(mut r) = renderer.lock() {
-                // Build a live sweep ID so we can detect elevation transitions
-                let live_elev = result.context.elevation_number;
-                let live_sweep_id = format!("live|{}", live_elev);
-
-                // If the current texture has data from a different sweep
-                // (complete or different live elevation), promote it to
-                // previous so it becomes the background for compositing
-                // partial data. The `should_promote` branch below
-                // (post-update_data) snapshots `displayed` into
-                // `previous_displayed`, which is the canonical source for
-                // overlay/timeline prev info.
-                let should_promote = r.current_sweep_id().is_some_and(|id| id != live_sweep_id);
-                if should_promote {
-                    r.promote_current_to_previous(gl);
-                }
-
-                r.update_data(
-                    gl,
-                    &result.azimuths,
-                    &result.gate_values,
-                    result.azimuth_count,
-                    result.gate_count,
-                    result.first_gate_range_km,
-                    result.gate_interval_km,
-                    result.max_range_km,
-                    result.offset,
-                    result.scale,
-                    result.azimuth_spacing_deg,
-                    &result.radial_times,
-                );
-                r.set_current_sweep_id(Some(live_sweep_id));
-                r.update_color_table(gl, &result.product);
-
-                // Capture the live on-GPU identity. `should_promote` flags
-                // an elevation transition within the live volume — only at
-                // those boundaries is the prior `displayed` semantically a
-                // *different* sweep, so we only roll it into
-                // `previous_displayed` then. Repeated partial-sweep uploads
-                // for the *same* elevation overwrite `displayed` in place.
-                let new_displayed = crate::core::DisplayedSweep {
-                    identity: SweepIdentity::new(
-                        result.context.scan_key.clone(),
-                        result.context.elevation_number,
-                        result.product.clone(),
-                    ),
-                    start_time: result.sweep_start_secs,
-                    end_time: result.sweep_end_secs,
-                    elevation_deg: display_angle,
-                };
-                if should_promote {
-                    let prior = self.state.viz_state.displayed.replace(new_displayed);
-                    self.state.viz_state.previous_displayed = prior;
-                } else {
-                    self.state.viz_state.displayed = Some(new_displayed);
-                }
-
-                // Re-run storm cell detection on the freshly-uploaded live
-                // sweep so the overlay tracks the incoming chunks rather
-                // than freezing until the user toggles the feature.
-                if self.state.viz_state.storm_cells_visible {
-                    self.state.viz_state.detected_storm_cells = r.detect_storm_cells(
-                        self.state.viz_state.center_lat,
-                        self.state.viz_state.center_lon,
-                        self.state.viz_state.storm_cell_threshold_dbz,
-                    );
-                }
-            }
-        }
-
-        // Update overlay staleness so the age counter reflects
-        // the most recently received live data.
-        if playhead_attached && result.sweep_end_secs > 0.0 {
-            self.update_overlay_from_sweep(
-                result.sweep_start_secs,
-                result.sweep_end_secs,
-                display_angle,
-            );
-        }
-
-        // Store the chronological azimuth range for sweep compositing.
-        // Must use chronological first/last (from radial timestamps), NOT
-        // sorted min/max. Once a sweep wraps past 0°, the sorted range
-        // spans ~360° and the shader thinks the entire circle has current
-        // data, hiding the previous sweep.
-        if !result.azimuths.is_empty() {
-            // Chronological first = sweep start azimuth (set once per sweep).
-            // Chronological last = most recent radial's azimuth from the live state.
-            if self.live.mode_state.sweep_start_azimuth.is_none() {
-                // First live decode for this sweep: use the earliest radial
-                // by collection time as the sweep start.
-                let first_az = if !result.radial_times.is_empty() {
-                    let min_time_idx = result
-                        .radial_times
-                        .iter()
-                        .enumerate()
-                        .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-                    result.azimuths[min_time_idx]
-                } else {
-                    result.azimuths[0]
-                };
-                self.live.mode_state.sweep_start_azimuth = Some(first_az);
-            }
-
-            // The trailing edge of received data: latest radial by collection time.
-            let last_az = if !result.radial_times.is_empty() {
-                let max_time_idx = result
-                    .radial_times
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                    .map(|(i, _)| i)
-                    .unwrap_or(result.azimuths.len() - 1);
-                result.azimuths[max_time_idx]
-            } else {
-                *result.azimuths.last().unwrap()
+        // Phase 1: display decisions. The GPU renderer's current sweep id
+        // (the promote decision's input) is read here and passed in as env.
+        let mut actions = {
+            let gpu_current_sweep_id = self.gpu.gpu.as_ref().and_then(|renderer| {
+                renderer
+                    .lock()
+                    .ok()
+                    .and_then(|r| r.current_sweep_id().map(str::to_string))
+            });
+            let env = LiveDecodedEnv {
+                playhead_attached: !self.live.is_detached(&self.playback.state),
+                live_volume: self.live.radar_model.volume.as_ref(),
+                gpu_current_sweep_id,
+                storm_cells_visible: self.state.viz_state.storm_cells_visible,
             };
+            reduce_live_decoded(env, &result)
+        };
 
-            let first_az = self.live.mode_state.sweep_start_azimuth.unwrap_or(0.0);
-            log::debug!(
-                "Live azimuth range: chrono_first={:.1} chrono_last={:.1} count={}",
-                first_az,
-                last_az,
-                result.azimuths.len(),
-            );
-            self.live.mode_state.live_data_azimuth_range = Some((first_az, last_az));
+        // Execute the described actions: the GPU upload block stays here.
+        if actions.upload_to_gpu {
+            if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
+                if let Ok(mut r) = renderer.lock() {
+                    if actions.promote_prev_texture {
+                        r.promote_current_to_previous(gl);
+                    }
+
+                    r.update_data(
+                        gl,
+                        &result.azimuths,
+                        &result.gate_values,
+                        result.azimuth_count,
+                        result.gate_count,
+                        result.first_gate_range_km,
+                        result.gate_interval_km,
+                        result.max_range_km,
+                        result.offset,
+                        result.scale,
+                        result.azimuth_spacing_deg,
+                        &result.radial_times,
+                    );
+                    r.set_current_sweep_id(Some(actions.gpu_sweep_id));
+                    r.update_color_table(gl, &result.product);
+
+                    // Roll semantics decided by the reducer: promote →
+                    // snapshot `displayed` into `previous_displayed` (the
+                    // canonical source for overlay/timeline prev info),
+                    // else overwrite in place.
+                    if let Some(new_displayed) = actions.new_displayed.take() {
+                        if actions.promote_prev_texture {
+                            let prior = self.state.viz_state.displayed.replace(new_displayed);
+                            self.state.viz_state.previous_displayed = prior;
+                        } else {
+                            self.state.viz_state.displayed = Some(new_displayed);
+                        }
+                    }
+
+                    if actions.run_storm_cells {
+                        self.state.viz_state.detected_storm_cells = r.detect_storm_cells(
+                            self.state.viz_state.center_lat,
+                            self.state.viz_state.center_lon,
+                            self.state.viz_state.storm_cell_threshold_dbz,
+                        );
+                    }
+                }
+            }
         }
+
+        if let Some((start, end, angle)) = actions.update_overlay {
+            self.update_overlay_from_sweep(start, end, angle);
+        }
+
+        // Phase 2: azimuth bookkeeping — runs attached or detached, after
+        // the GPU upload so the log interleaving matches the inline order.
+        reduce_live_decoded_azimuths(&mut self.live.mode_state, &result);
     }
 
     fn handle_volume_decoded_outcome(&mut self, volume_data: VolumeData) {
