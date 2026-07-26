@@ -5,7 +5,8 @@
 //! back through the channel. All other functions here are helpers called
 //! from `streaming_loop` (or from `super::mod`'s `RealtimeChannel::start`).
 
-use super::{ControlMessage, RealtimeResult};
+use super::{ControlMessage, ProjectorObservation, RealtimeResult};
+use crate::core::projection::{ChunkCoord, KnownChunk, SharedProjectionEngine};
 use crate::core::StreamingFilter;
 use crate::core::StreamingPlan;
 use crate::data::facade::DataFacade;
@@ -14,7 +15,6 @@ use crate::net::retry::{
 };
 use crate::nexrad::acquisition::download::NetworkStats;
 use crate::nexrad::live::streaming_state::StreamingState;
-use crate::nexrad::projection::{ChunkCoord, KnownChunk, SharedProjectionEngine};
 use eframe::egui;
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_util::future::join_all;
@@ -323,23 +323,23 @@ async fn run_mid_stream_backfill(
 }
 
 /// Drain projector observations queued from `main.rs` (after worker
-/// ingest) and apply each to the `StreamingState`'s projector. The
-/// dispatch shape — match on [`crate::nexrad::ProjectorObservation`] variant,
-/// call the matching projector method — is intentionally explicit so
+/// ingest) and apply each to the shared projection engine. The
+/// dispatch shape — match on [`ProjectorObservation`] variant,
+/// call the matching engine method — is intentionally explicit so
 /// adding a new observation kind is just one new arm here.
 fn drain_pending_observations(
-    observations_rx: &mut UnboundedReceiver<crate::nexrad::ProjectorObservation>,
+    observations_rx: &mut UnboundedReceiver<ProjectorObservation>,
     engine: &SharedProjectionEngine,
     iter: &StreamingState,
 ) {
     while let Ok(obs) = observations_rx.try_recv() {
         match obs {
-            crate::nexrad::ProjectorObservation::CollectionEndSecs(secs) => {
+            ProjectorObservation::CollectionEndSecs(secs) => {
                 engine
                     .borrow_mut()
                     .set_collection_anchor(iter.current_id(), secs);
             }
-            crate::nexrad::ProjectorObservation::AvailabilityLagSecs(lag_secs) => {
+            ProjectorObservation::AvailabilityLagSecs(lag_secs) => {
                 engine
                     .borrow_mut()
                     .record_availability_lag_for(iter.current_id(), lag_secs);
@@ -370,7 +370,7 @@ pub(super) async fn streaming_loop(
     stats: NetworkStats,
     facade: DataFacade,
     results_tx: UnboundedSender<RealtimeResult>,
-    mut observations_rx: UnboundedReceiver<crate::nexrad::ProjectorObservation>,
+    mut observations_rx: UnboundedReceiver<ProjectorObservation>,
     mut control_rx: UnboundedReceiver<ControlMessage>,
     engine: SharedProjectionEngine,
 ) {

@@ -7,8 +7,8 @@
 //! in weak text.
 
 use super::{format_timestamp_full, DateTimeComponents, TimelineFrame};
+use crate::core::projection::SweepAvailability;
 use crate::data::ScanCompleteness;
-use crate::nexrad::projection::SweepAvailability;
 use crate::ui::colors::timeline as tl_colors;
 use crate::ui::colors::ui as ui_colors;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
@@ -196,7 +196,7 @@ pub(super) fn render_timeline_tooltip(
 /// Tooltip for an available (in cloud archive, not downloaded) region.
 fn render_available_tooltip_content(
     ui: &mut egui::Ui,
-    boundary: &crate::nexrad::ScanBoundary,
+    boundary: &crate::core::ScanBoundary,
     use_local: bool,
 ) {
     tooltip_header(
@@ -333,7 +333,7 @@ fn render_sweep_tooltip_content(
 /// When hovering the scan track, it shows the volume-level summary.
 fn render_realtime_volume_tooltip(
     ui: &mut egui::Ui,
-    model: &crate::nexrad::projection::ScanProjection,
+    model: &crate::core::projection::ScanProjection,
     countdown: Option<f64>,
     hover_ts: f64,
     now_secs: f64,
@@ -353,8 +353,8 @@ fn render_realtime_volume_tooltip(
         let vcp_def = crate::data::vcp::get_vcp_definition(vcp_num);
 
         // Find which sweep block contains hover_ts (or snap to nearest).
-        let mut hovered_sweep: Option<&crate::nexrad::projection::SweepProjection> = None;
-        let mut nearest_sweep: Option<&crate::nexrad::projection::SweepProjection> = None;
+        let mut hovered_sweep: Option<&crate::core::projection::SweepProjection> = None;
+        let mut nearest_sweep: Option<&crate::core::projection::SweepProjection> = None;
         let mut nearest_dist: f64 = f64::MAX;
 
         for sp in &model.sweeps {

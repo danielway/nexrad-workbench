@@ -10,8 +10,8 @@
 //! carry all traffic between the UI thread and the async `streaming_loop`:
 //!
 //! - **results** (loop → UI): every [`RealtimeResult`] the loop produces.
-//! - **observations** (UI → loop): projector hints
-//!   ([`crate::nexrad::ProjectorObservation`]) the UI gathers from worker results
+//! - **observations** (UI → loop): projection hints
+//!   ([`ProjectorObservation`]) the UI gathers from worker results
 //!   and forwards via [`RealtimeChannel::observe`].
 //! - **control** (UI → loop): stop signal + filter changes, drained on
 //!   every iteration and inside the sleep loop so a filter swap doesn't
@@ -104,6 +104,31 @@ pub(crate) enum RealtimeResult {
     Error(String),
 }
 
+/// Single-source-of-truth input vocabulary for the projection engine's
+/// observation channel.
+///
+/// Observations originate on the main thread (worker ingest results, UI
+/// signals) and are enqueued via [`RealtimeChannel::observe`] for the
+/// streaming loop to drain and apply to the shared projection engine. Adding
+/// a new observation kind is one enum variant + one match arm in the drain
+/// dispatch — no new pending-field-on-state and no new method on the
+/// channel needed.
+///
+/// Filter changes are NOT a `ProjectorObservation`: they have additional
+/// sleep-interruption semantics (`filter_epoch`) and a separate
+/// re-entry path in the loop, so they keep their own dedicated channel.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ProjectorObservation {
+    /// ACTUAL category: collection-end time of the most recently
+    /// ingested chunk (Unix seconds, sub-second precision). Anchors
+    /// projected COLLECTION times for future chunks.
+    CollectionEndSecs(f64),
+    /// Empirical S3 upload − ACTUAL chunk collection time (seconds) for
+    /// the chunk just ingested. Folded into `ChunkTimingStats` so future
+    /// projections use a median lag rather than a default.
+    AvailabilityLagSecs(f64),
+}
+
 /// Control messages flowing from the UI thread into the streaming loop.
 ///
 /// The loop drains the control channel on every iteration and inside its
@@ -160,10 +185,10 @@ impl ResultsChannel {
 }
 
 struct ObservationsChannel {
-    tx: UnboundedSender<crate::nexrad::ProjectorObservation>,
+    tx: UnboundedSender<ProjectorObservation>,
     /// `Option` so `start()` can `take()` the receiver and hand it to
     /// the streaming loop; reset to `Some` on every fresh channel pair.
-    rx: Option<UnboundedReceiver<crate::nexrad::ProjectorObservation>>,
+    rx: Option<UnboundedReceiver<ProjectorObservation>>,
 }
 
 impl ObservationsChannel {
@@ -235,7 +260,7 @@ impl RealtimeChannel {
         ctx: egui::Context,
         site_id: String,
         facade: DataFacade,
-        engine: crate::nexrad::projection::SharedProjectionEngine,
+        engine: crate::core::projection::SharedProjectionEngine,
     ) {
         self.active.set(true);
 
@@ -300,9 +325,9 @@ impl RealtimeChannel {
 
     /// Enqueue a projector observation to be applied on the next
     /// streaming-loop iteration. Adding new observation kinds is purely
-    /// a matter of extending [`crate::nexrad::ProjectorObservation`] and the
+    /// a matter of extending [`ProjectorObservation`] and the
     /// drain dispatch — no new state field or new channel method needed.
-    pub(crate) fn observe(&self, observation: crate::nexrad::ProjectorObservation) {
+    pub(crate) fn observe(&self, observation: ProjectorObservation) {
         // Drop the result silently; if the loop has finished and
         // closed the receiver, late observations have no consumer.
         let _ = self.observations.borrow().tx.unbounded_send(observation);
@@ -312,16 +337,14 @@ impl RealtimeChannel {
     /// the chunk that was just ingested. Convenience wrapper over
     /// [`Self::observe`].
     pub(crate) fn record_chunk_collection_end_secs(&self, secs: f64) {
-        self.observe(crate::nexrad::ProjectorObservation::CollectionEndSecs(secs));
+        self.observe(ProjectorObservation::CollectionEndSecs(secs));
     }
 
     /// Push an empirical availability lag (S3 upload − ACTUAL chunk
     /// collection time, seconds) for the chunk just ingested. Convenience
     /// wrapper over [`Self::observe`].
     pub(crate) fn record_availability_lag_secs(&self, lag_secs: f64) {
-        self.observe(crate::nexrad::ProjectorObservation::AvailabilityLagSecs(
-            lag_secs,
-        ));
+        self.observe(ProjectorObservation::AvailabilityLagSecs(lag_secs));
     }
 
     /// Update the active streaming filter. The loop's de-dupe check
@@ -457,9 +480,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn observe_does_not_touch_active_or_results() {
         let ch = RealtimeChannel::new();
-        ch.observe(crate::nexrad::ProjectorObservation::CollectionEndSecs(
-            123.5,
-        ));
+        ch.observe(ProjectorObservation::CollectionEndSecs(123.5));
         assert!(!ch.is_active());
         // Observation goes to the observations channel, never to results.
         assert!(ch.try_recv().is_none());

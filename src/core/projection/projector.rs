@@ -6,11 +6,10 @@
 //! recently observed chunk collection-end timestamp (the projection
 //! anchor). [`Projector::build_plan`] composes these into a plan.
 //!
-//! Extracted from [`crate::nexrad::live::streaming_state::StreamingState`] so the
-//! projection concern stands alone. Today [`StreamingState`] still owns
-//! the projector (delegating projection-related methods to it); a later
-//! commit moves ownership to the main thread so observations from the
-//! worker pipeline can feed projection without an async round-trip.
+//! The kernel is an internal detail of this projection module: it is owned
+//! exclusively by [`super::ProjectionEngine`], which feeds it through the
+//! engine's input setters and reads plans from it when assembling the unified
+//! [`super::Projection`].
 
 use crate::core::timing::{
     project_scan_timing_with_next, AnchorSource, ChunkCharacteristics, ChunkTimingStats,
@@ -20,30 +19,6 @@ use crate::core::{StreamingFilter, StreamingPlan};
 use chrono::Duration as ChronoDuration;
 use nexrad_data::aws::realtime::{ChunkIdentifier, ChunkType};
 use nexrad_decode::messages::volume_coverage_pattern;
-
-/// Single-source-of-truth input vocabulary for the projector.
-///
-/// Observations originate on the main thread (worker ingest results, UI
-/// signals) and are enqueued via [`super::RealtimeChannel`] for the
-/// streaming loop to drain and apply to its [`Projector`]. Adding a new
-/// observation kind is one enum variant + one match arm in the drain
-/// dispatch — no new pending-field-on-state and no new method on the
-/// channel needed.
-///
-/// Filter changes are NOT a `ProjectorObservation`: they have additional
-/// sleep-interruption semantics (`filter_epoch`) and a separate
-/// re-entry path in the loop, so they keep their own dedicated channel.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum ProjectorObservation {
-    /// ACTUAL category: collection-end time of the most recently
-    /// ingested chunk (Unix seconds, sub-second precision). Anchors
-    /// projected COLLECTION times for future chunks.
-    CollectionEndSecs(f64),
-    /// Empirical S3 upload − ACTUAL chunk collection time (seconds) for
-    /// the chunk just ingested. Folded into `ChunkTimingStats` so future
-    /// projections use a median lag rather than a default.
-    AvailabilityLagSecs(f64),
-}
 
 /// All state needed to project future chunks for the in-progress volume.
 ///

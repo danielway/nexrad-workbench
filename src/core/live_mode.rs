@@ -9,7 +9,7 @@
 //! (`current_volume.confirmed`, `completed_sweep_metas`,
 //! `last_radial_time_secs`, `chunk_elev_spans`) plus the streaming state
 //! machine. **PROJECTED** timing (the forward-looking [`crate::core::StreamingPlan`])
-//! is produced and owned by the shared [`crate::nexrad::projection::ProjectionEngine`];
+//! is produced and owned by the shared [`crate::core::projection::ProjectionEngine`];
 //! the per-frame `Projection` is held on [`crate::subsystem::Live::frame_projection`]
 //! and read from there (countdown, next-target, chunk-in-sweep), never written
 //! back onto this struct.
@@ -429,7 +429,7 @@ impl LiveModeState {
     pub(crate) fn handle_volume_complete(
         &mut self,
         now: f64,
-        obs: &crate::nexrad::projection::VolumeObservations,
+        obs: &crate::core::projection::VolumeObservations,
     ) {
         let volume_start_secs = self.current_volume.as_ref().map(|v| v.best_start_secs());
 
@@ -568,7 +568,7 @@ impl LiveModeState {
     /// Returns `None` when prerequisites aren't met. Called by the modal.
     pub(crate) fn derive_current_volume_forecast(
         &self,
-        obs: &crate::nexrad::projection::VolumeObservations,
+        obs: &crate::core::projection::VolumeObservations,
     ) -> Option<crate::core::VolumeForecastSnapshot> {
         let vcp = obs.current_vcp_pattern.as_ref()?;
         let plan = self.volume_start_plan.as_ref()?;
@@ -592,10 +592,10 @@ impl LiveModeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::projection::VolumeObservations;
     use crate::core::ChunkArrivalStat;
     use crate::core::StreamingPlan;
     use crate::data::{ScanKey, UnixMillis};
-    use crate::nexrad::projection::VolumeObservations;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn scan_key(start_ms: i64) -> ScanKey {
@@ -1046,10 +1046,10 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
+    use crate::core::projection::VolumeObservations;
     use crate::core::ChunkArrivalStat;
     use crate::core::StreamingPlan;
     use crate::data::{ScanKey, UnixMillis};
-    use crate::nexrad::projection::VolumeObservations;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn scan_key(start_ms: i64) -> ScanKey {

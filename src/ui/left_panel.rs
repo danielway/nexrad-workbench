@@ -401,7 +401,7 @@ fn build_elevation_rows<'a>(
     scan: Option<&'a Scan>,
     extracted_pattern: Option<&'a crate::data::ExtractedVcp>,
     vcp_def: Option<&'a crate::data::vcp::VcpDefinition>,
-    position: Option<&crate::nexrad::projection::ScanProjection>,
+    position: Option<&crate::core::projection::ScanProjection>,
     current_elevation_number: Option<u8>,
 ) -> Vec<ElevRow<'a>> {
     // Helper to get sweep start offset (from volume start) for a given index.

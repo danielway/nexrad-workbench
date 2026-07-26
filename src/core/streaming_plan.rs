@@ -2,8 +2,8 @@
 //!
 //! [`StreamingPlan`] is the single source of truth for "what will happen next,
 //! when." It is computed once per streaming-loop iteration by the projector
-//! kernel (`Projector::build_plan_with_collection` in
-//! `crate::nexrad::projector`) and consumed by:
+//! kernel (`Projector::build_plan_with_collection`, internal to
+//! `crate::core::projection`) and consumed by:
 //!
 //! - The streaming loop's sleep target (via [`StreamingPlan::next_target`]'s
 //!   [`ChunkProjectedTimes::poll_at_secs`]).
@@ -87,7 +87,8 @@ pub(crate) struct ChunkProjectionInfo {
 /// Canonical projection of the real-time stream's near future.
 ///
 /// Built once per streaming-loop iteration from a snapshot of the
-/// projector's state (`crate::nexrad::projector::Projector`). Everything
+/// projector's state (the `Projector` kernel internal to
+/// `crate::core::projection`). Everything
 /// downstream that needs to know "what comes next" — the loop's sleep
 /// target, the timeline's countdown, the VCP forecast panel — reads from
 /// this object.
@@ -106,8 +107,8 @@ pub(crate) struct StreamingPlan {
     // Doc above: staleness context read alongside `revision` in diagnostics.
     pub built_at_secs: f64,
     /// Monotonically-incrementing per-projector counter, bumped on every
-    /// `Projector::build_plan_with_collection` call (in
-    /// `crate::nexrad::projector`). Lets diagnostics attribute a prediction
+    /// `Projector::build_plan_with_collection` call (internal to
+    /// `crate::core::projection`). Lets diagnostics attribute a prediction
     /// to a specific plan revision and lets UI skip redraws when the plan
     /// hasn't changed since the last frame.
     pub revision: u64,
@@ -147,7 +148,7 @@ impl StreamingPlan {
     /// pass-2 entries don't collide.
     ///
     /// The sole constructor is the projector kernel
-    /// (`crate::nexrad::projector::Projector`).
+    /// (the `Projector` internal to `crate::core::projection`).
     pub(crate) fn from_projection(
         projection: ScanTimingProjection,
         filter: StreamingFilter,

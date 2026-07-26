@@ -30,6 +30,15 @@ impl TimeRange {
     }
 }
 
+/// A scan's time boundaries derived from adjacent file timestamps in a listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScanBoundary {
+    /// Start of this scan (Unix seconds).
+    pub start: i64,
+    /// End of this scan (next scan's start, or estimated for last scan; Unix seconds).
+    pub end: i64,
+}
+
 /// A single radial (one azimuth direction at one elevation)
 #[derive(Clone, Debug)]
 pub(crate) struct Radial {

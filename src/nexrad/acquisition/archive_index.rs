@@ -3,6 +3,7 @@
 //! Stores archive file metadata by site/date to avoid repeated AWS listing requests.
 //! Listings for today's date are not cached since new files may still be added.
 
+use crate::core::ScanBoundary;
 use chrono::NaiveDate;
 use std::collections::HashMap;
 
@@ -58,15 +59,6 @@ pub(crate) struct ArchiveListing {
     pub files: Vec<ArchiveFileMeta>,
     /// When this listing was fetched (for potential TTL)
     pub fetched_at: f64,
-}
-
-/// A scan's time boundaries derived from adjacent file timestamps in a listing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ScanBoundary {
-    /// Start of this scan (Unix seconds).
-    pub start: i64,
-    /// End of this scan (next scan's start, or estimated for last scan; Unix seconds).
-    pub end: i64,
 }
 
 impl ArchiveListing {

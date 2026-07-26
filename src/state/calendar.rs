@@ -21,7 +21,7 @@
 //! cells from the same UTC day start.
 
 use crate::core::RadarTimeline;
-use crate::nexrad::ScanBoundary;
+use crate::core::ScanBoundary;
 use crate::state::SavedEvents;
 
 /// Seconds in a UTC day. Day buckets are `[day_start, day_start + DAY_SECS)`.

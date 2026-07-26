@@ -13,10 +13,10 @@
 //! once at the top of the update loop so every UI consumer sees the
 //! same snapshot for that frame.
 
+use crate::core::projection::{new_shared_engine, Projection, SharedProjectionEngine};
 use crate::core::PlaybackState;
 use crate::core::RadarTimeline;
 use crate::core::{LiveModeState, LiveRadarModel};
-use crate::nexrad::projection::{new_shared_engine, Projection, SharedProjectionEngine};
 use crate::nexrad::RealtimeChannel;
 use crate::state::AppMode;
 
@@ -28,7 +28,7 @@ pub(crate) struct LiveRefreshInputs<'a> {
     pub playback: &'a PlaybackState,
     /// Available archive scan boundaries — fed to the engine for authoritative
     /// next-scan extent.
-    pub archive_boundaries: &'a [crate::nexrad::ScanBoundary],
+    pub archive_boundaries: &'a [crate::core::ScanBoundary],
     /// This frame's wall clock (from `AppState::frame_now`).
     pub now: crate::core::FrameNow,
 }

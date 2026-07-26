@@ -1,42 +1,32 @@
 //! Unified projection architecture.
 //!
-//! This module is the single owner of forward-looking radar timing. It is being
-//! built incrementally (see the plan): the eventual `ProjectionEngine` collects
-//! every projection input — VCP, rolling timing stats, the collection anchor, a
-//! known-available-chunks inventory, cached sweeps (possibly sparse), archive
-//! boundaries, and the active filter — and emits one [`Projection`] that every
-//! consumer (timeline, VCP panel, sweep line, acquisition loop) reads.
+//! This module is the single owner of forward-looking radar timing.
+//! [`ProjectionEngine`] collects every projection input — VCP, rolling timing
+//! stats, the collection anchor, the known-available-chunks inventory, cached
+//! sweeps (possibly sparse), archive boundaries, and the active filter — and
+//! emits one [`Projection`] that every consumer (timeline, VCP panel, sweep
+//! line, acquisition loop) reads.
 //!
-//! Phase 0 introduces only [`Projection`], a thin wrapper that *contains*
-//! today's [`StreamingPlan`]. Later phases enrich it with per-sweep status on
-//! both the collection and availability axes and migrate consumers onto it; the
-//! wrapped `plan` is retained as the math carrier until those migrations land.
+//! Inputs arrive through the engine's setters: the streaming loop feeds chunk
+//! arrivals, listings, and filter changes; the main thread feeds worker ingest
+//! results (volume observations, cached sweeps, in-progress elevation). The
+//! per-chunk math kernel ([`projector::Projector`]) is an internal detail owned
+//! by the engine; [`Projection`] is the per-frame assembled view, pairing the
+//! plan (per-chunk forecasts for the acquisition loop) with the live-scan
+//! display container ([`ScanProjection`]).
 
 mod archive_adapter;
 mod cached_sweeps;
 mod engine;
 mod inventory;
 mod observations;
+mod projector;
 mod status;
 
-// Re-exported as the module's public names. The engine is wired (see
-// `subsystem::live`); a few helpers are still consumed only within this module,
-// hence the `allow(unused_imports)` until every consumer converges.
-#[allow(unused_imports)]
 pub(crate) use archive_adapter::scan_to_projection;
-#[allow(unused_imports)]
-pub(crate) use cached_sweeps::CachedSweepSet;
-#[allow(unused_imports)]
 pub(crate) use engine::ProjectionEngine;
-#[allow(unused_imports)]
-pub(crate) use inventory::{ChunkCoord, KnownChunk, KnownChunkInventory};
-#[allow(unused_imports)]
+pub(crate) use inventory::{ChunkCoord, KnownChunk};
 pub(crate) use observations::VolumeObservations;
-#[allow(unused_imports)]
-pub(crate) use status::{
-    build_sweeps, cascade_current_sweeps, derive_sweep_status, CascadeInputs, SweepBounds,
-    SweepBuildCtx,
-};
 
 use crate::core::{ChunkProjectionInfo, StreamingPlan};
 use std::cell::RefCell;

@@ -6,7 +6,7 @@
 //! what the radar is doing right now.
 
 use super::LiveModeState;
-use crate::nexrad::projection::{ExtrapolationState, ScanProjection};
+use crate::core::projection::{ExtrapolationState, ScanProjection};
 
 /// Computed snapshot of live radar state for consistent UI consumption.
 ///
@@ -227,7 +227,7 @@ mod coverage_tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     use crate::core::live_mode::LivePhase;
-    use crate::nexrad::projection::{
+    use crate::core::projection::{
         ChunkSpan, ProjectionScanRole, SweepProjection, SweepProjectionStatus,
         SweepTimingProvenance,
     };

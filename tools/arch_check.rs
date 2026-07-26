@@ -90,18 +90,11 @@ const ALLOWED: &[(&str, &str)] = &[
 /// Known violations of the intended layering, kept only until burned down.
 /// Removing the last occurrence of an edge REQUIRES deleting its row here
 /// (the build fails on stale rows). Never add to this list.
-const GRANDFATHERED: &[(&str, &str, &str)] = &[
-    (
-        "core",
-        "nexrad",
-        "core::panels uses nexrad::projection::ScanProjection — rehome per A1",
-    ),
-    (
-        "app",
-        "ui",
-        "geolocation effect executor lives in ui — move executor into app, Phase C2",
-    ),
-];
+const GRANDFATHERED: &[(&str, &str, &str)] = &[(
+    "app",
+    "ui",
+    "geolocation effect executor lives in ui — move executor into app, Phase C2",
+)];
 
 pub fn run() {
     println!("cargo:rerun-if-changed=src");

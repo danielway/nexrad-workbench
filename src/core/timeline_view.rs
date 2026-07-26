@@ -33,10 +33,10 @@
 //! failures + the live projection into per-cell states the frames-first strip
 //! renders (spec §6.3).
 
+use crate::core::projection::{ScanProjection, SweepProjectionStatus, SweepTimingProvenance};
 use crate::core::LiveModeState;
+use crate::core::ScanBoundary;
 use crate::core::{RadarTimeline, Scan};
-use crate::nexrad::projection::{ScanProjection, SweepProjectionStatus, SweepTimingProvenance};
-use crate::nexrad::ScanBoundary;
 use std::collections::BTreeSet;
 
 /// The single tolerance for matching one scan-start second against another
@@ -257,7 +257,7 @@ impl<'a> TimelineView<'a> {
 
     /// Cached ("settled") scans overlapping `[start, end]`, excluding the
     /// in-progress volume (the realtime overlay owns that). These carry
-    /// [`crate::nexrad::projection::SweepAvailability::Cached`] availability. Borrows tie
+    /// [`crate::core::projection::SweepAvailability::Cached`] availability. Borrows tie
     /// to the underlying cache (`'a`), not to the view, so callers can return
     /// them past the view's own scope. Each item carries the clamped display
     /// end from [`Self::visual_scans_in_range`].
@@ -765,11 +765,11 @@ pub(crate) fn merge_cached_into_live(position: &mut ScanProjection, cached: &Sca
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Sweep;
-    use crate::nexrad::projection::{
+    use crate::core::projection::{
         ProjectionScanRole, SweepAvailability, SweepProjection, SweepProjectionStatus,
         SweepTimingProvenance,
     };
+    use crate::core::Sweep;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn sweep_pos(elev: u8, status: SweepProjectionStatus) -> SweepProjection {
@@ -1329,10 +1329,10 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
-    use crate::core::Sweep;
-    use crate::nexrad::projection::{
+    use crate::core::projection::{
         ProjectionScanRole, SweepProjection, SweepProjectionStatus, SweepTimingProvenance,
     };
+    use crate::core::Sweep;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn sweep_pos(elev: u8, status: SweepProjectionStatus) -> SweepProjection {

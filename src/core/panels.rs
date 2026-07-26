@@ -95,7 +95,7 @@ pub(crate) struct RadarStateAtTimestamp<'a> {
     /// Extracted VCP pattern from live streaming (used when `scan` is `None`).
     pub live_vcp_pattern: Option<&'a crate::data::ExtractedVcp>,
     /// Unified position model with sweep timing (live or archived).
-    pub position: Option<crate::nexrad::projection::ScanProjection>,
+    pub position: Option<crate::core::projection::ScanProjection>,
 }
 
 /// Derive the left panel's radar state at the current playback position.
@@ -105,7 +105,7 @@ pub(crate) struct RadarStateAtTimestamp<'a> {
 /// [`animation_frozen`] / [`archive_azimuth_from_progress`].
 pub(crate) fn query_radar_state_at_timestamp<'a>(
     scans: &'a crate::core::RadarTimeline,
-    shadow_scan_boundaries: &'a [crate::nexrad::ScanBoundary],
+    shadow_scan_boundaries: &'a [crate::core::ScanBoundary],
     live_mode: &'a crate::core::live_mode::LiveModeState,
     radar_model: &'a crate::core::live_radar_model::LiveRadarModel,
     playback: &'a crate::core::PlaybackState,
@@ -182,7 +182,7 @@ pub(crate) fn query_radar_state_at_timestamp<'a>(
                 scan_progress,
                 scan: Some(scan),
                 live_vcp_pattern: None,
-                position: Some(crate::nexrad::projection::scan_to_projection(scan)),
+                position: Some(crate::core::projection::scan_to_projection(scan)),
             }
         }
         None => {

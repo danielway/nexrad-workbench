@@ -6,19 +6,20 @@
 //! changes a value); the output [`Projection`] is recomputed lazily only when an
 //! input changed since the last build for the same anchor + whole-second `now`.
 //!
-//! Phase 1 covers the realtime inputs the `Projector` already had. Later phases
-//! attach the known-available-chunks inventory, cached sweeps, and archive
-//! boundaries as additional inputs, and flip ownership to a shared
-//! `Rc<RefCell<ProjectionEngine>>` on the main thread.
+//! Inputs cover the realtime observations, the known-available-chunks
+//! inventory, cached sweeps, and archive boundaries. The engine is owned as a
+//! shared `Rc<RefCell<ProjectionEngine>>` on the main thread
+//! ([`super::SharedProjectionEngine`], held by `subsystem::live`), with one
+//! clone inside the streaming loop task.
 
 use super::cached_sweeps::CachedSweepSet;
 use super::inventory::{KnownChunk, KnownChunkInventory};
 use super::observations::VolumeObservations;
+use super::projector::Projector;
 use super::status::{build_sweeps, SweepBuildCtx};
 use super::Projection;
 use crate::core::timing::{AnchorSource, ChunkTimingStats};
 use crate::core::StreamingFilter;
-use crate::nexrad::projector::Projector;
 use chrono::Duration as ChronoDuration;
 use nexrad_data::aws::realtime::{ChunkIdentifier, VolumeIndex};
 use nexrad_decode::messages::volume_coverage_pattern;
@@ -54,7 +55,7 @@ pub(crate) struct ProjectionEngine {
     /// The engine owns this — it is no longer copied from `LiveModeState`.
     observed: VolumeObservations,
     /// Available archive scan boundaries, for authoritative next-scan extent.
-    archive_boundaries: Vec<crate::nexrad::ScanBoundary>,
+    archive_boundaries: Vec<crate::core::ScanBoundary>,
     /// Bumped whenever a setter changes an input value; the cache key.
     input_revision: u64,
     /// Memoized output + the inputs it was built from.
@@ -164,7 +165,7 @@ impl ProjectionEngine {
 
     /// Set the available archive scan boundaries (authoritative next-scan
     /// extent). Replaces; bumps on a length/content change.
-    pub(crate) fn set_archive_boundaries(&mut self, boundaries: Vec<crate::nexrad::ScanBoundary>) {
+    pub(crate) fn set_archive_boundaries(&mut self, boundaries: Vec<crate::core::ScanBoundary>) {
         if self.archive_boundaries != boundaries {
             self.archive_boundaries = boundaries;
             self.bump();
@@ -548,7 +549,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn set_archive_boundaries_bumps_only_on_content_change() {
         let mut eng = ProjectionEngine::new();
-        let a = vec![crate::nexrad::ScanBoundary {
+        let a = vec![crate::core::ScanBoundary {
             start: 100,
             end: 400,
         }];
@@ -560,11 +561,11 @@ mod coverage_tests {
         assert_eq!(eng.input_revision, 1);
         // Different content → bump.
         let b = vec![
-            crate::nexrad::ScanBoundary {
+            crate::core::ScanBoundary {
                 start: 100,
                 end: 400,
             },
-            crate::nexrad::ScanBoundary {
+            crate::core::ScanBoundary {
                 start: 400,
                 end: 700,
             },

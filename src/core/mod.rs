@@ -32,6 +32,7 @@ pub(crate) mod live_mode;
 pub(crate) mod live_radar_model;
 pub(crate) mod panels;
 pub(crate) mod persist;
+pub(crate) mod projection;
 pub(crate) mod render;
 pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;
@@ -59,7 +60,7 @@ pub(crate) use domain::playback::{
 #[allow(unused_imports)]
 pub(crate) use domain::playback::LoopWindow;
 pub(crate) use domain::prefs::UserPreferences;
-pub(crate) use domain::radar::{RadarTimeline, Scan, ScanMetadata, Sweep};
+pub(crate) use domain::radar::{RadarTimeline, Scan, ScanBoundary, ScanMetadata, Sweep};
 #[allow(unused_imports)]
 pub(crate) use domain::radar::{Radial, TimeRange};
 pub(crate) use domain::telemetry::{NetworkAggregate, NetworkRequest};

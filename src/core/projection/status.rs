@@ -46,7 +46,7 @@ pub(crate) fn derive_sweep_status(
 /// Whether a sweep's final chunk (or a later sequence / the End chunk) is known
 /// to be published in S3 per the inventory — the presence rule shared by the
 /// status derivation and the streaming probe's early-fire.
-pub(crate) fn published_in_inventory(
+fn published_in_inventory(
     inventory: &KnownChunkInventory,
     volume: VolumeIndex,
     last_seq_of_sweep: usize,
@@ -149,10 +149,9 @@ fn last_seq_by_elev(chunks: &[ChunkProjectionInfo]) -> HashMap<u8, usize> {
     last
 }
 
-/// Inputs to the current-scan bounds cascade. Borrowed slices so both the
-/// engine (`build_sweeps`) and the `build_position_from_live` oracle can call
-/// the SAME cascade — guaranteeing the per-sweep bounds can't diverge.
-pub(crate) struct CascadeInputs<'a> {
+/// Inputs to the current-scan bounds cascade, bundled as borrowed slices to
+/// keep [`cascade_current_sweeps`]'s signature manageable.
+struct CascadeInputs<'a> {
     pub vol_start: f64,
     pub expected_count: usize,
     /// `received[elev_idx]` — elevation `elev_idx + 1` is fully received.
@@ -169,9 +168,9 @@ pub(crate) struct CascadeInputs<'a> {
     pub fallback_sweep_durations: &'a [f64],
 }
 
-/// One sweep's derived bounds + provenance + in-progress detail — the shared
-/// output of the cascade, mapped by each caller to its own render type.
-pub(crate) struct SweepBounds {
+/// One sweep's derived bounds + provenance + in-progress detail — the output
+/// of the cascade, mapped by [`build_sweeps`] to the render type.
+struct SweepBounds {
     pub elevation_number: u8,
     pub elevation_angle: f32,
     pub start: f64,
@@ -194,10 +193,8 @@ pub(crate) struct SweepBounds {
 }
 
 /// The sweep-positioning cascade (Observed > Anchored > Projected > Estimated)
-/// for the current scan, as a pure function. Centralized here so the engine and
-/// the legacy `from_live` oracle share one implementation. Faithful transcription
-/// of the previous `from_live` body.
-pub(crate) fn cascade_current_sweeps(inp: &CascadeInputs) -> Vec<SweepBounds> {
+/// for the current scan, as a pure function called by [`build_sweeps`].
+fn cascade_current_sweeps(inp: &CascadeInputs) -> Vec<SweepBounds> {
     let vol_start = inp.vol_start;
     let expected_count = inp.expected_count;
     let expected_dur = inp.expected_dur;

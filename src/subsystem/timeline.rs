@@ -14,7 +14,7 @@
 //! helpers (e.g. matching-completion lookups, sweep accessors) to land.
 
 use crate::core::RadarTimeline;
-use crate::nexrad::ScanBoundary;
+use crate::core::ScanBoundary;
 
 /// Owner of the timeline (real + shadowed) scan inventory.
 #[derive(Default)]
