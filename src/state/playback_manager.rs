@@ -497,27 +497,6 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::core::ElevationLis
         .collect()
 }
 
-/// Build an elevation list from a live VCP pattern (no completed scan
-/// yet). `cached_products` is left empty; the right panel treats
-/// that as "unknown — allow" so all products are selectable until a
-/// completed sweep narrows it down.
-pub(crate) fn build_elevation_list_from_vcp(
-    vcp: &crate::data::ExtractedVcp,
-) -> Vec<crate::core::ElevationListEntry> {
-    vcp.elevations
-        .iter()
-        .enumerate()
-        .map(|(i, e)| crate::core::ElevationListEntry {
-            elevation_number: (i + 1) as u8,
-            angle: e.angle,
-            waveform: e.waveform.clone(),
-            is_sails: e.is_sails,
-            is_mrle: e.is_mrle,
-            cached_products: Vec::new(),
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1465,39 +1444,5 @@ mod coverage_tests {
             "empty pattern ignored → static VCP-215 used"
         );
         assert!((list[0].angle - 0.5).abs() < 1e-4);
-    }
-
-    // ── build_elevation_list_from_vcp ───────────────────────────────────────
-
-    #[wasm_bindgen_test]
-    fn build_elevation_list_from_vcp_maps_indices_and_empties_products() {
-        let vcp = ExtractedVcp {
-            number: 35,
-            elevations: vec![
-                extracted_elev(0.5, "CS", false, false),
-                extracted_elev(1.5, "CDW", true, true),
-                extracted_elev(2.4, "CDWO", false, true),
-            ],
-        };
-        let list = build_elevation_list_from_vcp(&vcp);
-        assert_eq!(list.len(), 3);
-        assert_eq!(list[0].elevation_number, 1);
-        assert_eq!(list[2].elevation_number, 3);
-        assert!((list[1].angle - 1.5).abs() < 1e-4);
-        assert_eq!(list[1].waveform, "CDW");
-        assert!(list[1].is_sails);
-        assert!(list[1].is_mrle);
-        assert!(list[2].is_mrle && !list[2].is_sails);
-        // cached_products is always empty for the live-VCP path.
-        assert!(list.iter().all(|e| e.cached_products.is_empty()));
-    }
-
-    #[wasm_bindgen_test]
-    fn build_elevation_list_from_vcp_empty_yields_empty() {
-        let vcp = ExtractedVcp {
-            number: 0,
-            elevations: Vec::new(),
-        };
-        assert!(build_elevation_list_from_vcp(&vcp).is_empty());
     }
 }

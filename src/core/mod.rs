@@ -38,6 +38,7 @@ pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;
 pub(crate) mod timeline_view;
 pub(crate) mod timing;
+pub(crate) mod worker_ingest;
 
 #[allow(unused_imports)]
 pub(crate) use domain::errors::TimestampedError;
@@ -67,8 +68,8 @@ pub(crate) use domain::telemetry::{NetworkAggregate, NetworkRequest};
 pub(crate) use domain::time::FrameNow;
 pub(crate) use domain::view::ViewState;
 pub(crate) use domain::viz::{
-    DisplayedSweep, ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct,
-    RenderProcessing, StormCellInfo, SweepIdentity,
+    build_elevation_list_from_vcp, DisplayedSweep, ElevationListEntry, ElevationSelection,
+    InterpolationMode, RadarProduct, RenderProcessing, StormCellInfo, SweepIdentity,
 };
 pub(crate) use domain::volume::VolumeElevationRoster;
 pub(crate) use domain::worker::{

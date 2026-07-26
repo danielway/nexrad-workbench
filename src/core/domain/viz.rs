@@ -231,6 +231,31 @@ pub(crate) struct ElevationListEntry {
     pub cached_products: Vec<String>,
 }
 
+/// Build an elevation list from a live VCP pattern (no completed scan
+/// yet). `cached_products` is left empty; the right panel treats
+/// that as "unknown — allow" so all products are selectable until a
+/// completed sweep narrows it down.
+///
+/// (Moved from `state::playback_manager` so the chunk-ingest reducer in
+/// [`crate::core::worker_ingest`] can resolve the elevation selection
+/// without core importing `state`.)
+pub(crate) fn build_elevation_list_from_vcp(
+    vcp: &crate::data::ExtractedVcp,
+) -> Vec<ElevationListEntry> {
+    vcp.elevations
+        .iter()
+        .enumerate()
+        .map(|(i, e)| ElevationListEntry {
+            elevation_number: (i + 1) as u8,
+            angle: e.angle,
+            waveform: e.waveform.clone(),
+            is_sails: e.is_sails,
+            is_mrle: e.is_mrle,
+            cached_products: Vec::new(),
+        })
+        .collect()
+}
+
 /// Interpolation mode for radar rendering.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InterpolationMode {
@@ -509,5 +534,56 @@ mod coverage_tests {
         assert!((rp.opacity - 1.0).abs() < 1e-6);
         assert!(!rp.sweep_animation);
         assert!(rp.data_age_desaturation);
+    }
+
+    // ---- build_elevation_list_from_vcp (moved from state::playback_manager)
+
+    fn extracted_elev(
+        angle: f32,
+        waveform: &str,
+        is_sails: bool,
+        is_mrle: bool,
+    ) -> crate::data::ExtractedVcpElevation {
+        crate::data::ExtractedVcpElevation {
+            angle,
+            waveform: waveform.to_string(),
+            prf_number: 1,
+            is_sails,
+            is_mrle,
+            is_base_tilt: false,
+            azimuth_rate: None,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn build_elevation_list_from_vcp_maps_indices_and_empties_products() {
+        let vcp = crate::data::ExtractedVcp {
+            number: 35,
+            elevations: vec![
+                extracted_elev(0.5, "CS", false, false),
+                extracted_elev(1.5, "CDW", true, true),
+                extracted_elev(2.4, "CDWO", false, true),
+            ],
+        };
+        let list = build_elevation_list_from_vcp(&vcp);
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].elevation_number, 1);
+        assert_eq!(list[2].elevation_number, 3);
+        assert!((list[1].angle - 1.5).abs() < 1e-4);
+        assert_eq!(list[1].waveform, "CDW");
+        assert!(list[1].is_sails);
+        assert!(list[1].is_mrle);
+        assert!(list[2].is_mrle && !list[2].is_sails);
+        // cached_products is always empty for the live-VCP path.
+        assert!(list.iter().all(|e| e.cached_products.is_empty()));
+    }
+
+    #[wasm_bindgen_test]
+    fn build_elevation_list_from_vcp_empty_yields_empty() {
+        let vcp = crate::data::ExtractedVcp {
+            number: 0,
+            elevations: Vec::new(),
+        };
+        assert!(build_elevation_list_from_vcp(&vcp).is_empty());
     }
 }

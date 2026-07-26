@@ -205,68 +205,11 @@ impl WorkbenchApp {
     }
 
     fn handle_chunk_ingested_outcome(&mut self, result: ChunkIngestResult) {
+        use crate::core::worker_ingest::{
+            reduce_chunk_ingested, ChunkIngestEnv, ChunkIngestSlices,
+        };
+
         let is_live = self.live.mode_state.is_active();
-        let source = "Realtime";
-
-        // Build enriched log with projection-derived chunk positioning.
-        let chunk_vol_index = result.context.chunk_index + 1; // 1-based for display
-        let elev_nums: Vec<u8> = result
-            .chunk_elev_spans
-            .iter()
-            .map(|&(e, _, _, _)| e)
-            .collect();
-        let total_azimuths: u32 = result
-            .chunk_elev_spans
-            .iter()
-            .map(|&(_, _, _, count)| count)
-            .sum();
-
-        // Azimuth angle range from the chunk's azimuth data
-        let az_range_str =
-            if let Some(&(_, first_az, last_az)) = result.chunk_elev_az_ranges.first() {
-                format!("{:.1}°–{:.1}°", first_az, last_az)
-            } else {
-                "n/a".to_string()
-            };
-
-        // Look up chunk-in-sweep and remaining from projection metadata.
-        // chunk_index is 0-based where 0 = Start chunk (sequence 1), so
-        // chunk_vol_index (= chunk_index + 1) already equals the 1-based sequence.
-        let sequence = chunk_vol_index as usize;
-        let (chunk_in_sweep_str, remaining_str) = self
-            .live
-            .frame_projection
-            .as_ref()
-            .and_then(|p| {
-                p.current_volume_chunks()
-                    .iter()
-                    .find(|c| c.sequence == sequence)
-            })
-            .map(|c| {
-                let in_sweep = format!("{}/{}", c.chunk_index_in_sweep + 1, c.chunks_in_sweep);
-                let remaining = c.chunks_in_sweep.saturating_sub(c.chunk_index_in_sweep + 1);
-                (in_sweep, format!("{}", remaining))
-            })
-            .unwrap_or_else(|| ("?/?".to_string(), "?".to_string()));
-
-        log::debug!(
-            "{}: chunk ingested scan={} vol_chunk={} sweep_chunk={} remaining_in_sweep={} \
-             elevs={:?} azimuths={} az_range={} \
-             elevs_completed={:?} sweeps_stored={} is_end={} vcp={:?} {:.1}ms",
-            source,
-            result.scan_key,
-            chunk_vol_index,
-            chunk_in_sweep_str,
-            remaining_str,
-            elev_nums,
-            total_azimuths,
-            az_range_str,
-            result.elevations_completed,
-            result.sweeps_stored,
-            result.is_end,
-            result.vcp.as_ref().map(|v| v.number),
-            result.total_ms,
-        );
 
         // Update scan key, growing elevation list, and displayed timestamp
         // through the single owner so they can never drift.
@@ -277,344 +220,65 @@ impl WorkbenchApp {
             result.context.timestamp_secs,
         );
 
-        // Only update live_mode_state when actually in live mode
-        if is_live {
-            // Adopt the live volume anchor — provisional from the streaming
-            // loop's IDB key, confirmed (when present) from the radial-parsed
-            // header time. `set_or_confirm_volume` handles same-volume vs.
-            // new-volume internally and runs `try_capture_forecast` on the
-            // transition that first makes start time + VCP pattern both
-            // known.
-            let scan_key = data::ScanKey::from_secs_f64(
-                &self.state.viz_state.site_id,
-                result.context.timestamp_secs,
-            );
-            self.live.mode_state.set_or_confirm_volume(
-                scan_key,
-                result.context.timestamp_secs,
-                result.volume_header_time_secs,
-            );
+        // Assemble the frame context and run the pure reducer over the core
+        // state slices. All decisions (and the core-state mutations they
+        // imply) happen in `reduce_chunk_ingested`; the shell only executes
+        // the described actions below.
+        let actions = {
+            let env = ChunkIngestEnv {
+                is_live,
+                site_id: &self.state.viz_state.site_id,
+                product_worker_string: self.state.viz_state.product.to_worker_string(),
+                now_secs: self.state.frame_now.secs(),
+                had_elevations,
+                available_elevations: self.render.coordinator.available_elevations(),
+                frame_projection: self.live.frame_projection.as_ref(),
+                volume_3d_enabled: self.state.viz_state.volume_3d_enabled,
+            };
+            let mut engine = self.live.engine.borrow_mut();
+            let slices = ChunkIngestSlices {
+                live_mode: &mut self.live.mode_state,
+                engine: &mut engine,
+                elevation_selection: &mut self.state.viz_state.elevation_selection,
+                playback: &mut self.playback.state,
+            };
+            reduce_chunk_ingested(env, slices, &result)
+        };
 
-            if !result.chunk_elev_spans.is_empty() {
-                self.live
-                    .engine
-                    .borrow_mut()
-                    .observations_mut()
-                    .record_chunk_elev_spans(&result.chunk_elev_spans);
-            }
-
-            // Feed the shared projection engine the cached-sweep + in-progress
-            // inputs: which cuts we have locally (CollectedByUs / omit from the
-            // acquisition view) and which elevation is being received now
-            // (InProgress). Borrow is scoped; no await inside.
-            let scan_start_secs = result
-                .volume_header_time_secs
-                .unwrap_or(result.context.timestamp_secs);
-            // Completed-volume duration so the engine can size the expected
-            // in-progress duration (it falls back to the VCP estimate / default).
-            let last_dur = self
-                .live
-                .mode_state
-                .last_completed_volume
-                .as_ref()
-                .map(|r| r.volume_end_secs - r.volume_start_secs);
-            {
-                let mut eng = self.live.engine.borrow_mut();
-                eng.set_current_scan_start_secs(scan_start_secs);
-                eng.observations_mut()
-                    .set_last_volume_duration_secs(last_dur);
-                // Reads the engine's own completed metas — the prior ingest's,
-                // since `update_sweep_metas` runs later this ingest.
-                eng.set_cached_sweeps_for_scan(scan_start_secs);
-                // Same source as the old `LiveModeState.current_in_progress_elevation`
-                // so the projection and the live model agree on the collecting cut.
-                eng.set_in_progress_elevation(scan_start_secs, result.current_elevation);
-            }
-
-            // Push the most recent chunk's collection-end time down to the
-            // streaming loop so the next projection anchors on the current
-            // chunk's actual collection time (not the volume's start time).
-            // Without this, forward-chunk projections come out as
-            // volume_start + small_offset, landing in the past once the
-            // volume is past its first chunk.
-            if let Some(chunk_max_secs) = result.chunk_max_time_secs {
-                self.live
-                    .channel
-                    .record_chunk_collection_end_secs(chunk_max_secs);
-            }
-
-            // Record the empirical availability lag (S3 upload − ACTUAL
-            // chunk collection time) into the projector's stats bucket.
-            // Uses the chunk's latest-radial time (when the radar finished
-            // this chunk) paired with the most recent arrival stat's
-            // Last-Modified header.
-            if let Some(chunk_max_secs) = result.chunk_max_time_secs {
-                // Lag requires both a parsed collection time AND the chunk's
-                // S3 Last-Modified header. Stamp collection time unconditionally
-                // and lag only when both are finite.
-                let s3_at = self
-                    .live
-                    .mode_state
-                    .chunk_arrivals
-                    .last()
-                    .and_then(|a| a.s3_last_modified_at);
-                let lag_secs = s3_at
-                    .map(|s3| s3 - chunk_max_secs)
-                    .filter(|v| v.is_finite());
-                if let Some(lag) = lag_secs {
-                    self.live.channel.record_availability_lag_secs(lag);
-                }
-                // Back-fill onto the most recent arrival so the diagnostics
-                // modal can compute per-chunk collection-space intervals
-                // and (when available) per-chunk availability lag.
-                self.live.mode_state.attach_collection_data_to_last_arrival(
-                    chunk_max_secs,
-                    lag_secs.map(|lag| (lag * 1000.0) as i64),
-                );
-            }
-            if !result.elevations_completed.is_empty() {
-                self.live
-                    .engine
-                    .borrow_mut()
-                    .observations_mut()
-                    .record_elevations(&result.elevations_completed);
-            }
-            if let Some(ref vcp) = result.vcp {
-                // Snap the user's selected elevation angle to the closest
-                // entry in the new VCP when the pattern changes. Both
-                // panels read the elevation list lazily via
-                // AppState::current_elevation_list(), so no cache to
-                // refresh — this resolve is the only thing that needs
-                // to fire on a VCP transition.
-                let prev_count = self
-                    .live
-                    .engine
-                    .borrow()
-                    .observations()
-                    .current_vcp_pattern
-                    .as_ref()
-                    .map(|p| p.elevations.len())
-                    .unwrap_or(0);
-                self.live
-                    .engine
-                    .borrow_mut()
-                    .observations_mut()
-                    .record_vcp(vcp);
-                if prev_count != vcp.elevations.len() {
-                    let entries = state::playback_manager::build_elevation_list_from_vcp(vcp);
-                    self.state
-                        .viz_state
-                        .elevation_selection
-                        .resolve_for_vcp(&entries);
-                }
-            }
-
-            let elev_changed = self
-                .live
-                .engine
-                .borrow_mut()
-                .observations_mut()
-                .record_in_progress_elevation(
-                    result.current_elevation,
-                    result.current_elevation_radials,
-                );
-            if elev_changed {
-                // The per-chunk az list (engine) and the decoder-side sweep
-                // start azimuth (live) reset together on an elevation change.
-                self.live.mode_state.on_in_progress_elevation_changed();
-            }
-
-            // Record per-chunk azimuth ranges for the current elevation
-            if let Some(cur_elev) = result.current_elevation {
-                for &(elev, first_az, last_az) in &result.chunk_elev_az_ranges {
-                    if elev == cur_elev {
-                        let radial_count = result
-                            .chunk_elev_spans
-                            .iter()
-                            .find(|&&(e, _, _, _)| e == elev)
-                            .map(|&(_, _, _, c)| c)
-                            .unwrap_or(0);
-                        self.live
-                            .engine
-                            .borrow_mut()
-                            .observations_mut()
-                            .push_elev_chunk((first_az, last_az, radial_count));
-                    }
-                }
-            }
-
-            if !result.sweeps.is_empty() {
-                self.live
-                    .engine
-                    .borrow_mut()
-                    .observations_mut()
-                    .update_sweep_metas(result.sweeps.clone());
-            }
-
-            self.live
-                .mode_state
-                .record_last_radial(result.last_radial_azimuth, result.last_radial_time_secs);
-
-            // ── Log: sweep storage ────────────────────────────────────
-            if !result.elevations_completed.is_empty() {
-                for &completed_elev in &result.elevations_completed {
-                    if let Some(meta) = result
-                        .sweeps
-                        .iter()
-                        .find(|s| s.elevation_number == completed_elev)
-                    {
-                        log::debug!(
-                            "{}: sweep stored elev={} angle={:.1}° start_az={:.1}° \
-                             time={:.1}–{:.1}s dur={:.2}s products={} vol_chunk={}",
-                            source,
-                            completed_elev,
-                            meta.elevation,
-                            meta.start_azimuth,
-                            meta.start,
-                            meta.end,
-                            meta.end - meta.start,
-                            result.sweeps_stored,
-                            chunk_vol_index,
-                        );
-                    } else {
-                        log::debug!(
-                            "{}: sweep stored elev={} (no CachedSweep) products={} vol_chunk={}",
-                            source,
-                            completed_elev,
-                            result.sweeps_stored,
-                            chunk_vol_index,
-                        );
-                    }
-                }
-            }
-
-            // ── Log + dispatch: live partial-sweep render ─────────────
-            // Always render whatever elevation is currently being
-            // accumulated — the user expects to see live progress
-            // regardless of which elevation was previously displayed.
-            if !result.is_end {
-                if let Some(target_elev) = result.current_elevation {
-                    let product = self.state.viz_state.product.to_worker_string().to_string();
-
-                    // Summarize what the accumulator holds for this elevation
-                    let accum_radials = result.current_elevation_radials.unwrap_or(0);
-                    let (accum_chunks, accum_az_range) = {
-                        let eng = self.live.engine.borrow();
-                        let obs = eng.observations();
-                        let chunks = obs
-                            .chunk_elev_spans
-                            .iter()
-                            .filter(|&&(e, _, _, _)| e == target_elev)
-                            .count();
-                        let az = obs
-                            .current_elev_chunks
-                            .iter()
-                            .fold((f32::MAX, f32::MIN), |(lo, hi), &(first_az, last_az, _)| {
-                                (lo.min(first_az), hi.max(last_az))
-                            });
-                        (chunks, az)
-                    };
-                    let az_str = if accum_az_range.0 < f32::MAX {
-                        format!("{:.1}°–{:.1}°", accum_az_range.0, accum_az_range.1)
-                    } else {
-                        "n/a".to_string()
-                    };
-
-                    log::debug!(
-                        "{}: render_live dispatched elev={} product={} accum_radials={} \
-                         accum_chunks={} accum_az={} vol_chunk={}",
-                        source,
-                        target_elev,
-                        product,
-                        accum_radials,
-                        accum_chunks,
-                        az_str,
-                        chunk_vol_index,
-                    );
-
-                    self.render.coordinator.render_live(target_elev, product);
+        // Execute the described actions in the struct's field order.
+        if let Some(secs) = actions.record_chunk_collection_end_secs {
+            self.live.channel.record_chunk_collection_end_secs(secs);
+        }
+        if let Some(lag) = actions.record_availability_lag_secs {
+            self.live.channel.record_availability_lag_secs(lag);
+        }
+        if let Some((elevation, product)) = actions.render_live {
+            self.render.coordinator.render_live(elevation, product);
+        }
+        if actions.promote_prev_texture {
+            if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
+                if let Ok(mut r) = renderer.lock() {
+                    r.promote_current_to_previous(gl);
                 }
             }
         }
-
-        // Refresh timeline when new elevations are written to cache
-        if !result.elevations_completed.is_empty() {
-            log::debug!(
-                "{}: {} new elevation(s) cached, refreshing timeline (total available: {:?})",
-                source,
-                result.elevations_completed.len(),
-                self.render.coordinator.available_elevations(),
-            );
-            self.state
-                .push_command(crate::core::Intent::RefreshTimeline {
-                    auto_position: !is_live,
-                });
-
-            if is_live {
-                self.state.status_message = format!(
-                    "Live: {} elevation(s) cached",
-                    self.render.coordinator.available_elevations().len()
-                );
-            }
+        if let Some(msg) = actions.status_message {
+            self.state.status_message = msg;
         }
-
-        if result.is_end {
-            if is_live {
-                if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
-                    if let Ok(mut r) = renderer.lock() {
-                        r.promote_current_to_previous(gl);
-                    }
-                }
-                let now = self.state.frame_now.secs();
-                {
-                    // Seal the diagnostics record from the engine's observations,
-                    // then reset them for the next volume (seal-before-reset).
-                    let eng = self.live.engine.borrow();
-                    self.live
-                        .mode_state
-                        .handle_volume_complete(now, eng.observations());
-                }
-                self.live.engine.borrow_mut().reset_volume_observations();
-                self.state.status_message = format!(
-                    "Live: volume complete ({} elevations)",
-                    self.render.coordinator.available_elevations().len()
-                );
-            } else {
-                let now = self.state.frame_now.secs();
-                self.playback.state.set_playback_position(now);
-            }
-
-            log::debug!(
-                "{}: volume complete — {} elevations, triggering render",
-                source,
-                self.render.coordinator.available_elevations().len()
-            );
-            self.state
-                .push_command(crate::core::Intent::RefreshTimeline {
-                    auto_position: !is_live,
-                });
-            self.state.push_command(crate::core::Intent::CheckEviction);
+        for intent in actions.intents {
+            self.state.push_command(intent);
+        }
+        if actions.mark_processing_done {
             self.state.session_stats.pipeline.mark_processing_done();
-
+        }
+        if actions.force_fresh_render {
             self.render.coordinator.force_fresh_render();
-            if !is_live {
-                self.request_worker_render();
-                if self.state.viz_state.volume_3d_enabled {
-                    self.request_worker_render_volume();
-                }
-            }
-        } else if !had_elevations && !self.render.coordinator.available_elevations().is_empty() {
-            log::debug!(
-                "{}: first elevation available, triggering initial render",
-                source
-            );
-            self.render.coordinator.force_fresh_render();
-            if !is_live {
-                self.request_worker_render();
-                if self.state.viz_state.volume_3d_enabled {
-                    self.request_worker_render_volume();
-                }
-            }
+        }
+        if actions.request_render {
+            self.request_worker_render();
+        }
+        if actions.request_volume_render {
+            self.request_worker_render_volume();
         }
     }
 

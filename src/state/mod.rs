@@ -564,7 +564,7 @@ impl AppState {
         }
         if let Some(vcp) = live_vcp_pattern {
             if !vcp.elevations.is_empty() {
-                return playback_manager::build_elevation_list_from_vcp(vcp);
+                return crate::core::build_elevation_list_from_vcp(vcp);
             }
         }
         Vec::new()
