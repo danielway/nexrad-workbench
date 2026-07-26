@@ -4,25 +4,11 @@
 //! from IndexedDB asynchronously. The UI can request a cache load and poll
 //! for results each frame.
 
-use crate::core::ScanMetadata;
+use crate::core::{CacheLoadResult, ScanMetadata};
 use crate::data::{DataFacade, SiteId, UnixMillis};
 use eframe::egui::Context;
 use std::cell::RefCell;
 use std::rc::Rc;
-
-/// Result of a cache load operation.
-#[derive(Debug, Clone)]
-pub(crate) enum CacheLoadResult {
-    /// Successfully loaded metadata for a site
-    Success {
-        site_id: String,
-        metadata: Vec<ScanMetadata>,
-        /// Total cache size across all sites (in bytes)
-        total_cache_size: u64,
-    },
-    /// Cache load failed with an error
-    Error(String),
-}
 
 /// Channel for async cache loading operations.
 ///
@@ -262,38 +248,6 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn success_result_clone_preserves_fields() {
-        let original = CacheLoadResult::Success {
-            site_id: "KTLX".to_string(),
-            metadata: vec![sample_metadata(), sample_metadata()],
-            total_cache_size: 100,
-        };
-        let cloned = original.clone();
-        match cloned {
-            CacheLoadResult::Success {
-                site_id,
-                metadata,
-                total_cache_size,
-            } => {
-                assert_eq!(site_id, "KTLX");
-                assert_eq!(metadata.len(), 2);
-                assert_eq!(total_cache_size, 100);
-            }
-            other => panic!("expected Success, got {:?}", other),
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn error_result_clone_preserves_message() {
-        let original = CacheLoadResult::Error("io failure".to_string());
-        let cloned = original.clone();
-        match cloned {
-            CacheLoadResult::Error(msg) => assert_eq!(msg, "io failure"),
-            other => panic!("expected Error, got {:?}", other),
-        }
-    }
-
-    #[wasm_bindgen_test]
     fn empty_success_result_round_trips_via_receiver() {
         // Mirrors the clear_cache success payload shape.
         let ch = CacheLoadChannel::new();
@@ -315,20 +269,5 @@ mod coverage_tests {
             }
             other => panic!("expected empty Success, got {:?}", other),
         }
-    }
-
-    #[wasm_bindgen_test]
-    fn result_debug_is_non_empty() {
-        let s = format!("{:?}", CacheLoadResult::Error("x".to_string()));
-        assert!(s.contains("Error"));
-        let s2 = format!(
-            "{:?}",
-            CacheLoadResult::Success {
-                site_id: "KDMX".to_string(),
-                metadata: Vec::new(),
-                total_cache_size: 5,
-            }
-        );
-        assert!(s2.contains("Success"));
     }
 }

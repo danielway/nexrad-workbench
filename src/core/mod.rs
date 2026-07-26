@@ -71,6 +71,10 @@ pub(crate) use domain::viz::{
     RenderProcessing, StormCellInfo, SweepIdentity,
 };
 pub(crate) use domain::volume::VolumeElevationRoster;
+pub(crate) use domain::worker::{
+    CacheLoadResult, ChunkIngestContext, ChunkIngestResult, DecodeResult, IngestContext,
+    IngestResult, RenderContext, VolumeData, VolumeSweepMeta,
+};
 pub(crate) use effect::{Effect, LocationResult};
 pub(crate) use live_mode::{
     should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase,

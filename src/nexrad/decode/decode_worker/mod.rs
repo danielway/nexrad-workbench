@@ -10,10 +10,9 @@ mod send;
 mod types;
 
 pub(crate) use pool::{default_pool_size, WorkerPool};
-pub(crate) use types::{
-    ChunkIngestContext, ChunkIngestResult, DecodeResult, IngestContext, IngestResult,
-    RenderContext, VolumeData, VolumeRenderContext, VolumeSweepMeta, WorkerOutcome,
-};
+pub(crate) use types::{VolumeRenderContext, WorkerOutcome};
+
+use crate::core::{ChunkIngestContext, IngestContext, RenderContext};
 
 use std::cell::RefCell;
 use std::collections::HashMap;

@@ -12,3 +12,4 @@ pub(crate) mod time;
 pub(crate) mod view;
 pub(crate) mod viz;
 pub(crate) mod volume;
+pub(crate) mod worker;

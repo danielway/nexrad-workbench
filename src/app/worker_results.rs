@@ -6,7 +6,10 @@
 //! plus the small helpers (`set_active_scan`, `advance_active_scan_chunk`,
 //! `clear_active_scan`) that bridge worker output and `RenderCoordinator`.
 
-use crate::core::{RadarTimeline, SweepIdentity};
+use crate::core::{
+    CacheLoadResult, ChunkIngestResult, DecodeResult, IngestResult, RadarTimeline, SweepIdentity,
+    VolumeData,
+};
 use crate::state::playback_manager::{sweep_cache_key, CachedSweepData};
 use crate::{data, nexrad, state, WorkbenchApp, MAX_SCAN_AGE_SECS};
 use eframe::egui;
@@ -59,9 +62,9 @@ impl WorkbenchApp {
         }
     }
 
-    fn handle_cache_load_outcome(&mut self, result: nexrad::CacheLoadResult) {
+    fn handle_cache_load_outcome(&mut self, result: CacheLoadResult) {
         match result {
-            nexrad::CacheLoadResult::Success {
+            CacheLoadResult::Success {
                 site_id,
                 metadata,
                 total_cache_size,
@@ -99,7 +102,7 @@ impl WorkbenchApp {
                     log::debug!("Timeline has {} contiguous range(s)", ranges.len());
                 }
             }
-            nexrad::CacheLoadResult::Error(msg) => {
+            CacheLoadResult::Error(msg) => {
                 log::error!("Cache load failed: {}", msg);
             }
         }
@@ -136,7 +139,7 @@ impl WorkbenchApp {
         self.render.coordinator.clear_scan_key();
     }
 
-    fn handle_ingested_outcome(&mut self, result: nexrad::IngestResult) {
+    fn handle_ingested_outcome(&mut self, result: IngestResult) {
         // Processing stays active through decode — don't mark done yet.
         // Transition to decoding phase. Don't remove the ghost
         // yet — it stays visible until the timeline refreshes
@@ -201,7 +204,7 @@ impl WorkbenchApp {
         }
     }
 
-    fn handle_chunk_ingested_outcome(&mut self, result: nexrad::ChunkIngestResult) {
+    fn handle_chunk_ingested_outcome(&mut self, result: ChunkIngestResult) {
         let is_live = self.live.mode_state.is_active();
         let source = "Realtime";
 
@@ -615,7 +618,7 @@ impl WorkbenchApp {
         }
     }
 
-    fn handle_decoded_outcome(&mut self, result: nexrad::DecodeResult) {
+    fn handle_decoded_outcome(&mut self, result: DecodeResult) {
         // Processing complete → transition to rendering.
         self.state.session_stats.pipeline.mark_processing_done();
         self.state.session_stats.pipeline.rendering = true;
@@ -805,7 +808,7 @@ impl WorkbenchApp {
         }
     }
 
-    fn handle_live_decoded_outcome(&mut self, result: nexrad::DecodeResult) {
+    fn handle_live_decoded_outcome(&mut self, result: DecodeResult) {
         log::debug!(
             "Live decode: {}x{}, {} radials, {}, {:.0}ms",
             result.azimuth_count,
@@ -965,7 +968,7 @@ impl WorkbenchApp {
         }
     }
 
-    fn handle_volume_decoded_outcome(&mut self, volume_data: nexrad::VolumeData) {
+    fn handle_volume_decoded_outcome(&mut self, volume_data: VolumeData) {
         log::debug!(
             "Volume decode complete: {} sweeps, {:.1}KB, product={}, {:.0}ms",
             volume_data.sweeps.len(),

@@ -28,13 +28,9 @@ pub(crate) use acquisition::download_queue;
 pub(crate) use render::color_table;
 
 pub(crate) use acquisition::acquisition_coordinator::AcquisitionCoordinator;
-pub(crate) use acquisition::cache_channel::CacheLoadResult;
 pub(crate) use acquisition::download::{ListingResult, NetworkStats};
 pub(crate) use acquisition::types::DownloadResult;
-pub(crate) use decode::decode_worker::{
-    default_pool_size, ChunkIngestResult, DecodeResult, IngestResult, VolumeData, VolumeSweepMeta,
-    WorkerOutcome, WorkerPool,
-};
+pub(crate) use decode::decode_worker::{default_pool_size, WorkerOutcome, WorkerPool};
 pub(crate) use live::realtime::{RealtimeChannel, RealtimeResult};
 pub(crate) use render::globe_radar_renderer::GlobeRadarRenderer;
 pub(crate) use render::gpu_renderer::RadarGpuRenderer;

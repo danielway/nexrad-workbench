@@ -2,6 +2,7 @@
 
 use super::types::*;
 use super::DecodeWorker;
+use crate::core::{ChunkIngestContext, IngestContext, RenderContext};
 use web_sys::Worker;
 
 // ---------------------------------------------------------------------------

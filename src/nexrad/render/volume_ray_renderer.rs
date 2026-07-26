@@ -6,8 +6,8 @@
 //! interpolation across azimuth, range, and elevation dimensions.
 
 use crate::core::RenderProcessing;
+use crate::core::VolumeSweepMeta;
 use crate::geo::Camera;
-use crate::nexrad::VolumeSweepMeta;
 use glow::HasContext;
 use std::sync::Arc;
 
