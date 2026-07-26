@@ -3,14 +3,20 @@
 The execution record for the remediation plan in
 [docs/arch-review-2026-07/README.md](../arch-review-2026-07/README.md). The
 review diagnosed the entropy as **five concurrent half-finished migrations**,
-each leaving two live conventions side by side; this program closed them, on
-branch `arch-health` (31 commits off the review commit).
+each leaving two live conventions side by side; this program closed four of
+them, on branch `arch-health` (33 commits off the review commit).
 
 The review's own meta-rule drove the sequencing: *finish or kill* — a migration
 is done only when the old convention is deleted and the doc is updated. Where
 finishing wasn't the right call, the decision is written down as settled
 (see [CORE_SHELL.md](../CORE_SHELL.md) → "What is explicitly NOT a violation")
 rather than left as a sixth half-migration.
+
+**Still open, and named here so it doesn't hide:** the fifth migration —
+transient UI state split across three homes (`subsystem::Chrome`'s 12 booleans,
+`AppState::datetime_picker`, and `ui::ModalStates`). Nothing in this program
+touched it, so every new modal or panel still has to guess which home to use.
+See [Not done](#not-done).
 
 ## Result
 
@@ -140,6 +146,35 @@ was replaced with the `upsert_scan` + `UpsertScanGuard` reality. TIMING.md and
 STREAMING.md were corrected — including a silent drift nobody had caught: the
 real-time scan key is now parsed from the Start chunk's volume header, not
 derived from upload time minus median lag.
+
+## Not done
+
+Named explicitly, because an unlisted gap is how the last round of entropy
+accumulated. None of these block feature work; the first two are the ones that
+will be *felt* while doing it.
+
+- **Transient UI state lives in three homes** (review finding #5, untouched):
+  `subsystem::Chrome` (12 visibility booleans), `AppState::datetime_picker` (a
+  modal's text buffers on the root struct), and `ui::ModalStates`. A new panel
+  or modal has no single obvious home — the exact "two live conventions" tax
+  this program existed to remove. `Chrome` is also the largest remaining source
+  of UI-side mutation (~60 sites), and its contents are arguably UI-local state
+  that landed in a subsystem; resolving placement may dissolve most of those
+  "violations" rather than migrate them.
+- **No test covers intent dispatch.** All 28 `Intent` variants are handled (the
+  `match` is exhaustive, so the compiler guarantees coverage) and every reducer
+  is unit-tested, but nothing asserts a variant reaches the *right* handler. A
+  mis-routed intent compiles and passes all 1,931 tests. This is the one defect
+  class the headless suite cannot see, which leaves the manual pass load-bearing
+  for wiring instead of once.
+- **`AppState` is still 34 fields** (review finding F4), roughly 40% per-frame
+  scratch and one-shot coordination flags.
+- **`streaming.rs`: 2,044 lines, one 884-line function.** Deliberately deferred
+  — a split reopens live-stream QA. Still the right call, and still the largest
+  single concentration of complexity in the tree. Decompose it *before*, not
+  during, the next substantial live-mode feature.
+- The optional Phase D leftovers: schema-first worker IPC, generators for the
+  hand-transcribed sites/cities tables, `too_many_arguments` bundling.
 
 ## Manual QA
 
