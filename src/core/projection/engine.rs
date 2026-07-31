@@ -341,6 +341,7 @@ impl ProjectionEngine {
                 cached: &self.cached_sweeps,
                 inventory: &self.inventory,
                 in_progress_elevation: self.in_progress.map(|(_, e)| e),
+                now_secs,
                 next_scan_boundary_start_secs: next_scan_boundary,
                 expected_count: obs.expected_count(),
                 received: &received,

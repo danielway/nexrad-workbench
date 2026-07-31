@@ -15,11 +15,38 @@ use crate::core::ChunkProjectionInfo;
 use nexrad_data::aws::realtime::VolumeIndex;
 use std::collections::HashMap;
 
-/// Status of one sweep, given what we have cached, what S3 has published, and
-/// what's currently being received. Pure.
+/// How long past a sweep's collection end we keep calling it "future expected"
+/// when it is neither cached nor in the inventory.
+///
+/// PRODUCT.md §3.2 draws the line at *availability* time, not collection time:
+/// "A chunk past its collection time is not yet late if the ingest-lag window
+/// hasn't elapsed." Typical NEXRAD ingest lag is 5-15 s, so this is generously
+/// past it — the inventory is polled, not pushed, so a tight threshold would
+/// flip sweeps that are genuinely still landing. Beyond it, the radar has
+/// demonstrably moved on and the sweep is simply archive data we don't hold.
+const AVAILABILITY_GRACE_SECS: f64 = 120.0;
+
+/// A `now` that sits inside the test fixtures' scan (which runs from ~1000), so
+/// the availability-grace branch stays dormant unless a test targets it
+/// directly. Shared by both test modules.
+#[cfg(test)]
+const NOW_DURING_SCAN: f64 = 1010.0;
+
+/// Status of one sweep, given what we have cached, what S3 has published, what's
+/// currently being received, and whether its moment has passed. Pure.
 ///
 /// Precedence: cached locally → currently receiving → published-but-not-ours →
 /// purely future.
+///
+/// The last step is time-aware for a reason. Without a clock, "not cached, not
+/// receiving, not in the inventory" was unconditionally `FutureExpected` — so a
+/// sweep whose collection time had long passed, and which we simply never
+/// downloaded (because of an elevation/product filter, say), kept rendering as
+/// *projected* forever. That is exactly backwards: the data isn't in the future,
+/// it's in the archive. Once the availability window has elapsed it reports as
+/// [`SweepProjectionStatus::AvailableNotCollected`] — the same state, word and
+/// visual already used for any other previously-collected data we chose not to
+/// download. No new vocabulary, no new cell state.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn derive_sweep_status(
     scan_start_secs: f64,
@@ -29,6 +56,8 @@ pub(crate) fn derive_sweep_status(
     cached: &CachedSweepSet,
     inventory: &KnownChunkInventory,
     in_progress_elevation: Option<u8>,
+    collection_end_secs: f64,
+    now_secs: f64,
 ) -> SweepProjectionStatus {
     if cached.has(scan_start_secs, elevation_number) {
         return SweepProjectionStatus::CollectedByUs;
@@ -37,10 +66,12 @@ pub(crate) fn derive_sweep_status(
         return SweepProjectionStatus::InProgress;
     }
     if published_in_inventory(inventory, volume, last_seq_of_sweep) {
-        SweepProjectionStatus::AvailableNotCollected
-    } else {
-        SweepProjectionStatus::FutureExpected
+        return SweepProjectionStatus::AvailableNotCollected;
     }
+    if now_secs > collection_end_secs + AVAILABILITY_GRACE_SECS {
+        return SweepProjectionStatus::AvailableNotCollected;
+    }
+    SweepProjectionStatus::FutureExpected
 }
 
 /// Whether a sweep's final chunk (or a later sequence / the End chunk) is known
@@ -76,6 +107,11 @@ pub(crate) struct SweepBuildCtx<'a> {
     /// Elevation currently being received (drives `InProgress`); current scan
     /// only.
     pub in_progress_elevation: Option<u8>,
+    /// Wall-clock now, so a sweep whose collection moment has passed stops
+    /// reporting as "projected" (see [`derive_sweep_status`]). The engine
+    /// already buckets this to whole seconds for its projection cache key, so
+    /// threading it here costs no extra rebuilds.
+    pub now_secs: f64,
     /// Authoritative next-scan start (e.g. archive `ScanBoundary.end`); when
     /// present, next-scan sweep times are shifted so the scan begins here.
     pub next_scan_boundary_start_secs: Option<f64>,
@@ -489,6 +525,8 @@ pub(crate) fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
             ctx.cached,
             ctx.inventory,
             ctx.in_progress_elevation,
+            b.end,
+            ctx.now_secs,
         );
         sweeps.push(SweepProjection {
             elevation_number: b.elevation_number,
@@ -528,6 +566,8 @@ pub(crate) fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
                 ctx.cached,
                 ctx.inventory,
                 None, // in-progress applies to the current scan only
+                agg.collection_end + delta,
+                ctx.now_secs,
             );
             sweeps.push(SweepProjection {
                 elevation_number: elev,
@@ -621,7 +661,17 @@ mod tests {
             chunk_type: nexrad_data::aws::realtime::ChunkType::Intermediate,
         });
         // Cached wins even though it's also "in progress" and published.
-        let status = derive_sweep_status(1000.0, 1, vol(1), 3, &cached, &inv, Some(1));
+        let status = derive_sweep_status(
+            1000.0,
+            1,
+            vol(1),
+            3,
+            &cached,
+            &inv,
+            Some(1),
+            1050.0,
+            NOW_DURING_SCAN,
+        );
         assert_eq!(status, SweepProjectionStatus::CollectedByUs);
     }
 
@@ -640,18 +690,153 @@ mod tests {
         });
         // In progress.
         assert_eq!(
-            derive_sweep_status(1000.0, 9, vol(1), 30, &cached, &inv, Some(9)),
+            derive_sweep_status(
+                1000.0,
+                9,
+                vol(1),
+                30,
+                &cached,
+                &inv,
+                Some(9),
+                1050.0,
+                NOW_DURING_SCAN
+            ),
             SweepProjectionStatus::InProgress
         );
         // Available (seq 5 known >= last_seq 5).
         assert_eq!(
-            derive_sweep_status(1000.0, 2, vol(1), 5, &cached, &inv, None),
+            derive_sweep_status(
+                1000.0,
+                2,
+                vol(1),
+                5,
+                &cached,
+                &inv,
+                None,
+                1050.0,
+                NOW_DURING_SCAN
+            ),
             SweepProjectionStatus::AvailableNotCollected
         );
-        // Future (last_seq 30 not yet published, not in progress).
+        // Future (last_seq 30 not yet published, not in progress) — and its
+        // collection moment has NOT passed yet, so "future" is still honest.
         assert_eq!(
-            derive_sweep_status(1000.0, 7, vol(1), 30, &cached, &inv, None),
+            derive_sweep_status(
+                1000.0,
+                7,
+                vol(1),
+                30,
+                &cached,
+                &inv,
+                None,
+                1050.0,
+                NOW_DURING_SCAN
+            ),
             SweepProjectionStatus::FutureExpected
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_sweep_whose_moment_has_passed_reads_as_available_not_projected() {
+        // The audit case: an elevation the user's filter meant we never
+        // downloaded. It is not cached, not receiving, and never showed up in
+        // the inventory — but its collection time is long gone, so calling it
+        // "projected" claims the data is still in the future when it is
+        // actually sitting in the archive.
+        let cached = CachedSweepSet::default();
+        let inv = empty_inventory();
+        let collection_end = 1050.0;
+        assert_eq!(
+            derive_sweep_status(
+                1000.0,
+                7,
+                vol(1),
+                30,
+                &cached,
+                &inv,
+                None,
+                collection_end,
+                collection_end + AVAILABILITY_GRACE_SECS + 1.0,
+            ),
+            SweepProjectionStatus::AvailableNotCollected
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn the_grace_window_protects_a_sweep_that_is_still_landing() {
+        // Inside the ingest-lag window a missing sweep is genuinely still
+        // expected — the inventory is polled, not pushed, so flipping early
+        // would relabel data that is about to arrive.
+        let cached = CachedSweepSet::default();
+        let inv = empty_inventory();
+        let collection_end = 1050.0;
+        for now in [
+            collection_end - 10.0,
+            collection_end,
+            collection_end + AVAILABILITY_GRACE_SECS,
+        ] {
+            assert_eq!(
+                derive_sweep_status(
+                    1000.0,
+                    7,
+                    vol(1),
+                    30,
+                    &cached,
+                    &inv,
+                    None,
+                    collection_end,
+                    now
+                ),
+                SweepProjectionStatus::FutureExpected
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn elapsed_time_never_overrides_cached_or_in_progress() {
+        // Precedence must hold: a sweep we actually hold stays CollectedByUs
+        // however long ago it was collected.
+        let mut cached = CachedSweepSet::default();
+        cached.set_for_scan(
+            1000.0,
+            &[crate::data::CachedSweep {
+                start: 1000.0,
+                end: 1010.0,
+                elevation: 1.0,
+                elevation_number: 1,
+                start_azimuth: 0.0,
+                cached_products: vec![],
+            }],
+        );
+        let inv = empty_inventory();
+        let long_after = 1_000_000.0;
+        assert_eq!(
+            derive_sweep_status(
+                1000.0,
+                1,
+                vol(1),
+                3,
+                &cached,
+                &inv,
+                None,
+                1050.0,
+                long_after
+            ),
+            SweepProjectionStatus::CollectedByUs
+        );
+        assert_eq!(
+            derive_sweep_status(
+                1000.0,
+                4,
+                vol(1),
+                3,
+                &cached,
+                &inv,
+                Some(4),
+                1050.0,
+                long_after
+            ),
+            SweepProjectionStatus::InProgress
         );
     }
 
@@ -699,6 +884,7 @@ mod tests {
             next_volume: vol(2),
             cached: &cached,
             inventory: &inv,
+            now_secs: NOW_DURING_SCAN,
             in_progress_elevation: Some(2),
             next_scan_boundary_start_secs: None,
             expected_count: 3,
@@ -781,6 +967,7 @@ mod tests {
             cached: &cached,
             inventory: &inv,
             in_progress_elevation: None,
+            now_secs: NOW_DURING_SCAN,
             next_scan_boundary_start_secs: None,
             expected_count: 2,
             received: &received,
@@ -823,6 +1010,7 @@ mod tests {
             cached: &cached,
             inventory: &inv,
             in_progress_elevation: None,
+            now_secs: NOW_DURING_SCAN,
             // Authoritative next-scan start is 1090, projection said 1100 → −10s.
             next_scan_boundary_start_secs: Some(1090.0),
             expected_count: 1,
@@ -1155,7 +1343,17 @@ mod coverage_tests {
             nexrad_data::aws::realtime::ChunkType::End,
         );
         assert_eq!(
-            derive_sweep_status(1000.0, 6, vol(1), 100, &cached, &inv, None),
+            derive_sweep_status(
+                1000.0,
+                6,
+                vol(1),
+                100,
+                &cached,
+                &inv,
+                None,
+                1050.0,
+                NOW_DURING_SCAN
+            ),
             SweepProjectionStatus::AvailableNotCollected
         );
     }
@@ -1174,7 +1372,17 @@ mod coverage_tests {
             nexrad_data::aws::realtime::ChunkType::End,
         );
         assert_eq!(
-            derive_sweep_status(1000.0, 3, vol(1), 5, &cached, &inv, Some(3)),
+            derive_sweep_status(
+                1000.0,
+                3,
+                vol(1),
+                5,
+                &cached,
+                &inv,
+                Some(3),
+                1050.0,
+                NOW_DURING_SCAN
+            ),
             SweepProjectionStatus::InProgress
         );
     }
@@ -1262,6 +1470,7 @@ mod coverage_tests {
             cached: &cached,
             inventory: &inv,
             in_progress_elevation: None,
+            now_secs: NOW_DURING_SCAN,
             next_scan_boundary_start_secs: None, // delta = 0
             expected_count: 1,
             received: &received,

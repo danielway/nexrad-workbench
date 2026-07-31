@@ -383,10 +383,14 @@ fn render_realtime_volume_tooltip(
         if let Some(sp) = hovered_sweep {
             let elev_num = sp.elevation_number;
 
+            // One vocabulary per concept. "In archive" matches the scan
+            // inspector's cell label and the scan-level "In cloud archive"
+            // header; the bare word "Available" was a third phrasing for the
+            // same state and read as a capability rather than a location.
             let (state_label, state_color) = match sp.availability() {
                 SweepAvailability::Cached => ("On device", tl_colors::status_cached()),
                 SweepAvailability::Collecting => ("Collecting now", ui_colors::ACTIVE),
-                SweepAvailability::Available => ("Available", tl_colors::status_available()),
+                SweepAvailability::Available => ("In archive", tl_colors::status_available()),
                 SweepAvailability::Projected => ("Projected", tl_colors::status_available()),
             };
             tooltip_header(
