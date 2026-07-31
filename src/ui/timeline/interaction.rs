@@ -1,21 +1,32 @@
 //! Timeline strip interaction (spec §12 rows 1, 2, 4).
 //!
 //! Gesture grammar:
+//!   - **Middle-drag** or **ctrl/cmd-drag** pans the view. This is the modeless
+//!     pan: it never moves the playhead and never touches the selection. The
+//!     minimap thumb and horizontal scroll are the other two pan surfaces.
 //!   - **Primary press** seeks the playhead immediately (on press, not
 //!     release); **primary drag** scrubs it continuously, following the
 //!     pointer. Starting a scrub pauses playback and detaches the tether.
 //!   - **Vertical scroll / pinch** zooms anchored at the cursor / pinch center
-//!     (routed through the hysteretic tier machine). **Horizontal scroll**
-//!     (trackpad two-finger) pans the view. View pan's primary home is the
-//!     minimap; horizontal scroll is the on-strip alias.
+//!     (routed through the hysteretic tier machine).
 //!   - **Alt-drag or right-drag** creates the loop/selection range; **shift**
 //!     is kept as an established alias. Selection creation never seeks and the
 //!     pan/zoom paths never clear a selection.
+//!   - **Right-click** opens the scan inspector. (There is deliberately no
+//!     long-press alias here: the strip shares one response across seek, scrub
+//!     and select, so a long-press fired mid-scrub — see the UX audit. The
+//!     mobile scrubber keeps its long-press, on its own dedicated response,
+//!     because touch has no secondary button.)
+//!
+//! Which gesture *wins* a given frame is not decided here — it is
+//! [`crate::core::resolve_gesture`], a pure function with unit tests. This
+//! module only collects raw pointer facts and performs the resulting mutation.
 //!
 //! Every seek path detaches the playhead first (`live.detach_playhead`, which
 //! keeps the stream ingesting) so `set_playback_position`'s Free-mode assert
 //! holds.
 
+use crate::core::{clamp_view_start, resolve_gesture, StripGesture, StripInput};
 use crate::state::AppState;
 use eframe::egui::{self, PointerButton, Rect};
 
@@ -44,103 +55,18 @@ pub(super) fn handle_timeline_interaction(
 ) -> InteractionOutcome {
     let mut outcome = InteractionOutcome::default();
 
-    let (shift_held, alt_held) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
-    // The loop/selection-creation modifier set: alt or shift (spec: alt/right
-    // for the range, shift kept as the established alias). Right-drag is the
-    // secondary button, handled per-branch.
-    let selection_mod = shift_held || alt_held;
-    let right_down = response.dragged_by(PointerButton::Secondary)
-        || response.drag_started_by(PointerButton::Secondary);
-
-    // -- Loop / selection range (alt-drag, right-drag, shift alias) ----------
-    // Click variants: shift/alt-click stretches a range from the playhead to
-    // the click. (Right-click has no click variant — it would clash with a
-    // future context menu; only right-DRAG selects.)
-    if selection_mod && response.clicked() {
-        if let Some(pos) = response.interact_pointer_pos() {
-            let clicked_ts = frame.x_to_ts(pos.x);
-            let current_pos = playback.state.playback_position();
-            playback.state.set_selection(current_pos, clicked_ts);
-            maybe_anchor_to_live(live, playback, frame.now_secs);
-            playback.state.apply_selection_as_bounds();
-            if let Some(range) = playback.state.selection_range() {
-                state.selection_just_finalized = Some(range);
-            }
-            let duration_mins = (clicked_ts - current_pos).abs() / 60.0;
-            log::debug!("Range from playhead: {:.0} minutes", duration_mins);
-        }
-    }
-
-    // A selection drag begins on either the selection modifier (primary) or the
-    // secondary button. Once in progress it is owned by `selection_in_progress`
-    // and tracked regardless of which trigger started it.
-    let selection_drag_started =
-        (selection_mod && response.drag_started_by(PointerButton::Primary)) || right_down;
-    if selection_drag_started && !playback.state.selection_in_progress() {
-        if let Some(pos) = response.interact_pointer_pos() {
-            playback.state.begin_selection_drag(frame.x_to_ts(pos.x));
-        }
-    }
-
-    if playback.state.selection_in_progress() && response.dragged() {
-        if let Some(pos) = response.interact_pointer_pos() {
-            playback.state.update_selection_drag(frame.x_to_ts(pos.x));
-        }
-    }
-
-    if response.drag_stopped() && playback.state.end_selection_drag() {
-        maybe_anchor_to_live(live, playback, frame.now_secs);
-        playback.state.apply_selection_as_bounds();
-        if let Some((start, end)) = playback.state.selection_range() {
-            state.selection_just_finalized = Some((start, end));
-            log::debug!("Selected time range: {:.0} minutes", (end - start) / 60.0);
-        }
-    }
-
-    // -- Scan inspector: right-click (desktop) / long-press (touch) ----------
-    // A right *click* without a drag opens the scan inspector for the scan
-    // under the pointer (a right *drag* selects, handled above — so we only
-    // open on a clean secondary click that did not become a drag). On touch
-    // there is no secondary button, so a long-press is the entry point. Both
-    // resolve the pointer x to a scan-start via the merged view, matching the
-    // strip's own join, and never seek.
-    let secondary_clicked =
-        response.clicked_by(PointerButton::Secondary) && !playback.state.selection_in_progress();
-    if secondary_clicked {
-        if let Some(pos) = response.interact_pointer_pos() {
-            open_inspector_at(state, chrome, frame, pos.x);
-        }
-    }
-    if let Some(pos) = crate::ui::long_press::detect(ui.ctx(), response, response.id) {
-        // A long-press that began as a selection drag is owned by the
-        // selection; only open the inspector when no selection is in progress.
-        if !playback.state.selection_in_progress() {
-            open_inspector_at(state, chrome, frame, pos.x);
-        }
-    }
-
-    // While a selection drag is live, no seek/scrub/pan path runs.
-    let selecting = playback.state.selection_in_progress();
-
-    // -- Press-seek (primary press, immediate) -------------------------------
-    // `is_pointer_button_down_on` + `primary_pressed` fires the moment the
-    // button goes down over the strip — not on release like `clicked()`. Alt /
-    // shift presses begin a selection instead (handled above), and presses on a
-    // suppressed control (now-cap, failed tick) never seek.
+    let (shift_held, alt_held, cmd_held) = ui.input(|i| {
+        (
+            i.modifiers.shift,
+            i.modifiers.alt,
+            // egui's `command` is cmd on macOS and ctrl elsewhere — exactly the
+            // platform-correct pan modifier, and unclaimed on every pointer
+            // surface in this app.
+            i.modifiers.command,
+        )
+    });
     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
-    if primary_pressed && !selection_mod && !selecting && response.is_pointer_button_down_on() {
-        if let Some(pos) = response.interact_pointer_pos() {
-            if !suppress_rects.iter().any(|r| r.contains(pos)) {
-                seek_to(state, live, playback, frame.x_to_ts(pos.x));
-            }
-        }
-    }
 
-    // -- Primary-drag scrub --------------------------------------------------
-    // Continuous seek following the pointer. The first frame of the scrub
-    // pauses playback (so the playhead stays where the user puts it) and
-    // detaches the tether. Button-filtered so right/alt drags don't scrub.
-    //
     // A drag that BEGINS on a suppressed control (a loop handle whose hit rect
     // extends up into the strip) must not also scrub — the handle owns that
     // drag. We can't read the drag origin from egui's Response, so remember on
@@ -162,28 +88,77 @@ pub(super) fn handle_timeline_interaction(
         .memory(|m| m.data.get_temp::<bool>(drag_lock_id))
         .unwrap_or(false);
 
-    if response.drag_started_by(PointerButton::Primary)
-        && !selection_mod
-        && !selecting
-        && !scrub_suppressed
-    {
-        playback.state.playing = false;
-        live.detach_playhead(
-            &mut playback.state,
-            state.frame_now.secs(),
-            state.pause_stream_while_reviewing,
-        );
-    }
-    if response.dragged_by(PointerButton::Primary)
-        && !selection_mod
-        && !selecting
-        && !scrub_suppressed
-    {
-        if let Some(pos) = response.interact_pointer_pos() {
-            seek_to(state, live, playback, frame.x_to_ts(pos.x));
-            outcome.scrubbing = true;
+    let pointer_pos = response.interact_pointer_pos();
+    let input = StripInput {
+        primary_pressed: primary_pressed && response.is_pointer_button_down_on(),
+        primary_drag_started: response.drag_started_by(PointerButton::Primary),
+        primary_dragging: response.dragged_by(PointerButton::Primary),
+        secondary_down: response.dragged_by(PointerButton::Secondary)
+            || response.drag_started_by(PointerButton::Secondary),
+        secondary_clicked: response.clicked_by(PointerButton::Secondary),
+        middle_dragging: response.dragged_by(PointerButton::Middle),
+        clicked: response.clicked(),
+        selection_mod: shift_held || alt_held,
+        pan_mod: cmd_held,
+        selection_in_progress: playback.state.selection_in_progress(),
+        on_suppressed_rect: pointer_pos
+            .is_some_and(|p| suppress_rects.iter().any(|r| r.contains(p))),
+        scrub_suppressed,
+        archive_tier: frame.tier == crate::core::TimelineTier::Archive,
+    };
+    let gesture = resolve_gesture(&input);
+
+    match gesture {
+        // -- Pan (middle-drag / ctrl-drag) -----------------------------------
+        // Content follows the pointer: dragging right moves the view earlier.
+        // Clamped to the addressable era so a flick at the widest zoom can't
+        // strand the view centuries away.
+        StripGesture::Pan => {
+            let delta_x = ui.input(|i| i.pointer.delta().x);
+            if delta_x != 0.0 && frame.zoom > 0.0 {
+                pan_view(state, playback, -delta_x as f64 / frame.zoom);
+            }
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         }
+
+        // -- Loop / selection range ------------------------------------------
+        StripGesture::Select => {
+            handle_selection(state, live, playback, response, frame, &input);
+        }
+
+        // -- Scan inspector (right-click) -------------------------------------
+        StripGesture::Inspect => {
+            if let Some(pos) = pointer_pos {
+                open_inspector_at(state, chrome, frame, pos.x);
+            }
+        }
+
+        // -- Press-seek and drag-scrub ---------------------------------------
+        StripGesture::Seek => {
+            // The first frame of a scrub pauses playback (so the playhead stays
+            // where the user puts it) and detaches the tether.
+            if input.primary_drag_started {
+                playback.state.playing = false;
+                live.detach_playhead(
+                    &mut playback.state,
+                    state.frame_now.secs(),
+                    state.pause_stream_while_reviewing,
+                );
+            }
+            if let Some(pos) = pointer_pos {
+                seek_to(state, live, playback, frame.x_to_ts(pos.x));
+            }
+            outcome.scrubbing = input.primary_dragging;
+        }
+
+        StripGesture::None => {}
     }
+
+    // A scrub in progress suppresses the reactive prefetch's debounce-free
+    // anchor fast path, so dragging the playhead across the archive doesn't
+    // fire a download per scan crossed. Read next frame by
+    // `pump_implicit_prefetch` (which runs before the UI renders).
+    state.pointer_scrub_active = outcome.scrubbing;
 
     // -- Pinch zoom (touch, anchored at the pinch center) --------------------
     // Consume egui multi-touch only when the pinch is over the timeline rect, so
@@ -212,13 +187,83 @@ pub(super) fn handle_timeline_interaction(
         }
         // Horizontal scroll (trackpad two-finger) pans the view. Never clears
         // the selection (spec: pan/zoom preserve loop bounds).
-        if scroll.x != 0.0 {
-            let delta_secs = -scroll.x as f64 / frame.zoom;
-            playback.state.timeline_view_start += delta_secs;
+        if scroll.x != 0.0 && frame.zoom > 0.0 {
+            pan_view(state, playback, -scroll.x as f64 / frame.zoom);
         }
     }
 
     outcome
+}
+
+/// Shift the timeline view by `delta_secs`, clamped to the addressable archive
+/// era. The single pan-write seam: every pan surface on the strip routes here
+/// so the clamp and the view-follow release can't be forgotten at one of them.
+fn pan_view(state: &AppState, playback: &mut crate::subsystem::Playback, delta_secs: f64) {
+    // A deliberate pan releases the live view-follow nudge, which would
+    // otherwise snap the view back to "now" on the very next frame.
+    playback.state.view_follows_now = false;
+    let span = playback.state.view_width_secs();
+    playback.state.timeline_view_start = clamp_view_start(
+        playback.state.timeline_view_start + delta_secs,
+        span,
+        crate::core::NEXRAD_ARCHIVE_START_SECS,
+        state.frame_now.secs(),
+    );
+}
+
+/// Run the loop/selection-range lifecycle for a frame the arbitration awarded
+/// to [`StripGesture::Select`]: the modifier click-to-extend, drag start,
+/// drag update, and the finalize-on-release that arms the bulk fetch.
+fn handle_selection(
+    state: &mut AppState,
+    live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
+    response: &egui::Response,
+    frame: &super::TimelineFrame<'_>,
+    input: &StripInput,
+) {
+    // Click variant: shift/alt-click stretches a range from the playhead to the
+    // click. (Right-click has no click variant — it would clash with a future
+    // context menu; only right-DRAG selects.)
+    if input.selection_mod && input.clicked && !input.selection_in_progress {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let clicked_ts = frame.x_to_ts(pos.x);
+            let current_pos = playback.state.playback_position();
+            playback.state.set_selection(current_pos, clicked_ts);
+            maybe_anchor_to_live(live, playback, frame.now_secs);
+            playback.state.apply_selection_as_bounds();
+            if let Some(range) = playback.state.selection_range() {
+                state.selection_just_finalized = Some(range);
+            }
+            let duration_mins = (clicked_ts - current_pos).abs() / 60.0;
+            log::debug!("Range from playhead: {:.0} minutes", duration_mins);
+        }
+    }
+
+    // A selection drag begins on either the selection modifier (primary) or the
+    // secondary button. Once in progress it is owned by `selection_in_progress`
+    // and tracked regardless of which trigger started it.
+    let drag_started = (input.selection_mod && input.primary_drag_started) || input.secondary_down;
+    if drag_started && !playback.state.selection_in_progress() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            playback.state.begin_selection_drag(frame.x_to_ts(pos.x));
+        }
+    }
+
+    if playback.state.selection_in_progress() && response.dragged() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            playback.state.update_selection_drag(frame.x_to_ts(pos.x));
+        }
+    }
+
+    if response.drag_stopped() && playback.state.end_selection_drag() {
+        maybe_anchor_to_live(live, playback, frame.now_secs);
+        playback.state.apply_selection_as_bounds();
+        if let Some((start, end)) = playback.state.selection_range() {
+            state.selection_just_finalized = Some((start, end));
+            log::debug!("Selected time range: {:.0} minutes", (end - start) / 60.0);
+        }
+    }
 }
 
 /// Open the scan inspector for the scan under screen-x `x`. Resolves the

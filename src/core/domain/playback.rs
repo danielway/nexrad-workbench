@@ -750,6 +750,13 @@ pub(crate) struct PlaybackState {
     /// Timeline view position - absolute timestamp of left edge (Unix seconds)
     pub timeline_view_start: f64,
 
+    /// Whether the view may be nudged to keep "now" on screen while streaming
+    /// (`WorkbenchApp::keep_now_on_screen`). A deliberate user pan clears it —
+    /// otherwise the nudge fights the pan every frame and panning away from the
+    /// live edge is impossible. Re-armed by [`Self::center_view_on`], which
+    /// every "take me back to the data" path already routes through.
+    pub view_follows_now: bool,
+
     /// The user's timeline selection, if any (see [`TimeSelection`]).
     pub selection: Option<TimeSelection>,
 
@@ -897,8 +904,14 @@ impl PlaybackState {
     }
 
     /// Center the timeline view on a given timestamp.
+    ///
+    /// Also re-arms [`Self::view_follows_now`]: every deliberate "put me back
+    /// where the data is" path (live attach, `CenterTimelineOnNow`, a fresh
+    /// timeline load) routes through here, so this is the one seam where
+    /// view-following is legitimately restored after a user pan turned it off.
     pub(crate) fn center_view_on(&mut self, ts: f64) {
         self.timeline_view_start = ts - self.view_width_secs() / 2.0;
+        self.view_follows_now = true;
     }
 
     // ------------------------------------------------------------------

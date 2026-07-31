@@ -15,6 +15,16 @@ impl WorkbenchApp {
         // they can't drift against each other within a frame.
         self.state.frame_now = crate::core::FrameNow::capture();
 
+        // Safety release for the scrub level. The timeline strip owns this
+        // flag, but if the strip stops rendering mid-drag (mobile switch,
+        // panel collapse) its clear would never run and the reactive prefetch
+        // would stay suppressed for the rest of the session. No button down
+        // means no drag, so this can only ever release a stale flag — during a
+        // real scrub the primary button is held.
+        if !ctx.input(|i| i.pointer.any_down()) {
+            self.state.pointer_scrub_active = false;
+        }
+
         // Record frame time for FPS meter (dev mode only)
         if self.state.dev_mode {
             let dt = ctx.input(|i| i.stable_dt);

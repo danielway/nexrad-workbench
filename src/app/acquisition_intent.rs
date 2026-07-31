@@ -47,7 +47,8 @@ impl WorkbenchApp {
         // normally); the queue not paused; the data-saver
         // `autofetch_while_scrubbing` policy on (explicit range selections
         // and the inspector's tap-to-fetch still fetch — the user asked for
-        // those — but seeking/scrubbing does not).
+        // those — but seeking/scrubbing does not); and no scrub drag currently
+        // holding the playhead (requests wait for the drag to settle).
         let playhead_attached = self.playback.state.time_model.is_pinned()
             || self.playback.state.time_model.is_lookback();
         if !self.render.coordinator.has_worker()
@@ -55,6 +56,7 @@ impl WorkbenchApp {
                 playhead_attached,
                 self.acquisition.state.is_paused(),
                 self.state.autofetch_while_scrubbing,
+                self.state.pointer_scrub_active,
             )
         {
             return;

@@ -27,14 +27,22 @@ use std::hash::{Hash, Hasher};
 /// Whether the playhead-driven reactive prefetch (settled window + anchor
 /// fast-path) may run this frame. Suppressed while the playhead is attached to
 /// the live edge (the stream owns acquisition there), while the queue is
-/// manually paused, or when the data-saver `autofetch_while_scrubbing` policy is
-/// off.
+/// manually paused, when the data-saver `autofetch_while_scrubbing` policy is
+/// off, or while a scrub drag is still in progress.
+///
+/// The `scrub_in_progress` gate is what makes dragging the playhead across the
+/// archive cost one fetch instead of one per scan crossed: the settle debounce
+/// alone can't do it, because `pump_anchor_fast_path` deliberately runs ahead
+/// of the debounce so a *click* into a shadow region fetches immediately. A
+/// press-and-release still fetches on the very next frame; only the sustained
+/// drag is held back.
 pub(crate) fn reactive_prefetch_allowed(
     playhead_attached: bool,
     queue_paused: bool,
     autofetch_while_scrubbing: bool,
+    scrub_in_progress: bool,
 ) -> bool {
-    !playhead_attached && !queue_paused && autofetch_while_scrubbing
+    !playhead_attached && !queue_paused && autofetch_while_scrubbing && !scrub_in_progress
 }
 
 /// How a just-finalized timeline selection should be fetched.
@@ -774,18 +782,18 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn prefetch_runs_when_free_and_autofetch_on() {
-        assert!(reactive_prefetch_allowed(false, false, true));
+        assert!(reactive_prefetch_allowed(false, false, true, false));
     }
 
     #[wasm_bindgen_test]
     fn prefetch_suppressed_when_autofetch_off() {
-        assert!(!reactive_prefetch_allowed(false, false, false));
+        assert!(!reactive_prefetch_allowed(false, false, false, false));
     }
 
     #[wasm_bindgen_test]
     fn prefetch_suppressed_when_attached_or_paused() {
-        assert!(!reactive_prefetch_allowed(true, false, true));
-        assert!(!reactive_prefetch_allowed(false, true, true));
+        assert!(!reactive_prefetch_allowed(true, false, true, false));
+        assert!(!reactive_prefetch_allowed(false, true, true, false));
     }
 
     // ── decide_selection_gate ──
@@ -864,26 +872,38 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn prefetch_all_false_is_blocked_by_autofetch_off() {
         // Not attached, not paused, but autofetch off → blocked.
-        assert!(!reactive_prefetch_allowed(false, false, false));
+        assert!(!reactive_prefetch_allowed(false, false, false, false));
     }
 
     #[wasm_bindgen_test]
     fn prefetch_blocked_when_attached_even_with_everything_else_permissive() {
         // Attached dominates regardless of paused/autofetch combos.
-        assert!(!reactive_prefetch_allowed(true, false, true));
-        assert!(!reactive_prefetch_allowed(true, true, true));
-        assert!(!reactive_prefetch_allowed(true, false, false));
-        assert!(!reactive_prefetch_allowed(true, true, false));
+        assert!(!reactive_prefetch_allowed(true, false, true, false));
+        assert!(!reactive_prefetch_allowed(true, true, true, false));
+        assert!(!reactive_prefetch_allowed(true, false, false, false));
+        assert!(!reactive_prefetch_allowed(true, true, false, false));
     }
 
     #[wasm_bindgen_test]
-    fn prefetch_requires_all_three_conditions() {
-        // The single allowing combination is exactly (!attached, !paused, autofetch).
-        assert!(reactive_prefetch_allowed(false, false, true));
+    fn prefetch_requires_all_four_conditions() {
+        // The single allowing combination is exactly
+        // (!attached, !paused, autofetch, !scrubbing).
+        assert!(reactive_prefetch_allowed(false, false, true, false));
         // Flipping any one input flips the result to false.
-        assert!(!reactive_prefetch_allowed(true, false, true));
-        assert!(!reactive_prefetch_allowed(false, true, true));
-        assert!(!reactive_prefetch_allowed(false, false, false));
+        assert!(!reactive_prefetch_allowed(true, false, true, false));
+        assert!(!reactive_prefetch_allowed(false, true, true, false));
+        assert!(!reactive_prefetch_allowed(false, false, false, false));
+        assert!(!reactive_prefetch_allowed(false, false, true, true));
+    }
+
+    #[wasm_bindgen_test]
+    fn prefetch_blocked_while_a_scrub_drag_is_in_progress() {
+        // The audit case: dragging the playhead across the archive must not
+        // fire a fetch per scan crossed. Every other input is permissive here,
+        // so the scrub flag is provably the thing doing the blocking.
+        assert!(!reactive_prefetch_allowed(false, false, true, true));
+        // …and releasing the drag re-allows it on the very next frame.
+        assert!(reactive_prefetch_allowed(false, false, true, false));
     }
 
     // ── decide_selection_gate: edge spans ──

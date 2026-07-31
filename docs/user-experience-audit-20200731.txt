@@ -1,0 +1,27 @@
+Feedback on UI
+    Timeline UI
+        The jump-to-datetime picker could be improved - it is clunky and difficult to use quickly right now.
+        Panning around the timeline is painful because I keep trying to click and drag, but now that moves my playback position. How could this be improved? Do we need to go back to click+drag panning, or do we need another keyboard combo or something?
+        Upper minimap
+            What determines the time range of the top bar? At smaller zooms it seems uselessly zoomed-out, but simply zooming it in will make the wider zooms less useful.
+            The availability strips are colored too intensely and it's difficult to see where cached data is.
+        Lower main strip
+            The volume scan time range only represents the downloaded data, not the full volume's time.
+            Zoom level
+                Micro
+                    The VCP text displays over the sweeps in an unpleasant way.
+                Macro
+                    If I download a full volume scan, I only see a tick mark at the start of the scan: all the intermediary elevations vanish from the timeline without getting their own tick marks.
+                    Have we lost the ability to zoom out to months and years? That was a great feature.
+    Live playback
+        How do I know if I'm actively downloading live data or not? I'm having a hard time separating that from whether my playback position is "locked" to "now"/live.
+        When I'm streaming live data, could I have a "play" option that plays within X time or frames of "now"?
+        When I'm playing a range of time near "now"/live, we should avoid repeatedly requesting mPING and related "recent" sources.
+        If I have an elevation/product filter selected, and my playback position passes a projected sweep which doesn't match, we still show it as "projected" in the tooltip despite our expectation of it having been collected.
+    Historical playback
+        Point selection
+            When dragging the playback position around, we shouldn't be firing-off requests automatically until my mouse up.
+            What is the "Scan inspector" and how is it triggered? I keep accidentally hitting it when scrubbing around.
+            Starting/resuming playback with a point position causes the playback to jump to crazy points in the cache/history other than what is visible in the timeline. It seems like playback should be limited in some way to what's visible in that case.
+        Range selection
+            The frame indicators are narrower than the logic that determines whether they are included in the range selection. I wonder if they should be updated to occupy the full width of time they represent, so that the range selection can be compared against them accurately.

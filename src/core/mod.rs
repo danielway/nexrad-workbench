@@ -40,6 +40,7 @@ pub(crate) mod render;
 pub(crate) mod render_loop;
 pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;
+pub(crate) mod timeline_interaction;
 pub(crate) mod timeline_view;
 pub(crate) mod timing;
 pub(crate) mod transport;
@@ -91,6 +92,9 @@ pub(crate) use live_radar_model::LiveRadarModel;
 pub(crate) use persist::{decide_persist, persist_due, PersistDecision};
 pub(crate) use streaming_filter::StreamingFilter;
 pub(crate) use streaming_plan::{ChunkProjectedTimes, ChunkProjectionInfo, StreamingPlan};
+pub(crate) use timeline_interaction::{
+    clamp_view_start, resolve_gesture, StripGesture, StripInput, NEXRAD_ARCHIVE_START_SECS,
+};
 pub(crate) use timeline_view::{
     FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView,
     SCAN_JOIN_TOLERANCE_SECS,

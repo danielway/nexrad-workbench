@@ -290,6 +290,12 @@ impl WorkbenchApp {
     /// visible range. (Relocated from the old `playing`-gated block in the
     /// bottom panel so it runs in both LIVE-NOW and LIVE-LOOKBACK.)
     fn keep_now_on_screen(&mut self, now: f64) {
+        // A deliberate user pan turns view-following off; without this the
+        // nudge below re-snaps every frame and panning away from the live edge
+        // while streaming is impossible.
+        if !self.playback.state.view_follows_now {
+            return;
+        }
         let view_width = self.playback.state.view_width_secs();
         if view_width <= 0.0 {
             return;

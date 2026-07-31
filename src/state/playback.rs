@@ -50,6 +50,7 @@ impl Default for PlaybackState {
             timeline_zoom: zoom,
             timeline_tier: Self::seed_tier(zoom, 1000.0),
             timeline_view_start: now - view_width_secs / 2.0,
+            view_follows_now: true,
             selection: None,
             loop_window: None,
             pending_loop_window: None,

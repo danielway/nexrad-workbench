@@ -86,6 +86,21 @@ pub(crate) struct AppState {
     pub start_live_on_site_select: bool,
 
     // ------------------------------------------------------------------------
+    // Cross-frame interaction levels — written by the UI during render, read by
+    // the pumps at the TOP of the following frame. Unlike the one-shot handoffs
+    // above these are levels, not edges: they stay set for a gesture's whole
+    // lifetime and are cleared by the same writer when it ends.
+    /// Whether a primary-drag scrub is currently underway on the timeline
+    /// strip. Suppresses the reactive prefetch's debounce-free anchor fast
+    /// path, so dragging the playhead across the archive no longer fires a
+    /// download for every scan crossed — the fetch happens once the drag
+    /// settles. Written by `ui::timeline::interaction`, read by
+    /// `pump_implicit_prefetch` (which runs before the UI renders, so it sees
+    /// the previous frame's value — correct here, since the flag is held for
+    /// the drag's duration and cleared the frame after it ends).
+    pub pointer_scrub_active: bool,
+
+    // ------------------------------------------------------------------------
     // View and rendering state.
     /// Visualization state (canvas, zoom/pan, product selection)
     pub viz_state: VizState,
