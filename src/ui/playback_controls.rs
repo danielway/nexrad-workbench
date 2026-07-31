@@ -1,6 +1,7 @@
 //! Playback controls: play/pause, speed, datetime picker, live indicator, and session stats.
 
 use super::colors::{live, timeline as tl_colors, ui as ui_colors};
+use super::modal_states::PickerField;
 use super::overflow_menu::overflow_menu;
 use super::timeline::format_timestamp_compact;
 use crate::core::{LoopMode, PlaybackMode, PlaybackSpeed};
@@ -29,6 +30,29 @@ pub(super) fn render_datetime_picker_popup(
     let tz_label = if use_local { "Local" } else { "UTC" };
     let popup_id = ui.make_persistent_id("datetime_picker_popup");
 
+    // Intercept a whole-timestamp paste before the individual field editors
+    // consume it, so pasting "2026-07-31T14:30:00Z" fills the whole form
+    // instead of dumping the string into whichever box happens to have focus.
+    // Single-field pastes ("07" into the month) fall through untouched.
+    let pasted = ui.input_mut(|i| {
+        let mut found: Option<String> = None;
+        i.events.retain(|e| match e {
+            egui::Event::Paste(s)
+                if found.is_none() && super::modal_states::looks_like_timestamp(s) =>
+            {
+                found = Some(s.clone());
+                false
+            }
+            _ => true,
+        });
+        found
+    });
+    if let Some(s) = pasted {
+        if !picker.apply_paste(&s, use_local) {
+            state.status_message = format!("Couldn't read \"{s}\" as a date/time");
+        }
+    }
+
     egui::Area::new(popup_id)
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -45,23 +69,11 @@ pub(super) fn render_datetime_picker_popup(
                     // the user edits it.
                     ui.horizontal(|ui| {
                         ui.label("Date:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut picker.year)
-                                .desired_width(45.0)
-                                .hint_text("YYYY"),
-                        );
+                        nudgeable_field(ui, &mut picker.year, PickerField::Year, 45.0, "YYYY");
                         ui.label("-");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut picker.month)
-                                .desired_width(25.0)
-                                .hint_text("MM"),
-                        );
+                        nudgeable_field(ui, &mut picker.month, PickerField::Month, 25.0, "MM");
                         ui.label("-");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut picker.day)
-                                .desired_width(25.0)
-                                .hint_text("DD"),
-                        );
+                        nudgeable_field(ui, &mut picker.day, PickerField::Day, 25.0, "DD");
                     });
 
                     ui.add_space(4.0);
@@ -69,25 +81,20 @@ pub(super) fn render_datetime_picker_popup(
                     // Time row
                     ui.horizontal(|ui| {
                         ui.label("Time:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut picker.hour)
-                                .desired_width(25.0)
-                                .hint_text("HH"),
-                        );
+                        nudgeable_field(ui, &mut picker.hour, PickerField::Hour, 25.0, "HH");
                         ui.label(":");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut picker.minute)
-                                .desired_width(25.0)
-                                .hint_text("MM"),
-                        );
+                        nudgeable_field(ui, &mut picker.minute, PickerField::Minute, 25.0, "MM");
                         ui.label(":");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut picker.second)
-                                .desired_width(25.0)
-                                .hint_text("SS"),
-                        );
+                        nudgeable_field(ui, &mut picker.second, PickerField::Second, 25.0, "SS");
                         ui.label(tz_label);
                     });
+
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("↑/↓ adjusts a field · paste a full timestamp anywhere")
+                            .size(9.0)
+                            .weak(),
+                    );
 
                     ui.add_space(8.0);
 
@@ -168,6 +175,34 @@ pub(super) fn render_datetime_picker_popup(
     }
 }
 
+/// One zero-padded numeric field of the datetime picker, with arrow-key nudge.
+///
+/// Borrows the buffer directly (rather than taking `&mut DateTimePickerState`)
+/// so the six calls can sit inside one `ui.horizontal` without re-borrowing the
+/// picker; the clamping itself lives in `DateTimePickerState::nudge`.
+fn nudgeable_field(
+    ui: &mut egui::Ui,
+    buf: &mut String,
+    field: PickerField,
+    width: f32,
+    hint: &str,
+) {
+    let response = ui.add(
+        egui::TextEdit::singleline(buf)
+            .desired_width(width)
+            .hint_text(hint),
+    );
+    if !response.has_focus() {
+        return;
+    }
+    let delta = ui.input(|i| {
+        i.key_pressed(egui::Key::ArrowUp) as i64 - i.key_pressed(egui::Key::ArrowDown) as i64
+    });
+    if delta != 0 {
+        super::modal_states::nudge_buf(buf, field, delta);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_playback_controls(
     ui: &mut egui::Ui,
@@ -231,6 +266,9 @@ pub(super) fn render_playback_controls(
     // re-tethers / starts a stream; stopping the stream is owned by the timeline
     // now-line cap.
     render_live_button(ui, state, live, playback);
+    // The tether's companion: whether data is actually still arriving. Silent
+    // when there is no stream.
+    render_stream_activity(ui, state, live);
     ui.separator();
 
     // Play/Pause button — disabled in Idle (no data to play). While tethered
@@ -545,6 +583,12 @@ fn render_utc_toggle(ui: &mut egui::Ui, state: &mut AppState) {
 ///
 /// If the stream dies underneath a detached state, `mode_state.is_active()`
 /// flips false and the button falls through to GO LIVE (risk 4).
+///
+/// **This button reports the *tether* only.** Whether data is actually still
+/// arriving is a separate, orthogonal fact, and it is carried by the activity
+/// chip [`render_stream_activity`] renders beside it — a single control's fill
+/// cannot honestly encode two independent booleans, which is why "am I
+/// downloading?" used to be indistinguishable from "am I locked to now?".
 fn render_live_button(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -608,6 +652,55 @@ fn render_live_button(
     {
         state.push_command(crate::core::Intent::GoLive);
     }
+}
+
+/// Stream-activity chip: **is data arriving right now?** — the other half of
+/// the fact the LIVE button used to carry alone.
+///
+/// Renders nothing when there is no stream, so it costs no chrome in the common
+/// archive case. When there is one it names the activity and shows the running
+/// chunk count, which is the part that visibly moves: a number that ticks up is
+/// unambiguous evidence of ingestion in a way a static fill never was. The
+/// glyph pulses only while data is genuinely moving, so motion means exactly
+/// one thing. Neutral/amber tones only — the accent budget's red stays with the
+/// live edge and the tether.
+fn render_stream_activity(ui: &mut egui::Ui, state: &AppState, live: &crate::subsystem::Live) {
+    use crate::core::StreamActivity;
+
+    let activity = live.mode_state.stream_activity(state.frame_now.secs());
+    if activity == StreamActivity::Off {
+        return;
+    }
+
+    let dark = state.is_dark;
+    let color = match activity {
+        StreamActivity::Stalled => live::WAITING,
+        StreamActivity::Receiving => ui_colors::value(dark),
+        _ => ui_colors::label(dark),
+    };
+    // The pulse is applied to alpha so the chip breathes without changing hue.
+    let color = if activity.is_animated() {
+        let pulse = live.mode_state.pulse_alpha();
+        let alpha = (150.0 + 105.0 * pulse) as u8;
+        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+    } else {
+        color
+    };
+
+    let chunks = live.mode_state.chunks_received;
+    let text = format!(
+        "{} {} · {chunks}",
+        egui_phosphor::regular::WAVE_SINE,
+        activity.label()
+    );
+    ui.label(RichText::new(text).size(10.0).monospace().color(color))
+        .on_hover_text(match activity {
+            StreamActivity::Connecting => "Connecting to the live feed",
+            StreamActivity::Receiving => "Receiving live data now",
+            StreamActivity::Waiting => "Stream healthy — waiting for the next chunk",
+            StreamActivity::Stalled => "No data has arrived for a while",
+            StreamActivity::Off => "",
+        });
 }
 
 /// Render session statistics (right-aligned in the bottom bar).

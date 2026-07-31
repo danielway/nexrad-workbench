@@ -95,6 +95,88 @@ impl LivePhase {
     }
 }
 
+/// How long a `WaitingForChunk` phase may run before the stream reads as
+/// stalled rather than merely between chunks. NEXRAD chunks land every ~10-15 s;
+/// four times the upper end is late enough to mean something is wrong without
+/// crying wolf on a slow volume.
+const STREAM_STALL_SECS: f64 = 60.0;
+
+/// Whether the live stream is actually pulling data right now.
+///
+/// This is deliberately **orthogonal to whether the playhead is tethered**. The
+/// LIVE button conflated the two — solid meant tethered, hollow meant detached,
+/// and "is data still arriving?" was only ever implied by the button's
+/// existence. Fill cannot carry two independent booleans, so a detached user
+/// had no way to tell a healthy background stream from a dead one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum StreamActivity {
+    /// No stream running.
+    Off,
+    /// Opening the connection / locating the live volume.
+    Connecting,
+    /// A chunk is being received right now.
+    Receiving,
+    /// Between chunks, within the normal cadence.
+    Waiting,
+    /// Past the normal cadence with nothing arriving.
+    Stalled,
+}
+
+impl StreamActivity {
+    /// Short lower-case word for the activity chip.
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            StreamActivity::Off => "off",
+            StreamActivity::Connecting => "connecting",
+            StreamActivity::Receiving => "receiving",
+            StreamActivity::Waiting => "waiting",
+            StreamActivity::Stalled => "stalled",
+        }
+    }
+
+    /// Whether the chip should animate. Only true while data is actually
+    /// moving, so motion means exactly one thing.
+    pub(crate) fn is_animated(&self) -> bool {
+        matches!(self, StreamActivity::Connecting | StreamActivity::Receiving)
+    }
+}
+
+/// Derive the stream's activity from the live phase and how long it has sat
+/// there. Pure.
+pub(crate) fn derive_stream_activity(
+    phase: LivePhase,
+    phase_elapsed_secs: f64,
+    stall_after_secs: f64,
+) -> StreamActivity {
+    match phase {
+        LivePhase::Idle => StreamActivity::Off,
+        LivePhase::Error => StreamActivity::Stalled,
+        LivePhase::AcquiringLock => {
+            // A connect that never completes is a stall, not a connect.
+            if phase_elapsed_secs > stall_after_secs {
+                StreamActivity::Stalled
+            } else {
+                StreamActivity::Connecting
+            }
+        }
+        LivePhase::Streaming => StreamActivity::Receiving,
+        LivePhase::WaitingForChunk => {
+            if phase_elapsed_secs > stall_after_secs {
+                StreamActivity::Stalled
+            } else {
+                StreamActivity::Waiting
+            }
+        }
+    }
+}
+
+impl LiveModeState {
+    /// This frame's [`StreamActivity`], using the shared stall threshold.
+    pub(crate) fn stream_activity(&self, now: f64) -> StreamActivity {
+        derive_stream_activity(self.phase, self.phase_elapsed_secs(now), STREAM_STALL_SECS)
+    }
+}
+
 /// Reason why live mode was exited.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum LiveExitReason {
@@ -780,6 +862,93 @@ mod tests {
             assert_eq!(s.phase, phase, "no-op from {:?}", phase);
             assert_eq!(s.phase_started_at, Some(7.0), "timestamp from {:?}", phase);
         }
+    }
+
+    // ── derive_stream_activity: orthogonal to the tether ──
+
+    #[wasm_bindgen_test]
+    fn activity_maps_each_phase() {
+        let fresh = 1.0;
+        assert_eq!(
+            derive_stream_activity(LivePhase::Idle, fresh, STREAM_STALL_SECS),
+            StreamActivity::Off
+        );
+        assert_eq!(
+            derive_stream_activity(LivePhase::AcquiringLock, fresh, STREAM_STALL_SECS),
+            StreamActivity::Connecting
+        );
+        assert_eq!(
+            derive_stream_activity(LivePhase::Streaming, fresh, STREAM_STALL_SECS),
+            StreamActivity::Receiving
+        );
+        assert_eq!(
+            derive_stream_activity(LivePhase::WaitingForChunk, fresh, STREAM_STALL_SECS),
+            StreamActivity::Waiting
+        );
+        assert_eq!(
+            derive_stream_activity(LivePhase::Error, fresh, STREAM_STALL_SECS),
+            StreamActivity::Stalled
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn waiting_past_the_threshold_reads_as_stalled() {
+        // The distinction the user actually needs: "between chunks" vs "nothing
+        // is coming". Both are non-Receiving, so a static indicator conflates
+        // them.
+        assert_eq!(
+            derive_stream_activity(LivePhase::WaitingForChunk, STREAM_STALL_SECS, 60.0),
+            StreamActivity::Waiting
+        );
+        assert_eq!(
+            derive_stream_activity(LivePhase::WaitingForChunk, STREAM_STALL_SECS + 0.1, 60.0),
+            StreamActivity::Stalled
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_connect_that_never_completes_reads_as_stalled() {
+        assert_eq!(
+            derive_stream_activity(LivePhase::AcquiringLock, 999.0, 60.0),
+            StreamActivity::Stalled
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn only_moving_data_animates() {
+        // Motion in the chip must mean exactly one thing.
+        assert!(StreamActivity::Receiving.is_animated());
+        assert!(StreamActivity::Connecting.is_animated());
+        assert!(!StreamActivity::Waiting.is_animated());
+        assert!(!StreamActivity::Stalled.is_animated());
+        assert!(!StreamActivity::Off.is_animated());
+    }
+
+    #[wasm_bindgen_test]
+    fn every_activity_has_a_label() {
+        for a in [
+            StreamActivity::Off,
+            StreamActivity::Connecting,
+            StreamActivity::Receiving,
+            StreamActivity::Waiting,
+            StreamActivity::Stalled,
+        ] {
+            assert!(!a.label().is_empty());
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn activity_is_independent_of_the_tether() {
+        // The whole point of the split: a detached playhead over a healthy
+        // stream and a tethered playhead over the same stream report the same
+        // activity, because activity is derived from the phase alone.
+        let mut s = LiveModeState::new();
+        s.start(0.0);
+        s.start_streaming(10.0);
+        assert_eq!(s.stream_activity(10.5), StreamActivity::Receiving);
+        // Nothing about detaching touches the phase.
+        s.detached_since = Some(10.5);
+        assert_eq!(s.stream_activity(10.5), StreamActivity::Receiving);
     }
 
     // ── is_active() truth table ──

@@ -102,6 +102,129 @@ impl DateTimePickerState {
     pub(crate) fn close(&mut self) {
         self.open = false;
     }
+
+    /// Fill every field from a pasted timestamp, returning whether it parsed.
+    ///
+    /// Accepts RFC-3339 / ISO-8601 with an offset (absolute — converted into
+    /// the displayed timezone), naive ISO-8601 to second, minute, or day
+    /// precision (taken verbatim in the displayed timezone, which is what the
+    /// user sees and means), and bare epoch seconds/milliseconds.
+    pub(crate) fn apply_paste(&mut self, text: &str, use_local: bool) -> bool {
+        let t = text.trim();
+        if t.is_empty() {
+            return false;
+        }
+
+        // Absolute: carries its own offset, so route through the timezone
+        // conversion `init_from_timestamp` already implements.
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(t) {
+            self.init_from_timestamp(dt.timestamp() as f64, use_local);
+            return true;
+        }
+
+        // Bare epoch. Guarded on an all-digit run of plausible length so a
+        // stray "2026" is treated as a year elsewhere, not as 1970.
+        if t.len() >= 10 && t.len() <= 13 && t.bytes().all(|b| b.is_ascii_digit()) {
+            if let Ok(n) = t.parse::<f64>() {
+                let secs = if t.len() > 10 { n / 1000.0 } else { n };
+                self.init_from_timestamp(secs, use_local);
+                return true;
+            }
+        }
+
+        // Naive: no zone to honor, so the components ARE what the user wants to
+        // see in the fields. Filling them verbatim avoids a pointless
+        // round-trip through a timezone the string never specified.
+        for fmt in [
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M",
+            "%Y-%m-%d %H:%M",
+        ] {
+            if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(t, fmt) {
+                self.set_parts(dt.date(), dt.time());
+                return true;
+            }
+        }
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d") {
+            self.set_parts(d, chrono::NaiveTime::MIN);
+            return true;
+        }
+
+        false
+    }
+
+    /// Write date/time components into the six buffers.
+    fn set_parts(&mut self, date: chrono::NaiveDate, time: chrono::NaiveTime) {
+        use chrono::{Datelike, Timelike};
+        self.year = format!("{:04}", date.year());
+        self.month = format!("{:02}", date.month());
+        self.day = format!("{:02}", date.day());
+        self.hour = format!("{:02}", time.hour());
+        self.minute = format!("{:02}", time.minute());
+        self.second = format!("{:02}", time.second());
+    }
+}
+
+/// One editable component of [`DateTimePickerState`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PickerField {
+    Year,
+    Month,
+    Day,
+    Hour,
+    Minute,
+    Second,
+}
+
+impl PickerField {
+    /// `(min, max, zero-pad width)` for the field.
+    ///
+    /// The year floor is the start of the NEXRAD archive era and the ceiling is
+    /// far enough out to never obstruct; the rest are calendar/clock ranges.
+    /// Day tops out at 31 without consulting the month — the real validity
+    /// check is `to_timestamp`, which rejects e.g. Feb 31 and already drives
+    /// the "Invalid date/time" warning.
+    fn range(self) -> (i64, i64, usize) {
+        match self {
+            PickerField::Year => (1991, 2100, 4),
+            PickerField::Month => (1, 12, 2),
+            PickerField::Day => (1, 31, 2),
+            PickerField::Hour => (0, 23, 2),
+            PickerField::Minute | PickerField::Second => (0, 59, 2),
+        }
+    }
+}
+
+/// Nudge one field buffer by `delta`, clamped to the field's range and
+/// re-zero-padded.
+///
+/// Six free-text boxes make "go back an hour" a retype-and-hope operation;
+/// arrow keys make it one keystroke. Clamping rather than wrapping is
+/// deliberate: a correct wrap would have to carry into the neighbouring field
+/// (23:00 + 1h is *tomorrow*), and a wrap that silently doesn't carry lands the
+/// user a day off without telling them.
+///
+/// A free function so the widget layer can drive a single borrowed buffer
+/// without re-borrowing the whole picker. Unparseable buffers are left alone
+/// rather than snapped to an arbitrary value.
+pub(crate) fn nudge_buf(buf: &mut String, field: PickerField, delta: i64) {
+    let (lo, hi, width) = field.range();
+    let Ok(current) = buf.trim().parse::<i64>() else {
+        return;
+    };
+    let next = (current + delta).clamp(lo, hi);
+    *buf = format!("{:0width$}", next, width = width);
+}
+
+/// Whether a pasted string looks like a whole timestamp rather than a single
+/// field's digits.
+///
+/// The picker intercepts whole-timestamp pastes before the field editors see
+/// them; this keeps pasting "07" into the month box working normally.
+pub(crate) fn looks_like_timestamp(s: &str) -> bool {
+    let t = s.trim();
+    t.contains('-') || t.contains(':') || (t.len() >= 10 && t.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Owns all transient modal UI state held outside [`crate::state::AppState`].
@@ -275,5 +398,147 @@ mod datetime_picker_tests {
             ..Default::default()
         };
         assert!(p.to_timestamp(false).is_none());
+    }
+
+    // ---- nudge_buf --------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn nudge_steps_and_keeps_zero_padding() {
+        let mut b = "07".to_string();
+        nudge_buf(&mut b, PickerField::Month, 1);
+        assert_eq!(b, "08");
+        nudge_buf(&mut b, PickerField::Month, -2);
+        assert_eq!(b, "06");
+        let mut y = "2026".to_string();
+        nudge_buf(&mut y, PickerField::Year, -1);
+        assert_eq!(y, "2025");
+    }
+
+    #[wasm_bindgen_test]
+    fn nudge_clamps_instead_of_wrapping() {
+        // Wrapping 23:00 + 1h to 00:00 without carrying into the day would put
+        // the user a day off with no indication.
+        let mut h = "23".to_string();
+        nudge_buf(&mut h, PickerField::Hour, 1);
+        assert_eq!(h, "23");
+        let mut m = "00".to_string();
+        nudge_buf(&mut m, PickerField::Minute, -1);
+        assert_eq!(m, "00");
+        let mut mo = "12".to_string();
+        nudge_buf(&mut mo, PickerField::Month, 5);
+        assert_eq!(mo, "12");
+    }
+
+    #[wasm_bindgen_test]
+    fn nudge_leaves_unparseable_buffers_alone() {
+        // Mid-edit garbage must not be silently rewritten under the cursor.
+        let mut b = "".to_string();
+        nudge_buf(&mut b, PickerField::Hour, 1);
+        assert_eq!(b, "");
+        let mut j = "ab".to_string();
+        nudge_buf(&mut j, PickerField::Hour, 1);
+        assert_eq!(j, "ab");
+    }
+
+    #[wasm_bindgen_test]
+    fn year_floor_is_the_archive_era() {
+        let mut y = "1991".to_string();
+        nudge_buf(&mut y, PickerField::Year, -1);
+        assert_eq!(y, "1991");
+    }
+
+    // ---- apply_paste ------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn paste_naive_iso_fills_fields_verbatim() {
+        // No zone in the string → the components are exactly what the user
+        // means, whichever display timezone is active.
+        for use_local in [false, true] {
+            let mut p = DateTimePickerState::default();
+            assert!(p.apply_paste("2026-07-31T14:30:05", use_local));
+            assert_eq!(
+                (
+                    p.year.as_str(),
+                    p.month.as_str(),
+                    p.day.as_str(),
+                    p.hour.as_str(),
+                    p.minute.as_str(),
+                    p.second.as_str()
+                ),
+                ("2026", "07", "31", "14", "30", "05")
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn paste_accepts_space_separator_and_minute_precision() {
+        let mut p = DateTimePickerState::default();
+        assert!(p.apply_paste("2026-07-31 14:30", false));
+        assert_eq!(p.hour, "14");
+        assert_eq!(p.minute, "30");
+        assert_eq!(p.second, "00");
+    }
+
+    #[wasm_bindgen_test]
+    fn paste_date_only_lands_at_midnight() {
+        let mut p = DateTimePickerState::default();
+        assert!(p.apply_paste("2026-07-31", false));
+        assert_eq!(p.day, "31");
+        assert_eq!(p.hour, "00");
+        assert_eq!(p.second, "00");
+    }
+
+    #[wasm_bindgen_test]
+    fn paste_rfc3339_with_offset_is_converted_not_copied() {
+        // 14:30 at +02:00 is 12:30 UTC — an offset-carrying string must be
+        // converted, not have its wall-clock digits copied across.
+        let mut p = DateTimePickerState::default();
+        assert!(p.apply_paste("2026-07-31T14:30:00+02:00", false));
+        assert_eq!(p.hour, "12");
+        assert_eq!(p.minute, "30");
+    }
+
+    #[wasm_bindgen_test]
+    fn paste_epoch_seconds_and_millis() {
+        // 1_774_000_000 = 2026-03-20T05:46:40Z
+        let mut secs = DateTimePickerState::default();
+        assert!(secs.apply_paste("1774000000", false));
+        assert_eq!(secs.year, "2026");
+        let mut millis = DateTimePickerState::default();
+        assert!(millis.apply_paste("1774000000000", false));
+        assert_eq!(millis.year, "2026");
+        assert_eq!(millis.month, secs.month);
+        assert_eq!(millis.day, secs.day);
+    }
+
+    #[wasm_bindgen_test]
+    fn paste_rejects_garbage_without_touching_the_fields() {
+        let mut p = DateTimePickerState::default();
+        p.year = "2020".to_string();
+        assert!(!p.apply_paste("not a date", false));
+        assert!(!p.apply_paste("", false));
+        assert_eq!(p.year, "2020");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_bare_year_is_not_mistaken_for_an_epoch() {
+        // "2026" must not become 1970-01-01T00:33:46 — the digit-run guard
+        // requires at least 10 digits.
+        let mut p = DateTimePickerState::default();
+        assert!(!p.apply_paste("2026", false));
+    }
+
+    // ---- looks_like_timestamp --------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn whole_timestamps_are_intercepted_single_fields_are_not() {
+        assert!(looks_like_timestamp("2026-07-31T14:30:00Z"));
+        assert!(looks_like_timestamp("2026-07-31"));
+        assert!(looks_like_timestamp("14:30"));
+        assert!(looks_like_timestamp("1774000000"));
+        // A single field's digits must still paste into that field normally.
+        assert!(!looks_like_timestamp("07"));
+        assert!(!looks_like_timestamp("2026"));
+        assert!(!looks_like_timestamp(""));
     }
 }

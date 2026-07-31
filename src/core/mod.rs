@@ -86,7 +86,7 @@ pub(crate) use domain::worker::{
 pub(crate) use effect::{Effect, LocationResult};
 pub(crate) use geo_layers::GeoLayer;
 pub(crate) use live_mode::{
-    should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase,
+    should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase, StreamActivity,
 };
 pub(crate) use live_radar_model::LiveRadarModel;
 pub(crate) use persist::{decide_persist, persist_due, PersistDecision};
