@@ -4,18 +4,19 @@
 //!
 //! * **Live-tailing** (playhead pinned to now or replaying the lookback
 //!   loop): refetch on a fixed time interval so newly-submitted reports
-//!   surface as wall-clock advances.
+//!   surface as wall-clock advances. The window is anchored to **wall-clock
+//!   now**, not the playhead — see [`fetch_window_ms`].
 //! * **Historical** (playhead parked or scrubbing through the archive):
 //!   the data is static, so refetch only when the playhead nears the edge
 //!   of the window we already hold. Scrubbing within a covered span costs
 //!   no requests, and forward playback rolls through the pre-fetched
-//!   forward half before the next refetch is due.
+//!   forward half before the next refetch is due. The window is centered on
+//!   the playhead.
 //!
-//! In both regimes a single fetch covers a symmetric ±30 min window around
-//! the playhead; the future half is buffer (never displayed — see
-//! `StormReport::visible_at`) so forward motion doesn't refetch per minute.
-//! Does nothing while the layer is hidden or no key is configured. Results
-//! are drained from the channel each frame.
+//! A fetch covers a 2-hour window; in the historical regime the future half is
+//! buffer (never displayed — see `StormReport::visible_at`) so forward motion
+//! doesn't refetch per minute. Does nothing while the layer is hidden or no key
+//! is configured. Results are drained from the channel each frame.
 
 use eframe::egui;
 
@@ -24,19 +25,33 @@ use super::channel::{MpingChannel, MpingEvent};
 use crate::core::MpingState;
 use crate::data::get_site;
 
-/// Half-window around the current playback position, in seconds. A fetch
-/// spans `[p - HALF_WINDOW, p + HALF_WINDOW]`.
-const HALF_WINDOW_SECS: i64 = 30 * 60;
+/// Half-window around the fetch anchor, in seconds. A fetch spans
+/// `[anchor - HALF_WINDOW, anchor + HALF_WINDOW]`.
+///
+/// Widened from 30 min: with the old value the *comfortable* zone (the window
+/// minus both refetch margins) was only 30 minutes wide, so looping over
+/// anything longer than that re-fetched at both ends of every pass. Two hours
+/// of coverage puts every realistic loop comfortably inside one window.
+const HALF_WINDOW_SECS: i64 = 60 * 60;
 
 /// How close (in seconds) the playhead may come to either edge of the
-/// covered window before a refetch is triggered. With a 30-min half-window
-/// this leaves 15 min of headroom, so steady forward playback refetches
-/// once per ~15 min of content.
-const REFETCH_MARGIN_SECS: f64 = 15.0 * 60.0;
+/// covered window before a refetch is triggered.
+///
+/// With the 2-hour window this leaves a 100-minute comfortable zone (was 30),
+/// which is what actually stops loop playback from thrashing the API.
+const REFETCH_MARGIN_SECS: f64 = 10.0 * 60.0;
 
 /// How often (wall-clock ms) to refetch while live-tailing, to pick up
 /// reports submitted since the last poll.
-const LIVE_POLL_INTERVAL_MS: f64 = 60_000.0;
+///
+/// Matches the NWS alerts poller. mPING reports are crowd-sourced and arrive
+/// minutes after the fact, so a 2-minute freshness poll costs nothing
+/// perceptible and halves the request rate of a long live session.
+const LIVE_POLL_INTERVAL_MS: f64 = 120_000.0;
+
+/// How far past `now` the live-tailing window reaches, to absorb clock skew
+/// between the browser and report timestamps.
+const LIVE_LOOKAHEAD_SECS: i64 = 5 * 60;
 
 /// Minimum wall-clock ms between retries after a fetch error, so a
 /// misconfigured key or a CORS failure doesn't hammer the server.
@@ -157,9 +172,8 @@ impl MpingManager {
             return;
         }
 
-        let center_secs = inputs.playback_secs as i64;
-        let min_ms = (center_secs - HALF_WINDOW_SECS) * 1000;
-        let max_ms = (center_secs + HALF_WINDOW_SECS) * 1000;
+        let (min_ms, max_ms) =
+            fetch_window_ms(inputs.playback_secs, now_ms / 1000.0, inputs.pinned_to_now);
         let params = FetchParams {
             center_lon: site.lon,
             center_lat: site.lat,
@@ -216,11 +230,16 @@ impl MpingManager {
                 log::warn!("mPING fetch failed: {}", msg);
                 mping.last_error = Some(msg.clone());
                 errors.push(crate::core::AppError::Mping { message: msg });
-                // Drop any stale reports so the user isn't shown them as if
-                // they were fresh.
-                mping.reports.clear();
-                mping.total_count = 0;
-                mping.selected_report_id = None;
+                // Reports are deliberately KEPT. A transient failure (a blip, a
+                // rate limit) used to blank the whole overlay, which is a worse
+                // lie than showing reports a minute stale — `last_error` is
+                // already surfaced, so the user knows the feed is unhealthy.
+                //
+                // But the coverage claim must go: it is written optimistically
+                // at spawn time, so leaving it would have us believe we hold a
+                // window we never received, and suppress the refetch once the
+                // error clears.
+                self.covered = None;
             }
         }
     }
@@ -238,6 +257,36 @@ impl MpingManager {
 /// `playback_ms` is the playhead in epoch ms; `pinned` selects the
 /// live-tailing regime; `now_ms`/`last_poll_ms` drive the live poll
 /// interval. Error-retry backoff is handled by the caller.
+/// The `[min, max]` epoch-ms window a fetch should request.
+///
+/// **While live-tailing the window is anchored to wall-clock `now`, not to the
+/// playhead.** Anchoring on the playhead meant that during a lookback loop —
+/// which is a "pinned" mode — the requested bounds oscillated with the loop
+/// phase, so every poll asked for a different window and reports flickered in
+/// and out of the render-side filter (which compares against the bounds
+/// recorded when the request was *spawned*). A now-anchored window is stable
+/// and monotonic, and a lookback loop of any realistic length sits entirely
+/// inside it.
+///
+/// Detached/archive browsing keeps the playhead anchor: there is no live edge
+/// to track, and the reports that matter are the ones around what is on screen.
+///
+/// Pure, so the anchoring rule is testable without a clock.
+fn fetch_window_ms(playback_secs: f64, now_secs: f64, pinned: bool) -> (i64, i64) {
+    if pinned {
+        let now = now_secs as i64;
+        return (
+            (now - HALF_WINDOW_SECS) * 1000,
+            (now + LIVE_LOOKAHEAD_SECS) * 1000,
+        );
+    }
+    let center = playback_secs as i64;
+    (
+        (center - HALF_WINDOW_SECS) * 1000,
+        (center + HALF_WINDOW_SECS) * 1000,
+    )
+}
+
 fn refetch_needed(
     covered: Option<&Covered>,
     site_id: &str,
@@ -309,8 +358,11 @@ mod tests {
     #[wasm_bindgen_test]
     fn refetch_near_low_edge() {
         let c = covered_at(100.0);
-        // Window is [70, 130] min; comfortable low edge is 70 + 15 = 85 min.
-        let p = 84.0 * MIN_MS;
+        // Window is [70, 130] min; the comfortable zone starts one margin in.
+        // Derived from the constant so retuning the margin doesn't silently
+        // invert the test's meaning.
+        let margin_min = REFETCH_MARGIN_SECS / 60.0;
+        let p = (70.0 + margin_min - 1.0) * MIN_MS;
         assert!(refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
     }
 
@@ -318,8 +370,8 @@ mod tests {
     #[wasm_bindgen_test]
     fn refetch_near_high_edge() {
         let c = covered_at(100.0);
-        // Comfortable high edge is 130 - 15 = 115 min.
-        let p = 116.0 * MIN_MS;
+        let margin_min = REFETCH_MARGIN_SECS / 60.0;
+        let p = (130.0 - margin_min + 1.0) * MIN_MS;
         assert!(refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
     }
 
@@ -501,5 +553,65 @@ mod coverage_tests {
         // 10 min past epoch is far below the [70, 130] window.
         let p = 10.0 * MIN_MS;
         assert!(refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+    }
+
+    // ── fetch_window_ms: where the window is anchored ──
+
+    #[wasm_bindgen_test]
+    fn historical_window_is_centered_on_the_playhead() {
+        let playhead = 1_000_000.0;
+        let (lo, hi) = fetch_window_ms(playhead, 9_000_000.0, false);
+        assert_eq!(lo, (1_000_000 - HALF_WINDOW_SECS) * 1000);
+        assert_eq!(hi, (1_000_000 + HALF_WINDOW_SECS) * 1000);
+    }
+
+    #[wasm_bindgen_test]
+    fn live_window_is_anchored_to_now_not_the_playhead() {
+        // The lookback-loop bug: `pinned` is true while replaying the last few
+        // frames, so a playhead-anchored window slid back and forth with the
+        // loop phase and every poll asked for different bounds. Anchoring on
+        // `now` makes the bounds stable and monotonic.
+        let now = 9_000_000.0;
+        let (lo_a, hi_a) = fetch_window_ms(now - 300.0, now, true);
+        let (lo_b, hi_b) = fetch_window_ms(now - 1800.0, now, true);
+        assert_eq!((lo_a, hi_a), (lo_b, hi_b));
+        assert_eq!(lo_a, (9_000_000 - HALF_WINDOW_SECS) * 1000);
+        assert_eq!(hi_a, (9_000_000 + LIVE_LOOKAHEAD_SECS) * 1000);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_lookback_loop_fits_inside_one_live_window() {
+        // A 6-frame lookback loop is roughly 20-35 min of content ending at
+        // now. The whole loop must sit inside the fetched window, or the
+        // overlay drops reports as the playhead sweeps back.
+        let now = 9_000_000.0;
+        let (lo, hi) = fetch_window_ms(now, now, true);
+        let loop_start_ms = ((now - 35.0 * 60.0) * 1000.0) as i64;
+        let loop_end_ms = (now * 1000.0) as i64;
+        assert!(lo <= loop_start_ms);
+        assert!(hi >= loop_end_ms);
+    }
+
+    // ── the widened comfortable zone (the loop-thrash fix) ──
+
+    #[wasm_bindgen_test]
+    fn a_loop_longer_than_the_old_zone_no_longer_refetches() {
+        // Comfortable zone = window - 2 * margin. It used to be 30 min, so any
+        // loop longer than that refetched at BOTH ends of every pass.
+        let zone_secs = (2 * HALF_WINDOW_SECS) as f64 - 2.0 * REFETCH_MARGIN_SECS;
+        assert!(zone_secs >= 90.0 * 60.0);
+
+        // A 60-minute loop centered in the covered window costs zero requests.
+        let center_ms = 1_000_000.0 * 1000.0;
+        let c = Covered {
+            lo_ms: center_ms - (HALF_WINDOW_SECS as f64) * 1000.0,
+            hi_ms: center_ms + (HALF_WINDOW_SECS as f64) * 1000.0,
+            site_id: "KTLX".to_string(),
+            key_fingerprint: 7,
+        };
+        for offset_min in [-30.0, -15.0, 0.0, 15.0, 30.0] {
+            let p = center_ms + offset_min * MIN_MS;
+            assert!(!refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+        }
     }
 }

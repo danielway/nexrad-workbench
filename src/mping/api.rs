@@ -18,10 +18,14 @@ use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
 /// Base URL for the mPING v2 reports endpoint.
 const REPORTS_URL: &str = "https://mping.ou.edu/mping/api/v2/reports";
 
-/// Maximum results to request per page. The API uses Django REST
-/// Framework pagination; for a 30-min × 300 km window this is comfortably
-/// above any realistic count.
-const PAGE_SIZE: u32 = 200;
+/// Maximum results to request per page. The API uses Django REST Framework
+/// pagination, but this client makes a single request and never follows the
+/// `next` link — so this value is also the point at which results are silently
+/// truncated. Raised alongside the widening of the fetch window from 1 h to
+/// 2 h, which roughly doubles the expected report count. `total_count` is
+/// carried separately from `reports.len()`, so a truncated page is at least
+/// detectable in the mPING panel.
+const PAGE_SIZE: u32 = 500;
 
 /// Parameters for a single fetch request.
 #[derive(Clone, Debug, PartialEq)]
@@ -238,10 +242,12 @@ mod coverage_tests {
         let url = build_url(&params);
         assert_eq!(
             url,
-            "https://mping.ou.edu/mping/api/v2/reports\
+            format!(
+                "https://mping.ou.edu/mping/api/v2/reports\
 ?obtime_gte=1970-01-01%2000%3A00%3A00\
 &obtime_lte=1970-01-01%2000%3A30%3A00\
-&dist=300000&point=-97.5,35.2&page_size=200"
+&dist=300000&point=-97.5,35.2&page_size={PAGE_SIZE}"
+            )
         );
     }
 

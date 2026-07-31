@@ -1,9 +1,12 @@
 //! Live-vs-archive recency gate for live-only overlays.
 //!
-//! Used by the NWS warnings, national mosaic, and mPING storm-report
-//! overlays so they hide (and stop polling) when the user has scrubbed
-//! to archive radar far enough behind wall-clock that current-time data
-//! would be misleading.
+//! Used by the NWS warnings and national mosaic overlays so they hide (and
+//! stop polling) when the user has scrubbed to archive radar far enough behind
+//! wall-clock that current-time data would be misleading.
+//!
+//! mPING deliberately does **not** gate on this: storm reports are historical
+//! observations, so they stay meaningful for archive playback and the mPING
+//! manager fetches a window around the playhead instead.
 
 use crate::core::TimeModel;
 
