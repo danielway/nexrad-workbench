@@ -14,10 +14,14 @@
 //! the main strip, so the minimap's window indicator stays neutral.
 //!
 //! Interaction (desktop only this phase):
-//!   - drag anywhere = pan/fast navigation: the visible window recenters on the
-//!     dragged position, clamped to the session extent ± a small margin.
-//!   - click = jump the view window there. The minimap navigates the *view*; it
-//!     never moves the playhead (the main strip owns the playhead seek).
+//!   - **drag the window indicator** = pan, relative to where you grabbed it.
+//!     This is the primary pan surface, so the grab must not teleport: a thumb
+//!     drag preserves the offset between the pointer and the window's left
+//!     edge for the drag's lifetime.
+//!   - **click/drag outside the indicator** = jump: the window recenters on
+//!     the pointer, which is the fast way to cross a long session.
+//!   - The minimap navigates the *view*; it never moves the playhead (the main
+//!     strip owns the playhead seek).
 //!
 //! The minimap has its own response/id so its drag never fights the main
 //! strip's scrub.
@@ -36,6 +40,22 @@ const EXTENT_MARGIN_FRAC: f64 = 0.02;
 /// (seconds) centered on `now`, so the minimap never has zero width.
 const FALLBACK_HALF_SPAN_SECS: f64 = 1800.0;
 
+/// How many times the main strip's visible span the minimap may show.
+///
+/// The minimap used to map the union of *everything* touched this session, so a
+/// single scan from a week ago flattened the whole sliver and the window
+/// indicator became a hairline — useless at exactly the zoom levels it exists
+/// to serve. Bounding the extent to a multiple of the visible span keeps the
+/// indicator a readable fraction (1/8) of the track at every zoom, while still
+/// showing real surrounding context. When the session is smaller than this, the
+/// whole session is shown as before.
+const CONTEXT_MULTIPLE: f64 = 8.0;
+
+/// Minimum grab width (px) for the window indicator. At wide zooms the painted
+/// indicator is only a few pixels; the hit target is widened to a comfortable
+/// size so the thumb stays draggable without making the paint heavier.
+const MIN_THUMB_GRAB_PX: f32 = 12.0;
+
 /// The whole-session extent the minimap maps across, in Unix seconds.
 ///
 /// Pure value object so the coordinate mapping and the clamp math are unit
@@ -47,9 +67,19 @@ pub(super) struct SessionExtent {
 }
 
 impl SessionExtent {
-    /// Union of cached time ranges, archive shadow boundaries, and — while
-    /// streaming — `now` (so the live edge stays at the right). Falls back to a
-    /// fixed window around `now` when there is no data at all.
+    /// The span the minimap maps across: everything worth showing (cached
+    /// ranges, archive shadows, and while streaming `now`), **bounded to
+    /// [`CONTEXT_MULTIPLE`] times the main strip's visible span, centered on
+    /// the view**.
+    ///
+    /// The bound is what makes the sliver useful at every zoom. Without it the
+    /// extent is the whole session, so one week-old scan squashes an hour-wide
+    /// view into a hairline. With it, the window indicator is always at least
+    /// 1/`CONTEXT_MULTIPLE` of the track — and when the session is smaller than
+    /// the context window, the whole session still shows, exactly as before.
+    ///
+    /// The result always fully contains `[view_start, view_start + view_span]`,
+    /// so the indicator can never clip off an edge.
     ///
     /// `cached` and `shadows` are `(start, end)` pairs in Unix seconds.
     pub(super) fn compute(
@@ -57,6 +87,8 @@ impl SessionExtent {
         shadows: impl IntoIterator<Item = (f64, f64)>,
         now: f64,
         streaming: bool,
+        view_start: f64,
+        view_span: f64,
     ) -> Self {
         let mut lo = f64::INFINITY;
         let mut hi = f64::NEG_INFINITY;
@@ -71,12 +103,31 @@ impl SessionExtent {
             lo = lo.min(now - FALLBACK_HALF_SPAN_SECS);
         }
         if !lo.is_finite() || !hi.is_finite() || hi <= lo {
-            return Self {
-                start: now - FALLBACK_HALF_SPAN_SECS,
-                end: now + FALLBACK_HALF_SPAN_SECS,
-            };
+            lo = now - FALLBACK_HALF_SPAN_SECS;
+            hi = now + FALLBACK_HALF_SPAN_SECS;
         }
-        Self { start: lo, end: hi }
+
+        // A degenerate view span (before the first layout pass) leaves the
+        // data extent alone — there is no view to be relative to yet.
+        if !view_span.is_finite() || view_span <= 0.0 || !view_start.is_finite() {
+            return Self { start: lo, end: hi };
+        }
+
+        // Everything that could be worth showing: the data plus the view
+        // itself (the view can sit outside the data after a long pan).
+        let view_end = view_start + view_span;
+        let full_lo = lo.min(view_start);
+        let full_hi = hi.max(view_end);
+
+        // …bounded to a context window centered on the view. Both bounds sit
+        // outside the view by construction (half the context is 4x the view
+        // span), so the window indicator always fits.
+        let half_context = view_span * CONTEXT_MULTIPLE / 2.0;
+        let center = view_start + view_span / 2.0;
+        Self {
+            start: full_lo.max(center - half_context),
+            end: full_hi.min(center + half_context),
+        }
     }
 
     /// Span in seconds (always > 0 by construction).
@@ -111,11 +162,44 @@ impl SessionExtent {
     }
 
     /// View start that recenters the window of width `win_secs` on `center_ts`,
-    /// clamped to the extent (± margin). The navigation primitive for both a
-    /// minimap click (jump) and a minimap drag (pan).
+    /// clamped to the extent (± margin). The navigation primitive for a minimap
+    /// click or drag that did NOT start on the window indicator — a deliberate
+    /// jump across the session.
     pub(super) fn recentered_view_start(&self, center_ts: f64, win_secs: f64) -> f64 {
         self.clamp_view_start(center_ts - win_secs / 2.0, win_secs)
     }
+
+    /// View start while dragging the window indicator itself.
+    ///
+    /// `grab_offset_secs` is how far into the window the pointer landed when
+    /// the drag began; holding it constant is what makes the thumb track the
+    /// pointer instead of teleporting so its center jumps under the cursor.
+    /// This is the difference between a scroll thumb and a "click to recenter"
+    /// target, and it is why grabbing the indicator used to feel broken.
+    pub(super) fn thumb_drag_view_start(
+        &self,
+        pointer_ts: f64,
+        grab_offset_secs: f64,
+        win_secs: f64,
+    ) -> f64 {
+        self.clamp_view_start(pointer_ts - grab_offset_secs, win_secs)
+    }
+}
+
+/// Horizontal hit span (screen x) for the window indicator, widened to at least
+/// [`MIN_THUMB_GRAB_PX`] around its center so a thin indicator is still
+/// grabbable. Returned as `(left, right)`.
+///
+/// Pure so the "is the thumb reachable at this zoom" rule is testable without a
+/// painter.
+pub(super) fn thumb_hit_span(painted_left: f32, painted_right: f32) -> (f32, f32) {
+    let width = painted_right - painted_left;
+    if width >= MIN_THUMB_GRAB_PX {
+        return (painted_left, painted_right);
+    }
+    let center = (painted_left + painted_right) / 2.0;
+    let half = MIN_THUMB_GRAB_PX / 2.0;
+    (center - half, center + half)
 }
 
 /// Render the minimap sliver and handle its drag/click navigation.
@@ -171,11 +255,15 @@ pub(super) fn render_minimap(
         .iter()
         .map(|b| (b.start as f64, b.end as f64))
         .collect();
+    let win_start = playback.state.timeline_view_start;
+    let win_secs = playback.state.view_width_secs();
     let extent = SessionExtent::compute(
         cached.iter().copied(),
         shadows.iter().copied(),
         now,
         streaming,
+        win_start,
+        win_secs,
     );
 
     let ts_to_x =
@@ -215,10 +303,15 @@ pub(super) fn render_minimap(
             if view.is_covered_by_cached(b.start) {
                 continue;
             }
+            // The faint interior wash, matching the main strip's Available
+            // cells. This used to use `available_border` (alpha 120, ~3x the
+            // fill) as a solid fill, which — given how close the available and
+            // cached hues are — left cached data barely distinguishable from
+            // the archive shadow behind it.
             draw_segment(
                 b.start as f64,
                 b.end as f64,
-                tl_colors::available_border(dark),
+                tl_colors::available_fill(dark),
             );
         }
     }
@@ -231,8 +324,6 @@ pub(super) fn render_minimap(
     // The visible-window indicator: a translucent NEUTRAL rectangle over the
     // span the main strip currently shows. Neutral on purpose — the accent
     // budget is spent on the main strip.
-    let win_start = playback.state.timeline_view_start;
-    let win_secs = playback.state.view_width_secs();
     let win_end = win_start + win_secs;
     let wx0 = ts_to_x(win_start);
     let wx1 = ts_to_x(win_end).max(wx0 + 2.0);
@@ -274,21 +365,58 @@ pub(super) fn render_minimap(
         );
     }
 
-    // Hover affordance — the whole sliver is draggable.
+    // Hover affordance — the whole sliver is draggable, but grabbing the
+    // indicator is a different gesture from jumping, so say so.
+    let (grab_x0, grab_x1) = thumb_hit_span(window_rect.left(), window_rect.right());
+    let over_thumb = response
+        .hover_pos()
+        .is_some_and(|p| p.x >= grab_x0 && p.x <= grab_x1);
     if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        ui.ctx().set_cursor_icon(if over_thumb {
+            egui::CursorIcon::Grab
+        } else {
+            egui::CursorIcon::ResizeHorizontal
+        });
     }
 
-    // Interaction: drag (pan) or click (jump). Both recenter the *view* window
-    // on the pointer position; neither touches the playhead. Filtered to the
-    // primary button so a right-drag here doesn't navigate.
+    // Interaction: grab-and-drag the window indicator (relative pan), or
+    // click/drag elsewhere to jump (absolute recenter). Neither touches the
+    // playhead. Filtered to the primary button so a right-drag here doesn't
+    // navigate.
+    //
+    // The grab offset must persist for the drag's lifetime — recomputing it
+    // per frame would make the thumb snap to the pointer, which is the
+    // teleport this replaces. `None` in memory means "this drag is a jump".
+    let grab_id = response.id.with("thumb_grab_secs");
+    if response.drag_started_by(egui::PointerButton::Primary) {
+        let grab = response
+            .interact_pointer_pos()
+            .filter(|p| p.x >= grab_x0 && p.x <= grab_x1)
+            .map(|p| x_to_ts(p.x) - win_start);
+        ui.ctx().memory_mut(|m| m.data.insert_temp(grab_id, grab));
+    }
+    if response.drag_stopped() {
+        ui.ctx()
+            .memory_mut(|m| m.data.remove::<Option<f64>>(grab_id));
+    }
+    let grab_offset_secs = ui
+        .ctx()
+        .memory(|m| m.data.get_temp::<Option<f64>>(grab_id))
+        .flatten();
+
     let primary_drag = response.dragged_by(egui::PointerButton::Primary);
     let acted = (primary_drag || response.clicked())
         .then(|| response.interact_pointer_pos())
         .flatten();
     if let Some(pos) = acted {
-        let center_ts = x_to_ts(pos.x);
-        let new_start = extent.recentered_view_start(center_ts, win_secs);
+        let pointer_ts = x_to_ts(pos.x);
+        let new_start = match grab_offset_secs {
+            Some(offset) => extent.thumb_drag_view_start(pointer_ts, offset, win_secs),
+            None => extent.recentered_view_start(pointer_ts, win_secs),
+        };
+        // Navigating here is a deliberate pan: release the live view-follow
+        // nudge so it can't snap the view back to now on the next frame.
+        playback.state.view_follows_now = false;
         playback.state.timeline_view_start = new_start;
     }
 }
@@ -313,9 +441,20 @@ mod tests {
         (a - b).abs() < 1e-6
     }
 
+    /// The data union with no view constraint applied — a degenerate view span
+    /// short-circuits the context bound, so this isolates the union logic.
+    fn union_of(
+        cached: impl IntoIterator<Item = (f64, f64)>,
+        shadows: impl IntoIterator<Item = (f64, f64)>,
+        now: f64,
+        streaming: bool,
+    ) -> SessionExtent {
+        SessionExtent::compute(cached, shadows, now, streaming, 0.0, 0.0)
+    }
+
     #[wasm_bindgen_test]
     fn extent_unions_cached_and_shadows() {
-        let e = SessionExtent::compute(
+        let e = union_of(
             [(100.0, 200.0)],
             [(50.0, 80.0), (300.0, 400.0)],
             1000.0,
@@ -327,7 +466,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn streaming_extends_to_now_on_the_right() {
-        let e = SessionExtent::compute([(100.0, 200.0)], [], 5000.0, true);
+        let e = union_of([(100.0, 200.0)], [], 5000.0, true);
         assert!(approx(
             e.start,
             200.0_f64.min(100.0).min(5000.0 - FALLBACK_HALF_SPAN_SECS)
@@ -340,15 +479,166 @@ mod tests {
     fn streaming_does_not_shrink_below_cached_end() {
         // now is BEFORE the cached end (clock skew / replay) — the extent must
         // still cover the cached data.
-        let e = SessionExtent::compute([(100.0, 9000.0)], [], 5000.0, true);
+        let e = union_of([(100.0, 9000.0)], [], 5000.0, true);
         assert!(approx(e.end, 9000.0));
     }
 
     #[wasm_bindgen_test]
     fn empty_session_falls_back_to_window_around_now() {
-        let e = SessionExtent::compute([], [], 1000.0, false);
+        let e = union_of([], [], 1000.0, false);
         assert!(approx(e.start, 1000.0 - FALLBACK_HALF_SPAN_SECS));
         assert!(approx(e.end, 1000.0 + FALLBACK_HALF_SPAN_SECS));
+    }
+
+    // ---- the context bound (the fix for "uselessly zoomed-out") -----------
+
+    #[wasm_bindgen_test]
+    fn a_distant_stale_range_no_longer_flattens_the_sliver() {
+        // The audit case: an hour-wide view, plus one cached range from a week
+        // ago. Unbounded, the extent spans a week and the window indicator is a
+        // 0.6% hairline. Bounded, the stale range is clipped out entirely and
+        // the indicator stays readable.
+        let view_start = 1_000_000.0;
+        let view_span = 3600.0;
+        let week_ago = view_start - 7.0 * 86_400.0;
+        let e = SessionExtent::compute(
+            [(week_ago, week_ago + 300.0)],
+            [],
+            view_start,
+            false,
+            view_start,
+            view_span,
+        );
+        // The week-old range is outside the context window, so it is clipped.
+        assert!(e.start > week_ago);
+        // Never wider than the context bound…
+        assert!(e.span() <= view_span * CONTEXT_MULTIPLE + 1e-6);
+        // …so the indicator is at least 1/CONTEXT_MULTIPLE of the track.
+        assert!(view_span / e.span() >= 1.0 / CONTEXT_MULTIPLE - 1e-9);
+        // Unbounded, it would have been under 1%.
+        assert!(view_span / (view_start + view_span - week_ago) < 0.01);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_session_smaller_than_the_context_window_is_shown_whole() {
+        // Nothing is clipped when the data already fits: this preserves the
+        // original whole-session behavior for short sessions.
+        let view_start = 1_000_000.0;
+        let view_span = 3600.0;
+        let e = SessionExtent::compute(
+            [(view_start - 600.0, view_start + view_span + 600.0)],
+            [],
+            view_start,
+            false,
+            view_start,
+            view_span,
+        );
+        assert!(approx(e.start, view_start - 600.0));
+        assert!(approx(e.end, view_start + view_span + 600.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn the_extent_always_contains_the_view_window() {
+        // The window indicator must never clip off an edge, whatever the data
+        // looks like — including when the view has been panned far away from
+        // every cached range.
+        let view_span = 3600.0;
+        for view_start in [1_000_000.0_f64, -5_000_000.0, 9_000_000.0] {
+            let e = SessionExtent::compute(
+                [(0.0, 1000.0)],
+                [(2_000_000.0, 2_000_100.0)],
+                500_000.0,
+                true,
+                view_start,
+                view_span,
+            );
+            assert!(e.start <= view_start);
+            assert!(e.end >= view_start + view_span);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn one_sided_data_clips_to_context_but_hugs_the_view_on_the_empty_side() {
+        // Data lies entirely to the LEFT of the view. Scrollbar semantics: the
+        // far side of the data is clipped to the context bound, while the empty
+        // side stops at the view — so a thumb flush against an edge honestly
+        // means "you are at the edge of the content".
+        let view_start = 1_000_000.0;
+        let view_span = 3600.0;
+        let center = view_start + view_span / 2.0;
+        let e = SessionExtent::compute(
+            [(view_start - 100_000.0, view_start - 90_000.0)],
+            [],
+            view_start,
+            false,
+            view_start,
+            view_span,
+        );
+        assert!(approx(e.start, center - view_span * CONTEXT_MULTIPLE / 2.0));
+        assert!(approx(e.end, view_start + view_span));
+    }
+
+    // ---- thumb drag --------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn thumb_drag_preserves_the_grab_offset() {
+        // Grabbing the thumb 1/4 in and moving the pointer must move the view
+        // by exactly the pointer delta — no teleport that recenters under the
+        // cursor.
+        let e = SessionExtent {
+            start: 0.0,
+            end: 100_000.0,
+        };
+        let win = 1000.0;
+        let grab_offset = win * 0.25;
+        let start_a = e.thumb_drag_view_start(50_000.0, grab_offset, win);
+        let start_b = e.thumb_drag_view_start(53_000.0, grab_offset, win);
+        assert!(approx(start_a, 50_000.0 - grab_offset));
+        assert!(approx(start_b - start_a, 3000.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn thumb_drag_with_zero_offset_puts_the_left_edge_under_the_pointer() {
+        let e = SessionExtent {
+            start: 0.0,
+            end: 100_000.0,
+        };
+        assert!(approx(
+            e.thumb_drag_view_start(42_000.0, 0.0, 1000.0),
+            42_000.0
+        ));
+    }
+
+    #[wasm_bindgen_test]
+    fn thumb_drag_is_clamped_to_the_extent() {
+        let e = SessionExtent {
+            start: 0.0,
+            end: 10_000.0,
+        };
+        let win = 1000.0;
+        let margin = 10_000.0 * EXTENT_MARGIN_FRAC;
+        assert!(approx(e.thumb_drag_view_start(-9e9, 0.0, win), -margin));
+        assert!(approx(
+            e.thumb_drag_view_start(9e9, 0.0, win),
+            10_000.0 + margin - win
+        ));
+    }
+
+    #[wasm_bindgen_test]
+    fn thin_thumbs_get_a_minimum_grab_width() {
+        // A 2px indicator is unhittable; widen symmetrically about its center.
+        let (lo, hi) = thumb_hit_span(100.0, 102.0);
+        assert!((hi - lo - MIN_THUMB_GRAB_PX).abs() < 1e-4);
+        assert!(((lo + hi) / 2.0 - 101.0).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn wide_thumbs_keep_their_painted_span() {
+        // Already comfortable — do not inflate, or clicks just outside the
+        // indicator would wrongly read as grabs.
+        let (lo, hi) = thumb_hit_span(100.0, 160.0);
+        assert!((lo - 100.0).abs() < 1e-4);
+        assert!((hi - 160.0).abs() < 1e-4);
     }
 
     #[wasm_bindgen_test]
@@ -486,7 +776,7 @@ mod coverage_tests {
         // No cached/shadow ranges, but streaming → extent spans
         // [now - FALLBACK_HALF_SPAN_SECS, now], not the symmetric fallback window.
         let now = 10_000.0;
-        let e = SessionExtent::compute([], [], now, true);
+        let e = SessionExtent::compute([], [], now, true, 0.0, 0.0);
         assert!(close(e.start, now - FALLBACK_HALF_SPAN_SECS));
         assert!(close(e.end, now));
     }
@@ -496,7 +786,7 @@ mod coverage_tests {
         // Union of an inverted (end < start) pair yields hi <= lo, which is
         // treated as degenerate → symmetric fallback window around `now`.
         let now = 2000.0;
-        let e = SessionExtent::compute([(900.0, 100.0)], [], now, false);
+        let e = SessionExtent::compute([(900.0, 100.0)], [], now, false, 0.0, 0.0);
         assert!(close(e.start, now - FALLBACK_HALF_SPAN_SECS));
         assert!(close(e.end, now + FALLBACK_HALF_SPAN_SECS));
     }
@@ -504,7 +794,14 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn compute_shadows_only_unions_their_bounds() {
         // Only archive-shadow ranges, not streaming → extent is their union.
-        let e = SessionExtent::compute([], [(300.0, 350.0), (100.0, 120.0)], 9999.0, false);
+        let e = SessionExtent::compute(
+            [],
+            [(300.0, 350.0), (100.0, 120.0)],
+            9999.0,
+            false,
+            0.0,
+            0.0,
+        );
         assert!(close(e.start, 100.0));
         assert!(close(e.end, 350.0));
     }
