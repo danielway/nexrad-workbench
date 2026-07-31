@@ -133,8 +133,22 @@ pub(crate) fn aggregate_day_buckets(
     }
 
     // Archive shadow boundaries (listing coverage) → availability only.
+    //
+    // Capped for plausibility. `ScanBoundary.end` is derived as the *next
+    // file's timestamp*, unconditionally, so the boundary immediately before a
+    // radar outage spans the whole outage — and pushed raw it would credit the
+    // day with hours of availability that never existed. The heatmap's whole
+    // job is showing where data is, so an inflated wash is a direct lie.
     for b in shadows {
-        push_span(&mut avail_spans, b.start as f64, b.end as f64);
+        let start = b.start as f64;
+        let extent = crate::core::block_extent(
+            start,
+            start,
+            None,
+            b.end as f64,
+            crate::FALLBACK_SCAN_DURATION_SECS as f64,
+        );
+        push_span(&mut avail_spans, start, extent.expected_end);
     }
 
     let mut buckets: Vec<DayBucket> = (0..day_count)
@@ -544,14 +558,48 @@ mod coverage_tests {
     // --- availability clamps to 1.0 for an over-full day ---
 
     #[wasm_bindgen_test]
-    fn day_fully_covered_clamps_availability_to_one() {
-        // A shadow span longer than the whole day; its day-slice is exactly one
-        // day of seconds, so availability_frac == 1.0 (and cache_frac == 0).
+    fn a_shadow_spanning_an_outage_does_not_inflate_availability() {
+        // ScanBoundary.end is the NEXT file's timestamp, unconditionally — so
+        // the last boundary before a radar outage spans the entire outage.
+        // Pushed raw, one such boundary credited the day with 6 hours of
+        // availability that never existed, which is a direct lie in a heatmap
+        // whose only job is showing where data is.
         let cache = RadarTimeline { scans: Vec::new() };
         let shadows = vec![ScanBoundary {
-            start: (DAY0 - DAY_SECS) as i64,
-            end: (DAY0 + 2.0 * DAY_SECS) as i64,
+            start: (DAY0 + 3600.0) as i64,
+            end: (DAY0 + 3600.0 + 6.0 * 3600.0) as i64,
         }];
+        let buckets =
+            aggregate_day_buckets(&cache, &shadows, &no_events(), "KDMX", DAY0, DAY0 + 100.0);
+        // One volume's worth of credit, not six hours.
+        let six_hours_frac = (6.0 * 3600.0 / DAY_SECS) as f32;
+        assert!(
+            buckets[0].availability_frac < six_hours_frac / 10.0,
+            "{}",
+            buckets[0].availability_frac
+        );
+        assert!(buckets[0].availability_frac > 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn day_fully_covered_clamps_availability_to_one() {
+        // Continuous listing coverage across the whole day (and past both
+        // edges), so availability_frac == 1.0 and cache_frac == 0.
+        //
+        // Built from back-to-back 300s boundaries because that is what a real
+        // listing produces — one per file. A single multi-day boundary would be
+        // capped as an outage now (see `block_extent`), which is the point.
+        let cache = RadarTimeline { scans: Vec::new() };
+        let step = 300.0;
+        let shadows: Vec<ScanBoundary> = (0..(3.0 * DAY_SECS / step) as i64)
+            .map(|i| {
+                let s = DAY0 - DAY_SECS + i as f64 * step;
+                ScanBoundary {
+                    start: s as i64,
+                    end: (s + step) as i64,
+                }
+            })
+            .collect();
         let buckets =
             aggregate_day_buckets(&cache, &shadows, &no_events(), "KDMX", DAY0, DAY0 + 100.0);
         assert_eq!(buckets.len(), 1);
@@ -572,10 +620,17 @@ mod coverage_tests {
         let cache = RadarTimeline {
             scans: vec![scan_span(DAY0 + 1000.0, DAY0 + 7600.0, true)],
         };
-        let shadows = vec![ScanBoundary {
-            start: (DAY0 + 10000.0) as i64,
-            end: (DAY0 + 11000.0) as i64,
-        }];
+        // 1000s of disjoint listing coverage, as consecutive volume-sized
+        // boundaries (a single 1000s boundary would now be capped at 450s).
+        let shadows: Vec<ScanBoundary> = (0..4)
+            .map(|i| {
+                let s = DAY0 + 10000.0 + i as f64 * 250.0;
+                ScanBoundary {
+                    start: s as i64,
+                    end: (s + 250.0) as i64,
+                }
+            })
+            .collect();
         let buckets =
             aggregate_day_buckets(&cache, &shadows, &no_events(), "KDMX", DAY0, DAY0 + 100.0);
         let b = buckets[0];
@@ -625,15 +680,22 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn cache_and_overlapping_shadow_union_in_availability() {
-        // Cache [1000,4600] and shadow [3000,6000] overlap; availability union is
-        // [1000,6000]=5000s (NOT 3600+3000).
+        // Cache [1000,4600] and shadow coverage [3000,6000] overlap;
+        // availability union is [1000,6000]=5000s (NOT 3600+3000). The shadow
+        // side is consecutive volume-sized boundaries, since one 3000s boundary
+        // would now be capped as an outage.
         let cache = RadarTimeline {
             scans: vec![scan_span(DAY0 + 1000.0, DAY0 + 4600.0, true)],
         };
-        let shadows = vec![ScanBoundary {
-            start: (DAY0 + 3000.0) as i64,
-            end: (DAY0 + 6000.0) as i64,
-        }];
+        let shadows: Vec<ScanBoundary> = (0..10)
+            .map(|i| {
+                let s = DAY0 + 3000.0 + i as f64 * 300.0;
+                ScanBoundary {
+                    start: s as i64,
+                    end: (s + 300.0) as i64,
+                }
+            })
+            .collect();
         let buckets =
             aggregate_day_buckets(&cache, &shadows, &no_events(), "KDMX", DAY0, DAY0 + 100.0);
         let expected_avail = (5000.0 / DAY_SECS) as f32;
