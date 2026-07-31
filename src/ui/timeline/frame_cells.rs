@@ -22,7 +22,7 @@ use super::{style, TimelineFrame};
 use crate::core::{FrameCell, FrameCellState, ScanContainer};
 use crate::ui::colors::acquisition as acq_colors;
 use crate::ui::colors::timeline as tl_colors;
-use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind};
+use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
 /// A failed frame cell's clickable tick, returned so the orchestrator can wire
 /// a retry. `key_secs` is the container scan-start (the join key the retry
@@ -154,14 +154,29 @@ pub(super) fn paint_container(
 
     // 4. Faint VCP identity at the container's bottom-left when there is room
     //    and the morph hasn't collapsed the cells (structure label, not color).
+    //
+    //    The cells are inset only CELL_INSET_Y (4px) from the box, so a 9px
+    //    glyph run cannot clear them — it lands on top of the sweep fills and
+    //    their sub-texture, which reads as noise rather than as a label. Draw
+    //    it as a chip on a neutral backdrop so it reads as chrome sitting over
+    //    the data instead of tangling with it. Neutral, so no accent is spent.
     if container.vcp > 0 && box_rect.width() > 64.0 && m > 0.6 {
-        painter.text(
-            Pos2::new(box_rect.left() + 3.0, box_rect.bottom() - 1.0),
-            egui::Align2::LEFT_BOTTOM,
+        let galley = painter.layout_no_wrap(
             format!("VCP {}", container.vcp),
             style::block_font(),
             tl_colors::block_label_weak(),
         );
+        let pad = Vec2::new(3.0, 1.0);
+        let size = galley.size() + pad * 2.0;
+        let chip = Rect::from_min_size(
+            Pos2::new(box_rect.left() + 1.0, box_rect.bottom() - 1.0 - size.y),
+            size,
+        );
+        // Never let the chip spill outside its own container.
+        if chip.right() <= box_rect.right() {
+            painter.rect_filled(chip, 2.0, tl_colors::block_label_backdrop(dark));
+            painter.galley(chip.min + pad, galley, tl_colors::block_label_weak());
+        }
     }
 }
 

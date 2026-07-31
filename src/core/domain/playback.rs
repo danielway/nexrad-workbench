@@ -112,6 +112,54 @@ pub(crate) struct MacroFrameInputs {
     pub scan_count: usize,
 }
 
+/// How finely the fallback view-derived macro bounds are quantized: the visible
+/// span divided by this, floored at [`MIN_VIEW_BOUNDS_QUANTUM_SECS`]. Without
+/// quantization every pixel of pan changes the bounds, and the bounds
+/// participate in the frame-list dirty check — so the whole list (an O(scans)
+/// walk) would rebuild on every frame of a pan.
+const VIEW_BOUNDS_QUANTUM_DIVISOR: f64 = 16.0;
+
+/// Floor for the view-bounds quantum, so a deeply zoomed-in view still doesn't
+/// rebuild more often than once per minute of timeline travel.
+const MIN_VIEW_BOUNDS_QUANTUM_SECS: f64 = 60.0;
+
+/// Time bounds the macro frame list is built from.
+///
+/// An explicit loop/selection always wins. Otherwise the list falls back to the
+/// **visible window** rather than the whole cache: with no bounds at all every
+/// cached sweep in the session is a frame, so pressing play with the playhead
+/// parked somewhere specific marched off to whatever else happened to be in the
+/// cache — the "playback jumps to crazy points in the cache/history other than
+/// what is visible" report.
+///
+/// Two adjustments make the fallback safe:
+/// - the window is quantized *outward* (see [`VIEW_BOUNDS_QUANTUM_DIVISOR`]),
+///   so panning doesn't rebuild the list every frame and the result always
+///   contains the whole visible span;
+/// - `playhead` is always included, so limiting the frames can never strand the
+///   cursor outside its own frame list and cause the very teleport this fixes.
+pub(crate) fn macro_frame_bounds(
+    explicit: Option<(f64, f64)>,
+    view_start: f64,
+    view_span: f64,
+    playhead: f64,
+) -> Option<(f64, f64)> {
+    if explicit.is_some() {
+        return explicit;
+    }
+    if !view_span.is_finite() || view_span <= 0.0 || !view_start.is_finite() {
+        return None;
+    }
+    let quantum = (view_span / VIEW_BOUNDS_QUANTUM_DIVISOR).max(MIN_VIEW_BOUNDS_QUANTUM_SECS);
+    let mut lo = (view_start / quantum).floor() * quantum;
+    let mut hi = ((view_start + view_span) / quantum).ceil() * quantum;
+    if playhead.is_finite() {
+        lo = lo.min((playhead / quantum).floor() * quantum);
+        hi = hi.max((playhead / quantum).ceil() * quantum);
+    }
+    Some((lo, hi))
+}
+
 /// Why the macro frame list needs rebuilding. The elevation case is
 /// distinguished because it additionally snaps the playback position to the
 /// resolved frame (see `render_loop`).
@@ -2163,6 +2211,92 @@ mod tests {
 mod coverage_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ---------------------------------------------------------------
+    // macro_frame_bounds: the visible-window fallback
+    // ---------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn explicit_bounds_always_win() {
+        // A loop/selection is the user's stated intent; the view never
+        // overrides it.
+        let out = macro_frame_bounds(Some((10.0, 20.0)), 1_000_000.0, 3600.0, 1_000_000.0);
+        assert_eq!(out, Some((10.0, 20.0)));
+    }
+
+    #[wasm_bindgen_test]
+    fn without_a_selection_the_bounds_follow_the_visible_window() {
+        // The audit case: previously `None`, which made every cached sweep in
+        // the session a playback frame.
+        let view_start = 1_000_000.0;
+        let span = 3600.0;
+        let (lo, hi) = macro_frame_bounds(None, view_start, span, view_start + span / 2.0).unwrap();
+        // Quantized OUTWARD — never narrower than what is on screen.
+        assert!(lo <= view_start);
+        assert!(hi >= view_start + span);
+    }
+
+    #[wasm_bindgen_test]
+    fn view_bounds_are_quantized_so_panning_does_not_rebuild_every_frame() {
+        // Two view positions a few seconds apart must land on identical
+        // bounds, otherwise the frame-list dirty check fires every frame of a pan.
+        let span = 3600.0;
+        let a = macro_frame_bounds(None, 1_000_000.0, span, 1_000_000.0);
+        let b = macro_frame_bounds(None, 1_000_003.0, span, 1_000_000.0);
+        assert_eq!(a, b);
+        // …but a pan of a full quantum does move them.
+        let quantum = (span / VIEW_BOUNDS_QUANTUM_DIVISOR).max(MIN_VIEW_BOUNDS_QUANTUM_SECS);
+        let c = macro_frame_bounds(None, 1_000_000.0 + quantum * 2.0, span, 1_000_000.0);
+        assert!(a != c);
+    }
+
+    #[wasm_bindgen_test]
+    fn quantum_has_a_floor_at_deep_zoom() {
+        // A 2-minute visible span would otherwise quantize at 7.5s and rebuild
+        // constantly while panning.
+        let span = 120.0;
+        let (lo, hi) = macro_frame_bounds(None, 1_000_000.0, span, 1_000_000.0).unwrap();
+        assert!(hi - lo >= MIN_VIEW_BOUNDS_QUANTUM_SECS);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_playhead_is_always_inside_the_derived_bounds() {
+        // Limiting frames to the view must never strand the cursor outside its
+        // own frame list — that would cause the exact teleport this fixes.
+        let span = 3600.0;
+        let view_start = 1_000_000.0;
+        for playhead in [
+            view_start - 50_000.0,
+            view_start + 1800.0,
+            view_start + 90_000.0,
+        ] {
+            let (lo, hi) = macro_frame_bounds(None, view_start, span, playhead).unwrap();
+            assert!(lo <= playhead);
+            assert!(hi >= playhead);
+            // The visible window still stays covered as well.
+            assert!(lo <= view_start);
+            assert!(hi >= view_start + span);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn degenerate_view_falls_back_to_unbounded() {
+        // Before the first layout pass there is no view to derive from; the
+        // old whole-cache behavior is the safe answer rather than an empty
+        // frame list.
+        assert_eq!(
+            macro_frame_bounds(None, 1_000_000.0, 0.0, 1_000_000.0),
+            None
+        );
+        assert_eq!(
+            macro_frame_bounds(None, 1_000_000.0, -1.0, 1_000_000.0),
+            None
+        );
+        assert_eq!(
+            macro_frame_bounds(None, f64::NAN, 3600.0, 1_000_000.0),
+            None
+        );
+    }
 
     // ---------------------------------------------------------------
     // PlaybackSpeed: labels, multipliers, fps mapping, enum tables

@@ -184,6 +184,18 @@ pub(crate) mod timeline {
         Color32::from_rgba_unmultiplied(225, 232, 248, 110)
     }
 
+    /// Backdrop for a label chip drawn *over* frame cells (the container's VCP
+    /// identity). Translucent panel background: enough to separate the glyphs
+    /// from the sweep fills and sub-texture underneath without hiding them, and
+    /// neutral so no accent is spent on chrome.
+    pub(crate) fn block_label_backdrop(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgba_unmultiplied(10, 10, 14, 170)
+        } else {
+            Color32::from_rgba_unmultiplied(230, 230, 235, 180)
+        }
+    }
+
     // ── Scan track colors: cached vs available ────────────────────────
     //
     // The scan track's color answers exactly one question — the data's

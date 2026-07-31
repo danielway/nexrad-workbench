@@ -60,9 +60,9 @@ pub(crate) use domain::forecast::{
 pub(crate) use domain::forecast::RateSource;
 pub(crate) use domain::ops::OperationId;
 pub(crate) use domain::playback::{
-    format_lag, FreezeAt, LoopBasis, LoopMode, LoopPreset, MacroFrameInputs, MacroPlaybackState,
-    PlaybackDirection, PlaybackMode, PlaybackSpeed, PlaybackState, PlayheadMode, RebuildCause,
-    TimeModel, TimeSelection, TimelineTier, TIMELINE_ZOOM_MAX,
+    format_lag, macro_frame_bounds, FreezeAt, LoopBasis, LoopMode, LoopPreset, MacroFrameInputs,
+    MacroPlaybackState, PlaybackDirection, PlaybackMode, PlaybackSpeed, PlaybackState,
+    PlayheadMode, RebuildCause, TimeModel, TimeSelection, TimelineTier, TIMELINE_ZOOM_MAX,
 };
 // Consumed only by test modules today; in a bin crate that reads as unused.
 #[allow(unused_imports)]

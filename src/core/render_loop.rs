@@ -137,7 +137,14 @@ pub(crate) fn reduce_advance_playback(
         let inputs = MacroFrameInputs {
             elevation: elevation_selection.clone(),
             product,
-            bounds: playback.time_model.playback_bounds,
+            // No explicit loop/selection falls back to the visible window, not
+            // the whole cache — see `macro_frame_bounds`.
+            bounds: crate::core::macro_frame_bounds(
+                playback.time_model.playback_bounds,
+                playback.timeline_view_start,
+                playback.view_width_secs(),
+                playback.playback_position(),
+            ),
             scan_count: timeline.scans.len(),
         };
 
@@ -558,6 +565,12 @@ mod tests {
             let mut playback = PlaybackState::default();
             playback.set_playback_position(pos);
             playback.timeline_tier = tier;
+            // The default view sits at wall-clock now, decades away from these
+            // fixtures' epoch-relative timestamps. Center it on the playhead so
+            // the macro frame list's visible-window fallback
+            // (`macro_frame_bounds`) sees a realistic view, as it always does
+            // in the app.
+            playback.center_view_on(pos);
             Self {
                 playback,
                 selection: ElevationSelection::default(),
