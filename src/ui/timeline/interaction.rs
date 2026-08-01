@@ -257,6 +257,19 @@ fn handle_selection(
     }
 
     if response.drag_stopped() && playback.state.end_selection_drag() {
+        if let Some((start, end)) = playback.state.selection_range() {
+            // At the widest zooms one pixel is days, so a short drag can span
+            // years — which is never a real request, just a way to queue a
+            // decade of downloads by accident.
+            if !crate::core::selection_span_allowed(start, end) {
+                playback.state.clear_selection();
+                state.status_message = format!(
+                    "Range too long — zoom in and select at most {} days",
+                    (crate::core::MAX_SELECTION_SPAN_SECS / 86_400.0) as i64
+                );
+                return;
+            }
+        }
         maybe_anchor_to_live(live, playback, frame.now_secs);
         playback.state.apply_selection_as_bounds();
         if let Some((start, end)) = playback.state.selection_range() {

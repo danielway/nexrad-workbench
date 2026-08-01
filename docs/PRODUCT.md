@@ -222,8 +222,8 @@ cached scans.
 | Tier | Range (approx) | Shows | Playback |
 |---|---|---|---|
 | **Micro** | minutes → ~1–2 hr visible | Scan containers with frame cells, chunk segments, ghosts + countdown | True-time, realtime multiples; renders latest matching frame at/before playhead; optional radial animation |
-| **Macro** | hours → a few days | Scans collapse to uniform ticks; gap glyphs where real spacing exceeds threshold | Equidistant frames at a chosen fps (classic radar loop) |
-| **Archive** | beyond ~2–3 days | A zoomable **1-D UTC-day lane** (day cells laid out linearly with month separators), with per-day availability + cache tone and bookmarks | None — navigator only; tapping a day zooms into Macro there |
+| **Macro** | hours → a few days | Each scan is a block spanning the volume's real duration — solid across downloaded sweeps, hollow across the rest; per-sweep hairlines once wide enough; gap glyphs where real spacing exceeds threshold. Blocks merge into a coverage fill once denser than ~1 per 3px | Equidistant frames at a chosen fps (classic radar loop) |
+| **Archive** | beyond ~2–3 days, out to the whole NEXRAD era | A zoomable **1-D coverage lane** whose cells coarsen with the span (day → week → month → quarter) so they stay legible at every zoom, with per-bucket availability + cache tone, period separators and bookmarks, over a keyline marking the addressable archive range | None — navigator only; tapping a cell frames that cell, one rung finer |
 
 - **One tier state machine** owns the boundary, stored on playback state; all
   zoom writes go through it (the tier is never re-derived from raw zoom). Tuning
@@ -630,7 +630,7 @@ deleted in the June 2026 docs cleanup.)
 - **Frames-first strip:** done — the design's biggest simplification win.
 - **Custom loop dragging on mobile:** cut; mobile gets presets, handles remain
   desktop-only.
-- **Year-scale strip zoom:** removed, replaced by the Archive calendar tier.
+- **Year-scale strip zoom:** the deprecated *linear* year-wide strip stays removed (it was label soup). The reach it offered is back, and further: the Archive calendar tier now spans the whole NEXRAD Level II era (1991→now) on the same continuous timeline, coarsening its cells rather than stretching a strip.
 - **Archive calendar layout:** ships a 1-D zoomable UTC-day lane (deliberate
   height-budget tradeoff), not a 2-D week-by-day grid; the grid is a possible
   future enhancement (§16).

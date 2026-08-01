@@ -15,22 +15,28 @@ pub(crate) const MICRO_ZOOM_THRESHOLD: f64 = 1.0;
 ///
 /// The minimum is the *hard floor* that bounds even a very wide strip; the
 /// effective per-frame floor is tighter and width-aware (see
-/// [`PlaybackState::min_zoom_for_width`] / [`MAX_VIEW_SPAN_SECS`]). The old
-/// `0.000001` floor allowed a single linear strip stretched across ~30 years —
-/// the "label soup" year-wide zoom the Archive calendar tier replaces (spec
-/// §6.4 DECIDED, §15 cut #4). It is now tightened so the widest view is a
-/// readable multi-month calendar span, not decades.
-pub(crate) const TIMELINE_ZOOM_MIN: f64 = 0.00001;
+/// [`PlaybackState::min_zoom_for_width`] / [`MAX_VIEW_SPAN_SECS`]). It exists
+/// only as a backstop against a degenerate `width_px`, and must therefore sit
+/// *below* the width-aware floor on even the narrowest plausible strip —
+/// otherwise it, not [`MAX_VIEW_SPAN_SECS`], silently decides how far the
+/// timeline can zoom out. (At 1200 px the era ceiling needs ~1.06e-6, so the
+/// former `1e-5` would have capped the view at under four years.)
+pub(crate) const TIMELINE_ZOOM_MIN: f64 = 0.0000001;
 pub(crate) const TIMELINE_ZOOM_MAX: f64 = 1000.0;
 
 /// Widest visible span (seconds) any timeline view may show — the ceiling the
-/// width-aware min-zoom enforces. The linear Micro/Macro strip stops being the
-/// renderer past the Archive-enter span (~60 h); beyond that the Archive
-/// **calendar** tier renders day cells over this same zoom scalar, so this
-/// ceiling sizes the calendar's widest reach (~a quarter of day cells) rather
-/// than the deprecated year-wide strip. Tuned so a multi-month heatmap stays
-/// legible while old URLs with absurd (near-zero) zooms clamp sanely into range.
-pub(crate) const MAX_VIEW_SPAN_SECS: f64 = 100.0 * 86_400.0;
+/// width-aware min-zoom enforces. **36 years: the whole NEXRAD Level II era**
+/// (the archive starts 1991-06-05).
+///
+/// One continuous timeline that reaches from a single sweep to the entire
+/// archive is the point; what changes with the span is the *renderer*, not the
+/// axis. The linear Micro/Macro strip stops past the Archive-enter span
+/// (~60 h), beyond which the Archive **calendar** tier draws over this same
+/// zoom scalar — and its cells coarsen day → week → month → quarter
+/// ([`BucketGranularity`]) so the widest view is a readable band of quarter
+/// cells rather than the "label soup" year-wide linear strip that was cut
+/// (spec §6.4, §15 cut #4).
+pub(crate) const MAX_VIEW_SPAN_SECS: f64 = 36.0 * 365.25 * 86_400.0;
 
 /// Tunable tier thresholds. The timeline's zoom level maps to one of three
 /// behavioral+visual tiers; transitions carry hysteresis (distinct enter/exit
@@ -49,6 +55,126 @@ pub(crate) mod tier {
     /// Nominal Archive boundary used only for hysteresis-free seeding
     /// (boot / URL restore), midway between the enter/exit spans.
     pub(crate) const ARCHIVE_NOMINAL_SPAN_SECS: f64 = 54.0 * 3600.0;
+}
+
+/// Bucket sizes the Archive calendar aggregates at, coarsest last.
+///
+/// One lane of day cells only stays legible for a few hundred days. Reaching
+/// the whole NEXRAD era on the same continuous timeline means the *cells* get
+/// coarser as the span grows, not that the lane gets denser — otherwise the
+/// widest view is a shimmer of sub-pixel ticks.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum BucketGranularity {
+    /// UTC days — the original Archive cell.
+    #[default]
+    Day,
+    /// UTC weeks starting Monday.
+    Week,
+    /// Real calendar months (28-31 days).
+    Month,
+    /// Calendar quarters (Jan/Apr/Jul/Oct). The terminal rung: at the widest
+    /// zoom this keeps cells ~8px instead of the ~3px a month rung would give.
+    Quarter,
+}
+
+/// Nominal seconds per bucket at each granularity, for threshold math only —
+/// the real boundaries are calendar-aligned and variable width.
+pub(crate) mod bucket_span {
+    pub(crate) const DAY_SECS: f64 = 86_400.0;
+    pub(crate) const WEEK_SECS: f64 = 7.0 * DAY_SECS;
+    /// Mean Gregorian month.
+    pub(crate) const MONTH_SECS: f64 = 2_629_746.0;
+    pub(crate) const QUARTER_SECS: f64 = 3.0 * MONTH_SECS;
+}
+
+/// Cell width (px) below which the calendar drops to the next coarser rung.
+const CELL_EXIT_PX: f64 = 5.0;
+
+/// Zoom (px/sec) at which the *terminal* rung's cells hit [`CELL_EXIT_PX`].
+///
+/// The ladder can always escape an unreadable cell by coarsening — except at
+/// Quarter, where there is nowhere left to go. So this becomes a hard zoom-out
+/// floor, keeping the invariant "a visible calendar cell is always legible"
+/// true at every strip width instead of merely usually true.
+pub(crate) const MIN_LEGIBLE_CELL_ZOOM: f64 = CELL_EXIT_PX / bucket_span::QUARTER_SECS;
+
+// The hard backstop must sit below the legibility floor, or it — not the
+// calendar's readability — would decide the zoom-out limit.
+const _: () = assert!(MIN_LEGIBLE_CELL_ZOOM > TIMELINE_ZOOM_MIN);
+/// Cell width (px) at or above which it climbs back to the finer rung. The gap
+/// against [`CELL_EXIT_PX`] is the hysteresis that stops a pinch hovering on a
+/// boundary from flickering between rungs — the same discipline the tier
+/// machine uses.
+const CELL_ENTER_PX: f64 = 7.0;
+
+impl BucketGranularity {
+    /// Nominal span of one bucket, for pixel-width estimates.
+    pub(crate) fn nominal_secs(self) -> f64 {
+        match self {
+            BucketGranularity::Day => bucket_span::DAY_SECS,
+            BucketGranularity::Week => bucket_span::WEEK_SECS,
+            BucketGranularity::Month => bucket_span::MONTH_SECS,
+            BucketGranularity::Quarter => bucket_span::QUARTER_SECS,
+        }
+    }
+
+    /// The next coarser rung, or `None` at the terminal rung.
+    fn coarser(self) -> Option<Self> {
+        match self {
+            BucketGranularity::Day => Some(BucketGranularity::Week),
+            BucketGranularity::Week => Some(BucketGranularity::Month),
+            BucketGranularity::Month => Some(BucketGranularity::Quarter),
+            BucketGranularity::Quarter => None,
+        }
+    }
+
+    /// The next finer rung, or `None` at the finest.
+    fn finer(self) -> Option<Self> {
+        match self {
+            BucketGranularity::Day => None,
+            BucketGranularity::Week => Some(BucketGranularity::Day),
+            BucketGranularity::Month => Some(BucketGranularity::Week),
+            BucketGranularity::Quarter => Some(BucketGranularity::Month),
+        }
+    }
+
+    /// Projected on-screen width (px) of one bucket at `zoom` (px/sec).
+    fn cell_px(self, zoom: f64) -> f64 {
+        self.nominal_secs() * zoom
+    }
+
+    /// Hysteretic advance from the current rung for a new zoom.
+    ///
+    /// Driven by projected *cell pixel width* rather than raw span, so the
+    /// ladder behaves identically on a phone and a wide desktop strip, and the
+    /// bucket count stays bounded by `width / CELL_EXIT_PX` by construction.
+    pub(crate) fn advance(self, zoom: f64) -> Self {
+        let mut g = self;
+        // Too small to read → step coarser, possibly more than one rung (a URL
+        // restore can land anywhere).
+        while g.cell_px(zoom) < CELL_EXIT_PX {
+            match g.coarser() {
+                Some(next) => g = next,
+                None => break,
+            }
+        }
+        // Comfortably large → step finer, but only while the finer rung itself
+        // clears the enter threshold.
+        while let Some(finer) = g.finer() {
+            if finer.cell_px(zoom) >= CELL_ENTER_PX {
+                g = finer;
+            } else {
+                break;
+            }
+        }
+        g
+    }
+
+    /// Hysteresis-free seeding for boot / URL restore, where there is no
+    /// previous rung to carry.
+    pub(crate) fn seed(zoom: f64) -> Self {
+        BucketGranularity::Day.advance(zoom)
+    }
 }
 
 /// The single stored timeline tier. Replaces the two previously-uncoupled
@@ -795,6 +921,11 @@ pub(crate) struct PlaybackState {
     /// `timeline_zoom`.
     pub timeline_tier: TimelineTier,
 
+    /// The Archive calendar's stored bucket size (see [`BucketGranularity`]).
+    /// Advanced with hysteresis alongside `timeline_tier`; deriving it per
+    /// frame from a bare threshold would flicker mid-pinch.
+    pub calendar_granularity: BucketGranularity,
+
     /// Timeline view position - absolute timestamp of left edge (Unix seconds)
     pub timeline_view_start: f64,
 
@@ -998,6 +1129,7 @@ impl PlaybackState {
     /// boot / URL restore once `timeline_zoom` is set.
     pub(crate) fn seed_tier_from_state(&mut self) {
         self.timeline_tier = Self::seed_tier(self.timeline_zoom, self.timeline_width_px);
+        self.calendar_granularity = BucketGranularity::seed(self.timeline_zoom);
     }
 
     /// Compute the tier a zoom+width should land in, given the current tier
@@ -1064,16 +1196,25 @@ impl PlaybackState {
         }
     }
 
-    /// The width-aware minimum zoom (px/sec): the smallest zoom whose visible
-    /// span does not exceed [`MAX_VIEW_SPAN_SECS`] at `width_px`, floored at the
-    /// hard [`TIMELINE_ZOOM_MIN`]. This is what stops the strip zooming out into
-    /// the deprecated year-wide view: past the Archive-enter span the calendar
-    /// tier renders, and this floor keeps even the calendar's widest reach to a
-    /// readable multi-month span (spec §6.4 DECIDED). Width-aware so the ceiling
-    /// holds whether the strip is a phone sliver or a wide desktop.
+    /// The width-aware minimum zoom (px/sec) — how far out the timeline may go.
+    ///
+    /// Two floors, whichever binds:
+    /// - **the era ceiling**: the visible span never exceeds
+    ///   [`MAX_VIEW_SPAN_SECS`] at `width_px`;
+    /// - **the legibility floor** ([`MIN_LEGIBLE_CELL_ZOOM`]): the Archive
+    ///   calendar's *terminal* rung stays a readable cell. Without this, a
+    ///   narrow strip zoomed fully out shows the whole era as ~2px quarter
+    ///   cells — the ladder has no coarser rung to escape to, so the ceiling
+    ///   has to stop instead. A phone therefore reaches ~16 years rather than
+    ///   36, which is the honest answer: 36 years across 320 px is ~42 days per
+    ///   pixel and there is nothing there to see.
+    ///
+    /// [`TIMELINE_ZOOM_MIN`] sits below both as a degenerate-width backstop.
     pub(crate) fn min_zoom_for_width(width_px: f64) -> f64 {
         let w = width_px.max(1.0);
-        (w / MAX_VIEW_SPAN_SECS).max(TIMELINE_ZOOM_MIN)
+        (w / MAX_VIEW_SPAN_SECS)
+            .max(MIN_LEGIBLE_CELL_ZOOM)
+            .max(TIMELINE_ZOOM_MIN)
     }
 
     /// The single zoom-mutation path. Clamps, stores the zoom, and advances
@@ -1093,6 +1234,7 @@ impl PlaybackState {
     ) {
         let min = Self::min_zoom_for_width(width_px);
         self.timeline_zoom = zoom.clamp(min, TIMELINE_ZOOM_MAX);
+        self.calendar_granularity = self.calendar_granularity.advance(self.timeline_zoom);
         let next = self.next_tier(self.timeline_zoom, width_px);
         self.apply_tier(next, median_frame_spacing);
     }
@@ -1102,6 +1244,13 @@ impl PlaybackState {
     /// Re-evaluate the tier against the current width with hysteresis. Cheap
     /// and idempotent when nothing moved.
     pub(crate) fn reconcile_tier(&mut self, width_px: f64, median_frame_spacing: f64) {
+        // Also re-clamp the zoom itself. `min_zoom_for_width` is width-aware, so
+        // a zoom restored from a URL was only ever clamped against the *seeded*
+        // width — harmless at a 100-day ceiling, a real error now that the
+        // ceiling is decades wide.
+        let min = Self::min_zoom_for_width(width_px);
+        self.timeline_zoom = self.timeline_zoom.clamp(min, TIMELINE_ZOOM_MAX);
+        self.calendar_granularity = self.calendar_granularity.advance(self.timeline_zoom);
         let next = self.next_tier(self.timeline_zoom, width_px);
         self.apply_tier(next, median_frame_spacing);
     }
@@ -1600,7 +1749,7 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn min_zoom_clamp_caps_widest_view_at_calendar_span() {
+    fn min_zoom_clamp_caps_widest_view_at_the_archive_era() {
         // The width-aware floor bounds the visible span to MAX_VIEW_SPAN_SECS.
         let width = 1200.0;
         let min = PlaybackState::min_zoom_for_width(width);
@@ -1610,28 +1759,198 @@ mod tests {
             (span_at_min - MAX_VIEW_SPAN_SECS).abs() < 1.0,
             "span {span_at_min}"
         );
-        // The widest linear view is far short of a year — the deprecated
-        // year-wide strip is gone.
-        assert!(span_at_min < 365.0 * 86_400.0);
+        // The widest view now reaches the whole NEXRAD era. (The old
+        // year-scale *linear* strip is still gone — past ~60h the renderer is
+        // the Archive calendar, not a stretched strip.)
+        assert!(span_at_min > 30.0 * 365.0 * 86_400.0);
 
-        // A zoom request below the floor clamps UP to it, never to the old
-        // ~30-year minimum.
+        // A zoom request below the floor clamps UP to it.
         let mut ps = PlaybackState::default();
-        ps.set_timeline_zoom(1e-9, width, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(1e-12, width, FALLBACK_FRAME_SPACING_SECS);
         assert_eq!(ps.timeline_zoom, min);
         // And the resulting view can't show beyond the ceiling.
         assert!(width / ps.timeline_zoom <= MAX_VIEW_SPAN_SECS + 1.0);
     }
 
     #[wasm_bindgen_test]
+    fn the_hard_floor_never_becomes_the_binding_constraint() {
+        // TIMELINE_ZOOM_MIN is a degenerate-width backstop, not the zoom-out
+        // ceiling. If it ever rises above the width-aware floor it silently
+        // decides how far the timeline can zoom out — which is exactly what
+        // capped the view at under four years before this change. Check the
+        // narrowest plausible strip, where the width-aware floor is smallest.
+        for width in [320.0_f64, 768.0, 1200.0, 3840.0] {
+            let width_aware = width / MAX_VIEW_SPAN_SECS;
+            assert!(
+                width_aware > TIMELINE_ZOOM_MIN,
+                "width {width}: {width_aware} <= {TIMELINE_ZOOM_MIN}"
+            );
+            // The effective floor is always one of the two meaningful ones.
+            assert_eq!(
+                PlaybackState::min_zoom_for_width(width),
+                width_aware.max(MIN_LEGIBLE_CELL_ZOOM)
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn a_wide_strip_reaches_the_whole_era() {
+        for width in [1200.0_f64, 1920.0, 3840.0] {
+            let min = PlaybackState::min_zoom_for_width(width);
+            assert!(
+                (width / min - MAX_VIEW_SPAN_SECS).abs() < 1.0,
+                "width {width}: {}",
+                width / min
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn a_narrow_strip_stops_where_cells_stop_being_readable() {
+        // A phone can't usefully show 36 years, so the legibility floor binds
+        // first and the reachable span comes down with it — rather than the
+        // view going wider than the ladder can render.
+        let width = 320.0;
+        let min = PlaybackState::min_zoom_for_width(width);
+        assert_eq!(min, MIN_LEGIBLE_CELL_ZOOM);
+        let span_years = (width / min) / (365.25 * 86_400.0);
+        assert!(span_years > 10.0, "{span_years}");
+        assert!(span_years < 36.0, "{span_years}");
+    }
+
+    // ---- BucketGranularity ladder ----------------------------------------
+
+    /// Zoom (px/sec) at which one bucket of `g` is `px` wide.
+    fn zoom_for_cell(g: BucketGranularity, px: f64) -> f64 {
+        px / g.nominal_secs()
+    }
+
+    #[wasm_bindgen_test]
+    fn the_ladder_coarsens_as_cells_shrink() {
+        // Day cells at 20px are comfortable; at 1px they are not, and the rung
+        // must step coarser rather than shimmer.
+        let g = BucketGranularity::Day;
+        assert_eq!(
+            g.advance(zoom_for_cell(BucketGranularity::Day, 20.0)),
+            BucketGranularity::Day
+        );
+        assert_eq!(
+            g.advance(zoom_for_cell(BucketGranularity::Day, 1.0)),
+            BucketGranularity::Week
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn the_terminal_rung_is_quarter() {
+        // The widest zoom on a wide strip must not fall off the ladder.
+        let widest = PlaybackState::min_zoom_for_width(1200.0);
+        assert_eq!(BucketGranularity::seed(widest), BucketGranularity::Quarter);
+    }
+
+    #[wasm_bindgen_test]
+    fn terminal_cells_stay_legible_at_the_widest_zoom() {
+        // The reason a Quarter rung exists: month cells at full zoom-out are
+        // ~2.8px, which reads as noise. Assert the terminal rung clears the
+        // exit threshold at both a phone and a desktop width.
+        for width in [320.0_f64, 1200.0, 3840.0] {
+            let zoom = PlaybackState::min_zoom_for_width(width);
+            let g = BucketGranularity::seed(zoom);
+            let cell_px = g.nominal_secs() * zoom;
+            assert!(cell_px >= CELL_EXIT_PX, "width {width}: {cell_px}px");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn the_ladder_has_hysteresis_at_every_boundary() {
+        // In the band between exit and enter the rung depends on which side it
+        // came from — that is what stops a pinch hovering on a boundary from
+        // flickering between two cell sizes every frame.
+        for (fine, coarse) in [
+            (BucketGranularity::Day, BucketGranularity::Week),
+            (BucketGranularity::Week, BucketGranularity::Month),
+            (BucketGranularity::Month, BucketGranularity::Quarter),
+        ] {
+            // A zoom putting the FINE cell inside the hysteresis band.
+            let zoom = zoom_for_cell(fine, (CELL_EXIT_PX + CELL_ENTER_PX) / 2.0);
+            assert_eq!(fine.advance(zoom), fine, "{fine:?} should hold");
+            assert_eq!(coarse.advance(zoom), coarse, "{coarse:?} should hold");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn sweeping_the_zoom_out_and_back_returns_to_the_starting_rung() {
+        // End-to-end stability: no ratchet, no oscillation.
+        let start = zoom_for_cell(BucketGranularity::Day, 20.0);
+        let mut g = BucketGranularity::seed(start);
+        assert_eq!(g, BucketGranularity::Day);
+        for zoom in [
+            zoom_for_cell(BucketGranularity::Week, 20.0),
+            zoom_for_cell(BucketGranularity::Month, 20.0),
+            PlaybackState::min_zoom_for_width(1200.0),
+            zoom_for_cell(BucketGranularity::Month, 20.0),
+            zoom_for_cell(BucketGranularity::Week, 20.0),
+            start,
+        ] {
+            g = g.advance(zoom);
+        }
+        assert_eq!(g, BucketGranularity::Day);
+    }
+
+    #[wasm_bindgen_test]
+    fn seeding_is_history_free() {
+        // Boot / URL restore has no previous rung, so the same zoom must always
+        // seed the same granularity regardless of what came before.
+        for zoom in [1e-6, 1e-5, 1e-4, 1e-3, 0.15] {
+            let seeded = BucketGranularity::seed(zoom);
+            for from in [
+                BucketGranularity::Day,
+                BucketGranularity::Week,
+                BucketGranularity::Month,
+                BucketGranularity::Quarter,
+            ] {
+                // Advancing from the seeded rung is a fixed point.
+                assert_eq!(seeded.advance(zoom), seeded, "zoom {zoom}");
+                let _ = from;
+            }
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn zooming_stores_the_granularity_on_state() {
+        let mut ps = PlaybackState::default();
+        ps.set_timeline_zoom(
+            PlaybackState::min_zoom_for_width(1200.0),
+            1200.0,
+            FALLBACK_FRAME_SPACING_SECS,
+        );
+        assert_eq!(ps.calendar_granularity, BucketGranularity::Quarter);
+        ps.set_timeline_zoom(0.15, 1200.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.calendar_granularity, BucketGranularity::Day);
+    }
+
+    #[wasm_bindgen_test]
+    fn reconcile_tier_reclamps_zoom_to_the_current_width_floor() {
+        // A URL-restored zoom is clamped against the seeded width; the real
+        // strip can be wider. Without a re-clamp the view silently exceeds the
+        // ceiling — invisible at 100 days, a real error at 36 years.
+        let mut ps = PlaybackState::default();
+        ps.timeline_zoom = 1e-12;
+        ps.timeline_width_px = 1200.0;
+        ps.reconcile_tier(1200.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_zoom, PlaybackState::min_zoom_for_width(1200.0));
+    }
+
+    #[wasm_bindgen_test]
     fn min_zoom_is_width_aware() {
         // span = width / zoom, so holding the same span ceiling, a WIDER strip
-        // needs a LARGER floor (more pixels per second).
-        let narrow = PlaybackState::min_zoom_for_width(300.0);
+        // needs a LARGER floor (more pixels per second). Both widths here are
+        // above the point where the legibility floor takes over, so the
+        // width-aware term is the one being exercised.
+        let narrow = PlaybackState::min_zoom_for_width(1200.0);
         let wide = PlaybackState::min_zoom_for_width(2400.0);
         assert!(wide > narrow);
         // Both hold the span ceiling.
-        assert!((300.0 / narrow - MAX_VIEW_SPAN_SECS).abs() < 1.0);
+        assert!((1200.0 / narrow - MAX_VIEW_SPAN_SECS).abs() < 1.0);
         assert!((2400.0 / wide - MAX_VIEW_SPAN_SECS).abs() < 1.0);
     }
 

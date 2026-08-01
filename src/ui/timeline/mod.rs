@@ -558,16 +558,18 @@ pub(super) fn render_timeline(
     // than the Archive-enter span. Macro↔Archive is an instant swap (no morph).
     // The per-cell hit list feeds tap-to-zoom + the day tooltip below.
     let mut day_cells: Vec<calendar::DayCellHit> = Vec::new();
+    let granularity = playback.state.calendar_granularity;
     if tier == TimelineTier::Archive {
-        let buckets = crate::state::aggregate_day_buckets(
+        let buckets = crate::state::aggregate_buckets(
             &timeline.scans,
             &timeline.shadow_scan_boundaries,
             &state.saved_events,
             &state.viz_state.site_id,
             view_start,
             view_end,
+            granularity,
         );
-        day_cells = calendar::render_calendar(&painter, &frame, &buckets);
+        day_cells = calendar::render_calendar(&painter, &frame, &buckets, granularity);
     } else if tier == TimelineTier::Macro || morphing {
         // Macro track (uniform ticks + coverage + gap glyphs). Drawn in Macro,
         // or while morphing into/out of Micro (cross-fade with the Micro layer).
@@ -581,15 +583,28 @@ pub(super) fn render_timeline(
     // Draw tick marks and labels in the dedicated tick lane above the main
     // track. Tick spacing/alignment is derived inside from the frame's zoom
     // and view bounds.
-    render_tick_marks(&painter, &frame);
+    //
+    // Skipped at Archive: the linear tick configs bottom out at a 6-hour minor
+    // interval, so a decade-wide span would iterate tens of thousands of times
+    // per frame and cram thousands of labels over the calendar's own month/year
+    // labels. The calendar owns the tick lane at that tier.
+    if tier != TimelineTier::Archive {
+        render_tick_marks(&painter, &frame);
+    }
 
-    // Draw saved event overlays (behind the selection range)
-    render_saved_events(
-        &painter,
-        &frame,
-        &state.saved_events,
-        &state.viz_state.site_id,
-    );
+    // Draw saved event overlays (behind the selection range).
+    //
+    // Skipped at Archive: the calendar already marks event buckets with its
+    // bookmark glyph, and at that scale these bands are sub-pixel — two
+    // grammars competing to say the same thing, one of them illegibly.
+    if tier != TimelineTier::Archive {
+        render_saved_events(
+            &painter,
+            &frame,
+            &state.saved_events,
+            &state.viz_state.site_id,
+        );
+    }
 
     // Draw selection range (if user has selected a range via shift+drag)
     if let Some((range_start, range_end)) = playback.state.selection_range() {
@@ -723,8 +738,10 @@ pub(super) fn render_timeline(
         if let Some(pos) = response.interact_pointer_pos() {
             if let Some(cell) = day_cells.iter().find(|c| c.rect.contains(pos)) {
                 let width = playback.state.timeline_width_px;
+                // One rung per tap (Quarter → Month → Week → Day → Macro), not
+                // straight to a single day — see `bucket_tap_target`.
                 let (new_view_start, new_zoom) =
-                    crate::state::day_tap_macro_view(cell.bucket.day_start, width);
+                    crate::state::bucket_tap_target(&cell.bucket, granularity, width);
                 playback.state.timeline_view_start = new_view_start;
                 let spacing = playback.state.median_frame_spacing();
                 playback.state.set_timeline_zoom(new_zoom, width, spacing);
@@ -786,7 +803,13 @@ pub(super) fn render_timeline(
         if let Some(hover_pos) = response.hover_pos() {
             if tier == TimelineTier::Archive {
                 if let Some(cell) = day_cells.iter().find(|c| c.rect.contains(hover_pos)) {
-                    calendar::render_day_tooltip(ui, &cell.bucket, hover_pos, use_local);
+                    calendar::render_day_tooltip(
+                        ui,
+                        &cell.bucket,
+                        hover_pos,
+                        use_local,
+                        granularity,
+                    );
                 }
             } else {
                 let hover_ts = frame.x_to_ts(hover_pos.x);
@@ -809,5 +832,10 @@ pub(super) fn render_timeline(
         Pos2::new(scan_rect.left(), scan_rect.bottom()),
         Pos2::new(scan_rect.right(), scan_rect.bottom() + style::LOOP_HANDLE_H),
     );
-    loop_handles::render_loop_handles(ui, state, live, playback, &frame, band_rect);
+    // Not at Archive: one pixel there can be weeks, so a handle drag adjusts
+    // the loop by an amount the user cannot see or aim. Archive is a navigator
+    // — zoom in to edit the loop.
+    if tier != TimelineTier::Archive {
+        loop_handles::render_loop_handles(ui, state, live, playback, &frame, band_rect);
+    }
 }

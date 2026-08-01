@@ -7,14 +7,21 @@
 //! linear renderer is simply never the active one at Archive spans; the calendar
 //! is.
 //!
-//! Layout choice (height budget): a **single horizontal lane of UTC-day cells**
-//! inside the same main-track rect the linear strip uses, so the panel height
-//! stays exactly `TIMELINE_TOTAL_H` (no reflow, honoring the constant-height
-//! contract). Month boundaries get a faint separator + a month label in the tick
-//! lane (the calendar supplies its own labels; the linear tick configs only go
-//! down to days now). Day cells map to x through the frame's shared `ts_to_x`,
-//! so the playhead/now overlays the orchestrator paints afterward stay spatially
+//! Layout choice (height budget): a **single horizontal lane of cells** inside
+//! the same main-track rect the linear strip uses, so the panel height stays
+//! exactly `TIMELINE_TOTAL_H` (no reflow, honoring the constant-height
+//! contract). Cells map to x through the frame's shared `ts_to_x` — both edges,
+//! since buckets are variable width once months are in play — so the
+//! playhead/now overlays the orchestrator paints afterward stay spatially
 //! consistent with the same zoom scalar.
+//!
+//! **Cell size follows the zoom ladder** (day → week → month → quarter), which
+//! is what lets the lane span the whole NEXRAD era while staying legible. The
+//! label ladder follows it: month names carry the structure while cells are days
+//! or weeks, but once a cell IS a month a month label on every cell is noise, so
+//! years take over. A collision guard thins labels further rather than
+//! hand-tuning an interval per zoom. The calendar owns the tick lane at this
+//! tier — the linear tick configs are skipped entirely.
 //!
 //! Tone (two visual dimensions per the spec, within the accent budget — no new
 //! hues, red still reserved for live/failure):
@@ -23,12 +30,21 @@
 //! - **cache** (downloaded locally) → a *solid intensity* inner fill whose alpha
 //!   scales with `cache_frac`.
 //!
-//! Both use the neutral steel cell tones. A saved-event day gets a small neutral
-//! bookmark tick (shape, not color). Reduced-motion has nothing to animate here
-//! (the calendar is static) — the morph into Archive is an instant swap.
+//! Both use the neutral steel cell tones. A saved-event bucket gets a small
+//! neutral bookmark tick (shape, not color). Reduced-motion has nothing to
+//! animate here (the calendar is static) — the morph into Archive is an instant
+//! swap.
+//!
+//! At the widest zooms most buckets are structurally empty (the listing pump is
+//! capped at a 4-day span, so nothing new ever loads out there). Three measures
+//! keep that reading as *bounded* rather than *broken*: a keyline washing the
+//! addressable `[era start, now]` range behind the cells, a 1px floor on the
+//! cache bar so a small-but-real fraction still shows, and gap/border collapsing
+//! on narrow cells so the coverage tones aren't crowded out by chrome.
 
 use super::TimelineFrame;
-use crate::state::DayBucket;
+use crate::core::BucketGranularity;
+use crate::state::TimeBucket;
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Color32, FontId, Painter, Pos2, Rect, Stroke, StrokeKind};
 
@@ -37,9 +53,18 @@ use eframe::egui::{self, Color32, FontId, Painter, Pos2, Rect, Stroke, StrokeKin
 const CELL_GAP_PX: f32 = 1.0;
 /// Vertical inset of the day-cell lane inside the main track.
 const LANE_INSET_Y: f32 = 5.0;
-/// Minimum on-screen width (px) for a day cell to draw its inner cache fill /
+/// Minimum on-screen width (px) for a cell to draw its inner cache fill /
 /// bookmark glyph; below this the cell is a thin tick and only the wash shows.
 const MIN_DETAIL_W: f32 = 4.0;
+/// Minimum horizontal spacing (px) between period labels in the tick lane. At
+/// the widest zooms year separators land only ~33px apart, so this thins them
+/// to every other year rather than letting them overlap into soup.
+const LABEL_MIN_GAP_PX: f32 = 40.0;
+/// Minimum painted height (px) of the cache bar whenever any data is cached.
+/// A 1%-cached week is 0.3px of a 32px lane and would vanish entirely — and at
+/// coarse rungs almost every real bucket is a small fraction, so without this
+/// floor the wide view looks empty even where data exists.
+const MIN_CACHE_BAR_H: f32 = 1.0;
 
 /// One hit-tested day cell, returned so the interaction layer can tap-to-zoom
 /// and the tooltip layer can describe the hovered day.
@@ -48,7 +73,7 @@ pub(super) struct DayCellHit {
     /// Screen rect of the cell (for hit-test + hover).
     pub rect: Rect,
     /// The bucket this cell renders (UTC day start + tones + events flag).
-    pub bucket: DayBucket,
+    pub bucket: TimeBucket,
 }
 
 /// Render the Archive calendar heatmap into the main-track rect and return the
@@ -58,30 +83,47 @@ pub(super) struct DayCellHit {
 pub(super) fn render_calendar(
     painter: &Painter,
     frame: &TimelineFrame<'_>,
-    buckets: &[DayBucket],
+    buckets: &[TimeBucket],
+    granularity: BucketGranularity,
 ) -> Vec<DayCellHit> {
     let track = &frame.rects.scan;
     let lane_top = track.top() + LANE_INSET_Y;
     let lane_bot = track.bottom() - LANE_INSET_Y;
     let dark = frame.dark;
 
-    let day_secs = crate::state::DAY_SECS;
+    // The addressable range, drawn under the cells. At the widest zooms most
+    // buckets are structurally empty (nothing new loads out there — the listing
+    // pump is capped at a 4-day span), so without a keyline the lane reads as
+    // broken rather than as bounded.
+    paint_era_keyline(painter, frame, dark);
+
     let mut hits: Vec<DayCellHit> = Vec::with_capacity(buckets.len());
 
-    let mut prev_month: Option<u32> = None;
+    // Label collision guard: the last x a label was emitted at. Beats
+    // hand-tuning a label interval per zoom — at 36 years the year separators
+    // land ~33px apart and this drops to every other year on its own.
+    let mut last_label_x = f32::NEG_INFINITY;
+    let mut prev_period: Option<(i32, u32)> = None;
+
     for bucket in buckets {
-        let day_start = bucket.day_start;
-        let day_end = day_start + day_secs;
-        // Cell x-extent from the shared mapping, clamped to the track and inset
-        // by the gap so cells read discretely.
-        let x0 = frame.ts_to_x(day_start);
-        let x1 = frame.ts_to_x(day_end);
+        // Both edges through the shared mapping: buckets are variable width
+        // once months are in play, so the end can't be derived from the start.
+        let x0 = frame.ts_to_x(bucket.start);
+        let x1 = frame.ts_to_x(bucket.end);
         // Fully off-screen cells are skipped (no hit, no paint).
         if x1 < track.left() || x0 > track.right() {
             continue;
         }
-        let cell_left = (x0 + CELL_GAP_PX).max(track.left());
-        let cell_right = (x1 - CELL_GAP_PX).min(track.right());
+        // Gap and border both collapse on narrow cells — at ~3px a bordered,
+        // gapped cell is almost entirely border and the coverage tones vanish.
+        let raw_w = x1 - x0;
+        let gap = if raw_w >= MIN_DETAIL_W * 2.0 {
+            CELL_GAP_PX
+        } else {
+            0.0
+        };
+        let cell_left = (x0 + gap).max(track.left());
+        let cell_right = (x1 - gap).min(track.right());
         if cell_right <= cell_left {
             continue;
         }
@@ -90,13 +132,22 @@ pub(super) fn render_calendar(
             Pos2::new(cell_right, lane_bot),
         );
 
-        paint_day_cell(painter, cell_rect, bucket, dark);
+        paint_day_cell(painter, cell_rect, bucket, dark, raw_w);
 
-        // Month separator + label when this day starts a new month.
-        let comps = super::DateTimeComponents::from_timestamp(day_start as i64, false);
-        if prev_month != Some(comps.month) {
-            paint_month_marker(painter, frame, x0, &comps, dark);
-            prev_month = Some(comps.month);
+        // Period separator + label. Which period counts depends on the rung:
+        // month boundaries are meaningful at Day/Week, but at Month/Quarter
+        // they land on every cell, so years carry the structure instead.
+        let comps = super::DateTimeComponents::from_timestamp(bucket.start as i64, false);
+        let period = match granularity {
+            BucketGranularity::Day | BucketGranularity::Week => (comps.year, comps.month),
+            BucketGranularity::Month | BucketGranularity::Quarter => (comps.year, 1),
+        };
+        if prev_period != Some(period) {
+            let far_enough = x0 - last_label_x >= LABEL_MIN_GAP_PX;
+            if paint_period_marker(painter, frame, x0, &comps, granularity, far_enough, dark) {
+                last_label_x = x0;
+            }
+            prev_period = Some(period);
         }
 
         hits.push(DayCellHit {
@@ -108,9 +159,34 @@ pub(super) fn render_calendar(
     hits
 }
 
+/// Wash the addressable archive range `[era start, now]` behind the cells.
+///
+/// Zoomed fully out, the great majority of buckets have no data and nothing
+/// will ever load there. A lane of uniformly empty cells reads as a failure; the
+/// same lane with a visible "this is the range that exists" band reads as
+/// bounded, which is the truth.
+fn paint_era_keyline(painter: &Painter, frame: &TimelineFrame<'_>, dark: bool) {
+    let track = &frame.rects.scan;
+    let x0 = frame
+        .ts_to_x(crate::core::NEXRAD_ARCHIVE_START_SECS)
+        .max(track.left());
+    let x1 = frame.ts_to_x(frame.now_secs).min(track.right());
+    if x1 <= x0 {
+        return;
+    }
+    painter.rect_filled(
+        Rect::from_min_max(
+            Pos2::new(x0, track.top() + LANE_INSET_Y - 2.0),
+            Pos2::new(x1, track.bottom() - LANE_INSET_Y + 2.0),
+        ),
+        1.0,
+        tl_colors::sub_texture(dark),
+    );
+}
+
 /// Paint one day cell: a lighter availability wash, a solid cache-intensity
 /// inner fill, a faint border, and a bookmark glyph when the day has events.
-fn paint_day_cell(painter: &Painter, rect: Rect, bucket: &DayBucket, dark: bool) {
+fn paint_day_cell(painter: &Painter, rect: Rect, bucket: &TimeBucket, dark: bool, raw_w: f32) {
     let w = rect.width();
     // Availability wash: lighter, alpha scaled by the fraction of the day that is
     // known to exist on the server. Even a fully-available day stays a wash so it
@@ -130,7 +206,12 @@ fn paint_day_cell(painter: &Painter, rect: Rect, bucket: &DayBucket, dark: bool)
     // quantity directly in grayscale (shape + intensity), not by hue.
     if bucket.cache_frac > 0.0 && w >= MIN_DETAIL_W {
         let frac = bucket.cache_frac.clamp(0.0, 1.0);
-        let fill_h = rect.height() * frac;
+        // Floored so a small-but-real fraction is visible. Coarse rungs make
+        // almost every genuine bucket a small fraction of its span, so without
+        // the floor the wide view reads as empty where it isn't.
+        let fill_h = (rect.height() * frac)
+            .max(MIN_CACHE_BAR_H)
+            .min(rect.height());
         let inner = Rect::from_min_max(
             Pos2::new(rect.left(), rect.bottom() - fill_h),
             Pos2::new(rect.right(), rect.bottom()),
@@ -153,13 +234,18 @@ fn paint_day_cell(painter: &Painter, rect: Rect, bucket: &DayBucket, dark: bool)
         );
     }
 
-    // Faint cell border so empty (unknown) days still read as cells in the grid.
-    painter.rect_stroke(
-        rect,
-        1.0,
-        Stroke::new(1.0_f32, tl_colors::container_border(dark)),
-        StrokeKind::Inside,
-    );
+    // Faint cell border so empty (unknown) cells still read as cells in the
+    // grid — but only while the cell is wide enough to have an interior. On a
+    // ~3px cell a 1px inset border on both sides IS the cell, which hides the
+    // coverage tones the lane exists to show.
+    if raw_w >= MIN_DETAIL_W {
+        painter.rect_stroke(
+            rect,
+            1.0,
+            Stroke::new(1.0_f32, tl_colors::container_border(dark)),
+            StrokeKind::Inside,
+        );
+    }
 
     // Saved-event bookmark: a small neutral triangle at the top-left (shape, not
     // an accent hue — matches the linear strip's event marker grammar).
@@ -178,22 +264,31 @@ fn paint_day_cell(painter: &Painter, rect: Rect, bucket: &DayBucket, dark: bool)
     }
 }
 
-/// Draw a month-start separator line through the lane and a `Mon YYYY` label in
-/// the tick lane above it. The calendar owns its own labels (the linear tick
-/// ladder no longer carries month/year configs).
-fn paint_month_marker(
+/// Draw a period separator through the lane and its label in the tick lane.
+///
+/// The label ladder follows the rung: month names carry the structure while
+/// cells are days or weeks, but once a cell *is* a month or a quarter a month
+/// label on every cell is noise, so years take over. The calendar owns its own
+/// labels — the linear tick ladder no longer carries month/year configs, and is
+/// skipped entirely at this tier.
+///
+/// Returns whether a label was actually emitted (the separator is always drawn;
+/// the label is subject to the collision guard).
+fn paint_period_marker(
     painter: &Painter,
     frame: &TimelineFrame<'_>,
     x: f32,
     comps: &super::DateTimeComponents,
+    granularity: BucketGranularity,
+    label_allowed: bool,
     dark: bool,
-) {
+) -> bool {
     let track = &frame.rects.scan;
     let tick = &frame.rects.tick;
     if x < track.left() || x > track.right() {
-        return;
+        return false;
     }
-    // Separator through the day lane.
+    // Separator through the cell lane.
     painter.line_segment(
         [
             Pos2::new(x, track.top() + 1.0),
@@ -201,8 +296,15 @@ fn paint_month_marker(
         ],
         Stroke::new(1.0_f32, tl_colors::tick_major(dark)),
     );
-    // Month label in the tick lane.
-    let label = format!("{} {}", comps.month_abbrev(), comps.year);
+    if !label_allowed {
+        return false;
+    }
+    let label = match granularity {
+        BucketGranularity::Day | BucketGranularity::Week => {
+            format!("{} {}", comps.month_abbrev(), comps.year)
+        }
+        BucketGranularity::Month | BucketGranularity::Quarter => comps.year.to_string(),
+    };
     painter.text(
         Pos2::new((x + 3.0).min(track.right() - 2.0), tick.center().y),
         egui::Align2::LEFT_CENTER,
@@ -210,23 +312,63 @@ fn paint_month_marker(
         FontId::monospace(9.0),
         tl_colors::tick_label(dark),
     );
+    true
 }
 
-/// Render the hover tooltip for a day cell: the date plus a "N cached /
-/// available" coverage summary. Reuses the always-open tooltip idiom the rest of
-/// the timeline uses. `hover_pos` anchors the popup.
+/// Human-readable coverage duration for a calendar tooltip.
+///
+/// Deliberately absolute rather than a percentage: at a quarter rung six hours
+/// of data is 0.3% and rounds to "0%", which tells the user there is nothing
+/// there when there is.
+pub(super) fn format_coverage(secs: f64) -> String {
+    if secs <= 0.0 {
+        return "none".to_string();
+    }
+    let hours = secs / 3600.0;
+    if hours < 1.0 {
+        format!("{:.0} min", (secs / 60.0).max(1.0))
+    } else if hours < 48.0 {
+        format!("{hours:.1} h")
+    } else {
+        format!("{:.1} days", hours / 24.0)
+    }
+}
+
+/// Render the hover tooltip for a calendar cell: the period plus a coverage
+/// summary. Reuses the always-open tooltip idiom the rest of the timeline uses.
+/// `hover_pos` anchors the popup.
 pub(super) fn render_day_tooltip(
     ui: &mut egui::Ui,
-    bucket: &DayBucket,
+    bucket: &TimeBucket,
     hover_pos: Pos2,
     use_local: bool,
+    granularity: BucketGranularity,
 ) {
     use eframe::egui::{RichText, Vec2};
-    let comps = super::DateTimeComponents::from_timestamp(bucket.day_start as i64, use_local);
-    let date = format!("{} {:02}, {}", comps.month_abbrev(), comps.day, comps.year);
-    // Fractions → percent for a legible "how much of the day" readout.
-    let avail_pct = (bucket.availability_frac * 100.0).round() as i32;
-    let cache_pct = (bucket.cache_frac * 100.0).round() as i32;
+    let comps = super::DateTimeComponents::from_timestamp(bucket.start as i64, use_local);
+    // The heading names what the cell actually is, so a quarter cell doesn't
+    // claim to be its first day.
+    let date = match granularity {
+        BucketGranularity::Day => {
+            format!("{} {:02}, {}", comps.month_abbrev(), comps.day, comps.year)
+        }
+        BucketGranularity::Week => format!(
+            "Week of {} {:02}, {}",
+            comps.month_abbrev(),
+            comps.day,
+            comps.year
+        ),
+        BucketGranularity::Month => format!("{} {}", comps.month_abbrev(), comps.year),
+        BucketGranularity::Quarter => {
+            format!("Q{} {}", (comps.month - 1) / 3 + 1, comps.year)
+        }
+    };
+    let period = match granularity {
+        BucketGranularity::Day => "this day",
+        BucketGranularity::Week => "this week",
+        BucketGranularity::Month => "this month",
+        BucketGranularity::Quarter => "this quarter",
+    };
 
     egui::Tooltip::always_open(
         ui.ctx().clone(),
@@ -236,17 +378,26 @@ pub(super) fn render_day_tooltip(
     )
     .show(|ui: &mut egui::Ui| {
         ui.label(RichText::new(date).strong().size(12.0));
-        if avail_pct == 0 {
+        if bucket.available_secs <= 0.0 {
+            // "No data" would imply the archive is empty here; the truth is
+            // that no listing has been loaded for this span — the listing pump
+            // is capped at a 4-day window, so wide views never populate.
             ui.label(
-                RichText::new("No data listed for this day")
+                RichText::new(format!("No listing loaded for {period} — zoom in"))
                     .size(11.0)
                     .weak(),
             );
         } else {
+            // Absolutes, not percentages: at coarse rungs a real few hours of
+            // data rounds to "0%", which reads as nothing at all.
             ui.label(
-                RichText::new(format!("{cache_pct}% cached / {avail_pct}% available"))
-                    .size(11.0)
-                    .color(tl_colors::status_cached()),
+                RichText::new(format!(
+                    "{} cached of {} available",
+                    format_coverage(bucket.cached_secs),
+                    format_coverage(bucket.available_secs)
+                ))
+                .size(11.0)
+                .color(tl_colors::status_cached()),
             );
         }
         if bucket.has_events {

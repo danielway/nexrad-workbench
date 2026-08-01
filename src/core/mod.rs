@@ -48,6 +48,7 @@ pub(crate) mod transport;
 pub(crate) mod worker_decoded;
 pub(crate) mod worker_ingest;
 
+pub(crate) use acquisition::{selection_span_allowed, MAX_SELECTION_SPAN_SECS};
 #[allow(unused_imports)]
 pub(crate) use domain::errors::TimestampedError;
 pub(crate) use domain::errors::{AppError, ErrorContext, WorkerErrorKind};
@@ -61,9 +62,10 @@ pub(crate) use domain::forecast::{
 pub(crate) use domain::forecast::RateSource;
 pub(crate) use domain::ops::OperationId;
 pub(crate) use domain::playback::{
-    format_lag, macro_frame_bounds, FreezeAt, LoopBasis, LoopMode, LoopPreset, MacroFrameInputs,
-    MacroPlaybackState, PlaybackDirection, PlaybackMode, PlaybackSpeed, PlaybackState,
-    PlayheadMode, RebuildCause, TimeModel, TimeSelection, TimelineTier, TIMELINE_ZOOM_MAX,
+    format_lag, macro_frame_bounds, BucketGranularity, FreezeAt, LoopBasis, LoopMode, LoopPreset,
+    MacroFrameInputs, MacroPlaybackState, PlaybackDirection, PlaybackMode, PlaybackSpeed,
+    PlaybackState, PlayheadMode, RebuildCause, TimeModel, TimeSelection, TimelineTier,
+    TIMELINE_ZOOM_MAX,
 };
 // Consumed only by test modules today; in a bin crate that reads as unused.
 #[allow(unused_imports)]

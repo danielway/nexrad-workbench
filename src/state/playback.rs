@@ -49,6 +49,7 @@ impl Default for PlaybackState {
             speed: PlaybackSpeed::default(),
             timeline_zoom: zoom,
             timeline_tier: Self::seed_tier(zoom, 1000.0),
+            calendar_granularity: crate::core::BucketGranularity::seed(zoom),
             timeline_view_start: now - view_width_secs / 2.0,
             view_follows_now: true,
             selection: None,

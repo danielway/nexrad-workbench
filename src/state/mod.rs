@@ -29,7 +29,7 @@ pub(crate) use acquisition::{
     AcquisitionState, DrawerTab, NetworkGroupKey, OperationKind, OperationStatus,
 };
 pub(crate) use app_mode::{derive_app_mode, AppMode};
-pub(crate) use calendar::{aggregate_day_buckets, day_tap_macro_view, DayBucket, DAY_SECS};
+pub(crate) use calendar::{aggregate_buckets, bucket_tap_target, TimeBucket};
 pub(crate) use layer::LayerState;
 pub(crate) use render_cache::{PrevSweepCacheKey, RenderCache};
 pub(crate) use saved_events::{SavedEvent, SavedEvents};

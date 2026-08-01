@@ -82,9 +82,38 @@ pub(crate) fn dates_spanning(start_secs: i64, end_secs: i64) -> Vec<NaiveDate> {
     dates
 }
 
+/// Hard cap on how many dates [`dates_in_range`] enumerates.
+///
+/// The walk is day-by-day, so an unbounded range allocates one `NaiveDate` per
+/// day — and every one becomes a `fetch_listings` intent downstream. Now that
+/// the timeline can be zoomed out across decades, a stray multi-year range
+/// would mean tens of thousands of S3 LIST requests. This is the backstop; the
+/// selection span gate ([`MAX_SELECTION_SPAN_SECS`]) is the front door.
+pub(crate) const MAX_ENUMERATED_DATES: usize = 400;
+
+/// Widest time range a loop/selection may cover.
+///
+/// The user explicitly accepts limits at extreme zooms: a range selection
+/// spanning years is not a meaningful request, it is a way to accidentally
+/// queue a decade of downloads. Well above any real event (the 6-hour
+/// [`SELECTION_BULK_CONFIRM_SECS`] modal still guards everything below it) and
+/// well below the point where enumeration gets expensive.
+pub(crate) const MAX_SELECTION_SPAN_SECS: f64 = 7.0 * 86_400.0;
+
+/// Whether a `[start, end]` range is short enough to be a selection at all.
+///
+/// Pure so the guard can be applied identically at the two places that need it:
+/// the strip's selection gesture (refuse to create it) and the bulk-fetch
+/// planner (refuse to act on one that somehow exists).
+pub(crate) fn selection_span_allowed(start: f64, end: f64) -> bool {
+    let span = (end - start).abs();
+    span.is_finite() && span <= MAX_SELECTION_SPAN_SECS
+}
+
 /// Every UTC date a `[start, end]` second-range touches, in order. Unlike
 /// [`dates_spanning`] (which only samples the endpoints), this walks day by day
-/// so multi-day visible windows enumerate their interior dates too.
+/// so multi-day visible windows enumerate their interior dates too. Bounded by
+/// [`MAX_ENUMERATED_DATES`].
 pub(crate) fn dates_in_range(start_secs: i64, end_secs: i64) -> Vec<NaiveDate> {
     let (Some(start_dt), Some(end_dt)) = (
         chrono::DateTime::from_timestamp(start_secs, 0),
@@ -95,7 +124,7 @@ pub(crate) fn dates_in_range(start_secs: i64, end_secs: i64) -> Vec<NaiveDate> {
     let mut dates = Vec::new();
     let mut date = start_dt.date_naive();
     let last = end_dt.date_naive();
-    while date <= last {
+    while date <= last && dates.len() < MAX_ENUMERATED_DATES {
         dates.push(date);
         let Some(next) = date.succ_opt() else { break };
         date = next;
@@ -698,6 +727,18 @@ pub(crate) fn plan_selection_fetch(env: &SelectionFetchEnv) -> SelectionFetchPla
         };
     }
 
+    // Disarm: absurdly wide selection. Defence in depth — the strip refuses to
+    // create one, but a URL-restored or handle-dragged range at an extreme zoom
+    // must never reach the listing enumeration.
+    if !selection_span_allowed(start, end) {
+        return SelectionFetchPlan::Disarm {
+            status_message: Some(format!(
+                "Selection too long to download — pick at most {} days",
+                (MAX_SELECTION_SPAN_SECS / 86_400.0) as i64
+            )),
+        };
+    }
+
     // Disarm: a listing is stuck (permanent 404 / network failure). The
     // hard backstop that guarantees termination regardless of outcome.
     if env.now_secs > armed_at_secs + env.deadline_secs {
@@ -968,6 +1009,63 @@ mod coverage_tests {
     fn dates_spanning_pre_epoch_negative_timestamp() {
         // Negative seconds resolve to 1969 UTC dates.
         assert_eq!(dates_spanning(-86_400, -1), vec![day(1969, 12, 31)]);
+    }
+
+    // ── span guardrails for the wide Archive zooms ──
+
+    #[wasm_bindgen_test]
+    fn dates_in_range_is_capped() {
+        // The walk allocates one NaiveDate per day, and each becomes a
+        // fetch_listings intent. Now that the timeline reaches decades, an
+        // unbounded range would mean tens of thousands of S3 LIST requests.
+        let thirty_six_years = JAN1 + (36 * 365 + 9) * 86_400;
+        let dates = dates_in_range(JAN1, thirty_six_years);
+        assert_eq!(dates.len(), MAX_ENUMERATED_DATES);
+        // Still ordered and starting where asked.
+        assert_eq!(dates[0], day(2021, 1, 1));
+        assert!(dates.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[wasm_bindgen_test]
+    fn ordinary_ranges_are_unaffected_by_the_cap() {
+        assert_eq!(dates_in_range(JAN1, JAN1 + 2 * 86_400).len(), 3);
+    }
+
+    #[wasm_bindgen_test]
+    fn selection_span_gate_allows_real_events_and_rejects_years() {
+        // A multi-day severe-weather event is a legitimate selection…
+        assert!(selection_span_allowed(0.0, 6.0 * 86_400.0));
+        assert!(selection_span_allowed(0.0, MAX_SELECTION_SPAN_SECS));
+        // …a multi-year drag at Archive zoom is not.
+        assert!(!selection_span_allowed(0.0, MAX_SELECTION_SPAN_SECS + 1.0));
+        assert!(!selection_span_allowed(0.0, 3.0 * 365.0 * 86_400.0));
+        // Direction-agnostic (a drag can go either way).
+        assert!(!selection_span_allowed(3.0 * 365.0 * 86_400.0, 0.0));
+        // Degenerate inputs don't pass by accident.
+        assert!(!selection_span_allowed(0.0, f64::INFINITY));
+        assert!(!selection_span_allowed(0.0, f64::NAN));
+    }
+
+    #[wasm_bindgen_test]
+    fn plan_selection_fetch_disarms_on_an_over_span_selection() {
+        // Defence in depth: the strip refuses to create one, but a
+        // URL-restored or handle-dragged range must never reach enumeration.
+        let env = SelectionFetchEnv {
+            has_worker: true,
+            queue_paused: false,
+            target: Some(((0.0, 3.0 * 365.0 * 86_400.0), 0.0)),
+            auto_fetch_cap_reached: false,
+            now_secs: 1000.0,
+            deadline_secs: 30.0,
+            elevation_filter: Some(1),
+            today: day(2021, 1, 5),
+        };
+        match plan_selection_fetch(&env) {
+            SelectionFetchPlan::Disarm { status_message } => {
+                assert!(status_message.is_some_and(|m| m.contains("too long")));
+            }
+            other => panic!("expected Disarm, got {other:?}"),
+        }
     }
 
     // ── dates_in_range: single-day, month/year boundaries, continuity ──

@@ -1,25 +1,34 @@
-//! Per-day coverage aggregation for the Archive zoom tier (spec §6.4).
+//! Coverage aggregation for the Archive zoom tier (spec §6.4).
 //!
-//! The Archive tier replaces the deprecated year-wide strip zoom with a
+//! The Archive tier replaces the deprecated year-wide *linear* strip zoom with a
 //! calendar-style coverage heatmap (GitHub-contributions grammar): a run of
-//! day cells, each toned by **how much data exists that day** (server
-//! availability) and **how much is cached locally** (downloaded). Tapping a day
-//! zooms into the Macro tier centred on that day.
+//! cells, each toned by **how much data exists in that period** (server
+//! availability) and **how much is cached locally** (downloaded). Tapping a cell
+//! frames it, one rung finer.
 //!
-//! This module is the *pure data* behind the heatmap. It derives per-day
-//! buckets from the in-memory timeline state the strip already holds — the
-//! cached scans ([`RadarTimeline`]) for the CACHE tone and the archive shadow
-//! boundaries ([`ScanBoundary`], the listing's coverage) for the AVAILABILITY
-//! tone. It adds **no IDB round-trips and no async**; days outside the listed
-//! window honestly read as empty rather than fabricating coverage (the listing
-//! only spans ranges the archive index has fetched — that's acceptable, the
-//! calendar shows what is genuinely known).
+//! **Cells coarsen with the span** — day → week → month → quarter
+//! ([`BucketGranularity`]) — which is what lets one continuous timeline reach
+//! from a single volume out to the whole NEXRAD era without the lane becoming a
+//! shimmer of sub-pixel ticks. Boundaries are calendar-aligned (real months, not
+//! 30-day blocks) so labels never drift off the periods they name, and buckets
+//! are therefore **variable width**: every fraction is taken against the
+//! bucket's own span, and the renderer maps both edges through the shared
+//! `ts_to_x`.
 //!
-//! **Day bucketing is by UTC day** (`floor(ts / 86400)`), matching the
-//! millisecond storage-key convention; it is deterministic and timezone-free,
-//! so the aggregation is unit-testable without a clock. The renderer labels day
-//! cells from the same UTC day start.
+//! This module is the *pure data* behind the heatmap. It derives buckets from
+//! the in-memory timeline state the strip already holds — the cached scans
+//! ([`RadarTimeline`]) for the CACHE tone and the archive shadow boundaries
+//! ([`ScanBoundary`], the listing's coverage) for the AVAILABILITY tone. It adds
+//! **no IDB round-trips and no async**; periods outside the listed window
+//! honestly read as empty rather than fabricating coverage (the listing only
+//! spans ranges the archive index has fetched — that's acceptable, the calendar
+//! shows what is genuinely known).
+//!
+//! **Bucketing is UTC-aligned**, matching the millisecond storage-key
+//! convention; it is deterministic and timezone-free, so the aggregation is
+//! unit-testable without a clock.
 
+use crate::core::BucketGranularity;
 use crate::core::RadarTimeline;
 use crate::core::ScanBoundary;
 use crate::state::SavedEvents;
@@ -27,38 +36,60 @@ use crate::state::SavedEvents;
 /// Seconds in a UTC day. Day buckets are `[day_start, day_start + DAY_SECS)`.
 pub(crate) const DAY_SECS: f64 = 86_400.0;
 
-/// Hard cap on how many day cells the aggregator emits, so an absurd span
-/// (e.g. an old URL with a microscopic zoom) can't allocate a runaway vector.
-/// The Archive tier's widest sensible view is months, not millennia; past this
-/// the heatmap is unreadable anyway.
-pub(crate) const MAX_DAY_BUCKETS: usize = 800;
+/// Hard cap on how many cells the aggregator emits, so an absurd span (e.g. an
+/// old URL with a microscopic zoom) can't allocate a runaway vector.
+///
+/// With the granularity ladder this is a pure safety net rather than the
+/// operative limit: the rung is chosen so cells stay ~5-8px, which bounds the
+/// count at `width / 5` on its own.
+pub(crate) const MAX_BUCKETS: usize = 800;
 
-/// One day's coverage in the Archive heatmap.
+/// One bucket's coverage in the Archive heatmap.
+///
+/// Buckets are variable width — a month is 28-31 days, and the renderer maps
+/// both edges through the shared `ts_to_x`, so nothing downstream needs to
+/// assume a fixed size.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub(crate) struct DayBucket {
-    /// UTC day start (Unix seconds) — the cell's identity and the tap-to-zoom
-    /// target's day origin.
-    pub day_start: f64,
-    /// Fraction `0..1` of the day for which data is *known to exist* on the
+pub(crate) struct TimeBucket {
+    /// Bucket start (Unix seconds) — the cell's identity and the drill-down
+    /// target's origin.
+    pub start: f64,
+    /// Bucket end (Unix seconds), exclusive.
+    pub end: f64,
+    /// Fraction `0..1` of the bucket for which data is *known to exist* on the
     /// server (the union of archive-listing spans and cached-scan spans clamped
-    /// to the day). 0 ⇒ no listing/cache touches this day (unknown/empty).
+    /// to the bucket). 0 ⇒ nothing touches this bucket (unknown/empty).
     pub availability_frac: f32,
-    /// Fraction `0..1` of the day covered by *downloaded* (cached) scans. Always
-    /// ≤ `availability_frac` (cached data is also available data).
+    /// Fraction `0..1` of the bucket covered by *downloaded* (cached) scans.
+    /// Always ≤ `availability_frac` (cached data is also available data).
     pub cache_frac: f32,
-    /// A saved event for the current site starts or overlaps this day.
+    /// Absolute covered seconds, kept alongside the fractions because at coarse
+    /// rungs a real amount of data rounds to "0%" — a tooltip saying
+    /// "6.2 h cached of 168 h" is honest where "0%" is not.
+    pub available_secs: f64,
+    /// Absolute cached seconds (see [`Self::available_secs`]).
+    pub cached_secs: f64,
+    /// A saved event for the current site starts or overlaps this bucket.
     pub has_events: bool,
 }
 
-impl DayBucket {
-    /// An empty (no data known) bucket for `day_start`.
-    fn empty(day_start: f64) -> Self {
+impl TimeBucket {
+    /// An empty (no data known) bucket spanning `[start, end)`.
+    fn empty(start: f64, end: f64) -> Self {
         Self {
-            day_start,
+            start,
+            end,
             availability_frac: 0.0,
             cache_frac: 0.0,
+            available_secs: 0.0,
+            cached_secs: 0.0,
             has_events: false,
         }
+    }
+
+    /// Bucket width in seconds (always > 0 by construction).
+    pub(crate) fn span(&self) -> f64 {
+        (self.end - self.start).max(1.0)
     }
 }
 
@@ -67,11 +98,106 @@ pub(crate) fn utc_day_start(ts: f64) -> f64 {
     (ts / DAY_SECS).floor() * DAY_SECS
 }
 
+/// The UTC Monday 00:00 (Unix seconds) of the week containing `ts`.
+///
+/// Integer day arithmetic, no chrono and no clock: epoch day 0 is a Thursday,
+/// so `(days + 3) mod 7` is the offset back to Monday.
+pub(crate) fn utc_week_start(ts: f64) -> f64 {
+    let days = (ts / DAY_SECS).floor();
+    let monday_days = days - (days + 3.0).rem_euclid(7.0);
+    monday_days * DAY_SECS
+}
+
+/// The start of the real UTC calendar month containing `ts`.
+pub(crate) fn utc_month_start(ts: f64) -> f64 {
+    month_start_from_ymd(ts, 1)
+}
+
+/// The start of the calendar quarter (Jan/Apr/Jul/Oct) containing `ts`.
+pub(crate) fn utc_quarter_start(ts: f64) -> f64 {
+    month_start_from_ymd(ts, 3)
+}
+
+/// Start of the `step`-month-aligned block containing `ts`.
+///
+/// Real calendar months, not fixed 30-day blocks: a fixed width drifts off the
+/// months it claims to name, so the labels would stop matching the cells within
+/// a couple of years.
+fn month_start_from_ymd(ts: f64, step: u32) -> f64 {
+    use chrono::{Datelike, NaiveDate};
+    let Some(dt) = chrono::DateTime::from_timestamp(ts.floor() as i64, 0) else {
+        return utc_day_start(ts);
+    };
+    let d = dt.date_naive();
+    let month0 = (d.month() - 1) / step * step;
+    NaiveDate::from_ymd_opt(d.year(), month0 + 1, 1)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|d| d.and_utc().timestamp() as f64)
+        .unwrap_or_else(|| utc_day_start(ts))
+}
+
+/// Start of the bucket containing `ts` at `granularity`.
+pub(crate) fn bucket_start(ts: f64, granularity: BucketGranularity) -> f64 {
+    match granularity {
+        BucketGranularity::Day => utc_day_start(ts),
+        BucketGranularity::Week => utc_week_start(ts),
+        BucketGranularity::Month => utc_month_start(ts),
+        BucketGranularity::Quarter => utc_quarter_start(ts),
+    }
+}
+
+/// Start of the bucket immediately after the one beginning at `start`.
+///
+/// Stepping by "one nominal span then re-align" rather than adding a fixed
+/// number of seconds is what keeps months correct across their 28/29/30/31-day
+/// variation and across leap years.
+pub(crate) fn next_bucket_start(start: f64, granularity: BucketGranularity) -> f64 {
+    match granularity {
+        BucketGranularity::Day => start + DAY_SECS,
+        BucketGranularity::Week => start + 7.0 * DAY_SECS,
+        // Step into the middle of the following month, then re-align — safe for
+        // any month length without per-month arithmetic.
+        BucketGranularity::Month => utc_month_start(start + 31.0 * DAY_SECS + DAY_SECS),
+        BucketGranularity::Quarter => utc_quarter_start(start + 93.0 * DAY_SECS + DAY_SECS),
+    }
+}
+
+/// The bucket boundaries covering `[view_start, view_end]` at `granularity`.
+///
+/// Returns `n + 1` ascending edges for `n` buckets, capped at [`MAX_BUCKETS`].
+pub(crate) fn bucket_boundaries(
+    view_start: f64,
+    view_end: f64,
+    granularity: BucketGranularity,
+) -> Vec<f64> {
+    let lo = view_start.min(view_end);
+    let hi = view_start.max(view_end);
+    let mut edges = vec![bucket_start(lo, granularity)];
+    while *edges.last().unwrap() <= hi && edges.len() <= MAX_BUCKETS {
+        let next = next_bucket_start(*edges.last().unwrap(), granularity);
+        // Defensive: a non-advancing step would spin forever.
+        if next <= *edges.last().unwrap() {
+            break;
+        }
+        edges.push(next);
+    }
+    if edges.len() < 2 {
+        let start = edges[0];
+        edges.push(next_bucket_start(start, granularity));
+    }
+    edges
+}
+
+/// Day-granularity convenience wrapper over [`aggregate_buckets`].
+///
+/// Production code always passes the zoom-derived granularity; this keeps the
+/// day-specific tests reading as they did before the ladder existed.
+///
 /// Aggregate the timeline sources into per-day buckets spanning the visible
 /// Archive window `[view_start, view_end]` (Unix seconds).
 ///
 /// One bucket per UTC day from `view_start`'s day through `view_end`'s day
-/// (inclusive), capped at [`MAX_DAY_BUCKETS`]. Days with no listing and no cache
+/// (inclusive), capped at [`MAX_BUCKETS`]. Days with no listing and no cache
 /// read empty — the calendar does not invent availability.
 ///
 /// - **availability**: the union of archive shadow-boundary spans and cached
@@ -82,6 +208,7 @@ pub(crate) fn utc_day_start(ts: f64) -> f64 {
 ///
 /// Spans are unioned per day (overlaps don't double-count) so a fraction never
 /// exceeds 1.0.
+#[cfg(test)]
 pub(crate) fn aggregate_day_buckets(
     cache: &RadarTimeline,
     shadows: &[ScanBoundary],
@@ -89,38 +216,70 @@ pub(crate) fn aggregate_day_buckets(
     current_site: &str,
     view_start: f64,
     view_end: f64,
-) -> Vec<DayBucket> {
-    let first_day = utc_day_start(view_start.min(view_end));
-    let last_day = utc_day_start(view_start.max(view_end));
-    let day_count = (((last_day - first_day) / DAY_SECS).round() as i64 + 1)
-        .clamp(1, MAX_DAY_BUCKETS as i64) as usize;
+) -> Vec<TimeBucket> {
+    aggregate_buckets(
+        cache,
+        shadows,
+        saved_events,
+        current_site,
+        view_start,
+        view_end,
+        BucketGranularity::Day,
+    )
+}
 
-    // Availability and cache coverage accumulators, in seconds-per-day. Kept as
-    // span lists per day then unioned, so overlapping spans don't over-count.
-    let mut avail_spans: Vec<Vec<(f64, f64)>> = vec![Vec::new(); day_count];
-    let mut cache_spans: Vec<Vec<(f64, f64)>> = vec![Vec::new(); day_count];
+/// Aggregate the timeline sources into coverage buckets at `granularity`.
+///
+/// The generalization of [`aggregate_day_buckets`]: identical semantics, but
+/// the cell size follows the zoom ladder so the same lane stays legible from a
+/// few days out to the whole NEXRAD era. Buckets are calendar-aligned and
+/// therefore variable width, so every fraction is taken against that bucket's
+/// own span rather than a fixed day.
+pub(crate) fn aggregate_buckets(
+    cache: &RadarTimeline,
+    shadows: &[ScanBoundary],
+    saved_events: &SavedEvents,
+    current_site: &str,
+    view_start: f64,
+    view_end: f64,
+    granularity: BucketGranularity,
+) -> Vec<TimeBucket> {
+    let edges = bucket_boundaries(view_start, view_end, granularity);
+    let bucket_count = edges.len() - 1;
+    let first_edge = edges[0];
+    let last_edge = edges[bucket_count];
 
-    let day_index = |ts: f64| -> Option<usize> {
-        let idx = ((utc_day_start(ts) - first_day) / DAY_SECS).round() as i64;
-        (0..day_count as i64).contains(&idx).then_some(idx as usize)
+    // Availability and cache coverage accumulators, in seconds-per-bucket. Kept
+    // as span lists then unioned, so overlapping spans don't over-count.
+    let mut avail_spans: Vec<Vec<(f64, f64)>> = vec![Vec::new(); bucket_count];
+    let mut cache_spans: Vec<Vec<(f64, f64)>> = vec![Vec::new(); bucket_count];
+
+    // Binary search rather than a fixed-width division: bucket edges are no
+    // longer evenly spaced once months are in play.
+    let bucket_index = |ts: f64| -> Option<usize> {
+        if ts < first_edge || ts >= last_edge {
+            return None;
+        }
+        let idx = edges.partition_point(|&e| e <= ts).saturating_sub(1);
+        (idx < bucket_count).then_some(idx)
     };
 
-    // Push a [start, end] span into per-day accumulators, splitting it at day
-    // boundaries so each day only sees its own slice.
+    // Push a [start, end] span into the accumulators, splitting it at bucket
+    // boundaries so each bucket only sees its own slice.
     let push_span = |spans: &mut [Vec<(f64, f64)>], start: f64, end: f64| {
         if end <= start {
             return;
         }
-        let mut cursor = start.max(first_day);
-        let stop = end.min(last_day + DAY_SECS);
+        let mut cursor = start.max(first_edge);
+        let stop = end.min(last_edge);
         while cursor < stop {
-            let day = utc_day_start(cursor);
-            let day_end = day + DAY_SECS;
-            let slice_end = stop.min(day_end);
-            if let Some(idx) = day_index(cursor) {
-                spans[idx].push((cursor, slice_end));
-            }
-            cursor = day_end;
+            let Some(idx) = bucket_index(cursor) else {
+                break;
+            };
+            let bucket_end = edges[idx + 1];
+            let slice_end = stop.min(bucket_end);
+            spans[idx].push((cursor, slice_end));
+            cursor = bucket_end;
         }
     };
 
@@ -151,21 +310,21 @@ pub(crate) fn aggregate_day_buckets(
         push_span(&mut avail_spans, start, extent.expected_end);
     }
 
-    let mut buckets: Vec<DayBucket> = (0..day_count)
+    let mut buckets: Vec<TimeBucket> = (0..bucket_count)
         .map(|i| {
-            let day_start = first_day + i as f64 * DAY_SECS;
-            let avail = union_seconds(&mut avail_spans[i]);
-            let cached = union_seconds(&mut cache_spans[i]);
-            let mut b = DayBucket::empty(day_start);
-            b.availability_frac = (avail / DAY_SECS).clamp(0.0, 1.0) as f32;
+            let mut b = TimeBucket::empty(edges[i], edges[i + 1]);
+            let span = b.span();
+            b.available_secs = union_seconds(&mut avail_spans[i]);
+            b.cached_secs = union_seconds(&mut cache_spans[i]);
+            b.availability_frac = (b.available_secs / span).clamp(0.0, 1.0) as f32;
             // Cache can't exceed availability (it is a subset), but float slop
             // could nudge it past; clamp to keep the visual invariant.
-            b.cache_frac = (cached / DAY_SECS).clamp(0.0, b.availability_frac as f64) as f32;
+            b.cache_frac = (b.cached_secs / span).clamp(0.0, b.availability_frac as f64) as f32;
             b
         })
         .collect();
 
-    // Saved-event flag: an event for the current site that overlaps the day.
+    // Saved-event flag: an event for the current site that overlaps the bucket.
     for event in &saved_events.events {
         if event.site_id != current_site {
             continue;
@@ -174,12 +333,13 @@ pub(crate) fn aggregate_day_buckets(
             event.start_time.min(event.end_time),
             event.start_time.max(event.end_time),
         );
-        let mut cursor = utc_day_start(es.max(first_day));
-        while cursor <= ee && cursor <= last_day {
-            if let Some(idx) = day_index(cursor) {
-                buckets[idx].has_events = true;
-            }
-            cursor += DAY_SECS;
+        let mut cursor = es.max(first_edge);
+        while cursor <= ee && cursor < last_edge {
+            let Some(idx) = bucket_index(cursor) else {
+                break;
+            };
+            buckets[idx].has_events = true;
+            cursor = edges[idx + 1];
         }
     }
 
@@ -222,6 +382,33 @@ pub(crate) fn day_tap_macro_view(day_start: f64, width_px: f64) -> (f64, f64) {
     let day_mid = day_start + DAY_SECS / 2.0;
     let view_start = day_mid - span / 2.0;
     (view_start, zoom)
+}
+
+/// Tap-a-bucket → the `(view_start, zoom)` to drill into.
+///
+/// **One rung per tap**, not straight to Macro. A quarter cell holds ~90 days;
+/// jumping from it to a single day is a 90x leap that throws away every scrap
+/// of context the user was navigating by. Quarter → Month → Week → Day → Macro
+/// keeps the tapped cell filling the strip at each step, so the gesture reads
+/// as "look closer" rather than "teleport".
+///
+/// The returned zoom is deliberately routed through
+/// [`crate::core::PlaybackState::set_timeline_zoom`] by the caller, so the tier
+/// and granularity state machines both advance from it.
+pub(crate) fn bucket_tap_target(
+    bucket: &TimeBucket,
+    granularity: BucketGranularity,
+    width_px: f64,
+) -> (f64, f64) {
+    // The finest rung hands off to the linear Macro tier.
+    if granularity == BucketGranularity::Day {
+        return day_tap_macro_view(bucket.start, width_px);
+    }
+    // Otherwise show exactly this bucket, which puts the next rung's cells at a
+    // comfortable size by construction.
+    let span = (bucket.end - bucket.start).max(DAY_SECS);
+    let zoom = (width_px / span).max(f64::MIN_POSITIVE);
+    (bucket.start, zoom)
 }
 
 /// Visible span (seconds) a day-tap lands on in Macro. Half a day on either
@@ -295,7 +482,7 @@ mod tests {
             DAY0 + DAY_SECS + 7200.0,
         );
         assert_eq!(buckets.len(), 1);
-        assert_eq!(buckets[0].day_start, DAY0 + DAY_SECS);
+        assert_eq!(buckets[0].start, DAY0 + DAY_SECS);
         assert_eq!(buckets[0].availability_frac, 0.0);
         assert_eq!(buckets[0].cache_frac, 0.0);
         assert!(!buckets[0].has_events);
@@ -418,14 +605,14 @@ mod tests {
             DAY0 + 3.0 * DAY_SECS + 100.0,
         );
         assert_eq!(buckets.len(), 4);
-        assert_eq!(buckets[0].day_start, DAY0);
-        assert_eq!(buckets[3].day_start, DAY0 + 3.0 * DAY_SECS);
+        assert_eq!(buckets[0].start, DAY0);
+        assert_eq!(buckets[3].start, DAY0 + 3.0 * DAY_SECS);
     }
 
     #[wasm_bindgen_test]
     fn absurd_span_is_capped() {
         let cache = RadarTimeline { scans: Vec::new() };
-        // A 10000-year span would be ~3.6M days; capped at MAX_DAY_BUCKETS.
+        // A 10000-year span would be ~3.6M days; capped at MAX_BUCKETS.
         let buckets = aggregate_day_buckets(
             &cache,
             &[],
@@ -434,7 +621,7 @@ mod tests {
             DAY0,
             DAY0 + 10_000.0 * 365.0 * DAY_SECS,
         );
-        assert_eq!(buckets.len(), MAX_DAY_BUCKETS);
+        assert_eq!(buckets.len(), MAX_BUCKETS);
     }
 
     #[wasm_bindgen_test]
@@ -784,7 +971,7 @@ mod coverage_tests {
         assert!(!buckets[0].has_events);
     }
 
-    // --- DayBucket equality / Copy semantics on an empty day ---
+    // --- TimeBucket equality / Copy semantics on an empty day ---
 
     #[wasm_bindgen_test]
     fn empty_day_buckets_compare_equal() {
@@ -795,7 +982,7 @@ mod coverage_tests {
         // Copy: the bucket can be duplicated and remains equal.
         let copied = a[0];
         assert_eq!(copied, a[0]);
-        assert_eq!(copied.day_start, DAY0);
+        assert_eq!(copied.start, DAY0);
     }
 
     // --- day_tap_macro_view: zoom scales with width; view_start width-independent ---
@@ -820,5 +1007,234 @@ mod coverage_tests {
         // a day before the day midpoint, i.e. at the day start itself.
         let (view_start, _zoom) = day_tap_macro_view(DAY0, 800.0);
         assert!((view_start - DAY0).abs() < 1e-6, "{}", view_start);
+    }
+
+    // ---- calendar-aligned bucket boundaries ------------------------------
+
+    fn ymd(y: i32, m: u32, d: u32) -> f64 {
+        chrono::NaiveDate::from_ymd_opt(y, m, d)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp() as f64
+    }
+
+    #[wasm_bindgen_test]
+    fn week_buckets_start_on_monday_utc() {
+        // Epoch day 0 is a Thursday, so the integer offset has to be right or
+        // every week label is off by a few days.
+        assert_eq!(utc_week_start(0.0), ymd(1969, 12, 29));
+        // 2026-07-29 is a Wednesday; it snaps back to Monday the 27th.
+        assert_eq!(utc_week_start(ymd(2026, 7, 29)), ymd(2026, 7, 27));
+        // A Monday is its own week start (idempotent).
+        assert_eq!(utc_week_start(ymd(2026, 7, 27)), ymd(2026, 7, 27));
+        // And the invariant holds across a whole year of arbitrary days.
+        use chrono::Datelike;
+        for offset in 0..370 {
+            let ts = ymd(2026, 1, 1) + offset as f64 * DAY_SECS;
+            let monday = utc_week_start(ts);
+            let wd = chrono::DateTime::from_timestamp(monday as i64, 0)
+                .unwrap()
+                .weekday();
+            assert_eq!(wd, chrono::Weekday::Mon, "offset {offset}");
+            assert!(monday <= ts && ts - monday < 7.0 * DAY_SECS);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn month_buckets_are_calendar_aligned_and_variable_width() {
+        // Fixed 30-day blocks would drift off the months they name; real
+        // months don't.
+        assert_eq!(utc_month_start(ymd(2024, 2, 17)), ymd(2024, 2, 1));
+        // February 2024 is a leap month: 29 days.
+        let feb = ymd(2024, 2, 1);
+        assert_eq!(
+            next_bucket_start(feb, BucketGranularity::Month) - feb,
+            29.0 * DAY_SECS
+        );
+        // January is 31.
+        let jan = ymd(2024, 1, 1);
+        assert_eq!(
+            next_bucket_start(jan, BucketGranularity::Month) - jan,
+            31.0 * DAY_SECS
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn month_stepping_crosses_the_year_boundary() {
+        let dec = ymd(2025, 12, 1);
+        assert_eq!(
+            next_bucket_start(dec, BucketGranularity::Month),
+            ymd(2026, 1, 1)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn quarters_align_to_jan_apr_jul_oct() {
+        assert_eq!(utc_quarter_start(ymd(2026, 2, 14)), ymd(2026, 1, 1));
+        assert_eq!(utc_quarter_start(ymd(2026, 5, 1)), ymd(2026, 4, 1));
+        assert_eq!(utc_quarter_start(ymd(2026, 9, 30)), ymd(2026, 7, 1));
+        assert_eq!(utc_quarter_start(ymd(2026, 12, 31)), ymd(2026, 10, 1));
+        let q4 = ymd(2026, 10, 1);
+        assert_eq!(
+            next_bucket_start(q4, BucketGranularity::Quarter),
+            ymd(2027, 1, 1)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn boundaries_are_ascending_and_cover_the_view() {
+        for g in [
+            BucketGranularity::Day,
+            BucketGranularity::Week,
+            BucketGranularity::Month,
+            BucketGranularity::Quarter,
+        ] {
+            let lo = ymd(2024, 3, 15);
+            let hi = ymd(2025, 8, 2);
+            let edges = bucket_boundaries(lo, hi, g);
+            assert!(edges.len() >= 2, "{g:?}");
+            assert!(edges[0] <= lo, "{g:?}");
+            assert!(*edges.last().unwrap() > hi, "{g:?}");
+            assert!(edges.windows(2).all(|w| w[1] > w[0]), "{g:?}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn bucket_count_is_bounded_at_every_granularity() {
+        // A 36-year span must never allocate a runaway vector, whichever rung
+        // it is asked for.
+        let lo = ymd(1991, 6, 5);
+        let hi = ymd(2027, 1, 1);
+        for g in [
+            BucketGranularity::Day,
+            BucketGranularity::Week,
+            BucketGranularity::Month,
+            BucketGranularity::Quarter,
+        ] {
+            let edges = bucket_boundaries(lo, hi, g);
+            assert!(edges.len() <= MAX_BUCKETS + 1, "{g:?}: {}", edges.len());
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn the_whole_era_at_the_terminal_rung_fits_well_inside_the_cap() {
+        // The ladder, not the cap, is what keeps the count sane: ~144 quarters
+        // across the era.
+        let edges = bucket_boundaries(ymd(1991, 6, 5), ymd(2027, 1, 1), BucketGranularity::Quarter);
+        assert!(edges.len() - 1 > 100);
+        assert!(edges.len() - 1 < 200);
+    }
+
+    #[wasm_bindgen_test]
+    fn fractions_use_the_buckets_own_span_not_a_fixed_day() {
+        // A fully-covered week must read 1.0, not 7.0 — the denominator has to
+        // follow the variable bucket width.
+        let week_start = utc_week_start(ymd(2026, 7, 29));
+        let cache = RadarTimeline {
+            scans: vec![scan_span(week_start, week_start + 7.0 * DAY_SECS, true)],
+        };
+        let buckets = aggregate_buckets(
+            &cache,
+            &[],
+            &no_events(),
+            "KDMX",
+            week_start,
+            week_start + 100.0,
+            BucketGranularity::Week,
+        );
+        assert!((buckets[0].availability_frac - 1.0).abs() < 1e-4);
+        assert!((buckets[0].cache_frac - 1.0).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn absolute_seconds_survive_coarse_rungs() {
+        // At a quarter rung a few cached hours round to ~0%, so the fraction
+        // alone can't tell an empty bucket from a lightly-populated one. The
+        // absolutes are what the tooltip reports.
+        let q = ymd(2026, 7, 1);
+        let cache = RadarTimeline {
+            scans: vec![scan_span(q + 1000.0, q + 1000.0 + 3600.0, true)],
+        };
+        let buckets = aggregate_buckets(
+            &cache,
+            &[],
+            &no_events(),
+            "KDMX",
+            q,
+            q + 100.0,
+            BucketGranularity::Quarter,
+        );
+        assert!(buckets[0].cache_frac < 0.001);
+        assert!((buckets[0].cached_secs - 3600.0).abs() < 1.0);
+    }
+
+    // ---- drill-down ladder ------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn tapping_drills_one_rung_at_a_time() {
+        // A quarter cell holds ~90 days; jumping straight to a single day is a
+        // 90x leap that discards all context. Each tap should frame exactly
+        // the tapped bucket instead.
+        let width = 1200.0;
+        for (g, start, end) in [
+            (
+                BucketGranularity::Quarter,
+                ymd(2026, 7, 1),
+                ymd(2026, 10, 1),
+            ),
+            (BucketGranularity::Month, ymd(2026, 7, 1), ymd(2026, 8, 1)),
+            (
+                BucketGranularity::Week,
+                ymd(2026, 7, 27),
+                ymd(2026, 7, 27) + 7.0 * DAY_SECS,
+            ),
+        ] {
+            let bucket = TimeBucket::empty(start, end);
+            let (view_start, zoom) = bucket_tap_target(&bucket, g, width);
+            assert!((view_start - start).abs() < 1e-6, "{g:?}");
+            // The landed view shows exactly this bucket.
+            assert!(((width / zoom) - (end - start)).abs() < 1.0, "{g:?}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn tapping_the_finest_rung_hands_off_to_macro() {
+        let bucket = TimeBucket::empty(DAY0, DAY0 + DAY_SECS);
+        let (view_start, zoom) = bucket_tap_target(&bucket, BucketGranularity::Day, 800.0);
+        let (macro_start, macro_zoom) = day_tap_macro_view(DAY0, 800.0);
+        assert!((view_start - macro_start).abs() < 1e-6);
+        assert!((zoom - macro_zoom).abs() < 1e-12);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_coarse_tap_stays_in_the_calendar_and_gains_detail() {
+        // Framing the tapped bucket keeps the user inside the Archive tier —
+        // they see what they tapped, rendered at a finer rung — rather than
+        // being thrown straight down to a single day in Macro. From a quarter
+        // that means the quarter as day cells, which is exactly "look closer".
+        let width = 1200.0;
+        for (tapped, start, end) in [
+            (
+                BucketGranularity::Quarter,
+                ymd(2026, 7, 1),
+                ymd(2026, 10, 1),
+            ),
+            (BucketGranularity::Month, ymd(2026, 7, 1), ymd(2026, 8, 1)),
+        ] {
+            let bucket = TimeBucket::empty(start, end);
+            let (_, zoom) = bucket_tap_target(&bucket, tapped, width);
+            let landed = BucketGranularity::seed(zoom);
+            // Strictly finer than what was tapped.
+            assert!(
+                landed.nominal_secs() < tapped.nominal_secs(),
+                "{tapped:?} -> {landed:?}"
+            );
+            // Still a calendar span, not a jump into the linear tiers.
+            assert!(width / zoom > 60.0 * 3600.0, "{tapped:?}");
+            // And the cells it lands on are legible.
+            assert!(landed.nominal_secs() * zoom >= 5.0, "{tapped:?}");
+        }
     }
 }
