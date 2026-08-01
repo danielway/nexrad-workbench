@@ -41,6 +41,12 @@ pub(crate) struct Acquisition {
     /// Wall-clock ms before which the visible-range listing pump may not
     /// issue another S3 LIST (rate limit: one new listing per interval).
     pub visible_listing_next_ms: f64,
+    /// Settle gate for the visible-range listing pump, keyed on the visible
+    /// *day* range. The rate limit alone only bounds requests per second — it
+    /// never stops them, so a continuous pan issued a LIST every interval for
+    /// each date it swept past. This makes the pump wait for the view to stop
+    /// moving, the same way `prefetch_settle` does for the playhead.
+    pub visible_listing_settle: PrefetchSettle,
     /// Per-(site, date) wall-clock ms before which a failed listing may be
     /// retried — keeps a failing day from being re-LISTed at the pump rate.
     pub listing_backoff: std::collections::HashMap<(String, chrono::NaiveDate), f64>,
@@ -77,6 +83,7 @@ impl Acquisition {
             prefetch_settle: PrefetchSettle::default(),
             lookback_backfill_next_ms: 0.0,
             visible_listing_next_ms: 0.0,
+            visible_listing_settle: PrefetchSettle::default(),
             listing_backoff: std::collections::HashMap::new(),
             selection_fetch_target: None,
         }

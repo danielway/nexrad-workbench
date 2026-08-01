@@ -318,6 +318,23 @@ pub(crate) fn prefetch_signature(
     h.finish()
 }
 
+/// Hash of the inputs that determine *which listings the visible range needs*:
+/// the first and last visible UTC day, plus the site.
+///
+/// Quantized to whole days on purpose. The listing pump works per date, so
+/// panning *within* a day needs no new listings and must not reset the settle;
+/// panning *across* days does, and should wait for the view to stop before
+/// spending requests on dates being scrolled past.
+pub(crate) fn visible_listing_signature(view_start: f64, view_end: f64, site_id: &str) -> u64 {
+    let first_day = (view_start / 86_400.0).floor() as i64;
+    let last_day = (view_end / 86_400.0).floor() as i64;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    first_day.hash(&mut h);
+    last_day.hash(&mut h);
+    site_id.hash(&mut h);
+    h.finish()
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Anchor fast-path
 // ───────────────────────────────────────────────────────────────────────────
@@ -1009,6 +1026,65 @@ mod coverage_tests {
     fn dates_spanning_pre_epoch_negative_timestamp() {
         // Negative seconds resolve to 1969 UTC dates.
         assert_eq!(dates_spanning(-86_400, -1), vec![day(1969, 12, 31)]);
+    }
+
+    // ── visible-listing settle: the pan request storm ──
+
+    const DAY: f64 = 86_400.0;
+
+    #[wasm_bindgen_test]
+    fn panning_within_a_day_does_not_reset_the_listing_settle() {
+        // The pump works per date, so moving inside one day needs no new
+        // listings and must not keep re-arming the timer.
+        let a = visible_listing_signature(DAY * 100.0, DAY * 100.0 + 3600.0, "KDMX");
+        let b = visible_listing_signature(DAY * 100.0 + 7200.0, DAY * 100.0 + 10_800.0, "KDMX");
+        assert_eq!(a, b);
+    }
+
+    #[wasm_bindgen_test]
+    fn panning_across_a_day_boundary_resets_it() {
+        let a = visible_listing_signature(DAY * 100.0, DAY * 100.0 + 3600.0, "KDMX");
+        let b = visible_listing_signature(DAY * 101.0, DAY * 101.0 + 3600.0, "KDMX");
+        assert!(a != b);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_signature_covers_both_edges_and_the_site() {
+        let base = visible_listing_signature(DAY * 100.0, DAY * 101.0, "KDMX");
+        // Widening the view (zoom out) brings new dates in.
+        assert!(base != visible_listing_signature(DAY * 100.0, DAY * 103.0, "KDMX"));
+        // A different site needs different listings entirely.
+        assert!(base != visible_listing_signature(DAY * 100.0, DAY * 101.0, "KABR"));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_continuous_pan_never_settles_and_a_stopped_one_does() {
+        // The reported bug: panning fired a LIST every rate-limit interval for
+        // each date swept past. The rate limit bounds requests per second but
+        // never stops them — only the settle does.
+        let mut settle = PrefetchSettle::default();
+        let settle_ms = 300.0;
+        let mut now = 1000.0;
+
+        // Sweeping one day per 100ms: the range keeps changing, so the pump
+        // stays shut for the whole gesture.
+        for day in 0..20 {
+            let start = DAY * (100 + day) as f64;
+            let sig = visible_listing_signature(start, start + DAY, "KDMX");
+            assert!(
+                !settle.poll(sig, now, settle_ms),
+                "fired mid-pan at day {day}"
+            );
+            now += 100.0;
+        }
+
+        // Pointer released — the range holds still and the pump opens once the
+        // settle elapses.
+        let start = DAY * 120.0;
+        let sig = visible_listing_signature(start, start + DAY, "KDMX");
+        assert!(!settle.poll(sig, now, settle_ms));
+        assert!(!settle.poll(sig, now + settle_ms - 1.0, settle_ms));
+        assert!(settle.poll(sig, now + settle_ms, settle_ms));
     }
 
     // ── span guardrails for the wide Archive zooms ──

@@ -272,11 +272,30 @@ impl WorkbenchApp {
             return;
         }
 
+        // Wait for the view to stop moving. The rate limit above only bounds
+        // requests per second, it never stops them — so a continuous pan issued
+        // one LIST every interval for every date it swept past, none of which
+        // the user was looking at by the time it landed. Keyed on the visible
+        // day range, so panning within a day (which needs no new listings) does
+        // not reset the timer.
+        let view_start = self.playback.state.timeline_view_start;
+        let signature = acquisition_core::visible_listing_signature(
+            view_start,
+            view_start + span,
+            &self.state.viz_state.site_id,
+        );
+        if !self.acquisition.visible_listing_settle.poll(
+            signature,
+            now_ms,
+            crate::PREFETCH_DEBOUNCE_MS,
+        ) {
+            return;
+        }
+
         let now_secs = self.state.frame_now.secs();
         let today = chrono::DateTime::from_timestamp(now_secs as i64, 0)
             .map(|dt| dt.date_naive())
             .unwrap_or_else(|| chrono::Utc::now().date_naive());
-        let view_start = self.playback.state.timeline_view_start;
         let site_id = self.state.viz_state.site_id.clone();
 
         let days: Vec<acquisition_core::VisibleListingDay> =
