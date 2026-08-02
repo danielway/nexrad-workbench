@@ -585,6 +585,12 @@ not unfinished work:
   handling of stale projections is a post-v1 revisit.
 - **Wi-Fi-only acquisition toggle:** not implementable in a browser today; revisit
   if a reliable network-type signal becomes available.
+- **Live loop-preset discoverability:** the July 2026 UX audit asked for "a play
+  option that plays within X time or frames of *now*" while streaming — which is
+  exactly what the loop presets already do (Pin to live / Last 4-10 frames /
+  Last 30 min / Last 1 h, §7). The capability exists and is one tap away; what is
+  missing is that a user watching live never learns it is there. A presentation
+  question for the transport row, not a feature gap.
 
 ---
 
