@@ -31,10 +31,14 @@ pub(crate) fn handle_globe_interaction(
         super::mobile::gestures::consume(&response.ctx).filter(|t| rect.contains(t.focus))
     {
         if (t.zoom - 1.0).abs() > f32::EPSILON {
-            // Camera's zoom() takes a scroll-like delta; convert the
-            // proportional zoom_delta into a comparable magnitude.
+            // Camera's zoom_about() takes a scroll-like delta; convert the
+            // proportional zoom_delta into a comparable magnitude. Anchored
+            // on the pinch focus like the 2D path.
             let scroll_equivalent = (t.zoom - 1.0) * 120.0;
-            state.viz_state.camera.zoom(scroll_equivalent);
+            state
+                .viz_state
+                .camera
+                .zoom_about(scroll_equivalent, Some(t.focus), *rect);
         }
         if t.pan != Vec2::ZERO {
             let viewport_h = response.rect.height();
@@ -63,18 +67,32 @@ pub(crate) fn handle_globe_interaction(
                 .camera
                 .adjust_tilt_heading(delta.x, delta.y, viewport_h);
         } else {
-            // Left-drag: pan the pivot across the globe (grab feel).
-            state
-                .viz_state
-                .camera
-                .pan_pivot(delta.x, delta.y, viewport_h);
+            // Left-drag: pan the pivot. Prefer the grab pan (the surface
+            // point under the cursor sticks to it exactly); fall back to
+            // the delta pan when the cursor is off-globe or the view is
+            // tilted near the horizon.
+            let grabbed = response.interact_pointer_pos().is_some_and(|pos| {
+                state
+                    .viz_state
+                    .camera
+                    .pan_pivot_grab(pos - delta, pos, *rect)
+            });
+            if !grabbed {
+                state
+                    .viz_state
+                    .camera
+                    .pan_pivot(delta.x, delta.y, viewport_h);
+            }
         }
     }
 
     if response.hovered() {
         let scroll_delta = response.ctx.input(|i| i.raw_scroll_delta);
         if scroll_delta.y != 0.0 {
-            state.viz_state.camera.zoom(scroll_delta.y);
+            state
+                .viz_state
+                .camera
+                .zoom_about(scroll_delta.y, response.hover_pos(), *rect);
         }
     }
 

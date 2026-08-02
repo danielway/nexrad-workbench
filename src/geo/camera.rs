@@ -58,6 +58,11 @@ const KEY_ROTATE_DEG_PER_SEC: f32 = 60.0;
 /// altitude, capped at 1 radius so planet-scale panning stays controllable.
 const KEY_PAN_DEG_PER_SEC_PER_RADIUS: f32 = 120.0;
 
+/// Above this tilt the cursor ray grazes the surface near the horizon,
+/// where cursor-anchored zoom / grab panning become ill-conditioned —
+/// both fall back to their centered/delta variants.
+const GRAB_MAX_TILT_DEG: f32 = 60.0;
+
 // ── Flat 2D ─────────────────────────────────────────────────────────
 
 /// State for the flat 2D top-down view.
@@ -491,6 +496,61 @@ impl Camera {
         if let Camera::Orbit(s) = self {
             s.distance = zoom_distance(s.distance, delta);
         }
+    }
+
+    /// Cursor-anchored zoom: like [`Self::zoom`], but slides the pivot
+    /// toward the surface point under `cursor` so that point stays put on
+    /// screen while zooming in — the same anchoring the 2D view does.
+    /// Falls back to a plain centered zoom when the cursor is absent,
+    /// misses the globe, or the view is tilted near the horizon (where
+    /// the flat-earth re-anchoring linearization is poor). No-op in 2D.
+    pub fn zoom_about(&mut self, delta: f32, cursor: Option<Pos2>, screen_rect: Rect) {
+        let anchor = cursor
+            .filter(|_| {
+                self.orbit_state()
+                    .is_some_and(|s| s.tilt <= GRAB_MAX_TILT_DEG)
+            })
+            .and_then(|pos| self.screen_to_geo(pos, screen_rect));
+        let Camera::Orbit(s) = self else {
+            return;
+        };
+        let old_dist = s.distance;
+        s.distance = zoom_distance(old_dist, delta);
+        if let Some((alat, alon)) = anchor {
+            // Exact in the flat-earth limit: the pivot's offset from the
+            // anchor shrinks by the same ratio as the distance.
+            let ratio = s.distance / old_dist;
+            let alat = alat as f32;
+            let alon = alon as f32;
+            s.pivot_lat = clamp_lat(alat + (s.pivot_lat - alat) * ratio);
+            s.pivot_lon = wrap_deg(alon + wrap_deg(s.pivot_lon - alon) * ratio);
+        }
+    }
+
+    /// Grab-style pan: shift the pivot so the surface point that was under
+    /// `from` lands under `to` (the globe sticks to the cursor). Returns
+    /// false — with no state change — when either screen point misses the
+    /// globe or the view is tilted near the horizon; the caller falls back
+    /// to the delta-based [`Self::pan_pivot`].
+    pub fn pan_pivot_grab(&mut self, from: Pos2, to: Pos2, screen_rect: Rect) -> bool {
+        if !self
+            .orbit_state()
+            .is_some_and(|s| s.tilt <= GRAB_MAX_TILT_DEG)
+        {
+            return false;
+        }
+        let Some((from_lat, from_lon)) = self.screen_to_geo(from, screen_rect) else {
+            return false;
+        };
+        let Some((to_lat, to_lon)) = self.screen_to_geo(to, screen_rect) else {
+            return false;
+        };
+        let Camera::Orbit(s) = self else {
+            return false;
+        };
+        s.pivot_lat = clamp_lat(s.pivot_lat + (from_lat - to_lat) as f32);
+        s.pivot_lon = wrap_deg(s.pivot_lon + wrap_deg((from_lon - to_lon) as f32));
+        true
     }
 
     /// Center the camera on the given lat/lon and reset the view.
@@ -982,6 +1042,107 @@ mod tests {
         // One tick back out immediately increases distance.
         c.zoom(-120.0);
         assert!(orbit(&c).distance > MIN_SURFACE_DIST);
+    }
+
+    #[wasm_bindgen_test]
+    fn zoom_about_keeps_the_anchor_point_under_the_cursor() {
+        let (mut c, rect) = orbit_with_rect();
+        let cursor = Pos2::new(rect.center().x + 150.0, rect.center().y - 100.0);
+        let (lat0, lon0) = c.screen_to_geo(cursor, rect).expect("on-globe cursor");
+        c.zoom_about(240.0, Some(cursor), rect);
+        let (lat1, lon1) = c.screen_to_geo(cursor, rect).expect("still on globe");
+        assert!(
+            (lat1 - lat0).abs() < 0.05,
+            "anchor lat drifted: {lat0} → {lat1}"
+        );
+        assert!(
+            (lon1 - lon0).abs() < 0.05,
+            "anchor lon drifted: {lon0} → {lon1}"
+        );
+        // And it actually zoomed.
+        assert!(orbit(&c).distance < 0.10);
+    }
+
+    #[wasm_bindgen_test]
+    fn zoom_about_falls_back_to_centered_zoom() {
+        // Off-globe cursor: distance changes, pivot does not.
+        let (mut c, rect) = orbit_with_rect();
+        {
+            let Camera::Orbit(s) = &mut c else {
+                unreachable!()
+            };
+            s.distance = 10.0; // globe small on screen; corners miss it
+        }
+        let pivot0 = (orbit(&c).pivot_lat, orbit(&c).pivot_lon);
+        c.zoom_about(240.0, Some(Pos2::new(1.0, 1.0)), rect);
+        assert_eq!((orbit(&c).pivot_lat, orbit(&c).pivot_lon), pivot0);
+        assert!(orbit(&c).distance < 10.0);
+
+        // No cursor at all: same fallback.
+        let (mut c2, rect2) = orbit_with_rect();
+        let pivot2 = (orbit(&c2).pivot_lat, orbit(&c2).pivot_lon);
+        c2.zoom_about(240.0, None, rect2);
+        assert_eq!((orbit(&c2).pivot_lat, orbit(&c2).pivot_lon), pivot2);
+
+        // Tilted near the horizon: re-anchoring is skipped.
+        let (mut c3, rect3) = orbit_with_rect();
+        {
+            let Camera::Orbit(s) = &mut c3 else {
+                unreachable!()
+            };
+            s.tilt = 80.0;
+        }
+        let pivot3 = (orbit(&c3).pivot_lat, orbit(&c3).pivot_lon);
+        c3.zoom_about(240.0, Some(rect3.center()), rect3);
+        assert_eq!((orbit(&c3).pivot_lat, orbit(&c3).pivot_lon), pivot3);
+    }
+
+    #[wasm_bindgen_test]
+    fn grab_pan_keeps_the_grabbed_point_under_the_cursor() {
+        let (mut c, rect) = orbit_with_rect();
+        let from = Pos2::new(rect.center().x + 40.0, rect.center().y + 30.0);
+        let to = Pos2::new(rect.center().x + 120.0, rect.center().y - 50.0);
+        let (glat, glon) = c.screen_to_geo(from, rect).expect("grab point on globe");
+        assert!(c.pan_pivot_grab(from, to, rect));
+        let (nlat, nlon) = c.screen_to_geo(to, rect).expect("target on globe");
+        assert!(
+            (nlat - glat).abs() < 0.05,
+            "grabbed lat slipped: {glat} → {nlat}"
+        );
+        assert!(
+            (nlon - glon).abs() < 0.05,
+            "grabbed lon slipped: {glon} → {nlon}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn grab_pan_reports_false_when_ill_conditioned() {
+        // Off-globe endpoint → false, no state change.
+        let (mut c, rect) = orbit_with_rect();
+        {
+            let Camera::Orbit(s) = &mut c else {
+                unreachable!()
+            };
+            s.distance = 10.0;
+        }
+        let pivot0 = (orbit(&c).pivot_lat, orbit(&c).pivot_lon);
+        assert!(!c.pan_pivot_grab(Pos2::new(1.0, 1.0), rect.center(), rect));
+        assert_eq!((orbit(&c).pivot_lat, orbit(&c).pivot_lon), pivot0);
+
+        // High tilt → false (caller falls back to delta pan).
+        let (mut c2, rect2) = orbit_with_rect();
+        {
+            let Camera::Orbit(s) = &mut c2 else {
+                unreachable!()
+            };
+            s.tilt = 80.0;
+        }
+        assert!(!c2.pan_pivot_grab(rect2.center(), rect2.center(), rect2));
+
+        // 2D → false.
+        let mut flat = Camera::centered_on(39.0, -98.0);
+        let r = Rect::from_min_size(Pos2::ZERO, eframe::egui::Vec2::new(800.0, 600.0));
+        assert!(!flat.pan_pivot_grab(r.center(), r.center(), r));
     }
 
     #[wasm_bindgen_test]
