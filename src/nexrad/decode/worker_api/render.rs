@@ -196,7 +196,6 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let mut packed_data: Vec<u8> = Vec::new();
         let mut sweep_meta_vec: Vec<VolumeRenderSweepMeta> = Vec::new();
         let mut data_offset: u32 = 0; // offset in values (not bytes)
-        let mut has_u16 = false;
 
         // First pass: read all sweep blobs and headers, determine word size
         struct SweepBlob {
@@ -224,10 +223,6 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 Err(_) => continue,
             };
 
-            if header.data_word_size != 1 {
-                has_u16 = true;
-            }
-
             let total_values = header.azimuth_count as usize * header.gate_count as usize;
             sweep_blobs.push(SweepBlob {
                 blob_buffer,
@@ -236,11 +231,39 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             });
         }
 
+        // Order the sweeps by true elevation angle and drop duplicate cuts.
+        // The blobs arrive in elevation-*number* order, which SAILS/MRLE
+        // rescans and split cuts leave non-monotonic in angle — an ordering
+        // the ray marcher's bracket search cannot survive.
+        let candidates: Vec<SweepCandidate> = sweep_blobs
+            .iter()
+            .map(|sb| SweepCandidate {
+                elevation_deg: sb.header.mean_elevation,
+                coverage_km: (sb.header.first_gate_range_km
+                    + sb.header.gate_count as f64 * sb.header.gate_interval_km)
+                    as f32,
+                sweep_start_secs: sb.header.sweep_start_secs,
+            })
+            .collect();
+        let plan = plan_volume_sweeps(&candidates, MAX_VOLUME_SWEEPS);
+        if plan.len() < sweep_blobs.len() {
+            log::debug!(
+                "render_volume: {} of {} sweeps kept after elevation dedup/cap",
+                plan.len(),
+                sweep_blobs.len(),
+            );
+        }
+
         // Second pass: pack data using native word size when all u8,
-        // widening to u16 only when mixed.
+        // widening to u16 only when mixed. Judged over the *kept* sweeps, so a
+        // discarded duplicate can't force the whole volume wide.
+        let has_u16 = plan
+            .iter()
+            .any(|&i| sweep_blobs[i].header.data_word_size != 1);
         let word_size: u8 = if has_u16 { 2 } else { 1 };
 
-        for sb in &sweep_blobs {
+        for &plan_idx in &plan {
+            let sb = &sweep_blobs[plan_idx];
             let header = &sb.header;
             let total_values = sb.total_values;
 

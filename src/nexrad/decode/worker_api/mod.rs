@@ -7,6 +7,7 @@ mod ingest;
 mod render;
 mod render_live;
 
+use crate::core::volume_plan::{plan_volume_sweeps, SweepCandidate, MAX_VOLUME_SWEEPS};
 use crate::data::indexeddb::IndexedDbStore;
 use crate::data::keys::*;
 use crate::data::ExtractedVcp;

@@ -45,6 +45,7 @@ pub(crate) mod timeline_interaction;
 pub(crate) mod timeline_view;
 pub(crate) mod timing;
 pub(crate) mod transport;
+pub(crate) mod volume_plan;
 pub(crate) mod worker_decoded;
 pub(crate) mod worker_ingest;
 

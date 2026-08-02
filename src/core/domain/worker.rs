@@ -181,7 +181,10 @@ pub(crate) struct VolumeData {
     pub buffer: Vec<u8>,
     /// Bytes per gate value: 1 (R8UI) when all sweeps are u8, 2 (R16UI) otherwise.
     pub word_size: u8,
-    /// Per-sweep metadata sorted by elevation.
+    /// Per-sweep metadata in ascending elevation-*angle* order, one entry per
+    /// distinct angle. Guaranteed by `core::volume_plan::plan_volume_sweeps`,
+    /// which the worker packer runs before concatenating gate data — the ray
+    /// marcher's bracket search depends on it.
     pub sweeps: Vec<VolumeSweepMeta>,
     pub product: String,
     pub total_ms: f64,
