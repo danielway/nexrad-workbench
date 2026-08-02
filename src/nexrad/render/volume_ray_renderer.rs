@@ -102,7 +102,17 @@ const float EARTH_RADIUS = 6371.0;
 
 // Tuning constants
 const int MAX_STEPS = 96;
-const float ALPHA_CUTOFF = 0.95;
+// Front-to-back early-out. Now purely an optimization: with Beer-Lambert
+// accumulation the remaining contribution really is negligible by here.
+const float ALPHA_CUTOFF = 0.99;
+
+// Extinction coefficient (per km) at the top of the value range with the
+// opacity slider at 1.0 — the knob to turn if the volume reads too dense or
+// too faint overall.
+const float SIGMA_MAX = 0.3;
+// Shapes how quickly extinction climbs across the value range. Above 1.0 the
+// low end stays translucent so weak echo doesn't fog over the storm cores.
+const float EXTINCTION_GAMMA = 2.0;
 
 // ── Ray-sphere intersection ──────────────────────────────────────────
 
@@ -318,16 +328,26 @@ void main() {
         float physical = (scale_val != 0.0) ? (raw - offset_val) / scale_val : raw;
 
         if (physical >= u_density_cutoff) {
-            // Color lookup
             float normalized = clamp((physical - u_value_min) / u_value_range, 0.0, 1.0);
-            vec4 color = texture(u_lut_tex, vec2(normalized, 0.5));
 
-            // Density-proportional opacity
-            float sample_alpha = color.a * u_opacity * step * 300.0;
-            sample_alpha = clamp(sample_alpha, 0.0, 0.8);
+            // Colour comes from the shared LUT; opacity does NOT. The LUT's
+            // alpha ramp saturates by ~25 dBZ, so using it as extinction pinned
+            // almost every in-cloud sample to the same value and turned the
+            // volume into a first-hit isosurface. Deriving extinction from the
+            // normalized value with a gamma curve keeps weak echo translucent
+            // while cores still go opaque over a few kilometres.
+            vec3 rgb = texture(u_lut_tex, vec2(normalized, 0.5)).rgb;
+            float extinction = SIGMA_MAX * u_opacity * pow(normalized, EXTINCTION_GAMMA);
+
+            // Beer-Lambert over the physical length of this step. Because the
+            // absorbed fraction is integrated over distance, the result no
+            // longer depends on step size or view angle -- halving the step
+            // halves each sample's contribution automatically.
+            float ds_km = step * EARTH_RADIUS;
+            float sample_alpha = 1.0 - exp(-extinction * ds_km);
 
             // Front-to-back compositing
-            accum_color += (1.0 - accum_alpha) * color.rgb * sample_alpha;
+            accum_color += (1.0 - accum_alpha) * rgb * sample_alpha;
             accum_alpha += (1.0 - accum_alpha) * sample_alpha;
         }
 
