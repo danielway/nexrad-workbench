@@ -93,7 +93,7 @@ impl WorkbenchApp {
 
                 self.render.coordinator.force_fresh_render();
                 self.request_worker_render();
-                if self.state.viz_state.volume_3d_enabled {
+                if self.volume_3d_active() {
                     self.request_worker_render_volume();
                 }
             } else {

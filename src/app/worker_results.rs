@@ -216,7 +216,7 @@ impl WorkbenchApp {
 
         // Trigger render for the ingested scan
         self.request_worker_render();
-        if self.state.viz_state.volume_3d_enabled {
+        if self.volume_3d_active() {
             self.request_worker_render_volume();
         }
     }
@@ -250,7 +250,7 @@ impl WorkbenchApp {
                 had_elevations,
                 available_elevations: self.render.coordinator.available_elevations(),
                 frame_projection: self.live.frame_projection.as_ref(),
-                volume_3d_enabled: self.state.viz_state.volume_3d_enabled,
+                volume_3d_active: self.volume_3d_active(),
             };
             let mut engine = self.live.engine.borrow_mut();
             let slices = ChunkIngestSlices {

@@ -28,7 +28,7 @@ impl WorkbenchApp {
                 has_worker: self.render.coordinator.has_worker(),
                 site_id: &self.state.viz_state.site_id,
                 product: self.state.viz_state.product,
-                volume_3d_enabled: self.state.viz_state.volume_3d_enabled,
+                volume_3d_active: self.volume_3d_active(),
                 coordinator_scan_key: self.render.coordinator.scan_key(),
                 max_scan_age_secs: MAX_SCAN_AGE_SECS,
             },
@@ -330,12 +330,19 @@ impl WorkbenchApp {
         if !live_active && self.render.coordinator.scan_key().is_none() {
             return;
         }
-        if !live_active
-            && self.state.viz_state.volume_3d_enabled
-            && self.state.viz_state.view_mode() == crate::geo::ViewMode::Globe3D
-        {
+        if !live_active && self.volume_3d_active() {
             self.request_worker_render_volume();
         }
         self.request_worker_render();
+    }
+
+    /// The single 3D predicate every volume-render gate shares: the
+    /// volumetric layer is enabled AND the camera is in Globe3D. Keeping one
+    /// definition means the frame-list granularity, the render triggers, and
+    /// the ingest-driven volume refresh can never disagree about what "3D
+    /// mode" is.
+    pub(crate) fn volume_3d_active(&self) -> bool {
+        self.state.viz_state.volume_3d_enabled
+            && self.state.viz_state.view_mode() == crate::geo::ViewMode::Globe3D
     }
 }

@@ -398,8 +398,9 @@ fn detach_for_seek(
 }
 
 /// ←/→ frame step: move one matching frame (a sweep of the selected product +
-/// tilt). Detach-then-step so the Free-mode seek assert holds and stepping
-/// while tethered detaches rather than no-opping (spec §7/§12).
+/// tilt; a whole scan in volumetric 3D, where per-sweep steps wouldn't change
+/// the picture). Detach-then-step so the Free-mode seek assert holds and
+/// stepping while tethered detaches rather than no-opping (spec §7/§12).
 fn handle_frame_step(
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
@@ -412,6 +413,25 @@ fn handle_frame_step(
     let pos = current_pos(state, playback);
     let fallback = jog_fallback(state, playback);
     detach_for_seek(state, live, playback);
+    // Volumetric 3D: a frame is a whole scan (the volume render is keyed
+    // per scan), so ←/→ uses the scan steppers regardless of the elevation
+    // selection — same predicate as the frame-list granularity.
+    if state.viz_state.volume_3d_enabled
+        && state.viz_state.view_mode() == crate::geo::ViewMode::Globe3D
+    {
+        let new_pos = match dir {
+            StepDir::Forward => timeline
+                .scans
+                .next_scan_any_sweep_end(pos)
+                .unwrap_or(pos + fallback),
+            StepDir::Backward => timeline
+                .scans
+                .prev_scan_any_sweep_end(pos)
+                .unwrap_or(pos - fallback),
+        };
+        playback.state.set_playback_position(new_pos);
+        return;
+    }
     let new_pos = match (&state.viz_state.elevation_selection, dir) {
         (
             crate::core::ElevationSelection::Fixed {

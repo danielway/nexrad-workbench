@@ -236,6 +236,11 @@ pub(crate) struct MacroFrameInputs {
     pub product: &'static str,
     pub bounds: Option<(f64, f64)>,
     pub scan_count: usize,
+    /// Whether the volumetric (3D) render path is active. In 3D a frame is a
+    /// whole scan (the volume render is keyed per scan), so flipping this
+    /// must rebuild the list — without this term a stale per-sweep list
+    /// survives the 3D toggle.
+    pub volume_3d: bool,
 }
 
 /// How finely the fallback view-derived macro bounds are quantized: the visible
@@ -333,10 +338,13 @@ impl MacroPlaybackState {
         } else if self.built_from.product != inputs.product
             || self.built_from.bounds != inputs.bounds
             || self.built_from.scan_count != inputs.scan_count
+            || self.built_from.volume_3d != inputs.volume_3d
         {
             // A product switch re-filters the frame list (frame = product +
             // tilt) but keeps the cursor where it is — no snap side-effect, so
-            // it's a window-class change.
+            // it's a window-class change. A 3D toggle swaps the frame
+            // granularity (sweep ↔ scan) the same way: rebuild, re-land the
+            // cursor on the nearest frame, no teleport.
             Some(RebuildCause::WindowChanged)
         } else {
             None
@@ -2041,6 +2049,7 @@ mod tests {
             product: "reflectivity",
             bounds: None,
             scan_count: 3,
+            volume_3d: false,
         };
         // Fresh state vs non-default inputs: scan count differs → window change.
         assert_eq!(mp.rebuild_cause(&base), Some(RebuildCause::WindowChanged));
@@ -2076,6 +2085,17 @@ mod tests {
         };
         assert_eq!(
             mp.rebuild_cause(&scans_changed),
+            Some(RebuildCause::WindowChanged)
+        );
+
+        // 3D toggle alone → window change (frame granularity swaps sweep↔scan;
+        // rebuild without teleporting the cursor).
+        let volume_3d_changed = MacroFrameInputs {
+            volume_3d: true,
+            ..base.clone()
+        };
+        assert_eq!(
+            mp.rebuild_cause(&volume_3d_changed),
             Some(RebuildCause::WindowChanged)
         );
 

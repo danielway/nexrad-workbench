@@ -37,7 +37,7 @@ pub(crate) struct ChunkIngestEnv<'a> {
     pub available_elevations: &'a [u8],
     /// `live.frame_projection` (for the enriched chunk-position log).
     pub frame_projection: Option<&'a Projection>,
-    pub volume_3d_enabled: bool,
+    pub volume_3d_active: bool,
 }
 
 /// Mutable borrows of the core state the reducer updates directly.
@@ -422,7 +422,7 @@ pub(crate) fn reduce_chunk_ingested(
         actions.force_fresh_render = true;
         if !is_live {
             actions.request_render = true;
-            if env.volume_3d_enabled {
+            if env.volume_3d_active {
                 actions.request_volume_render = true;
             }
         }
@@ -434,7 +434,7 @@ pub(crate) fn reduce_chunk_ingested(
         actions.force_fresh_render = true;
         if !is_live {
             actions.request_render = true;
-            if env.volume_3d_enabled {
+            if env.volume_3d_active {
                 actions.request_volume_render = true;
             }
         }
@@ -506,7 +506,7 @@ mod tests {
             had_elevations,
             available_elevations: available,
             frame_projection: None,
-            volume_3d_enabled: false,
+            volume_3d_active: false,
         }
     }
 
@@ -694,7 +694,7 @@ mod tests {
         // With the 3D toggle on, the volume render request mirrors it.
         let mut fx2 = Fx::new();
         let mut e = env(false, true, &[1]);
-        e.volume_3d_enabled = true;
+        e.volume_3d_active = true;
         let a2 = fx2.run(e, &end);
         assert!(a2.request_render);
         assert!(a2.request_volume_render);

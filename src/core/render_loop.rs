@@ -62,8 +62,10 @@ pub(crate) struct AdvancePlaybackEnv<'a> {
     pub site_id: &'a str,
     /// `viz_state.product`.
     pub product: RadarProduct,
-    /// `viz_state.volume_3d_enabled`.
-    pub volume_3d_enabled: bool,
+    /// The combined 3D predicate: `viz_state.volume_3d_enabled` AND the view
+    /// mode is `Globe3D` (the shell's `WorkbenchApp::volume_3d_active`). All
+    /// 3D gates share this one predicate so they can't disagree.
+    pub volume_3d_active: bool,
     /// `render.coordinator.scan_key()` at frame start.
     pub coordinator_scan_key: Option<&'a ScanKey>,
     /// `crate::MAX_SCAN_AGE_SECS`.
@@ -146,18 +148,28 @@ pub(crate) fn reduce_advance_playback(
                 playback.playback_position(),
             ),
             scan_count: timeline.scans.len(),
+            volume_3d: env.volume_3d_active,
         };
 
         if let Some(cause) = playback.macro_playback.rebuild_cause(&inputs) {
-            let frames = match &inputs.elevation {
-                ElevationSelection::Fixed {
-                    elevation_number, ..
-                } => timeline.matching_sweep_end_times_by_number(
-                    *elevation_number,
-                    product,
-                    inputs.bounds,
-                ),
-                ElevationSelection::Latest => timeline.all_sweep_end_times(product, inputs.bounds),
+            // In 3D a frame is a whole scan: the volume render is keyed
+            // (scan_key, product), so per-sweep frames would advance the
+            // playhead/captions without changing the picture.
+            let frames = if inputs.volume_3d {
+                timeline.scan_end_frame_times(product, inputs.bounds)
+            } else {
+                match &inputs.elevation {
+                    ElevationSelection::Fixed {
+                        elevation_number, ..
+                    } => timeline.matching_sweep_end_times_by_number(
+                        *elevation_number,
+                        product,
+                        inputs.bounds,
+                    ),
+                    ElevationSelection::Latest => {
+                        timeline.all_sweep_end_times(product, inputs.bounds)
+                    }
+                }
             };
             playback.macro_playback.store_rebuilt(inputs, frames);
             playback.sync_macro_frame_index();
@@ -278,7 +290,7 @@ pub(crate) fn reduce_advance_playback(
                             actions.force_fresh_render = true;
                         }
                         actions.request_render = true;
-                        if env.volume_3d_enabled && !live_active {
+                        if env.volume_3d_active && !live_active {
                             actions.request_volume_render = true;
                         }
                     }
@@ -544,7 +556,7 @@ mod tests {
             has_worker: true,
             site_id: "KDMX",
             product: RadarProduct::Reflectivity,
-            volume_3d_enabled: false,
+            volume_3d_active: false,
             coordinator_scan_key: None,
             max_scan_age_secs: MAX_AGE,
         }
@@ -678,6 +690,35 @@ mod tests {
         assert_eq!(
             fx.playback.macro_playback.sweep_frames,
             vec![1010.0, 2010.0, 3010.0]
+        );
+        assert_eq!(fx.playback.playback_position(), 2005.0, "no snap");
+    }
+
+    // (3b) Volumetric 3D: the frame list is one frame per scan (scan end
+    // times), regardless of the elevation selection — the volume render is
+    // keyed per scan, so per-sweep frames would move the playhead without
+    // changing the picture. Toggling 3D off rebuilds back to per-sweep
+    // frames; neither rebuild teleports the cursor.
+    #[wasm_bindgen_test]
+    fn macro_volume_3d_frames_are_per_scan() {
+        let tl = two_scan_timeline();
+        let mut fx = Fx::at(2005.0, TimelineTier::Macro);
+        let mut env = base_env();
+        env.volume_3d_active = true;
+        let _ = fx.run(env, &tl);
+
+        // scan() gives end_time = key_ts + 300 → one frame per scan.
+        assert_eq!(
+            fx.playback.macro_playback.sweep_frames,
+            vec![1300.0, 2300.0]
+        );
+        assert_eq!(fx.playback.playback_position(), 2005.0, "no snap");
+
+        // 3D off → the per-sweep (elev 1) list returns, still no snap.
+        let _ = fx.run(base_env(), &tl);
+        assert_eq!(
+            fx.playback.macro_playback.sweep_frames,
+            vec![1010.0, 2010.0]
         );
         assert_eq!(fx.playback.playback_position(), 2005.0, "no snap");
     }
@@ -887,7 +928,7 @@ mod tests {
 
         let mut env = base_env();
         env.live_active = true;
-        env.volume_3d_enabled = true;
+        env.volume_3d_active = true;
         env.coordinator_scan_key = Some(&key);
         let a = fx.run(env, &tl);
 
@@ -954,7 +995,7 @@ mod tests {
         let mut fx = Fx::at(2005.0, TimelineTier::Micro);
 
         let mut env = base_env();
-        env.volume_3d_enabled = true;
+        env.volume_3d_active = true;
         env.coordinator_scan_key = Some(&key);
         let a = fx.run(env, &tl);
 

@@ -385,6 +385,43 @@ impl RadarTimeline {
         times
     }
 
+    /// Collect one frame time per scan — the scan's `end_time` — for scans
+    /// holding at least one cached sweep of `product`. The volumetric (3D)
+    /// playback frame source: the volume render is keyed per scan, so
+    /// stepping per sweep would move the playhead/captions without changing
+    /// the picture. `end_time` is the instant the whole volume exists, which
+    /// is what the 3D composite renders. The elevation filter is irrelevant
+    /// to the volumetric pass (it composites all cuts).
+    ///
+    /// Returns a sorted, deduplicated `Vec<f64>`, bounds-clipped like the
+    /// per-sweep sources.
+    pub(crate) fn scan_end_frame_times(
+        &self,
+        product: &str,
+        bounds: Option<(f64, f64)>,
+    ) -> Vec<f64> {
+        let mut times: Vec<f64> = Vec::new();
+        for scan in &self.scans {
+            if let Some((start, end)) = bounds {
+                if scan.end_time < start || scan.start_time > end {
+                    continue;
+                }
+            }
+            if !scan.sweeps.iter().any(|s| sweep_has_product(s, product)) {
+                continue;
+            }
+            if let Some((start, end)) = bounds {
+                if scan.end_time < start || scan.end_time > end {
+                    continue;
+                }
+            }
+            times.push(scan.end_time);
+        }
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        times.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+        times
+    }
+
     /// The `(start, end)` span covering the last `n` matching frames at or
     /// before `now`, for the given elevation selection — the "lookback" window
     /// the live Play button replays. Uses the same frame source as the macro
@@ -1372,6 +1409,57 @@ mod coverage_tests {
             elevation_number: elev_num,
             angle: 0.5,
         }
+    }
+
+    // --- scan_end_frame_times (volumetric 3D frame source) ---
+
+    #[wasm_bindgen_test]
+    fn scan_end_frame_times_one_frame_per_product_bearing_scan() {
+        let tl = RadarTimeline {
+            scans: vec![
+                // Three sweeps → still ONE frame, at the scan's end_time.
+                scan_with_sweeps(
+                    1000.0,
+                    1300.0,
+                    vec![
+                        sweep(1000.0, 1010.0, 0.5, 1),
+                        sweep(1010.0, 1020.0, 1.5, 2),
+                        sweep(1020.0, 1030.0, 2.4, 3),
+                    ],
+                ),
+                // Sweeps exist but none carry the product → excluded.
+                scan_with_sweeps(
+                    1300.0,
+                    1600.0,
+                    vec![sweep_products(1300.0, 1310.0, 0.5, 1, &["velocity"])],
+                ),
+                // No sweeps at all → excluded.
+                scan(1600.0, 1900.0),
+                scan_with_sweeps(1900.0, 2200.0, vec![sweep(1900.0, 1910.0, 0.5, 1)]),
+            ],
+        };
+        assert_eq!(
+            tl.scan_end_frame_times("reflectivity", None),
+            vec![1300.0, 2200.0]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn scan_end_frame_times_clips_to_bounds() {
+        let tl = RadarTimeline {
+            scans: vec![
+                scan_with_sweeps(1000.0, 1300.0, vec![sweep(1000.0, 1010.0, 0.5, 1)]),
+                scan_with_sweeps(1300.0, 1600.0, vec![sweep(1300.0, 1310.0, 0.5, 1)]),
+            ],
+        };
+        // Bounds admit only the first scan's end_time.
+        assert_eq!(
+            tl.scan_end_frame_times("reflectivity", Some((900.0, 1400.0))),
+            vec![1300.0]
+        );
+        assert!(tl
+            .scan_end_frame_times("reflectivity", Some((0.0, 500.0)))
+            .is_empty());
     }
 
     // --- Sweep::duration / Scan::duration ---
