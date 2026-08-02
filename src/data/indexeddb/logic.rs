@@ -69,6 +69,18 @@ pub(super) fn eviction_order(
 /// Filters a list of scan-index entries to those within the inclusive
 /// `[start, end]` window, sorted by `scan_start`. Used after a
 /// site-prefix range scan in `list_scans`.
+/// Picks the entry whose scan start is nearest `target` — the selection half
+/// of the tolerance-based availability probe (the caller bounds the candidate
+/// list to ±tolerance via a key-range read first).
+pub(super) fn nearest_scan_entry(
+    entries: Vec<ScanIndexEntry>,
+    target: UnixMillis,
+) -> Option<ScanIndexEntry> {
+    entries
+        .into_iter()
+        .min_by_key(|e| (e.scan.scan_start.0 - target.0).abs())
+}
+
 pub(super) fn filter_scans_by_time_window(
     entries: Vec<ScanIndexEntry>,
     start: UnixMillis,
@@ -102,6 +114,24 @@ mod tests {
             cached_sweeps: Vec::new(),
             total_size_bytes: size,
         }
+    }
+
+    // ===== nearest_scan_entry =====
+
+    #[wasm_bindgen_test]
+    fn nearest_scan_entry_picks_closest_and_handles_empty() {
+        assert!(nearest_scan_entry(Vec::new(), UnixMillis(1_000)).is_none());
+        let picked = nearest_scan_entry(
+            vec![
+                entry("KDMX", 900, 1),
+                entry("KDMX", 1_040, 2),
+                entry("KDMX", 1_400, 3),
+            ],
+            UnixMillis(1_000),
+        )
+        .unwrap();
+        // 1_040 is 40 away; 900 is 100 away.
+        assert_eq!(picked.scan.scan_start, UnixMillis(1_040));
     }
 
     // ===== should_skip_touch =====

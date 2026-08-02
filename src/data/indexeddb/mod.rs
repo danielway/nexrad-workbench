@@ -711,6 +711,32 @@ impl IndexedDbStore {
         from_js_value_opt(&result)
     }
 
+    /// Gets the scan-index entry nearest `scan` within ±`tolerance_ms` of its
+    /// start time (exact key first, then a site-scoped window read).
+    ///
+    /// The worker re-keys stored scans by their decoded volume-header time,
+    /// which can sit several seconds off the archive listing's timestamp — a
+    /// probe keyed on the listing therefore needs the same join tolerance the
+    /// rest of the app uses, or a re-request re-downloads a cached volume.
+    pub async fn scan_availability_near(
+        &self,
+        scan: &ScanKey,
+        tolerance_ms: i64,
+    ) -> Result<Option<ScanIndexEntry>, DataError> {
+        if let Some(entry) = self.scan_availability(scan).await? {
+            return Ok(Some(entry));
+        }
+        let ts = scan.scan_start;
+        let candidates = self
+            .list_scans(
+                &scan.site,
+                UnixMillis(ts.0 - tolerance_ms),
+                UnixMillis(ts.0 + tolerance_ms),
+            )
+            .await?;
+        Ok(logic::nearest_scan_entry(candidates, ts))
+    }
+
     /// Lists all scans for a site within a time window.
     ///
     /// Uses an IDB key range bounded by the site prefix (`"SITE|"`..),

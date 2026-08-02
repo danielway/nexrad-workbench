@@ -64,6 +64,18 @@ impl MainThreadStore {
         self.store.scan_availability(scan).await
     }
 
+    /// Gets the scan-index entry nearest `scan` within ±`tolerance_ms`
+    /// (exact key first, then a site-scoped window read) — the probe to use
+    /// when the key may be a listing timestamp rather than the stored
+    /// volume-header key.
+    pub async fn scan_availability_near(
+        &self,
+        scan: &ScanKey,
+        tolerance_ms: i64,
+    ) -> CacheResult<Option<ScanIndexEntry>> {
+        self.store.scan_availability_near(scan, tolerance_ms).await
+    }
+
     /// Queries available scans for a site within a time window.
     pub async fn list_scans(
         &self,

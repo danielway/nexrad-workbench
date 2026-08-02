@@ -329,8 +329,15 @@ async fn download_specific_file(
     // Check cache first (no network call). The dedup granularity depends on
     // scope: a filter-scoped fetch only needs its one elevation present, while
     // an unfiltered fetch is a hit only when the whole volume is complete.
+    // `timestamp` is the archive listing's time, but stored scans are keyed
+    // by decoded volume-header time — probe within the app-wide join
+    // tolerance so a re-request lands on the cached volume instead of
+    // re-downloading it.
     let scan_key = ScanKey::from_secs(site_id, timestamp);
-    if let Ok(Some(entry)) = facade.scan_availability(&scan_key).await {
+    if let Ok(Some(entry)) = facade
+        .scan_availability_near(&scan_key, crate::SCAN_CACHE_MATCH_TOLERANCE_SECS * 1000)
+        .await
+    {
         let cache_hit = match elevation_filter {
             Some(elev) => entry.has_elevation(elev),
             None => entry.completeness() == ScanCompleteness::Complete,
