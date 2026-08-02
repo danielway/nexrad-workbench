@@ -131,9 +131,9 @@ pub(crate) fn playhead_priority(
 /// Action the caller should take after a queue operation.
 #[derive(Debug)]
 pub(crate) enum QueueAction {
-    /// Start downloading a specific file.
+    /// Start downloading a specific file. The archive identifier (site,
+    /// date, S3 key) is derived from `file_name` by the download channel.
     StartDownload {
-        date: chrono::NaiveDate,
         file_name: String,
         scan_start: i64,
         scan_end: i64,
@@ -294,7 +294,6 @@ impl DownloadQueueManager {
                 .count();
             let item = &self.queue[idx];
             let action = QueueAction::StartDownload {
-                date: item.date,
                 file_name: item.file_name.clone(),
                 scan_start: item.scan_start,
                 scan_end: item.scan_end,

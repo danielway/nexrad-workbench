@@ -102,7 +102,6 @@ impl WorkbenchApp {
                 .advance(is_paused)
             {
                 QueueAction::StartDownload {
-                    date,
                     file_name,
                     scan_start,
                     scan_end,
@@ -134,7 +133,6 @@ impl WorkbenchApp {
                     self.acquisition.coordinator.download_channel.download_file(
                         ctx.clone(),
                         site_id.clone(),
-                        date,
                         file_name,
                         scan_start,
                         self.acquisition.coordinator.facade().clone(),

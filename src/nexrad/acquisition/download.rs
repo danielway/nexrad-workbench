@@ -124,7 +124,8 @@ impl DownloadChannel {
         self.stats.clone()
     }
 
-    /// Download a specific file from the archive by name.
+    /// Download a specific file from the archive by name. The archive
+    /// identifier (site, date, S3 key) is derived from the file name itself.
     ///
     /// Returns false if the download is already pending.
     #[allow(clippy::too_many_arguments)]
@@ -132,7 +133,6 @@ impl DownloadChannel {
         &self,
         ctx: egui::Context,
         site_id: String,
-        date: NaiveDate,
         file_name: String,
         timestamp: i64,
         facade: MainThreadStore,
@@ -157,7 +157,6 @@ impl DownloadChannel {
         wasm_bindgen_futures::spawn_local(async move {
             let result = download_specific_file(
                 &site_id,
-                date,
                 &file_name,
                 timestamp,
                 facade,
@@ -319,7 +318,6 @@ fn classify_nexrad_result<T>(result: nexrad_data::result::Result<T>) -> Verdict<
 /// Downloads a specific file from the archive.
 async fn download_specific_file(
     site_id: &str,
-    date: NaiveDate,
     file_name: &str,
     timestamp: i64,
     facade: MainThreadStore,
@@ -346,40 +344,14 @@ async fn download_specific_file(
 
     log::debug!("Cache miss, downloading: {}", file_name);
 
-    // Request 1: List files to find the one we want
-    stats.request_started();
-    let site_owned = site_id.to_string();
-    let files = match with_retry(&DEFAULT_POLICY, "archive_list", |_attempt| {
-        let s = site_owned.clone();
-        async move { classify_nexrad_result(archive::list_files(&s, &date).await) }
-    })
-    .await
-    {
-        Ok(files) => {
-            stats.request_completed(0);
-            files
-        }
-        Err(msg) => {
-            stats.request_completed(0);
-            return DownloadResult::Error {
-                message: format!("Failed to list files: {}", msg),
-                scan_start: timestamp,
-            };
-        }
-    };
+    // The archive identifier is derived entirely from the file name (site,
+    // date, and S3 key are parsed out of it), and the name came from an
+    // archive listing in the first place — so no pre-GET LIST is needed.
+    // A name that doesn't exist surfaces as a terminal 404 on the GET, the
+    // same outcome the old listing lookup produced with an extra request.
+    let file_meta = archive::Identifier::new(file_name.to_string());
 
-    // Find the specific file
-    let file_meta = match files.iter().find(|f| f.name() == file_name) {
-        Some(f) => f.clone(),
-        None => {
-            return DownloadResult::Error {
-                message: format!("File not found: {}", file_name),
-                scan_start: timestamp,
-            };
-        }
-    };
-
-    // Request 2: Download the file
+    // Download the file
     stats.request_started();
     let fetch_start = web_time::Instant::now();
     let file = match with_retry(&DEFAULT_POLICY, "archive_download", |_attempt| {
