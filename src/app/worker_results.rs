@@ -301,7 +301,10 @@ impl WorkbenchApp {
                 product: self.state.viz_state.product,
                 max_scan_age_secs: MAX_SCAN_AGE_SECS,
                 live_cut: self.live_render_sources(),
-                sweep_animation: self.state.effective_sweep_animation(&self.playback.state),
+                sweep_animation: self.state.effective_sweep_animation(
+                    &self.playback.state,
+                    self.live.mode_state.is_active(),
+                ),
                 storm_cells_visible: self.state.viz_state.storm_cells_visible,
                 in_flight_scans: &self.state.download_progress.in_flight_scans,
                 pending_scans_empty: self.state.download_progress.pending_scans.is_empty(),

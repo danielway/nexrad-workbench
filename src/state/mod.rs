@@ -5,7 +5,7 @@
 //! areas of functionality.
 
 use crate::core::{
-    ElevationListEntry, ErrorContext, FrameNow, Intent, PlaybackMode, PlaybackState, RadarTimeline,
+    ElevationListEntry, ErrorContext, FrameNow, Intent, PlaybackState, RadarTimeline,
     RenderProcessing, UserPreferences,
 };
 
@@ -453,14 +453,23 @@ impl AppState {
     }
 
     /// Whether sweep animation is effectively enabled. Requires the user
-    /// preference, micro playback mode (zoomed in), and Advanced UI mode.
-    /// Macro mode and Basic UI both suppress the animation regardless of
-    /// the stored preference; Basic users get a calmer display and the
-    /// preference is preserved across UI-mode toggles.
-    pub(crate) fn effective_sweep_animation(&self, playback: &PlaybackState) -> bool {
-        self.render_processing.sweep_animation
-            && playback.playback_mode() == PlaybackMode::Micro
-            && self.advanced_mode
+    /// preference, micro playback mode (zoomed in), Advanced UI mode, and a
+    /// live context: an active stream with the playhead attached to the live
+    /// edge. Macro mode, Basic UI, and historical viewing all suppress the
+    /// animation regardless of the stored preference, which is preserved
+    /// across mode toggles.
+    pub(crate) fn effective_sweep_animation(
+        &self,
+        playback: &PlaybackState,
+        streaming: bool,
+    ) -> bool {
+        crate::core::canvas::sweep_animation_effective(
+            self.render_processing.sweep_animation,
+            playback.playback_mode(),
+            self.advanced_mode,
+            streaming,
+            playback.time_model.is_pinned() || playback.time_model.is_lookback(),
+        )
     }
 
     /// Elevation list for the current playback context, derived per

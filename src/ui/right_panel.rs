@@ -415,7 +415,8 @@ pub(super) fn render_rendering_section(
                     .on_hover_text(if in_macro {
                         "Sweep animation is disabled at this zoom level (macro playback mode)"
                     } else {
-                        "Progressively reveal new data behind the sweep line during playback"
+                        "Progressively reveal new data behind the sweep line while streaming \
+                         live; historical playback shows complete frames"
                     });
             });
 

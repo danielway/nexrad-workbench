@@ -710,7 +710,11 @@ impl eframe::App for WorkbenchApp {
         // Take an early Derived snapshot so subsystem ticks consume the
         // same `data_is_live` value the panels will (and recomputation
         // is centralised).
-        let early_derived = subsystem::Derived::for_frame(&self.state, &self.playback);
+        let early_derived = subsystem::Derived::for_frame(
+            &self.state,
+            &self.playback,
+            self.live.mode_state.is_active(),
+        );
         self.state.national_mosaic.poll_tick(
             ctx,
             self.state.layer_state.geo.national_mosaic && early_derived.data_is_live,
@@ -823,7 +827,11 @@ impl eframe::App for WorkbenchApp {
         // renders see live-mode pulse + the freshest playback position.
         // (An earlier copy was already taken before the diagnostics tick
         // so `data_is_live` flows into that consumer.)
-        let derived = subsystem::Derived::for_frame(&self.state, &self.playback);
+        let derived = subsystem::Derived::for_frame(
+            &self.state,
+            &self.playback,
+            self.live.mode_state.is_active(),
+        );
 
         // 19. Consume any deferred geolocation request raised by the
         // mobile action bar. Handled before layout dispatch so the modal

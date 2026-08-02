@@ -20,6 +20,24 @@ use crate::core::Sweep;
 // Sweep-animation decisions
 // ---------------------------------------------------------------------------
 
+/// Whether the sweep animation is effectively enabled this frame.
+///
+/// The animation's meaning is "the beam is collecting now", so beyond the
+/// stored preference it requires micro playback mode (zoomed in), Advanced UI
+/// mode, an active live stream, and a playhead attached to the live edge
+/// (pinned or lookback). Historical playback — detached playhead or no stream
+/// — never animates: the reveal would be theater, and it costs a sustained
+/// ~30 fps repaint loop.
+pub(crate) fn sweep_animation_effective(
+    pref: bool,
+    mode: crate::core::PlaybackMode,
+    advanced: bool,
+    streaming: bool,
+    playhead_attached: bool,
+) -> bool {
+    pref && mode == crate::core::PlaybackMode::Micro && advanced && streaming && playhead_attached
+}
+
 /// Interpolate the rotating sweep-line azimuth within `sweep` at playback time
 /// `ts`, returning `(current_az, start_az)` in degrees, or `None` if the sweep
 /// has no positive duration.
@@ -696,6 +714,25 @@ mod coverage_tests {
             data_offset: 2.0,
             data_scale: 0.5,
         }
+    }
+
+    // --- sweep_animation_effective: live/historical gate -----------------------
+
+    #[wasm_bindgen_test]
+    fn sweep_animation_requires_live_attached_stream() {
+        use crate::core::PlaybackMode::{Macro, Micro};
+        // Fully live: pref + Micro + advanced + streaming + attached → on.
+        assert!(sweep_animation_effective(true, Micro, true, true, true));
+        // Streaming but detached (historical review) → off.
+        assert!(!sweep_animation_effective(true, Micro, true, true, false));
+        // Attached-shaped playhead but no active stream → off.
+        assert!(!sweep_animation_effective(true, Micro, true, false, true));
+        // Historical playback entirely (no stream, detached) → off.
+        assert!(!sweep_animation_effective(true, Micro, true, false, false));
+        // Pre-existing gates still suppress: preference off, Macro, Basic UI.
+        assert!(!sweep_animation_effective(false, Micro, true, true, true));
+        assert!(!sweep_animation_effective(true, Macro, true, true, true));
+        assert!(!sweep_animation_effective(true, Micro, false, true, true));
     }
 
     // --- sweep_line_azimuth: uncovered branches -------------------------------

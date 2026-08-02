@@ -42,20 +42,22 @@ pub(crate) struct Derived {
     /// [`crate::state::recency::data_is_live`].
     pub data_is_live: bool,
     /// Whether sweep animation is effectively enabled this frame
-    /// (`render_processing.sweep_animation && micro mode && advanced`).
+    /// (`render_processing.sweep_animation && micro mode && advanced
+    /// && streaming && playhead attached to the live edge`).
     pub effective_sweep_animation: bool,
 }
 
 impl Derived {
     /// Populate the snapshot. Called once near the top of `update()`,
     /// before any subsystem tick or panel render, so every consumer
-    /// downstream reads the same values.
-    pub(crate) fn for_frame(state: &AppState, playback: &Playback) -> Self {
+    /// downstream reads the same values. `streaming` is the live
+    /// subsystem's `mode_state.is_active()` — an active stream session.
+    pub(crate) fn for_frame(state: &AppState, playback: &Playback, streaming: bool) -> Self {
         Self {
             frame_now_secs: state.frame_now.secs(),
             visible_bounds: state.viz_state.last_visible_bounds,
             data_is_live: crate::state::recency::data_is_live(&playback.state),
-            effective_sweep_animation: state.effective_sweep_animation(&playback.state),
+            effective_sweep_animation: state.effective_sweep_animation(&playback.state, streaming),
         }
     }
 }
