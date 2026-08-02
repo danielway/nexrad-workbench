@@ -67,6 +67,11 @@ const GRAB_MAX_TILT_DEG: f32 = 60.0;
 /// of the remaining distance per TAU, so transitions settle in ~1 s.
 const FLY_TO_TAU_SECS: f32 = 0.25;
 
+/// Shared 2D + 3D scroll feel: log-space zoom change per scroll unit
+/// (~+27% per 120-unit wheel tick). The 2D canvas handler uses the same
+/// constant so the wheel feels identical in both views.
+pub(crate) const ZOOM_LOG_PER_SCROLL_UNIT: f32 = 0.002;
+
 // ── Flat 2D ─────────────────────────────────────────────────────────
 
 /// State for the flat 2D top-down view.
@@ -272,7 +277,7 @@ fn near_plane_for(surface_distance: f32) -> f32 {
 /// clamps. Positive `delta` zooms in (closer). Each scroll unit moves a
 /// consistent percentage of the altitude.
 fn zoom_distance(distance: f32, delta: f32) -> f32 {
-    let new_log = distance.ln() - delta * 0.003;
+    let new_log = distance.ln() - delta * ZOOM_LOG_PER_SCROLL_UNIT;
     new_log
         .clamp(MIN_SURFACE_DIST.ln(), MAX_SURFACE_DIST.ln())
         .exp()
@@ -1268,6 +1273,18 @@ mod tests {
         let mut flat = Camera::centered_on(39.0, -98.0);
         let r = Rect::from_min_size(Pos2::ZERO, eframe::egui::Vec2::new(800.0, 600.0));
         assert!(!flat.pan_pivot_grab(r.center(), r.center(), r));
+    }
+
+    #[wasm_bindgen_test]
+    fn zoom_step_matches_the_shared_scroll_constant() {
+        // One 120-unit wheel tick moves log-distance by exactly
+        // 120 × ZOOM_LOG_PER_SCROLL_UNIT — the same step the 2D handler
+        // applies to its zoom factor, so both views share one feel.
+        let (mut c, _) = orbit_with_rect();
+        let before = orbit(&c).distance.ln();
+        c.zoom(120.0);
+        let after = orbit(&c).distance.ln();
+        assert!((before - after - 120.0 * ZOOM_LOG_PER_SCROLL_UNIT).abs() < 1e-6);
     }
 
     #[wasm_bindgen_test]

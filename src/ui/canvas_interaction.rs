@@ -221,7 +221,10 @@ pub(crate) fn handle_canvas_interaction(
         if response.hovered() {
             let scroll_delta = response.ctx.input(|i| i.raw_scroll_delta);
             if scroll_delta.y != 0.0 {
-                let zoom_factor = 1.0 + scroll_delta.y * 0.001;
+                // Same log-space step per scroll unit as the 3D camera, so
+                // the wheel feels identical in both views.
+                let zoom_factor =
+                    (scroll_delta.y * crate::geo::camera::ZOOM_LOG_PER_SCROLL_UNIT).exp();
                 let old_zoom = state.viz_state.zoom();
                 let new_zoom = (old_zoom * zoom_factor).clamp(0.1, 25.0);
 
