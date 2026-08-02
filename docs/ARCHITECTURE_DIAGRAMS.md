@@ -729,21 +729,17 @@ The camera is an **enum** — exactly one variant is active, and `ViewMode` is
 ```mermaid
 stateDiagram-v2
     [*] --> Flat2D
-    Flat2D --> PlanetOrbit: enter 3D
-    PlanetOrbit --> Flat2D: exit 3D
-    PlanetOrbit --> SiteOrbit: switch
-    PlanetOrbit --> FreeLook: switch
-    SiteOrbit --> PlanetOrbit: switch
-    SiteOrbit --> FreeLook: switch
-    FreeLook --> PlanetOrbit: switch
+    Flat2D --> Orbit: enter 3D (restores saved pose)
+    Orbit --> Flat2D: exit 3D (pose carried as `saved`)
 
     note left of Flat2D
         2D: MapProjection
         (equirectangular + zoom/pan)
         → RadarGpuRenderer
     end note
-    note right of FreeLook
-        3D: view/projection matrices
+    note right of Orbit
+        3D: unified orbit camera
+        (pivot lat/lon · distance · tilt · heading)
         → Globe + GeoLine + GlobeRadar or VolumeRay
     end note
 ```
@@ -770,7 +766,7 @@ flowchart TB
     end
 
     cam -->|Flat2D| two
-    cam -->|"PlanetOrbit / SiteOrbit / FreeLook"| three
+    cam -->|Orbit| three
 ```
 
 Both paths share the same GPU textures (data / lut / azimuth) and the same GLSL
@@ -883,7 +879,7 @@ frame loop's INTAKE phase.
 | `LiveModeState` / `LivePhase` | `state::live_mode` | Live streaming state machine |
 | `DataFacade` / `IndexedDbStore` | `data` | Cache layer (cloneable, shared connection) |
 | `RadarGpuRenderer` | `nexrad::gpu_renderer` | WebGL2 polar→Cartesian + raw→physical shader |
-| `Camera` | `geo::camera` | Enum state machine (Flat2D / PlanetOrbit / SiteOrbit / FreeLook) |
+| `Camera` | `geo::camera` | Enum state machine (Flat2D / Orbit — the unified orbit camera) |
 
 ---
 

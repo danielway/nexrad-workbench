@@ -377,9 +377,13 @@ the playback model are identical across them — only the projection differs.
 
 - **2D map.** Equirectangular projection centered on the active site, drawn
   alongside the toggleable overlays in §13.
-- **3D globe.** WebGL2 sphere with three camera modes — **Planet Orbit** (around
-  Earth's center), **Site Orbit** (around the radar site, always facing it), and
-  **Free Look** (first-person flying camera). The globe additionally offers a
+- **3D globe.** WebGL2 sphere with a single **Google-Earth-style orbit camera**:
+  it orbits a pivot point on the surface (always the screen center) at a
+  distance, with tilt and heading. Left-drag pans the globe (the grabbed point
+  sticks to the cursor), right/middle/Ctrl-drag tilts and rotates, scroll zooms
+  toward the cursor, and double-click flies the pivot to the clicked point with
+  a smooth transition. Zoomed out it behaves like a planet camera; zoomed in it
+  orbits the site — no mode boundary. The globe additionally offers a
   **volumetric ray-march** rendering that composites all elevations of the active
   scan into a single 3D pass with a user-controlled density cutoff, instead of
   rendering a single elevation as a surface.
@@ -499,8 +503,10 @@ only.
 
 **Keyboard:** Space play/pause · ←/→ frame step · Shift+←/→ scan step · I/O loop
 in/out · plain **L** go-live (one-way re-tether) · +/− timeline zoom anchored at
-the playhead · **[** / **]** speed down/up. Camera pan uses WASD; the arrow keys
-no longer pan the camera.
+the playhead · **[** / **]** speed down/up. Camera pan uses WASD (the arrow keys
+no longer pan the camera); in 3D, **Q/E** rotate the heading and **R/F/N**
+reset / focus the site / align north via animated fly-to. **1/2** select 2D/3D;
+**T** toggles.
 
 ## 13. Overlays, Tools & Platforms
 
