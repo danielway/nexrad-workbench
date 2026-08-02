@@ -159,31 +159,51 @@ float fetch_cell(int si, int az, int gate) {
     return (raw > 1.5) ? raw : -1.0;
 }
 
-float sample_sweep_nn(int si, float az_deg, float range_km) {
+// Sample one sweep at a bearing and slant range, bilinear across azimuth bins
+// and range gates, returned in physical units. False when every contributing
+// cell is a sentinel or the range falls outside the sweep.
+bool sample_sweep(int si, float az_deg, float range_km, out float physical) {
+    physical = 0.0;
     float gc = u_gate_count[si];
     float ac = u_azimuth_count[si];
-    if (ac < 1.0) return -1.0;
+    if (ac < 1.0 || gc < 1.0) return false;
 
     float gate_f = (range_km - u_first_gate_km[si]) / u_gate_interval_km[si];
-    if (gate_f < 0.0 || gate_f >= gc) return -1.0;
+    if (gate_f < 0.0 || gate_f >= gc) return false;
 
-    int gate = int(gate_f);
+    int g0 = int(gate_f);
+    int g1 = min(g0 + 1, int(gc) - 1);
+    float gf = gate_f - float(g0);
 
     // Bin i is centered on bearing i * 360/ac, so the two bins bracketing this
     // bearing are floor and floor+1, wrapping through 0 at the seam.
     float bin_f = az_deg * ac / 360.0;
     float bin_lo = floor(bin_f);
-    int az0 = int(mod(bin_lo, ac));
-    int az1 = int(mod(bin_lo + 1.0, ac));
-    float frac = bin_f - bin_lo;
+    int a0 = int(mod(bin_lo, ac));
+    int a1 = int(mod(bin_lo + 1.0, ac));
+    float af = bin_f - bin_lo;
 
-    float v0 = fetch_cell(si, az0, gate);
-    float v1 = fetch_cell(si, az1, gate);
+    // Weighted average of the four neighbours, with sentinels dropping out of
+    // the sum rather than contributing zero — so a cell at the edge of an echo
+    // blends toward its valid neighbours instead of toward "no data".
+    float acc = 0.0;
+    float wsum = 0.0;
+    float v; float w;
+    v = fetch_cell(si, a0, g0); if (v >= 0.0) { w = (1.0 - af) * (1.0 - gf); acc += v * w; wsum += w; }
+    v = fetch_cell(si, a1, g0); if (v >= 0.0) { w = af * (1.0 - gf);         acc += v * w; wsum += w; }
+    v = fetch_cell(si, a0, g1); if (v >= 0.0) { w = (1.0 - af) * gf;         acc += v * w; wsum += w; }
+    v = fetch_cell(si, a1, g1); if (v >= 0.0) { w = af * gf;                 acc += v * w; wsum += w; }
 
-    if (v0 < 0.0 && v1 < 0.0) return -1.0;
-    if (v0 < 0.0) return v1;
-    if (v1 < 0.0) return v0;
-    return mix(v0, v1, frac);
+    if (wsum < 1e-6) return false;
+    float raw = acc / wsum;
+
+    // Raw values are linear in the physical value within a sweep, so blending
+    // raw and converting once matches converting each corner first. Across
+    // sweeps that no longer holds, which is why conversion happens here with
+    // this sweep's own scale/offset rather than sweep 0's for everything.
+    float sc = u_scale[si];
+    physical = (sc != 0.0) ? (raw - u_offset[si]) / sc : raw;
+    return true;
 }
 
 // ── Linear search for elevation bracket (faster than binary for ≤25) ─
@@ -246,10 +266,6 @@ void main() {
     float clon = cos(u_site_lon_rad);
     vec3 north = vec3(-slat * slon, clat, -slat * clon);
     vec3 east  = vec3(clon, 0.0, -slon);
-
-    // Precompute scale/offset (same for all sweeps of same product)
-    float scale_val = u_scale[0];
-    float offset_val = u_offset[0];
 
     // Front-to-back accumulation
     vec3 accum_color = vec3(0.0);
@@ -318,26 +334,24 @@ void main() {
         float az_deg = degrees(atan(dot(d, east), dot(d, north)));
         if (az_deg < 0.0) az_deg += 360.0;
 
-        // Sample two bracketing sweeps (nearest-neighbor: 1 fetch each)
-        float v_lo = sample_sweep_nn(si, az_deg, range_km);
-        float v_hi = sample_sweep_nn(si + 1, az_deg, range_km);
+        // Sample the two bracketing sweeps, each already in physical units.
+        float p_lo, p_hi;
+        bool ok_lo = sample_sweep(si, az_deg, range_km, p_lo);
+        bool ok_hi = sample_sweep(si + 1, az_deg, range_km, p_hi);
 
         // Elevation interpolation
-        float raw;
-        if (v_lo < 0.0 && v_hi < 0.0) {
+        float physical;
+        if (!ok_lo && !ok_hi) {
             t += step;
             continue;
-        } else if (v_lo < 0.0) {
-            raw = v_hi;
-        } else if (v_hi < 0.0) {
-            raw = v_lo;
+        } else if (!ok_lo) {
+            physical = p_hi;
+        } else if (!ok_hi) {
+            physical = p_lo;
         } else {
             float el_frac = (el_deg - u_elevation[si]) / max(u_elevation[si + 1] - u_elevation[si], 0.01);
-            raw = mix(v_lo, v_hi, el_frac);
+            physical = mix(p_lo, p_hi, clamp(el_frac, 0.0, 1.0));
         }
-
-        // Convert raw to physical value
-        float physical = (scale_val != 0.0) ? (raw - offset_val) / scale_val : raw;
 
         if (physical >= u_density_cutoff) {
             float normalized = clamp((physical - u_value_min) / u_value_range, 0.0, 1.0);
@@ -380,6 +394,11 @@ pub struct VolumeRayRenderer {
     _quad_vbo: glow::Buffer,
     volume_texture: Option<glow::Texture>,
     tex_width: i32,
+    /// (width, height, internal format) the volume texture is allocated at, so
+    /// a same-shaped re-upload can reuse it instead of reallocating.
+    tex_alloc: Option<(i32, i32, i32)>,
+    /// GL_MAX_TEXTURE_SIZE, queried once.
+    max_texture_size: i32,
 
     // Half-res offscreen FBO for cheaper rendering
     blit_program: glow::Program,
@@ -570,6 +589,8 @@ impl VolumeRayRenderer {
             _quad_vbo: quad_vbo,
             volume_texture: None,
             tex_width: 0,
+            tex_alloc: None,
+            max_texture_size: gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE).max(2048),
             blit_program,
             fbo,
             fbo_color,
@@ -631,17 +652,27 @@ impl VolumeRayRenderer {
         self.extents = derive_shell_extents(&sweeps[..self.sweep_count as usize]);
 
         let bytes_per_value = word_size as usize;
-
-        // Determine texture dimensions
         let total_values = buffer.len() / bytes_per_value;
-        let tex_width = 4096i32;
-        let tex_height = ((total_values as i32 + tex_width - 1) / tex_width).max(1);
-        self.tex_width = tex_width;
 
-        // Pad buffer to fill full texture
-        let padded_size = (tex_width * tex_height) as usize * bytes_per_value;
-        let mut padded = buffer.to_vec();
-        padded.resize(padded_size, 0);
+        // Determine texture dimensions. Widen the row before giving up: on a
+        // device with a 4096 limit a super-res volume overflows the height,
+        // while on one with 8192 a wider row halves it.
+        let limit = self.max_texture_size;
+        let mut tex_width = 4096.min(limit);
+        let mut tex_height = total_values.div_ceil(tex_width as usize).max(1) as i32;
+        if tex_height > limit && tex_width < limit {
+            tex_width = limit;
+            tex_height = total_values.div_ceil(tex_width as usize).max(1) as i32;
+        }
+        if tex_height > limit {
+            log::warn!(
+                "Volume too large for this GPU: {total_values} values need {tex_height} rows \
+                 of {tex_width}, limit is {limit}; skipping volume render"
+            );
+            self.has_data = false;
+            return;
+        }
+        self.tex_width = tex_width;
 
         // Choose texture format based on word size
         let (internal_fmt, data_type) = if word_size == 1 {
@@ -651,47 +682,94 @@ impl VolumeRayRenderer {
         };
 
         unsafe {
-            // Delete old texture
-            if let Some(tex) = self.volume_texture.take() {
-                gl.delete_texture(tex);
+            // Reuse the existing texture when the shape is unchanged — scrubbing
+            // re-uploads a same-shaped volume on every scan.
+            let reusable = self.volume_texture.is_some()
+                && self.tex_alloc == Some((tex_width, tex_height, internal_fmt));
+            if !reusable {
+                if let Some(tex) = self.volume_texture.take() {
+                    gl.delete_texture(tex);
+                }
+                let tex = gl.create_texture().unwrap();
+                gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+                // Allocate storage only; the data goes up row-wise below.
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    internal_fmt,
+                    tex_width,
+                    tex_height,
+                    0,
+                    glow::RED_INTEGER,
+                    data_type,
+                    glow::PixelUnpackData::Slice(None),
+                );
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MIN_FILTER,
+                    glow::NEAREST as i32,
+                );
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MAG_FILTER,
+                    glow::NEAREST as i32,
+                );
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_WRAP_S,
+                    glow::CLAMP_TO_EDGE as i32,
+                );
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_WRAP_T,
+                    glow::CLAMP_TO_EDGE as i32,
+                );
+                self.volume_texture = Some(tex);
+                self.tex_alloc = Some((tex_width, tex_height, internal_fmt));
+            } else {
+                gl.bind_texture(glow::TEXTURE_2D, self.volume_texture);
             }
 
-            let tex = gl.create_texture().unwrap();
-            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                internal_fmt,
-                tex_width,
-                tex_height,
-                0,
-                glow::RED_INTEGER,
-                data_type,
-                glow::PixelUnpackData::Slice(Some(&padded)),
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MIN_FILTER,
-                glow::NEAREST as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MAG_FILTER,
-                glow::NEAREST as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_WRAP_S,
-                glow::CLAMP_TO_EDGE as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_WRAP_T,
-                glow::CLAMP_TO_EDGE as i32,
-            );
-            gl.bind_texture(glow::TEXTURE_2D, None);
+            // Upload the complete rows straight from the source, then a single
+            // zero-padded tail row. Padding the whole buffer instead meant
+            // cloning several megabytes on every volume update.
+            let row_values = tex_width as usize;
+            let row_bytes = row_values * bytes_per_value;
+            let full_rows = total_values / row_values;
+            let remainder = total_values - full_rows * row_values;
 
-            self.volume_texture = Some(tex);
+            if full_rows > 0 {
+                gl.tex_sub_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    0,
+                    0,
+                    tex_width,
+                    full_rows as i32,
+                    glow::RED_INTEGER,
+                    data_type,
+                    glow::PixelUnpackData::Slice(Some(&buffer[..full_rows * row_bytes])),
+                );
+            }
+            if remainder > 0 {
+                let mut tail = vec![0u8; row_bytes];
+                tail[..remainder * bytes_per_value].copy_from_slice(
+                    &buffer[full_rows * row_bytes..total_values * bytes_per_value],
+                );
+                gl.tex_sub_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    0,
+                    full_rows as i32,
+                    tex_width,
+                    1,
+                    glow::RED_INTEGER,
+                    data_type,
+                    glow::PixelUnpackData::Slice(Some(&tail)),
+                );
+            }
+
+            gl.bind_texture(glow::TEXTURE_2D, None);
         }
 
         // Upload sweep metadata uniforms
