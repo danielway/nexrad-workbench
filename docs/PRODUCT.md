@@ -397,8 +397,12 @@ default.
 
 ### 10.1 Two classes of acquisition
 
-- **Implicit prefetch** — bounded and fully automatic. Covers the current sweep
-  plus a small lookahead. It is **debounced (300 ms)** so transient positions
+- **Implicit prefetch** — bounded and fully automatic. While paused it covers
+  exactly the scan under the playhead (the render anchor); while playing it
+  keeps a speed-scaled lead of at least one volume ahead in the playback
+  direction so frame advances never wait on a cold fetch. There is no trailing
+  prefetch — backward jogs are served on-frame by the same at-or-before anchor
+  resolution. It is **debounced (300 ms)** so transient positions
   produced while scrubbing or zooming don't fire fetches; the view must settle
   first (the debounce collapses to zero during playback). Subject to a cap of
   **4 concurrent downloads** (below the browser's per-origin limit) and a

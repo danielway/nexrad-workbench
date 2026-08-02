@@ -55,11 +55,11 @@ const PREFETCH_LOOKAHEAD_SECS: f64 = 0.5;
 /// this long before a prefetch fires, so transient scrub/zoom positions don't
 /// trigger downloads. Collapses to zero during playback.
 const PREFETCH_DEBOUNCE_MS: f64 = 300.0;
-/// Timeline-seconds ahead of the cursor to prefetch when paused (≈ one VCP
-/// cycle of margin). Covers the current scan plus the next scan or two.
-const PREFETCH_LOOKAHEAD_SECS_PAUSED: f64 = 600.0;
 /// Real-time seconds of lead to keep buffered during playback; multiplied by
-/// the playback speed so fast playback fetches proportionally further ahead.
+/// the playback speed so fast playback fetches proportionally further ahead
+/// (floored at one scan — `FALLBACK_SCAN_DURATION_SECS` — so playback never
+/// waits on a cold fetch at a scan boundary). While paused there is no lead
+/// at all: only the scan under the playhead is fetched.
 const PREFETCH_PLAY_LEAD_SECS: f64 = 4.0;
 
 /// Fallback scan duration (in seconds) used when the true end timestamp of

@@ -20,10 +20,13 @@ impl WorkbenchApp {
             return;
         }
 
-        // 0. Serve the playhead: drop pending work the cursor has scrubbed
-        // far away from (cancelling its drawer operations), then order what
-        // remains nearest-first in the playback direction. Active downloads
-        // are never cancelled — they finish and free their slots naturally.
+        // 0. Serve the playhead: drop pending *reactive* work the cursor has
+        // scrubbed far away from (cancelling its drawer operations), then
+        // order what remains nearest-first in the playback direction.
+        // Selection/Explicit items are user-requested and never playhead-
+        // pruned (their lifecycles are owned by their own flows); active
+        // downloads are never cancelled — they finish and free their slots
+        // naturally.
         let playhead = self.playback.state.playback_position();
         let forward =
             self.playback.state.time_model.direction == crate::core::PlaybackDirection::Forward;
@@ -31,15 +34,18 @@ impl WorkbenchApp {
         let playing = self.playback.state.playing;
         let (win_start, win_end) =
             crate::core::acquisition::prefetch_window(playhead, speed, playing, forward);
-        // Keep a generous 3x margin around the prefetch window so small
-        // scrubs don't churn the queue.
-        let span = win_end - win_start;
-        let (keep_start, keep_end) = (win_start - span, win_end + span);
+        // Keep a fixed two-scan margin around the (possibly degenerate)
+        // window so small scrubs don't churn the queue.
+        let margin = 2 * crate::FALLBACK_SCAN_DURATION_SECS;
+        let (keep_start, keep_end) = (win_start - margin, win_end + margin);
         let pruned = self
             .acquisition
             .coordinator
             .download_queue
-            .prune_pending(|item| item.scan_end >= keep_start && item.scan_start <= keep_end);
+            .prune_pending(|item| {
+                item.origin != crate::nexrad::download_queue::QueueOrigin::Reactive
+                    || (item.scan_end >= keep_start && item.scan_start <= keep_end)
+            });
         for item in pruned {
             if let Some(op_id) = item.operation_id {
                 self.acquisition.state.cancel_operation(op_id);

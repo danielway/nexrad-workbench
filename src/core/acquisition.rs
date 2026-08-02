@@ -172,27 +172,29 @@ pub(crate) fn at_or_before_index(bounds: &[ScanBoundary], timestamp: i64) -> Opt
 // ───────────────────────────────────────────────────────────────────────────
 
 /// The `[start, end]` window (Unix seconds) of scans worth having queued for
-/// a playhead at `pos`. Ahead of the playback direction: the configured
-/// lookahead, scaled with speed while playing so fast playback buffers
-/// proportionally further. Behind: a fixed ~2-scan trail so a small backward
-/// jog doesn't hit a cold cache. `forward` flips the asymmetry.
+/// a playhead at `pos`.
+///
+/// Paused: degenerate — only the scan under the playhead is wanted (the
+/// `anchor_at_or_before` mechanism resolves it; backward jogs are served
+/// on-frame by the same at-or-before anchor). Playing: a lead in the playback
+/// direction of at least one scan, scaled with speed so fast playback buffers
+/// proportionally further — without it every scan boundary during playback
+/// would wait on a cold S3 fetch. No trailing prefetch in either state.
 pub(crate) fn prefetch_window(
     pos: f64,
     speed_secs_per_sec: f64,
     playing: bool,
     forward: bool,
 ) -> (i64, i64) {
-    let lead = if playing {
-        crate::PREFETCH_LOOKAHEAD_SECS_PAUSED
-            .max(speed_secs_per_sec * crate::PREFETCH_PLAY_LEAD_SECS)
-    } else {
-        crate::PREFETCH_LOOKAHEAD_SECS_PAUSED
-    };
-    let trail = 2.0 * crate::FALLBACK_SCAN_DURATION_SECS as f64;
+    if !playing {
+        return (pos as i64, pos as i64);
+    }
+    let lead = (crate::FALLBACK_SCAN_DURATION_SECS as f64)
+        .max(speed_secs_per_sec * crate::PREFETCH_PLAY_LEAD_SECS);
     if forward {
-        ((pos - trail) as i64, (pos + lead) as i64)
+        (pos as i64, (pos + lead) as i64)
     } else {
-        ((pos - lead) as i64, (pos + trail) as i64)
+        ((pos - lead) as i64, pos as i64)
     }
 }
 
@@ -1319,53 +1321,47 @@ mod reducer_tests {
     // ── prefetch_window (moved from nexrad::download_queue) ────────────────
 
     #[wasm_bindgen_test]
-    fn prefetch_window_shapes() {
-        let trail = 2.0 * crate::FALLBACK_SCAN_DURATION_SECS as f64;
-        // Paused forward: fixed lead, fixed trail.
-        let (s, e) = prefetch_window(10_000.0, 300.0, false, true);
-        assert_eq!(s, (10_000.0 - trail) as i64);
-        assert_eq!(e, (10_000.0 + crate::PREFETCH_LOOKAHEAD_SECS_PAUSED) as i64);
-        // Playing fast forward: lead scales with speed.
-        let (_, e_fast) = prefetch_window(10_000.0, 1200.0, true, true);
+    fn prefetch_window_paused_is_degenerate_anchor_only() {
+        // Paused: no lead, no trail — only the scan under the playhead is
+        // wanted (via anchor_at_or_before), regardless of speed/direction.
         assert_eq!(
-            e_fast,
+            prefetch_window(10_000.0, 300.0, false, true),
+            (10_000, 10_000)
+        );
+        assert_eq!(
+            prefetch_window(10_000.0, 1_000_000.0, false, false),
+            (10_000, 10_000)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn prefetch_window_playing_scales_lead_with_speed() {
+        // Playing fast forward: lead scales with speed, no trail behind.
+        let (s, e) = prefetch_window(10_000.0, 1200.0, true, true);
+        assert_eq!(s, 10_000);
+        assert_eq!(
+            e,
             (10_000.0 + 1200.0 * crate::PREFETCH_PLAY_LEAD_SECS) as i64
         );
-        // Backward play mirrors the asymmetry.
-        let (s_b, e_b) = prefetch_window(10_000.0, 300.0, false, false);
-        assert_eq!(
-            s_b,
-            (10_000.0 - crate::PREFETCH_LOOKAHEAD_SECS_PAUSED) as i64
-        );
-        assert_eq!(e_b, (10_000.0 + trail) as i64);
     }
 
     #[wasm_bindgen_test]
-    fn prefetch_window_paused_lead_independent_of_speed() {
-        let trail = 2.0 * crate::FALLBACK_SCAN_DURATION_SECS as f64;
-        // Huge speed but paused → lead is the fixed PAUSED constant, not scaled.
-        let (s, e) = prefetch_window(0.0, 1_000_000.0, false, true);
-        assert_eq!(s, (-trail) as i64);
-        assert_eq!(e, crate::PREFETCH_LOOKAHEAD_SECS_PAUSED as i64);
+    fn prefetch_window_playing_slow_floors_at_one_scan() {
+        // Playing but slow: speed*PLAY_LEAD (4 s) < one scan → floor at
+        // FALLBACK_SCAN_DURATION_SECS so playback never waits on a cold fetch.
+        let (s, e) = prefetch_window(0.0, 1.0, true, true);
+        assert_eq!(s, 0);
+        assert_eq!(e, crate::FALLBACK_SCAN_DURATION_SECS);
     }
 
     #[wasm_bindgen_test]
-    fn prefetch_window_playing_slow_floors_at_paused_lead() {
-        // Playing but slow: speed*PLAY_LEAD < PAUSED, so .max() picks PAUSED.
-        // speed 1.0 * PREFETCH_PLAY_LEAD_SECS(4.0) = 4.0 < 600.0.
-        let (_, e) = prefetch_window(0.0, 1.0, true, true);
-        assert_eq!(e, crate::PREFETCH_LOOKAHEAD_SECS_PAUSED as i64);
-    }
-
-    #[wasm_bindgen_test]
-    fn prefetch_window_playing_fast_backward_mirrors_lead() {
-        let trail = 2.0 * crate::FALLBACK_SCAN_DURATION_SECS as f64;
+    fn prefetch_window_playing_backward_mirrors_lead() {
         let speed = 1000.0;
-        let expected_lead = speed * crate::PREFETCH_PLAY_LEAD_SECS; // 4000 > 600
+        let expected_lead = speed * crate::PREFETCH_PLAY_LEAD_SECS; // 4000 > 300
         let (s, e) = prefetch_window(50_000.0, speed, true, false);
-        // Backward: lead extends behind, trail ahead.
+        // Backward: lead extends behind, nothing ahead.
         assert_eq!(s, (50_000.0 - expected_lead) as i64);
-        assert_eq!(e, (50_000.0 + trail) as i64);
+        assert_eq!(e, 50_000);
     }
 
     // ── prefetch_already_satisfied ──────────────────────────────────────────
@@ -1687,9 +1683,9 @@ mod reducer_tests {
             ReactivePrefetchPlan::Window(w) => w,
             other => panic!("expected Window, got {other:?}"),
         };
-        // Paused: lead 600 / trail 600 around pos 10_000; anchor at the cursor.
-        assert_eq!(plan.intersect_start, 9_400);
-        assert_eq!(plan.win_end, 10_600);
+        // Paused: degenerate window at the cursor; the anchor is the fetch.
+        assert_eq!(plan.intersect_start, 10_000);
+        assert_eq!(plan.win_end, 10_000);
         assert_eq!(plan.anchor_at_or_before, Some(10_000));
         assert_eq!(plan.elevation_filter, Some(1));
         assert_eq!(plan.skip_missing_after, None);
@@ -1759,8 +1755,9 @@ mod reducer_tests {
 
     #[wasm_bindgen_test]
     fn reactive_window_spans_midnight_for_the_prior_dates_listing() {
-        // Cursor 100 s after a UTC midnight: the trail reaches into the prior
-        // date, so both dates' listings are consulted.
+        // Cursor 100 s after a UTC midnight: the anchor scan may start on the
+        // prior date, so the date span reaches one scan back and both dates'
+        // listings are consulted even though the window itself is degenerate.
         let playback = playback_at((JAN1 + 100) as f64);
         let sel = ElevationSelection::Latest;
         let mut settle = PrefetchSettle::default();
@@ -1771,8 +1768,8 @@ mod reducer_tests {
             other => panic!("expected Window, got {other:?}"),
         };
         assert_eq!(plan.dates, vec![day(2020, 12, 31), day(2021, 1, 1)]);
-        assert_eq!(plan.intersect_start, JAN1 - 500);
-        assert_eq!(plan.win_end, JAN1 + 700);
+        assert_eq!(plan.intersect_start, JAN1 + 100);
+        assert_eq!(plan.win_end, JAN1 + 100);
         // Latest fetches the whole volume.
         assert_eq!(plan.elevation_filter, None);
     }

@@ -22,7 +22,7 @@ use crate::core::acquisition::{
     WindowIntentActions, WindowPlan,
 };
 use crate::nexrad::acquisition::archive_index::ArchiveListing;
-use crate::nexrad::download_queue::QueueItem;
+use crate::nexrad::download_queue::{QueueItem, QueueOrigin};
 use crate::{state, WorkbenchApp};
 use eframe::egui;
 
@@ -101,7 +101,7 @@ impl WorkbenchApp {
         // just enqueued): reduce the settled window to concrete actions,
         // then execute them.
         let actions = self.reduce_window_plan(&plan);
-        let listing_pending = self.execute_window_actions(ctx, actions);
+        let listing_pending = self.execute_window_actions(ctx, actions, QueueOrigin::Reactive);
 
         // Listings may still be in flight for adjacent dates; only mark the
         // view resolved once everything is enqueued and nothing is pending.
@@ -148,7 +148,7 @@ impl WorkbenchApp {
             acquisition_core::decide_anchor_fast_path(&env, &self.timeline.scans)
         };
         if let Some(intent) = intent {
-            self.enqueue_intents(vec![intent]);
+            self.enqueue_intents(vec![intent], QueueOrigin::Reactive);
         }
     }
 
@@ -198,12 +198,14 @@ impl WorkbenchApp {
 
     /// Execute a window reduction's described actions in field order: fetch
     /// the missing listings (they populate the index for a later frame), then
-    /// enqueue the wanted scans. Returns whether a needed listing is still
-    /// missing, so the caller can decide completion (resolve/disarm).
+    /// enqueue the wanted scans under `origin`. Returns whether a needed
+    /// listing is still missing, so the caller can decide completion
+    /// (resolve/disarm).
     fn execute_window_actions(
         &mut self,
         ctx: &egui::Context,
         actions: WindowIntentActions,
+        origin: QueueOrigin,
     ) -> bool {
         let site_id = self.state.viz_state.site_id.clone();
         for date in actions.fetch_listings {
@@ -213,7 +215,7 @@ impl WorkbenchApp {
                 date,
             );
         }
-        self.enqueue_intents(actions.enqueue);
+        self.enqueue_intents(actions.enqueue, origin);
         actions.listing_pending
     }
 
@@ -222,7 +224,7 @@ impl WorkbenchApp {
     /// rides on each queue item so priority dispatch and pruning stay
     /// correlated with the drawer. The next frame's pump_download_queue
     /// dispatches them.
-    fn enqueue_intents(&mut self, intents: Vec<ScanFetchIntent>) {
+    fn enqueue_intents(&mut self, intents: Vec<ScanFetchIntent>, origin: QueueOrigin) {
         if intents.is_empty() {
             return;
         }
@@ -246,6 +248,7 @@ impl WorkbenchApp {
                     i.elevation_filter,
                 )
                 .with_operation(op_id)
+                .with_origin(origin)
             })
             .collect();
         self.acquisition.coordinator.download_queue.enqueue(items);
@@ -410,7 +413,8 @@ impl WorkbenchApp {
                 // are fetched at once — the per-(site,date) backoff + channel
                 // pending-dedup (decided in the reducer) still prevent storms.
                 let actions = self.reduce_window_plan(&plan);
-                let listing_pending = self.execute_window_actions(ctx, actions);
+                let listing_pending =
+                    self.execute_window_actions(ctx, actions, QueueOrigin::Selection);
 
                 // Disarm: every fetchable date is present and enqueued
                 // (normal path).
@@ -463,6 +467,6 @@ impl WorkbenchApp {
             self.state.viz_state.elevation_selection.elevation_number(),
         );
         let actions = self.reduce_window_plan(&plan);
-        self.execute_window_actions(ctx, actions);
+        self.execute_window_actions(ctx, actions, QueueOrigin::Reactive);
     }
 }

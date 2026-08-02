@@ -20,6 +20,23 @@ pub(crate) enum QueueItemState {
     Done,
 }
 
+/// Why an item was enqueued. Playhead-relative pruning applies only to
+/// `Reactive` items — background prefetch the cursor has moved away from.
+/// `Selection` (range bulk fetch) and `Explicit` (retry / tap-to-fetch)
+/// items were asked for by the user and are never playhead-pruned; their
+/// lifecycles are owned by their own flows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QueueOrigin {
+    /// Implicit prefetch driven by the playhead (anchor fast path, debounced
+    /// window pump, lookback backfill).
+    Reactive,
+    /// A finalized timeline range selection's bulk fetch.
+    Selection,
+    /// A direct user action: failed-cell retry, queue-sheet retry, inspector
+    /// tap-to-fetch.
+    Explicit,
+}
+
 /// A single file in the download queue.
 #[derive(Clone, Debug)]
 pub(crate) struct QueueItem {
@@ -41,6 +58,10 @@ pub(crate) struct QueueItem {
     /// Dispatch priority — lower dispatches sooner. Recomputed against the
     /// playhead by [`DownloadQueueManager::reprioritize`] each pump.
     pub priority: i64,
+    /// Why this item exists — see [`QueueOrigin`]. Defaults to `Explicit`
+    /// (never pruned); the reactive/selection pumps tag theirs via
+    /// [`QueueItem::with_origin`].
+    pub origin: QueueOrigin,
 }
 
 impl QueueItem {
@@ -60,12 +81,19 @@ impl QueueItem {
             elevation_filter,
             operation_id: None,
             priority: 0,
+            origin: QueueOrigin::Explicit,
         }
     }
 
     /// Attach the acquisition operation that tracks this item.
     pub(crate) fn with_operation(mut self, id: crate::core::OperationId) -> Self {
         self.operation_id = Some(id);
+        self
+    }
+
+    /// Tag the item's enqueue origin (default is `Explicit`).
+    pub(crate) fn with_origin(mut self, origin: QueueOrigin) -> Self {
+        self.origin = origin;
         self
     }
 }
@@ -734,6 +762,41 @@ mod coverage_tests {
         assert_eq!(it.operation_id, Some(77));
         assert_eq!(it.scan_start, 500);
         assert!(matches!(it.state, QueueItemState::Pending));
+    }
+
+    // ── QueueOrigin: default + origin-aware pruning ─────────────────────────
+
+    #[wasm_bindgen_test]
+    fn origin_defaults_to_explicit_and_with_origin_tags() {
+        // Default Explicit: a caller that forgets to tag is never pruned —
+        // the safe direction for user-requested work.
+        assert_eq!(item(500, None).origin, QueueOrigin::Explicit);
+        let tagged = item(500, None).with_origin(QueueOrigin::Reactive);
+        assert_eq!(tagged.origin, QueueOrigin::Reactive);
+    }
+
+    #[wasm_bindgen_test]
+    fn prune_keeps_selection_and_explicit_outside_keep_band() {
+        // The shell's predicate shape: Reactive items outside the keep band
+        // are dropped; Selection/Explicit items survive anywhere.
+        let (keep_start, keep_end) = (1_000i64, 2_000i64);
+        let keep = |it: &QueueItem| {
+            it.origin != QueueOrigin::Reactive
+                || (it.scan_end >= keep_start && it.scan_start <= keep_end)
+        };
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([
+            item(9_000, None).with_origin(QueueOrigin::Reactive), // far → pruned
+            item(9_400, None).with_origin(QueueOrigin::Selection), // far → kept
+            item(9_800, None),                                    // Explicit default, far → kept
+            item(1_500, None).with_origin(QueueOrigin::Reactive), // in band → kept
+        ]);
+        let pruned = q.prune_pending(keep);
+        assert_eq!(pruned.len(), 1);
+        assert_eq!(pruned[0].scan_start, 9_000);
+        assert!(q.find_by_scan_start(9_400).is_some());
+        assert!(q.find_by_scan_start(9_800).is_some());
+        assert!(q.find_by_scan_start(1_500).is_some());
     }
 
     // ── has_work / active_count / clear ─────────────────────────────────────
