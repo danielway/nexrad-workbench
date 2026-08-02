@@ -233,12 +233,12 @@ pub(crate) fn reduce_advance_playback(
                         scan.sweeps.iter().map(|s| s.elevation_number).collect();
                     elev_nums.sort_unstable();
                     elev_nums.dedup();
-                    let elev_list = crate::core::playback_manager::build_elevation_list(scan);
-                    (scan_ts, elev_nums, elev_list)
+                    let roster = crate::core::playback_manager::build_elevation_roster(scan);
+                    (scan_ts, elev_nums, roster)
                 });
 
             match scrub_action {
-                Some((scan_ts, elev_nums, elev_list)) => {
+                Some((scan_ts, elev_nums, (elev_list, roster_source))) => {
                     if env.has_worker {
                         let scan_key = ScanKey::from_secs_f64(env.site_id, scan_ts);
                         let scan_changed = active_ts != Some(scan_ts);
@@ -262,7 +262,19 @@ pub(crate) fn reduce_advance_playback(
                             } else {
                                 ActiveScanSync::AdvanceChunkEmpty { scan_key, scan_ts }
                             });
-                            elevation_selection.resolve_for_vcp(&elev_list);
+                            // Re-resolve the user's elevation selection only
+                            // against a trusted (complete-VCP) roster — a
+                            // partial cached-sweeps roster must never rewrite
+                            // durable intent (it would snap e.g. elevation 7
+                            // to 0.5° while a scan is still ingesting).
+                            if let Some((elevation_number, angle)) = elevation_selection
+                                .resolved_against_roster(&elev_list, roster_source)
+                            {
+                                *elevation_selection = ElevationSelection::Fixed {
+                                    elevation_number,
+                                    angle,
+                                };
+                            }
                             actions.force_fresh_render = true;
                         }
                         actions.request_render = true;
@@ -737,7 +749,7 @@ mod tests {
             )],
         };
         let mut fx = Fx::at(2005.0, TimelineTier::Micro);
-        fx.selection = ElevationSelection::Latest; // resolve_for_vcp no-op
+        fx.selection = ElevationSelection::Latest; // roster resolution no-op
 
         let a = fx.run(base_env(), &tl);
 
@@ -796,6 +808,32 @@ mod tests {
         // Cache holds the selection as it was when the walk started.
         // (ElevationSelection has no Debug derive — compare via PartialEq.)
         assert!(fx.scrub.last_elevation_selection == Some(stale));
+    }
+
+    // (8b) A scan with no VCP metadata yields a cached-sweeps-only roster,
+    // which must never rewrite the user's fixed selection — the QA regression
+    // where elevation 7 snapped to 0.5° on every scan boundary mid-ingest.
+    #[wasm_bindgen_test]
+    fn scrub_scan_change_keeps_selection_on_untrusted_roster() {
+        // Only the 0.5° cut is cached and there's no vcp_pattern / known VCP
+        // (vcp = 0 mirrors `RadarTimeline::from_metadata` when extraction
+        // hasn't landed) → the roster degenerates to cached sweeps only.
+        let mut s = scan(2000.0, vec![sweep(1, 2000.0, 2010.0, vec!["reflectivity"])]);
+        s.vcp = 0;
+        let tl = RadarTimeline { scans: vec![s] };
+        let mut fx = Fx::at(2005.0, TimelineTier::Micro);
+        fx.selection = ElevationSelection::Fixed {
+            elevation_number: 7,
+            angle: 6.4,
+        };
+
+        let a = fx.run(base_env(), &tl);
+
+        // The scan sync itself still happens…
+        assert!(a.force_fresh_render);
+        // …but the selection survives untouched.
+        assert_eq!(fx.selection.elevation_number(), Some(7));
+        assert!((fx.selection.angle() - 6.4).abs() < 1e-6);
     }
 
     // (9) Same scan already active: no sync, no fresh render — just the

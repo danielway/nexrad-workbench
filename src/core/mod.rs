@@ -80,7 +80,7 @@ pub(crate) use domain::time::FrameNow;
 pub(crate) use domain::view::ViewState;
 pub(crate) use domain::viz::{
     build_elevation_list_from_vcp, DisplayedSweep, ElevationListEntry, ElevationSelection,
-    InterpolationMode, RadarProduct, RenderProcessing, StormCellInfo, SweepIdentity,
+    InterpolationMode, RadarProduct, RenderProcessing, RosterSource, StormCellInfo, SweepIdentity,
 };
 pub(crate) use domain::volume::VolumeElevationRoster;
 pub(crate) use domain::worker::{

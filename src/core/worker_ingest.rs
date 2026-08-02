@@ -17,7 +17,7 @@
 use crate::core::projection::{Projection, ProjectionEngine};
 use crate::core::{
     build_elevation_list_from_vcp, ChunkIngestResult, ElevationSelection, Intent, LiveModeState,
-    PlaybackState,
+    PlaybackState, RosterSource,
 };
 
 /// Read-only frame context for one chunk-ingest outcome, shell-assembled.
@@ -236,22 +236,21 @@ pub(crate) fn reduce_chunk_ingested(
                 .record_elevations(&result.elevations_completed);
         }
         if let Some(ref vcp) = result.vcp {
-            // Snap the user's selected elevation angle to the closest
-            // entry in the new VCP when the pattern changes. Both
-            // panels read the elevation list lazily via
-            // AppState::current_elevation_list(), so no cache to
-            // refresh — this resolve is the only thing that needs
-            // to fire on a VCP transition.
-            let prev_count = engine
-                .observations()
-                .current_vcp_pattern
-                .as_ref()
-                .map(|p| p.elevations.len())
-                .unwrap_or(0);
             engine.observations_mut().record_vcp(vcp);
-            if prev_count != vcp.elevations.len() {
-                let entries = build_elevation_list_from_vcp(vcp);
-                elevation_selection.resolve_for_vcp(&entries);
+            // Re-resolve the user's selected elevation against the new VCP.
+            // The incoming pattern is a complete roster, and the resolver
+            // only rewrites when the selected cut genuinely has no home in
+            // it (a real VCP transition) — so this is safe to run on every
+            // volume's Start chunk, even though `reset_volume_observations`
+            // wipes the previous pattern between volumes.
+            let entries = build_elevation_list_from_vcp(vcp);
+            if let Some((elevation_number, angle)) =
+                elevation_selection.resolved_against_roster(&entries, RosterSource::FullVcp)
+            {
+                *elevation_selection = ElevationSelection::Fixed {
+                    elevation_number,
+                    angle,
+                };
             }
         }
 
@@ -722,10 +721,12 @@ mod tests {
         );
     }
 
-    // (6) VCP arrival with a changed elevation count resolves the fixed
-    // elevation selection against the new list; unchanged count skips it.
+    // (6) A VCP arrival remaps a fixed selection whose cut has no home in the
+    // new pattern — and is idempotent, so the per-volume Start-chunk arrivals
+    // (after `reset_volume_observations` wiped the previous pattern) never
+    // churn a selection that's already valid.
     #[wasm_bindgen_test]
-    fn vcp_change_resolves_elevation_selection_only_on_count_change() {
+    fn vcp_arrival_remaps_homeless_selection_and_is_idempotent() {
         let mut fx = Fx::new();
         fx.sel = ElevationSelection::Fixed {
             elevation_number: 9,
@@ -740,16 +741,21 @@ mod tests {
         assert_eq!(fx.sel.elevation_number(), Some(2));
         assert!((fx.sel.angle() - 1.5).abs() < 1e-6);
 
-        // Same VCP again (count unchanged) → no re-resolve.
+        // Same VCP on the next volume's Start chunk → the now-valid selection
+        // is untouched (no per-volume flicker).
+        let _ = fx.run(env(true, false, &[]), &r);
+        assert_eq!(fx.sel.elevation_number(), Some(2));
+
+        // A selection that already lives in the pattern is never rewritten.
         fx.sel = ElevationSelection::Fixed {
-            elevation_number: 7,
-            angle: 0.4,
+            elevation_number: 3,
+            angle: 3.0,
         };
         let _ = fx.run(env(true, false, &[]), &r);
         assert_eq!(
             fx.sel.elevation_number(),
-            Some(7),
-            "unchanged elevation count must not re-resolve"
+            Some(3),
+            "valid selection must survive repeated VCP arrivals"
         );
     }
 

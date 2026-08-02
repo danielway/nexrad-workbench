@@ -430,13 +430,29 @@ pub(crate) fn resolve_desired_display(
     }
 }
 
-/// Build the elevation list from a scan's VCP data (extracted, static, or sweep-based).
+/// Build the elevation list from a scan's VCP data (extracted, static, or
+/// sweep-based). UI wrapper over [`build_elevation_roster`] for callers that
+/// don't care how trustworthy the roster is.
+pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::core::ElevationListEntry> {
+    build_elevation_roster(scan).0
+}
+
+/// Build the elevation roster from a scan, tagged with how trustworthy it is
+/// (see [`crate::core::RosterSource`]): the extracted VCP pattern and the
+/// static VCP table both enumerate the complete pattern; the sweep-metadata
+/// fallback reflects only what happens to be cached and must never be used
+/// to rewrite the user's elevation selection.
 ///
 /// The displayed `angle` is the VCP target (commanded) angle — the cut's
 /// identity (e.g. "0.5°") — not the encoder's measured average, which
 /// wobbles a few hundredths of a degree per sweep. We only fall back to
 /// the measured value when no VCP info is available at all.
-pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::core::ElevationListEntry> {
+pub(crate) fn build_elevation_roster(
+    scan: &Scan,
+) -> (
+    Vec<crate::core::ElevationListEntry>,
+    crate::core::RosterSource,
+) {
     let products_for = |elev_num: u8| -> Vec<String> {
         scan.sweeps
             .iter()
@@ -448,7 +464,7 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::core::ElevationLis
     // 1. Prefer extracted VCP pattern (has waveform, SAILS, MRLE info)
     if let Some(ref pattern) = scan.vcp_pattern {
         if !pattern.elevations.is_empty() {
-            return pattern
+            let entries = pattern
                 .elevations
                 .iter()
                 .enumerate()
@@ -464,12 +480,13 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::core::ElevationLis
                     }
                 })
                 .collect();
+            return (entries, crate::core::RosterSource::FullVcp);
         }
     }
 
     // 2. Fall back to static VCP definition
     if let Some(def) = crate::data::vcp::get_vcp_definition(scan.vcp) {
-        return def
+        let entries = def
             .elevations
             .iter()
             .enumerate()
@@ -485,10 +502,12 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::core::ElevationLis
                 }
             })
             .collect();
+        return (entries, crate::core::RosterSource::StaticVcp);
     }
 
     // 3. Fall back to sweep metadata (no VCP available)
-    scan.sweeps
+    let entries = scan
+        .sweeps
         .iter()
         .map(|s| crate::core::ElevationListEntry {
             elevation_number: s.elevation_number,
@@ -498,7 +517,8 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::core::ElevationLis
             is_mrle: false,
             cached_products: s.cached_products.clone(),
         })
-        .collect()
+        .collect();
+    (entries, crate::core::RosterSource::SweepsOnly)
 }
 
 #[cfg(test)]

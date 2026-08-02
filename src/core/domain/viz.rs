@@ -198,24 +198,83 @@ impl ElevationSelection {
         }
     }
 
-    /// On VCP change, find the closest angle match and update elevation_number.
-    pub(crate) fn resolve_for_vcp(&mut self, entries: &[ElevationListEntry]) {
-        if let ElevationSelection::Fixed {
+    /// Re-resolve this selection against a scan's elevation roster, returning
+    /// `Some((elevation_number, angle))` when the selection should be
+    /// rewritten and `None` to keep it as-is.
+    ///
+    /// The selection is durable user intent: it may only be rewritten from a
+    /// roster that enumerates the *complete* VCP (`FullVcp`/`StaticVcp`), and
+    /// only when the selected cut genuinely has no home there (a real VCP
+    /// change). A `SweepsOnly` roster — whatever happens to be cached, often
+    /// just 0.5° mid-ingest — never rewrites; the render path handles a
+    /// temporarily missing cut by blanking with a caption instead.
+    ///
+    /// Resolution rules for a trusted roster:
+    /// 1. An entry with the same elevation number within
+    ///    [`ELEVATION_ANGLE_MATCH_TOLERANCE_DEG`] of the selected angle →
+    ///    keep (the cut still exists, including SAILS/MRLE revisits).
+    /// 2. Else the closest entry within tolerance → remap to it (the VCP
+    ///    renumbered the same physical cut).
+    /// 3. Else the nearest angle overall → remap (the cut vanished).
+    pub(crate) fn resolved_against_roster(
+        &self,
+        entries: &[ElevationListEntry],
+        source: RosterSource,
+    ) -> Option<(u8, f32)> {
+        let ElevationSelection::Fixed {
             angle,
             elevation_number,
         } = self
-        {
-            if let Some(best) = entries.iter().min_by(|a, b| {
-                (a.angle - *angle)
-                    .abs()
-                    .partial_cmp(&(b.angle - *angle).abs())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            }) {
-                *elevation_number = best.elevation_number;
-                *angle = best.angle;
-            }
+        else {
+            return None;
+        };
+        if source == RosterSource::SweepsOnly || entries.is_empty() {
+            return None;
         }
+
+        let within_tolerance = |e: &&ElevationListEntry| {
+            (e.angle - *angle).abs() <= ELEVATION_ANGLE_MATCH_TOLERANCE_DEG
+        };
+        if entries
+            .iter()
+            .filter(within_tolerance)
+            .any(|e| e.elevation_number == *elevation_number)
+        {
+            return None;
+        }
+
+        let closest = |a: &&ElevationListEntry, b: &&ElevationListEntry| {
+            (a.angle - *angle)
+                .abs()
+                .partial_cmp(&(b.angle - *angle).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        };
+        let best = entries
+            .iter()
+            .filter(within_tolerance)
+            .min_by(closest)
+            .or_else(|| entries.iter().min_by(closest))?;
+        Some((best.elevation_number, best.angle))
     }
+}
+
+/// Max angular distance (degrees) at which a roster entry still counts as
+/// "the same cut" as the user's selected angle. Adjacent low cuts sit ≥0.4°
+/// apart, so 0.2° cannot jump to a neighbor.
+pub(crate) const ELEVATION_ANGLE_MATCH_TOLERANCE_DEG: f32 = 0.2;
+
+/// How trustworthy an elevation roster is for re-resolving the user's
+/// selection. Only rosters that enumerate the complete VCP are trusted;
+/// a sweeps-derived roster reflects what happens to be cached, not what
+/// the radar collects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RosterSource {
+    /// Built from the scan's extracted VCP pattern — complete.
+    FullVcp,
+    /// Built from a static VCP definition table — complete.
+    StaticVcp,
+    /// Built from cached sweep metadata only — partial, untrusted.
+    SweepsOnly,
 }
 
 /// One row in the elevation list UI.
@@ -485,33 +544,81 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn resolve_for_vcp_picks_closest_angle() {
-        let mut sel = ElevationSelection::Fixed {
+    fn resolve_roster_vanished_cut_picks_closest_angle() {
+        let sel = ElevationSelection::Fixed {
             elevation_number: 9,
             angle: 1.4,
         };
-        // Entries with angles 0.5, 1.5, 3.0 — closest to 1.4 is 1.5 (entry #2).
+        // No entry within 0.2° of 1.4 with number 9; closest overall is 1.5.
         let entries = [elev(1, 0.5), elev(2, 1.5), elev(3, 3.0)];
-        sel.resolve_for_vcp(&entries);
-        assert_eq!(sel.elevation_number(), Some(2));
-        assert!((sel.angle() - 1.5).abs() < 1e-6);
+        assert_eq!(
+            sel.resolved_against_roster(&entries, RosterSource::FullVcp),
+            Some((2, 1.5))
+        );
     }
 
     #[wasm_bindgen_test]
-    fn resolve_for_vcp_noop_on_latest_and_empty() {
+    fn resolve_roster_noop_on_latest_and_empty() {
         // Latest is untouched.
-        let mut latest = ElevationSelection::Latest;
-        latest.resolve_for_vcp(&[elev(1, 0.5)]);
-        assert!(latest.is_auto());
+        let latest = ElevationSelection::Latest;
+        assert_eq!(
+            latest.resolved_against_roster(&[elev(1, 0.5)], RosterSource::FullVcp),
+            None
+        );
 
         // Empty entry list leaves a Fixed selection unchanged.
-        let mut fixed = ElevationSelection::Fixed {
+        let fixed = ElevationSelection::Fixed {
             elevation_number: 7,
             angle: 4.2,
         };
-        fixed.resolve_for_vcp(&[]);
-        assert_eq!(fixed.elevation_number(), Some(7));
-        assert!((fixed.angle() - 4.2).abs() < 1e-6);
+        assert_eq!(
+            fixed.resolved_against_roster(&[], RosterSource::FullVcp),
+            None
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_roster_sweeps_only_never_rewrites() {
+        // The QA bug scenario: user on elevation 7 (6.4°), scan mid-ingest has
+        // only the 0.5° cut cached and no VCP → selection must survive.
+        let sel = ElevationSelection::Fixed {
+            elevation_number: 7,
+            angle: 6.4,
+        };
+        assert_eq!(
+            sel.resolved_against_roster(&[elev(1, 0.5)], RosterSource::SweepsOnly),
+            None
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_roster_same_cut_present_is_noop() {
+        // The selected number exists at (about) the selected angle → keep,
+        // even when another entry shares the angle (SAILS revisit).
+        let sel = ElevationSelection::Fixed {
+            elevation_number: 5,
+            angle: 0.5,
+        };
+        let entries = [elev(1, 0.5), elev(3, 1.5), elev(5, 0.5), elev(6, 2.4)];
+        assert_eq!(
+            sel.resolved_against_roster(&entries, RosterSource::FullVcp),
+            None
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_roster_renumbered_cut_remaps_within_tolerance() {
+        // The physical 1.5° cut still exists but under a different number →
+        // remap to it rather than to the nearest angle overall.
+        let sel = ElevationSelection::Fixed {
+            elevation_number: 2,
+            angle: 1.5,
+        };
+        let entries = [elev(1, 0.5), elev(3, 1.45), elev(4, 3.0)];
+        assert_eq!(
+            sel.resolved_against_roster(&entries, RosterSource::StaticVcp),
+            Some((3, 1.45))
+        );
     }
 
     // ---- InterpolationMode / RenderProcessing / defaults ------------------
