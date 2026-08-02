@@ -268,7 +268,8 @@ mod coverage_tests {
             vm: Some(1),
             cm: Some(2),
             cd: Some(3.25),
-            fp: Some([1.0, 2.0, 3.0]),
+            ct: Some(35.0),
+            cr: Some(-120.0),
             v3d: Some(true),
             rt: Some(true),
             ..Default::default()

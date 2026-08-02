@@ -13,7 +13,7 @@ mod renderer;
 
 #[allow(unused_imports)] // GlobeProjection is the 3D Projection adapter.
 pub(crate) use camera::GlobeProjection;
-pub(crate) use camera::{Camera, Flat2DState, UrlCameraSnapshot, ViewMode};
+pub(crate) use camera::{Camera, Flat2DState, UrlOrbitFields, ViewMode};
 pub(crate) use geo_line_renderer::GeoLineRenderer;
 pub(crate) use globe_renderer::GlobeRenderer;
 pub(crate) use layer::{GeoFeature, GeoLayer, GeoLayerSet, GeoLayerType, GeoLayerVisibility};

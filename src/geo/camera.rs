@@ -675,6 +675,72 @@ impl Camera {
             heading: wrap_deg(snap.rotation),
         });
     }
+
+    /// Restore the 3D camera from raw URL view fields, mapping legacy
+    /// per-mode links (`cm` = 0 PlanetOrbit / 1 SiteOrbit / 2 FreeLook)
+    /// onto the unified orbit camera. New-format links carry no `cm` and
+    /// restore directly. Absent fields fall back to the default view over
+    /// the already-centered site.
+    pub fn restore_from_url_fields(&mut self, f: &UrlOrbitFields) {
+        let site_lat = self.common().site_lat;
+        let site_lon = self.common().site_lon;
+        let distance = f.cd.unwrap_or(1.0 + DEFAULT_SITE_SURFACE_DIST);
+        let snap = match f.cm {
+            // Legacy FreeLook: no meaningful orbit equivalent — restore the
+            // default view over the site (documented degradation).
+            Some(2) => UrlCameraSnapshot {
+                distance: 1.0 + DEFAULT_SITE_SURFACE_DIST,
+                center_lat: site_lat,
+                center_lon: site_lon,
+                tilt: 0.0,
+                rotation: 0.0,
+            },
+            // Legacy SiteOrbit: the camera sat at bearing `ob` looking
+            // toward the site, so the view heading is ob − 180; elevation
+            // `oe` (90 = overhead) becomes tilt off vertical.
+            Some(1) => UrlCameraSnapshot {
+                distance,
+                center_lat: f.clat.unwrap_or(site_lat),
+                center_lon: f.clon.unwrap_or(site_lon),
+                tilt: 90.0 - f.oe.unwrap_or(45.0),
+                rotation: wrap_deg(f.ob.unwrap_or(180.0) - 180.0),
+            },
+            // Legacy PlanetOrbit (cm = 0) and new-format links (no cm):
+            // pivot/heading map directly; legacy planet tilt was a
+            // view-space pitch, so magnitude is the closest analogue.
+            _ => UrlCameraSnapshot {
+                distance,
+                center_lat: f.clat.unwrap_or(site_lat),
+                center_lon: f.clon.unwrap_or(site_lon),
+                tilt: f.ct.unwrap_or(0.0).abs(),
+                rotation: f.cr.unwrap_or(0.0),
+            },
+        };
+        self.restore_from_url(&snap);
+    }
+}
+
+/// Raw camera fields parsed from a URL `v` blob, including the legacy
+/// per-mode fields written by pre-overhaul builds. The mapping onto the
+/// unified camera lives in [`Camera::restore_from_url_fields`].
+#[derive(Clone, Copy, Default)]
+pub struct UrlOrbitFields {
+    /// Legacy camera mode: 0 = PlanetOrbit, 1 = SiteOrbit, 2 = FreeLook.
+    pub cm: Option<u8>,
+    /// Distance from the globe center (Earth radii).
+    pub cd: Option<f32>,
+    /// Pivot latitude (degrees).
+    pub clat: Option<f32>,
+    /// Pivot longitude (degrees).
+    pub clon: Option<f32>,
+    /// Tilt (degrees).
+    pub ct: Option<f32>,
+    /// Heading / rotation (degrees).
+    pub cr: Option<f32>,
+    /// Legacy site-orbit bearing (degrees).
+    pub ob: Option<f32>,
+    /// Legacy site-orbit elevation above horizon (degrees).
+    pub oe: Option<f32>,
 }
 
 /// 3D adapter implementing [`crate::geo::projection::Projection`].
@@ -1143,6 +1209,107 @@ mod tests {
         assert!((-180.0..=180.0).contains(&s.pivot_lon));
         assert_eq!(s.tilt, 0.0);
         assert!((-180.0..=180.0).contains(&s.heading));
+    }
+
+    #[wasm_bindgen_test]
+    fn legacy_planet_orbit_url_maps_directly() {
+        let mut c = Camera::centered_on(39.0, -98.0);
+        c.restore_from_url_fields(&UrlOrbitFields {
+            cm: Some(0),
+            cd: Some(1.5),
+            clat: Some(30.0),
+            clon: Some(-85.0),
+            ct: Some(-30.0), // legacy view-space pitch: magnitude maps
+            cr: Some(45.0),
+            ..Default::default()
+        });
+        let s = orbit(&c);
+        assert!((s.pivot_lat - 30.0).abs() < 1e-5);
+        assert!((s.pivot_lon - -85.0).abs() < 1e-5);
+        assert!((s.distance - 0.5).abs() < 1e-6);
+        assert!((s.tilt - 30.0).abs() < 1e-5);
+        assert!((s.heading - 45.0).abs() < 1e-5);
+    }
+
+    #[wasm_bindgen_test]
+    fn legacy_site_orbit_url_maps_bearing_and_elevation() {
+        // Camera at bearing 180 looking north at elevation 45 → heading 0,
+        // tilt 45.
+        let mut c = Camera::centered_on(39.0, -98.0);
+        c.restore_from_url_fields(&UrlOrbitFields {
+            cm: Some(1),
+            cd: Some(1.2),
+            ob: Some(180.0),
+            oe: Some(45.0),
+            ..Default::default()
+        });
+        {
+            let s = orbit(&c);
+            // Pivot falls back to the site when clat/clon are absent.
+            assert!((s.pivot_lat - 39.0).abs() < 1e-4);
+            assert!((s.distance - 0.2).abs() < 1e-6);
+            assert!((s.heading - 0.0).abs() < 1e-5);
+            assert!((s.tilt - 45.0).abs() < 1e-5);
+        }
+        // Camera at bearing 0 (due north of the site) → view faces south.
+        let mut c2 = Camera::centered_on(39.0, -98.0);
+        c2.restore_from_url_fields(&UrlOrbitFields {
+            cm: Some(1),
+            ob: Some(0.0),
+            oe: Some(90.0),
+            ..Default::default()
+        });
+        let s2 = orbit(&c2);
+        assert!(s2.heading.abs() > 179.0);
+        assert_eq!(s2.tilt, 0.0);
+        // Past-horizon legacy elevation clamps into the tilt range.
+        let mut c3 = Camera::centered_on(39.0, -98.0);
+        c3.restore_from_url_fields(&UrlOrbitFields {
+            cm: Some(1),
+            oe: Some(2.0),
+            ..Default::default()
+        });
+        assert_eq!(orbit(&c3).tilt, MAX_TILT_DEG);
+    }
+
+    #[wasm_bindgen_test]
+    fn legacy_free_look_url_degrades_to_default_site_view() {
+        let mut c = Camera::centered_on(39.0, -98.0);
+        c.restore_from_url_fields(&UrlOrbitFields {
+            cm: Some(2),
+            cd: Some(5.0),
+            clat: Some(10.0),
+            ..Default::default()
+        });
+        let s = orbit(&c);
+        assert!((s.pivot_lat - 39.0).abs() < 1e-4);
+        assert!((s.distance - 0.10).abs() < 1e-6);
+        assert_eq!(s.tilt, 0.0);
+        assert_eq!(s.heading, 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn new_format_url_fields_restore_without_cm() {
+        let mut c = Camera::centered_on(39.0, -98.0);
+        c.restore_from_url_fields(&UrlOrbitFields {
+            cd: Some(1.3),
+            clat: Some(41.0),
+            clon: Some(-93.0),
+            ct: Some(20.0),
+            cr: Some(-60.0),
+            ..Default::default()
+        });
+        let s = orbit(&c);
+        assert!((s.pivot_lat - 41.0).abs() < 1e-5);
+        assert!((s.distance - 0.3).abs() < 1e-6);
+        assert!((s.tilt - 20.0).abs() < 1e-5);
+        assert!((s.heading - -60.0).abs() < 1e-5);
+        // Entirely empty fields → default view over the site.
+        let mut c2 = Camera::centered_on(39.0, -98.0);
+        c2.restore_from_url_fields(&UrlOrbitFields::default());
+        let s2 = orbit(&c2);
+        assert!((s2.pivot_lat - 39.0).abs() < 1e-4);
+        assert!((s2.distance - 0.10).abs() < 1e-6);
     }
 
     #[wasm_bindgen_test]

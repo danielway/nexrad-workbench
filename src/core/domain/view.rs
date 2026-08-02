@@ -21,42 +21,34 @@ pub(crate) struct ViewState {
     /// View mode: 0 = Flat2D, 1 = Globe3D.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vm: Option<u8>,
-    /// Camera mode: 0 = PlanetOrbit, 1 = SiteOrbit, 2 = FreeLook.
+    /// LEGACY, parse-only: camera mode of pre-overhaul links
+    /// (0 = PlanetOrbit, 1 = SiteOrbit, 2 = FreeLook). Never written; the
+    /// unified camera maps it in `Camera::restore_from_url_fields`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cm: Option<u8>,
     /// Camera distance from globe center (Earth radii).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cd: Option<f32>,
-    /// Camera center latitude (degrees) — planet orbit pivot.
+    /// Camera pivot latitude (degrees).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clat: Option<f32>,
-    /// Camera center longitude (degrees) — planet orbit pivot.
+    /// Camera pivot longitude (degrees).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clon: Option<f32>,
-    /// Camera tilt/pitch (degrees).
+    /// Camera tilt off vertical (degrees).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ct: Option<f32>,
-    /// Camera rotation/yaw offset (degrees).
+    /// Camera heading (degrees, 0 = north up).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cr: Option<f32>,
-    /// Site orbit bearing (degrees).
+    /// LEGACY, parse-only: site-orbit bearing (degrees). Never written.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ob: Option<f32>,
-    /// Site orbit elevation (degrees).
+    /// LEGACY, parse-only: site-orbit elevation (degrees). Never written.
+    /// (The free-look fields `fp`/`fy`/`fpt`/`fs` were dropped entirely —
+    /// serde ignores unknown keys, so old blobs still parse.)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oe: Option<f32>,
-    /// Free look position [x, y, z].
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fp: Option<[f32; 3]>,
-    /// Free look yaw (degrees).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fy: Option<f32>,
-    /// Free look pitch (degrees).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fpt: Option<f32>,
-    /// Free look speed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fs: Option<f32>,
     /// Volume 3D rendering enabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub v3d: Option<bool>,

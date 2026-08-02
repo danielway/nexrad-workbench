@@ -308,25 +308,21 @@ fn apply_url_params(
     let v = &url_params.view;
     let wants_3d = v.vm.is_some_and(|vm| vm != 0);
     if wants_3d {
-        // Build the snapshot from the saved fields, falling back to the
-        // defaults for any field the saved link omitted.
-        let mut snap = crate::geo::UrlCameraSnapshot::default();
-        if let Some(cd) = v.cd {
-            snap.distance = cd;
-        }
-        if let Some(clat) = v.clat {
-            snap.center_lat = clat;
-        }
-        if let Some(clon) = v.clon {
-            snap.center_lon = clon;
-        }
-        if let Some(ct) = v.ct {
-            snap.tilt = ct;
-        }
-        if let Some(cr) = v.cr {
-            snap.rotation = cr;
-        }
-        state.viz_state.camera.restore_from_url(&snap);
+        // The pure legacy mapping in `restore_from_url_fields` handles both
+        // new-format links and pre-overhaul per-mode (`cm`) links.
+        state
+            .viz_state
+            .camera
+            .restore_from_url_fields(&crate::geo::UrlOrbitFields {
+                cm: v.cm,
+                cd: v.cd,
+                clat: v.clat,
+                clon: v.clon,
+                ct: v.ct,
+                cr: v.cr,
+                ob: v.ob,
+                oe: v.oe,
+            });
     }
     if let Some(v3d) = v.v3d {
         state.viz_state.volume_3d_enabled = v3d;
