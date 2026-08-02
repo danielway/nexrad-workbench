@@ -303,23 +303,13 @@ fn apply_url_params(
 
     // Restore 3D view mode and camera parameters from URL. The camera is the
     // single source of truth for the view mode, so a globe link reconstructs
-    // the appropriate 3D variant from the saved snapshot; a 2D link leaves the
-    // camera in its (already-centered) Flat2D state but still records the saved
-    // 3D mode so a later 2D → 3D toggle re-enters it.
+    // the orbit camera from the saved snapshot; a 2D link leaves the camera
+    // in its (already-centered) Flat2D state.
     let v = &url_params.view;
-    let restored_mode = v.cm.map(|cm| match cm {
-        1 => geo::CameraMode::SiteOrbit,
-        2 => geo::CameraMode::FreeLook,
-        _ => geo::CameraMode::PlanetOrbit,
-    });
-    if let Some(mode) = restored_mode {
-        state.viz_state.last_3d_mode = mode;
-    }
     let wants_3d = v.vm.is_some_and(|vm| vm != 0);
     if wants_3d {
-        let mode = restored_mode.unwrap_or_default();
         // Build the snapshot from the saved fields, falling back to the
-        // historical defaults for any field the saved link omitted.
+        // defaults for any field the saved link omitted.
         let mut snap = crate::geo::UrlCameraSnapshot::default();
         if let Some(cd) = v.cd {
             snap.distance = cd;
@@ -336,25 +326,7 @@ fn apply_url_params(
         if let Some(cr) = v.cr {
             snap.rotation = cr;
         }
-        if let Some(ob) = v.ob {
-            snap.orbit_bearing = ob;
-        }
-        if let Some(oe) = v.oe {
-            snap.orbit_elevation = oe;
-        }
-        if let Some(fp) = v.fp {
-            snap.free_pos = fp;
-        }
-        if let Some(fy) = v.fy {
-            snap.free_yaw = fy;
-        }
-        if let Some(fpt) = v.fpt {
-            snap.free_pitch = fpt;
-        }
-        if let Some(fs) = v.fs {
-            snap.free_speed = fs;
-        }
-        state.viz_state.camera.restore_from_url(mode, &snap);
+        state.viz_state.camera.restore_from_url(&snap);
     }
     if let Some(v3d) = v.v3d {
         state.viz_state.volume_3d_enabled = v3d;

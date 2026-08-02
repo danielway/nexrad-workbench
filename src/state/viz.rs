@@ -24,13 +24,6 @@ pub(crate) struct VizState {
     /// Stored Fixed selection to restore when toggling off auto mode.
     pub last_fixed_selection: Option<(u8, f32)>,
 
-    /// The 3D camera mode to return to when toggling 2D → 3D (the `T`
-    /// shortcut and the Basic 3D pill). Preserves the historical "toggle
-    /// last 2D/3D mode" behavior now that [`ViewMode`] is derived from the
-    /// camera variant rather than stored independently. Updated whenever a
-    /// 3D mode becomes active.
-    pub last_3d_mode: crate::geo::CameraMode,
-
     /// Overlay info: radar site ID
     pub site_id: String,
 
@@ -124,7 +117,6 @@ impl Default for VizState {
             product: RadarProduct::default(),
             elevation_selection: ElevationSelection::default(),
             last_fixed_selection: None,
-            last_3d_mode: crate::geo::CameraMode::default(),
             site_id: "KDMX".to_string(),
             elevation: "-- deg".to_string(),
             center_lat: 41.7312,
@@ -194,11 +186,10 @@ impl VizState {
         self.camera.flat_2d_mut().map(|s| &mut s.pan_offset)
     }
 
-    /// Switch the camera into the given 3D mode and remember it as the
-    /// mode to return to when toggling 2D → 3D.
-    pub(crate) fn switch_camera_mode(&mut self, mode: crate::geo::CameraMode) {
-        self.last_3d_mode = mode;
-        self.camera.switch_to_3d(mode);
+    /// Switch the camera to the 3D globe view, restoring the last 3D
+    /// camera pose (carried on the Flat2D variant across 2D excursions).
+    pub(crate) fn switch_to_3d_view(&mut self) {
+        self.camera.switch_to_globe();
     }
 
     /// Switch the camera to the flat 2D view (default pan/zoom).
@@ -206,12 +197,11 @@ impl VizState {
         self.camera.switch_to_flat_2d(Flat2DState::default());
     }
 
-    /// Toggle between the flat 2D view and the last-used 3D mode. Mirrors
-    /// the historical `T` shortcut: 2D → the remembered 3D mode, any 3D
-    /// mode → 2D.
+    /// Toggle between the flat 2D view and the 3D globe. Mirrors the
+    /// historical `T` shortcut; the 3D side restores the saved orbit pose.
     pub(crate) fn toggle_2d_3d(&mut self) {
         if self.camera.is_2d() {
-            self.switch_camera_mode(self.last_3d_mode);
+            self.switch_to_3d_view();
         } else {
             self.switch_to_2d();
         }
@@ -266,9 +256,9 @@ mod tests {
         viz.set_pan_offset(Vec2::new(12.0, -4.0));
         assert!((viz.zoom() - 3.0).abs() < 1e-6);
         assert!((viz.pan_offset().x - 12.0).abs() < 1e-6);
-        // Switching to a 3D mode makes view_mode derive to Globe3D; zoom/pan
+        // Switching to 3D makes view_mode derive to Globe3D; zoom/pan
         // fall back to the 2D defaults (only meaningful in Flat2D).
-        viz.switch_camera_mode(crate::geo::CameraMode::SiteOrbit);
+        viz.switch_to_3d_view();
         assert_eq!(viz.view_mode(), ViewMode::Globe3D);
         assert!(!viz.is_2d());
         assert!((viz.zoom() - 1.0).abs() < 1e-6);
@@ -276,22 +266,21 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn toggle_returns_to_last_3d_mode() {
+    fn toggle_restores_saved_3d_pose() {
         let mut viz = VizState::default();
-        // Pick FreeLook as the last 3D mode, then drop to 2D.
-        viz.switch_camera_mode(crate::geo::CameraMode::FreeLook);
-        assert_eq!(
-            viz.camera.camera_mode(),
-            Some(crate::geo::CameraMode::FreeLook)
-        );
+        // Enter 3D and put the camera in a distinctive pose.
+        viz.switch_to_3d_view();
+        viz.camera.move_pivot_to(30.0, -80.0);
+        viz.camera.adjust_tilt_heading(100.0, -60.0, 600.0);
+        let before = *viz.camera.orbit_state().unwrap();
         viz.switch_to_2d();
         assert!(viz.is_2d());
-        // Toggling back enters the remembered FreeLook mode, not the default.
+        // Toggling back restores the exact orbit pose, not the defaults.
         viz.toggle_2d_3d();
-        assert_eq!(
-            viz.camera.camera_mode(),
-            Some(crate::geo::CameraMode::FreeLook)
-        );
+        let after = viz.camera.orbit_state().unwrap();
+        assert!((after.pivot_lat - before.pivot_lat).abs() < 1e-6);
+        assert!((after.tilt - before.tilt).abs() < 1e-6);
+        assert!((after.heading - before.heading).abs() < 1e-6);
         // Toggling again returns to 2D.
         viz.toggle_2d_3d();
         assert!(viz.is_2d());
@@ -359,7 +348,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn set_zoom_pan_are_noops_in_3d() {
         let mut viz = VizState::default();
-        viz.switch_camera_mode(crate::geo::CameraMode::SiteOrbit);
+        viz.switch_to_3d_view();
         assert!(!viz.is_2d());
         // No flat-2D state to write -> setters are no-ops, getters fall back.
         viz.set_zoom(5.0);

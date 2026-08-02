@@ -47,17 +47,13 @@ fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &Camera) {
     );
 
     // Compute compass rotation to match the camera's on-screen orientation.
-    // In SiteOrbit, orbit_bearing is where the camera IS, not where it looks.
-    // The camera looks FROM the bearing TOWARD the site, so the viewing direction
-    // is bearing + 180°. We add π to account for this.
+    // Heading 0 = north up; positive heading rotates the view clockwise on
+    // screen, so the compass needle counter-rotates.
     let rotation_rad = match camera {
-        Camera::SiteOrbit(s) => {
-            (std::f32::consts::PI - s.orbit_bearing.to_radians()) - s.rotation.to_radians()
-        }
-        Camera::PlanetOrbit(s) => -s.rotation.to_radians(),
-        // Free Look and the 2D view have no compass-relevant bearing/roll;
-        // the compass overlay is only visible in 3D modes anyway.
-        Camera::FreeLook(_) | Camera::Flat2D(_) => 0.0,
+        Camera::Orbit(s) => -s.heading.to_radians(),
+        // The 2D view has no heading; the compass overlay is only visible
+        // in 3D anyway.
+        Camera::Flat2D(_) => 0.0,
     };
 
     // Cardinal directions

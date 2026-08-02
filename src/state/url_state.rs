@@ -11,16 +11,6 @@ use base64::Engine as _;
 
 use crate::core::ViewState;
 
-/// URL wire code for a [`CameraMode`](crate::geo::CameraMode):
-/// 0 = PlanetOrbit, 1 = SiteOrbit, 2 = FreeLook.
-fn camera_mode_code(mode: crate::geo::CameraMode) -> u8 {
-    match mode {
-        crate::geo::CameraMode::PlanetOrbit => 0,
-        crate::geo::CameraMode::SiteOrbit => 1,
-        crate::geo::CameraMode::FreeLook => 2,
-    }
-}
-
 impl ViewState {
     /// Build a `ViewState` from the current [`super::AppState`] plus
     /// explicit `playback` and `is_live` slices.
@@ -42,31 +32,19 @@ impl ViewState {
                 crate::geo::ViewMode::Flat2D => 0,
                 crate::geo::ViewMode::Globe3D => 1,
             }),
-            // The 3D camera mode to restore. In 2D the camera variant carries
-            // no 3D mode, so persist the remembered `last_3d_mode` (the mode a
-            // 2D → 3D toggle would re-enter) — this keeps a reloaded 2D link
-            // returning to the same 3D mode the user last used.
-            cm: Some(camera_mode_code(
-                state
-                    .viz_state
-                    .camera
-                    .camera_mode()
-                    .unwrap_or(state.viz_state.last_3d_mode),
-            )),
+            // The unified orbit camera: pivot (clat/clon), center-convention
+            // distance (cd), tilt (ct) and heading (cr). The legacy per-mode
+            // fields (cm/ob/oe and the free-look set) are no longer written;
+            // they remain parse-only so pre-overhaul links still restore.
             cd: Some(snap.distance),
             clat: Some(snap.center_lat),
             clon: Some(snap.center_lon),
             ct: Some(snap.tilt),
             cr: Some(snap.rotation),
-            ob: Some(snap.orbit_bearing),
-            oe: Some(snap.orbit_elevation),
-            fp: Some(snap.free_pos),
-            fy: Some(snap.free_yaw),
-            fpt: Some(snap.free_pitch),
-            fs: Some(snap.free_speed),
             v3d: Some(state.viz_state.volume_3d_enabled),
             vdc: Some(state.viz_state.volume_density_cutoff),
             rt: is_live.then_some(true),
+            ..Default::default()
         }
     }
 }
@@ -275,13 +253,6 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn camera_mode_code_maps_each_variant() {
-        assert_eq!(camera_mode_code(crate::geo::CameraMode::PlanetOrbit), 0);
-        assert_eq!(camera_mode_code(crate::geo::CameraMode::SiteOrbit), 1);
-        assert_eq!(camera_mode_code(crate::geo::CameraMode::FreeLook), 2);
-    }
-
-    #[wasm_bindgen_test]
     fn default_view_state_serializes_to_empty_object() {
         // Every field is `skip_serializing_if = Option::is_none`, so a default
         // ViewState carries no keys — keeps shared URLs minimal.
@@ -339,7 +310,9 @@ mod coverage_tests {
         assert!(vs.mz.is_some());
         assert!(vs.tz.is_some());
         assert!(vs.vm.is_some());
-        assert!(vs.cm.is_some());
+        assert!(vs.cd.is_some());
+        // Legacy per-mode fields are parse-only — never written anymore.
+        assert!(vs.cm.is_none());
         assert_eq!(vs.tz, Some(playback.timeline_zoom));
     }
 }

@@ -23,12 +23,10 @@ pub(crate) fn handle_globe_interaction(
     rect: &Rect,
     state: &mut AppState,
 ) {
-    use crate::geo::Camera;
-
-    // Multi-touch: two-finger pinch zooms, two-finger drag pans the pivot
-    // (orbit modes). When a pinch is active we skip the single-finger drag
-    // and scroll-wheel branches below to avoid double-applying motion. A pinch
-    // focused over the timeline belongs to the strip, not the globe.
+    // Multi-touch: two-finger pinch zooms, two-finger drag pans the pivot.
+    // When a pinch is active we skip the single-finger drag and scroll-wheel
+    // branches below to avoid double-applying motion. A pinch focused over
+    // the timeline belongs to the strip, not the globe.
     if let Some(t) =
         super::mobile::gestures::consume(&response.ctx).filter(|t| rect.contains(t.focus))
     {
@@ -40,81 +38,36 @@ pub(crate) fn handle_globe_interaction(
         }
         if t.pan != Vec2::ZERO {
             let viewport_h = response.rect.height();
-            match state.viz_state.camera {
-                Camera::PlanetOrbit(_) | Camera::SiteOrbit(_) => {
-                    state
-                        .viz_state
-                        .camera
-                        .pan_pivot(t.pan.x, t.pan.y, viewport_h);
-                }
-                Camera::FreeLook(_) => {
-                    state
-                        .viz_state
-                        .camera
-                        .free_translate(t.pan.x, t.pan.y, viewport_h);
-                }
-                // Flat2D never reaches the globe interaction handler.
-                Camera::Flat2D(_) => {}
-            }
+            state
+                .viz_state
+                .camera
+                .pan_pivot(t.pan.x, t.pan.y, viewport_h);
         }
         // Double-click still falls through below.
-        if response.double_clicked() {
-            if let Some(click_pos) = response.interact_pointer_pos() {
-                if let Some((lat, lon)) = state.viz_state.camera.screen_to_geo(click_pos, *rect) {
-                    state.viz_state.camera.move_pivot_to(lat, lon);
-                } else {
-                    state.viz_state.camera.recenter();
-                }
-            }
-        }
+        handle_globe_double_click(response, rect, state);
         return;
     }
 
     if response.dragged() {
         let delta = response.drag_delta();
         let viewport_h = response.rect.height();
-        let shift_held = response.ctx.input(|i| i.modifiers.shift);
+        let ctrl_held = response.ctx.input(|i| i.modifiers.ctrl);
         let right_button = response.dragged_by(egui::PointerButton::Secondary);
         let middle_button = response.dragged_by(egui::PointerButton::Middle);
 
-        match state.viz_state.camera {
-            Camera::FreeLook(_) => {
-                if middle_button || (shift_held && !right_button) {
-                    // Middle-drag or Shift+left: translate camera sideways
-                    state
-                        .viz_state
-                        .camera
-                        .free_translate(delta.x, delta.y, viewport_h);
-                } else if right_button {
-                    // Right-drag: look around without moving
-                    state
-                        .viz_state
-                        .camera
-                        .free_look(delta.x, delta.y, viewport_h);
-                } else {
-                    // Left-drag: look around (primary control in free look)
-                    state
-                        .viz_state
-                        .camera
-                        .free_look(delta.x, delta.y, viewport_h);
-                }
-            }
-            Camera::PlanetOrbit(_) | Camera::SiteOrbit(_) => {
-                if middle_button || (shift_held && !right_button) {
-                    state
-                        .viz_state
-                        .camera
-                        .pan_pivot(delta.x, delta.y, viewport_h);
-                } else if right_button {
-                    // Right-drag: horizontal rotates (heading), vertical pitches
-                    state.viz_state.camera.orbit(delta.x, delta.y, viewport_h);
-                } else {
-                    // Left-drag: orbit
-                    state.viz_state.camera.orbit(delta.x, delta.y, viewport_h);
-                }
-            }
-            // Flat2D never reaches the globe interaction handler.
-            Camera::Flat2D(_) => {}
+        if right_button || middle_button || ctrl_held {
+            // Right / middle / Ctrl+left drag: horizontal rotates the
+            // heading, vertical tilts toward/away from the horizon.
+            state
+                .viz_state
+                .camera
+                .adjust_tilt_heading(delta.x, delta.y, viewport_h);
+        } else {
+            // Left-drag: pan the pivot across the globe (grab feel).
+            state
+                .viz_state
+                .camera
+                .pan_pivot(delta.x, delta.y, viewport_h);
         }
     }
 
@@ -125,14 +78,18 @@ pub(crate) fn handle_globe_interaction(
         }
     }
 
-    // Double-click: move pivot to clicked surface point
+    handle_globe_double_click(response, rect, state);
+}
+
+/// Double-click: move the pivot to the clicked surface point, or back to
+/// the radar site when the click misses the globe.
+fn handle_globe_double_click(response: &egui::Response, rect: &Rect, state: &mut AppState) {
     if response.double_clicked() {
         if let Some(click_pos) = response.interact_pointer_pos() {
             if let Some((lat, lon)) = state.viz_state.camera.screen_to_geo(click_pos, *rect) {
                 state.viz_state.camera.move_pivot_to(lat, lon);
             } else {
-                // Clicked off-globe: recenter on site
-                state.viz_state.camera.recenter();
+                state.viz_state.camera.focus_site();
             }
         }
     }

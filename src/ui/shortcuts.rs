@@ -182,7 +182,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "E",
         description: "Cycle elevation up (2D)",
         pressed: |i| no_mods(i, egui::Key::E),
-        // In 3D, E is reserved for upward camera movement.
+        // In 3D, E is reserved for heading rotation.
         enabled: in_2d,
         handler: handle_cycle_elevation,
     },
@@ -191,7 +191,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "S",
         description: "Open site selection (2D)",
         pressed: |i| no_mods(i, egui::Key::S),
-        // In 3D, S is reserved for backward camera movement.
+        // In 3D, S is reserved for camera panning.
         enabled: in_2d,
         handler: handle_open_site,
     },
@@ -209,43 +209,17 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     OneShotShortcut {
         section: SECTION_VIEW,
         key_label: "2",
-        description: "3D site orbit mode",
+        description: "3D globe mode",
         pressed: |i| no_mods(i, egui::Key::Num2),
         enabled: always_enabled,
         handler: |state, _live, _timeline, _playback, _chrome, _| {
-            state
-                .viz_state
-                .switch_camera_mode(crate::geo::CameraMode::SiteOrbit);
-        },
-    },
-    OneShotShortcut {
-        section: SECTION_VIEW,
-        key_label: "3",
-        description: "3D planet orbit mode",
-        pressed: |i| no_mods(i, egui::Key::Num3),
-        enabled: always_enabled,
-        handler: |state, _live, _timeline, _playback, _chrome, _| {
-            state
-                .viz_state
-                .switch_camera_mode(crate::geo::CameraMode::PlanetOrbit);
-        },
-    },
-    OneShotShortcut {
-        section: SECTION_VIEW,
-        key_label: "4",
-        description: "Free look mode",
-        pressed: |i| no_mods(i, egui::Key::Num4),
-        enabled: always_enabled,
-        handler: |state, _live, _timeline, _playback, _chrome, _| {
-            state
-                .viz_state
-                .switch_camera_mode(crate::geo::CameraMode::FreeLook);
+            state.viz_state.switch_to_3d_view();
         },
     },
     OneShotShortcut {
         section: SECTION_VIEW,
         key_label: "T",
-        description: "Toggle last 2D / 3D mode",
+        description: "Toggle 2D / 3D view",
         pressed: |i| no_mods(i, egui::Key::T),
         enabled: always_enabled,
         handler: |state, _live, _timeline, _playback, _chrome, _| {
@@ -277,16 +251,6 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         enabled: in_3d,
         handler: |state, _live, _timeline, _playback, _chrome, _| {
             state.viz_state.camera.align_north()
-        },
-    },
-    OneShotShortcut {
-        section: SECTION_CAMERA,
-        key_label: "Home",
-        description: "Reset pivot to default (3D)",
-        pressed: |i| no_mods(i, egui::Key::Home),
-        enabled: in_3d,
-        handler: |state, _live, _timeline, _playback, _chrome, _| {
-            state.viz_state.camera.reset_pivot()
         },
     },
     // ---- General ----------------------------------------------------
@@ -326,12 +290,12 @@ const HELD_KEY_DOCS: &[HelpEntry] = &[
     HelpEntry {
         section: SECTION_CAMERA,
         key_label: "WASD",
-        description: "Move / pan camera",
+        description: "Pan map / camera",
     },
     HelpEntry {
         section: SECTION_CAMERA,
         key_label: "Q / E",
-        description: "Move down / up (3D)",
+        description: "Rotate view (3D)",
     },
     HelpEntry {
         section: SECTION_CAMERA,
@@ -821,10 +785,10 @@ fn handle_continuous_movement(
     state: &mut AppState,
     _playback: &mut crate::subsystem::Playback,
 ) {
-    let (forward, right_move, up_move, speed_mult, dt) = ctx.input(|i| {
+    let (forward, right_move, rotate, speed_mult, dt) = ctx.input(|i| {
         let dt = i.stable_dt.min(0.1); // cap to avoid jumps
                                        // Arrows are now frame/scan step (spec §12) — camera movement is WASD
-                                       // only (plus Q/E for vertical in 3D).
+                                       // only (plus Q/E for heading rotation in 3D).
         let w = i.key_down(egui::Key::W) as i32 as f32;
         let a = i.key_down(egui::Key::A) as i32 as f32;
         let s = i.key_down(egui::Key::S) as i32 as f32;
@@ -833,7 +797,7 @@ fn handle_continuous_movement(
         let e = i.key_down(egui::Key::E) as i32 as f32;
         let forward = w - s;
         let right_move = d - a;
-        let up_move = e - q;
+        let rotate = e - q;
         let speed_mult = if i.modifiers.shift {
             2.0
         } else if i.modifiers.command {
@@ -841,10 +805,10 @@ fn handle_continuous_movement(
         } else {
             1.0
         };
-        (forward, right_move, up_move, speed_mult, dt)
+        (forward, right_move, rotate, speed_mult, dt)
     });
 
-    if forward == 0.0 && right_move == 0.0 && up_move == 0.0 {
+    if forward == 0.0 && right_move == 0.0 && rotate == 0.0 {
         return;
     }
 
@@ -852,7 +816,7 @@ fn handle_continuous_movement(
         let moved = state
             .viz_state
             .camera
-            .keyboard_move(forward, right_move, up_move, speed_mult, dt);
+            .keyboard_move(forward, right_move, rotate, speed_mult, dt);
         if moved {
             ctx.request_repaint();
         }

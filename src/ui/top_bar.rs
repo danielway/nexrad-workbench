@@ -7,7 +7,7 @@ use crate::alerts::{event_color, AlertSeverity};
 use crate::core::ErrorContext;
 use crate::core::Intent;
 use crate::core::RadarProduct;
-use crate::geo::{CameraMode, ViewMode};
+use crate::geo::ViewMode;
 use crate::state::{AppMode, AppState, WidthTier};
 use eframe::egui::{self, Color32, Frame, RichText};
 
@@ -360,76 +360,29 @@ fn render_ui_mode_pill(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// View-mode selector pills. In Basic, a single 2D / 3D toggle (3D picks
-/// SiteOrbit as the sensible default for radar viewing). In Advanced, all
-/// three 3D camera modes are exposed as separate pills. Rendered both inline
-/// in the top bar and, when space is tight, inside the overflow menu.
+/// View-mode selector pills: a single 2D / 3D toggle (the 3D globe has one
+/// unified orbit camera). Rendered both inline in the top bar and, when
+/// space is tight, inside the overflow menu.
 fn render_view_mode_pills(ui: &mut egui::Ui, state: &mut AppState) {
     let dim = Color32::from_rgb(100, 100, 100);
 
-    let modes: &[(&str, ViewMode, Option<CameraMode>, Color32, &str)] = if state.show_advanced() {
-        &[
-            (
-                "2D",
-                ViewMode::Flat2D,
-                None,
-                Color32::from_rgb(100, 180, 255),
-                "1",
-            ),
-            (
-                "3D Site",
-                ViewMode::Globe3D,
-                Some(CameraMode::SiteOrbit),
-                Color32::from_rgb(255, 200, 80),
-                "2",
-            ),
-            (
-                "3D Planet",
-                ViewMode::Globe3D,
-                Some(CameraMode::PlanetOrbit),
-                Color32::from_rgb(120, 200, 120),
-                "3",
-            ),
-            (
-                "3D Free",
-                ViewMode::Globe3D,
-                Some(CameraMode::FreeLook),
-                Color32::from_rgb(200, 140, 255),
-                "4",
-            ),
-        ]
-    } else {
-        &[
-            (
-                "2D",
-                ViewMode::Flat2D,
-                None,
-                Color32::from_rgb(100, 180, 255),
-                "1",
-            ),
-            (
-                "3D",
-                ViewMode::Globe3D,
-                Some(CameraMode::SiteOrbit),
-                Color32::from_rgb(255, 200, 80),
-                "2",
-            ),
-        ]
-    };
+    let modes: &[(&str, ViewMode, Color32, &str)] = &[
+        (
+            "2D",
+            ViewMode::Flat2D,
+            Color32::from_rgb(100, 180, 255),
+            "1",
+        ),
+        (
+            "3D",
+            ViewMode::Globe3D,
+            Color32::from_rgb(255, 200, 80),
+            "2",
+        ),
+    ];
 
-    for &(label, view, cam, color, key) in modes {
-        let is_active = match (view, cam) {
-            (ViewMode::Flat2D, _) => state.viz_state.view_mode() == ViewMode::Flat2D,
-            (ViewMode::Globe3D, Some(cm)) => {
-                if state.show_advanced() {
-                    state.viz_state.camera.camera_mode() == Some(cm)
-                } else {
-                    // In Basic the single 3D pill is active for any 3D camera mode.
-                    state.viz_state.view_mode() == ViewMode::Globe3D
-                }
-            }
-            _ => false,
-        };
+    for &(label, view, color, key) in modes {
+        let is_active = state.viz_state.view_mode() == view;
 
         let text = if is_active {
             RichText::new(label).size(13.0).strong().color(color)
@@ -447,11 +400,9 @@ fn render_view_mode_pills(ui: &mut egui::Ui, state: &mut AppState) {
             .on_hover_text(format!("Switch to {} ({})", label, key))
             .clicked()
         {
-            match (view, cam) {
-                (ViewMode::Flat2D, _) => state.viz_state.switch_to_2d(),
-                (ViewMode::Globe3D, Some(cm)) => state.viz_state.switch_camera_mode(cm),
-                // Globe3D pills always carry a camera mode; nothing else fires.
-                (ViewMode::Globe3D, None) => {}
+            match view {
+                ViewMode::Flat2D => state.viz_state.switch_to_2d(),
+                ViewMode::Globe3D => state.viz_state.switch_to_3d_view(),
             }
         }
     }

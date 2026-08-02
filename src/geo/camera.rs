@@ -1,21 +1,18 @@
 //! Camera state machine for the radar view.
 //!
 //! A single [`Camera`] enum owns every camera state — the flat 2D
-//! top-down view plus three disjoint 3D modes (planet orbit, site orbit,
-//! free look). Each variant carries ONLY the fields valid in that mode,
-//! so an invalid-field-in-wrong-mode access (or a cross-mode state leak
-//! like `free_pos` surviving a switch to orbit) is impossible by
-//! construction. Mode transitions are explicit `switch_to_*` methods that
-//! build the new variant from the old, preserving what makes sense and
-//! dropping what doesn't.
+//! top-down view plus one unified 3D orbit camera. The orbit camera is
+//! Google-Earth-style: it orbits a pivot point on the earth's surface at
+//! a distance, with a tilt off the surface normal and a heading about it.
+//! Zoomed out it behaves like a planet-scale globe camera; zoomed in it
+//! orbits the pivot like a site camera — there is no mode boundary.
 //!
-//! Each mode has distinct mouse/keyboard controls following a consistent
-//! paradigm:
-//! - Left mouse: primary navigation
-//! - Right mouse: orientation adjustment
-//! - Middle mouse / Shift+left: pan/translate
-//! - Scroll: zoom or speed
-//! - WASD / arrows: directional movement
+//! Controls (wired in `src/ui/canvas_interaction.rs` / `src/ui/shortcuts.rs`):
+//! - Left drag: pan the pivot across the globe (grab feel)
+//! - Right / Ctrl+left / middle drag: tilt + heading
+//! - Scroll: zoom (log-space distance)
+//! - Double-click: move the pivot to the clicked point
+//! - W/A/S/D: pan the pivot · Q/E: rotate heading · R/F/N: reset/focus/north
 //!
 //! [`ViewMode`] is a *derived* view of the active variant
 //! ([`Camera::view_mode`]); it is not an independent toggle to keep in
@@ -34,63 +31,32 @@ pub enum ViewMode {
     Globe3D,
 }
 
-/// 3D camera movement mode (the three orbit variants).
-///
-/// Mirrors the three 3D arms of [`Camera`]; used by URL persistence, the
-/// view-mode pills, and the compass overlay to talk about "which 3D
-/// mode" without owning camera state.
-#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CameraMode {
-    /// Orbit around the planet core. Drag rotates the globe.
-    #[default]
-    PlanetOrbit,
-    /// Orbit around the radar site, always facing it.
-    SiteOrbit,
-    /// Free look: first-person flying camera.
-    FreeLook,
-}
+// Distance clamp range: eye distance above the pivot SURFACE point, in
+// Earth radii. Storing surface distance (not center distance) makes the
+// zoom range continuous down to the minimum — there is no render-side
+// `.max()` floor and therefore no dead zone.
+/// Closest approach (~6.4 km above the surface).
+const MIN_SURFACE_DIST: f32 = 0.001;
+/// Farthest distance (matches the historical 20 Earth radii from center).
+const MAX_SURFACE_DIST: f32 = 19.0;
 
-impl CameraMode {
-    pub fn label(&self) -> &'static str {
-        match self {
-            CameraMode::PlanetOrbit => "Planet Orbit",
-            CameraMode::SiteOrbit => "Site Orbit",
-            CameraMode::FreeLook => "Free Look",
-        }
-    }
+/// Default camera height above the site (~637 km). Provides a view
+/// comparable to the 2D flat view's ~500 km radius.
+const DEFAULT_SITE_SURFACE_DIST: f32 = 0.10;
 
-    pub fn next(&self) -> Self {
-        match self {
-            CameraMode::PlanetOrbit => CameraMode::SiteOrbit,
-            CameraMode::SiteOrbit => CameraMode::FreeLook,
-            CameraMode::FreeLook => CameraMode::PlanetOrbit,
-        }
-    }
+/// Tilt clamp, degrees off the surface normal. 0 = straight down; the cap
+/// keeps the pivot in front of the camera (no zenith crossing possible).
+const MAX_TILT_DEG: f32 = 85.0;
 
-    /// Key label for the mode (shown in UI).
-    pub fn key_hint(&self) -> &'static str {
-        match self {
-            CameraMode::SiteOrbit => "2",
-            CameraMode::PlanetOrbit => "3",
-            CameraMode::FreeLook => "4",
-        }
-    }
-}
-
-// Distance clamp range (Earth radii).
-// 1.001 allows very close zoom (~6.4 km above surface).
-const MIN_DISTANCE: f32 = 1.001;
-const MAX_DISTANCE: f32 = 20.0;
-
-/// Default camera distance when viewing a radar site (~637 km above surface).
-/// Provides a view comparable to the 2D flat view's ~500 km radius.
-const DEFAULT_SITE_DISTANCE: f32 = 1.10;
-
-/// Default vertical field-of-view (radians) for the 3D modes.
+/// Default vertical field-of-view (radians) for the 3D view.
 const DEFAULT_FOV_Y: f32 = std::f32::consts::FRAC_PI_4; // 45°
 
-/// Default free-look movement speed (Earth radii per second).
-const DEFAULT_FREE_SPEED: f32 = 0.5;
+/// Held-key heading rotation rate (degrees per second).
+const KEY_ROTATE_DEG_PER_SEC: f32 = 60.0;
+
+/// Held-key pivot pan rate: degrees per second per Earth radius of
+/// altitude, capped at 1 radius so planet-scale panning stays controllable.
+const KEY_PAN_DEG_PER_SEC_PER_RADIUS: f32 = 120.0;
 
 // ── Flat 2D ─────────────────────────────────────────────────────────
 
@@ -118,27 +84,24 @@ impl Default for Flat2DState {
     }
 }
 
-/// The flat 2D view plus the carried 3D seed.
+/// The flat 2D view plus the carried 3D camera.
 ///
-/// 2D itself only needs pan/zoom, but the radar site (and fov/aspect) are
-/// shared by every mode — the historical single-struct camera always
-/// carried them. Keeping the [`Globe3DCommon`] seed on the 2D arm lets a
-/// later switch to a 3D mode re-center on the correct site instead of the
-/// equator. This is shared 3D *frustum/site* state, not orbit/free state,
-/// so it isn't the kind of cross-mode leak S4 eliminates.
+/// 2D itself only needs pan/zoom, but the full orbit camera is carried as
+/// `saved` so a 2D excursion round-trips the exact 3D view: switching
+/// 2D → 3D restores `saved` verbatim. Site changes while in 2D update
+/// `saved` in place (see [`Camera::center_on`]).
 #[derive(Clone, Copy)]
 pub struct Flat2D {
     pub view: Flat2DState,
-    pub seed: Globe3DCommon,
+    pub saved: OrbitState,
 }
 
-// ── 3D shared state ─────────────────────────────────────────────────
+// ── 3D orbit camera ─────────────────────────────────────────────────
 
-/// State shared by all three 3D modes.
+/// Frustum + radar-site state shared by the 3D camera.
 ///
 /// `fov_y`/`aspect` define the perspective frustum; `site_lat`/`site_lon`
-/// track the radar site (the focus/reset/recenter target in every 3D
-/// mode). Mode-specific state lives on the variant structs.
+/// track the radar site (the focus/reset target).
 #[derive(Clone, Copy)]
 pub struct Globe3DCommon {
     /// Vertical field-of-view in radians.
@@ -163,88 +126,61 @@ impl Globe3DCommon {
     }
 }
 
-/// State for Planet Orbit mode: orbit around the planet core, drag rotates
-/// the globe.
+/// The unified Google-Earth-style orbit camera.
+///
+/// The camera orbits a pivot point on the earth's surface. The defining
+/// invariant (test-enforced): the pivot projects to the exact screen
+/// center for every tilt/heading/distance.
 #[derive(Clone, Copy)]
-pub struct PlanetOrbitState {
+pub struct OrbitState {
     pub common: Globe3DCommon,
-    /// Latitude the camera is looking at (degrees, -90..90).
-    pub center_lat: f32,
-    /// Longitude the camera is looking at (degrees, -180..180).
-    pub center_lon: f32,
-    /// Distance from the camera to the globe center, in Earth radii.
+    /// Surface pivot latitude (degrees), clamped to ±89.9.
+    pub pivot_lat: f32,
+    /// Surface pivot longitude (degrees), wrapped to ±180.
+    pub pivot_lon: f32,
+    /// Eye distance above the pivot surface point, in Earth radii.
+    /// Clamped to `[MIN_SURFACE_DIST, MAX_SURFACE_DIST]`.
     pub distance: f32,
-    /// Camera tilt (pitch) in degrees. 0 = looking at globe center.
+    /// Pitch off the pivot's surface normal, degrees. 0 = straight down,
+    /// clamped to `[0, MAX_TILT_DEG]`.
     pub tilt: f32,
-    /// Camera rotation (yaw offset) in degrees. 0 = North up, positive = CW.
-    pub rotation: f32,
+    /// View rotation about the pivot's surface normal, degrees.
+    /// 0 = north up, positive = view rotates clockwise on screen.
+    /// Wrapped to ±180.
+    pub heading: f32,
 }
 
-/// State for Site Orbit mode: orbit around the radar site, always facing it.
-#[derive(Clone, Copy)]
-pub struct SiteOrbitState {
-    pub common: Globe3DCommon,
-    /// Distance from the camera to the globe center, in Earth radii.
-    pub distance: f32,
-    /// Bearing from site (degrees, 0=North, CW).
-    pub orbit_bearing: f32,
-    /// Elevation angle above horizon (degrees, 0=level, 90=directly above).
-    pub orbit_elevation: f32,
-    /// Camera tilt (pitch) in degrees.
-    pub tilt: f32,
-    /// Camera rotation (roll/yaw offset) in degrees.
-    pub rotation: f32,
-    /// Orbit pivot latitude (degrees) — carried so a switch back to planet
-    /// orbit keeps the same look-at center.
-    pub center_lat: f32,
-    /// Orbit pivot longitude (degrees).
-    pub center_lon: f32,
+impl OrbitState {
+    /// A default orbit camera hovering straight above the given site.
+    fn over_site(common: Globe3DCommon) -> Self {
+        Self {
+            pivot_lat: common.site_lat,
+            pivot_lon: common.site_lon,
+            distance: DEFAULT_SITE_SURFACE_DIST,
+            tilt: 0.0,
+            heading: 0.0,
+            common,
+        }
+    }
 }
 
-/// State for Free Look mode: first-person flying camera.
-#[derive(Clone, Copy)]
-pub struct FreeLookState {
-    pub common: Globe3DCommon,
-    /// Camera position in world space.
-    pub free_pos: Vec3,
-    /// Yaw angle in degrees (0 = looking along +Z, 90 = looking along +X).
-    pub free_yaw: f32,
-    /// Pitch angle in degrees (0 = level, positive = looking up).
-    pub free_pitch: f32,
-    /// Movement speed in Earth radii per second.
-    pub free_speed: f32,
-}
-
-/// The camera state machine: exactly one of the flat 2D view or the three
-/// 3D orbit modes is active at a time. Each variant owns only the fields
-/// valid in that mode.
+/// The camera state machine: the flat 2D view or the 3D orbit camera.
 #[derive(Clone)]
 pub enum Camera {
     Flat2D(Flat2D),
-    PlanetOrbit(PlanetOrbitState),
-    SiteOrbit(SiteOrbitState),
-    FreeLook(FreeLookState),
+    Orbit(OrbitState),
 }
 
 impl Default for Camera {
     fn default() -> Self {
-        // Matches the historical default: 2D view (ViewMode::default()),
-        // with the camera seeded as if it were centered on the
-        // equator/prime-meridian. Callers immediately `center_on` the
-        // active site, so the seed center is rarely observed.
-        Camera::Flat2D(Flat2D {
-            view: Flat2DState::default(),
-            seed: Globe3DCommon::centered_on(0.0, 0.0),
-        })
+        // Matches the historical default: 2D view, camera seeded as if
+        // centered on the equator/prime-meridian. Callers immediately
+        // `center_on` the active site, so the seed is rarely observed.
+        Camera::centered_on(0.0, 0.0)
     }
 }
 
 // ── Free-standing 3D math ───────────────────────────────────────────
-//
-// These helpers carry the exact orbit/free-look transforms so each
-// `Camera` variant can produce identical matrices to the historical
-// single-struct `GlobeCamera`. They are split out of the variants so the
-// math is moved verbatim rather than re-derived per arm.
 
 /// Convert geographic (lat°, lon°) to a point on the unit sphere.
 fn geo_to_world(lat_deg: f64, lon_deg: f64) -> Vec3 {
@@ -253,122 +189,73 @@ fn geo_to_world(lat_deg: f64, lon_deg: f64) -> Vec3 {
     Vec3::new(lat.cos() * lon.sin(), lat.sin(), lat.cos() * lon.cos())
 }
 
-/// Rotation matrix that places `(center_lat, center_lon)` facing the camera.
-fn globe_rotation_matrix(center_lat: f32, center_lon: f32) -> Mat4 {
-    // Rotate world so that (center_lat, center_lon) ends up at +Z (facing camera).
-    // 1. Rotate around Y by -lon → brings the target longitude to the prime meridian.
-    //    After this, the target is at (0, sin(lat), cos(lat)).
-    // 2. Rotate around X by +lat → brings (0, sin(lat), cos(lat)) to (0, 0, 1).
-    let lat = center_lat.to_radians();
-    let lon = center_lon.to_radians();
-    Mat4::from_rotation_x(lat) * Mat4::from_rotation_y(-lon)
-}
-
-/// View matrix for Planet Orbit mode.
-fn planet_orbit_view_matrix(s: &PlanetOrbitState) -> Mat4 {
-    let eye = Vec3::new(0.0, 0.0, s.distance);
-    let look_at = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
-    let base = look_at * globe_rotation_matrix(s.center_lat, s.center_lon);
-
-    // Apply tilt (pitch) and rotation (yaw) from right-drag.
-    if s.tilt != 0.0 || s.rotation != 0.0 {
-        let tilt_mat = Mat4::from_rotation_x(s.tilt.to_radians());
-        let rot_mat = Mat4::from_rotation_z(s.rotation.to_radians());
-        rot_mat * tilt_mat * base
-    } else {
-        base
-    }
-}
-
-/// View matrix for Site Orbit mode — camera orbits around the radar site.
-fn site_orbit_view_matrix(s: &SiteOrbitState) -> Mat4 {
-    let site_pos = geo_to_world(s.common.site_lat as f64, s.common.site_lon as f64);
-    let site_dist = s.distance - 1.0; // distance from the site surface
-    let orbit_dist = site_dist.max(0.05);
-
-    // Compute camera position by offsetting from the site along bearing/elevation
-    let bearing_rad = s.orbit_bearing.to_radians();
-    let elev_rad = s.orbit_elevation.to_radians();
-
-    // Local coordinate frame at the site (on the sphere surface)
-    let up = site_pos.normalize();
-    // Handle pole degeneracy: if up ≈ ±Y, use Z as reference instead
+/// East/north tangent basis at a unit-sphere point with radial `up`.
+/// Handles pole degeneracy by switching the reference vector.
+fn enu_basis(up: Vec3) -> (Vec3, Vec3) {
     let ref_vec = if up.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
     let east = ref_vec.cross(up).normalize();
     let north = up.cross(east).normalize();
-
-    // Offset direction in the local tangent plane rotated by bearing, then elevated
-    let horiz = north * bearing_rad.cos() + east * bearing_rad.sin();
-    let offset_dir = (horiz * elev_rad.cos() + up * elev_rad.sin()).normalize();
-
-    let eye = site_pos + offset_dir * orbit_dist;
-    // Use radial up so the horizon stays level regardless of bearing.
-    Mat4::look_at_rh(eye, site_pos, up)
+    (east, north)
 }
 
-/// View matrix for Free Look mode — first-person flying camera.
-fn free_look_view_matrix(s: &FreeLookState) -> Mat4 {
-    let (forward, _, _) = free_look_basis(s.free_yaw, s.free_pitch);
-    let target = s.free_pos + forward;
-    Mat4::look_at_rh(s.free_pos, target, Vec3::Y)
+/// Eye position, pivot point, and camera-up vector for an orbit state —
+/// the single geometric core shared by the view matrix and
+/// `camera_world_pos`.
+fn orbit_eye_pivot_up(s: &OrbitState) -> (Vec3, Vec3, Vec3) {
+    let pivot = geo_to_world(s.pivot_lat as f64, s.pivot_lon as f64);
+    let up = pivot; // radial surface normal (unit sphere)
+    let (_east, north) = enu_basis(up);
+    let tilt = s.tilt.to_radians();
+    let heading = s.heading.to_radians();
+    // Positive heading rotates the *view* clockwise on screen, which
+    // means the camera swings counter-clockwise around the pivot.
+    let spin = glam::Quat::from_axis_angle(up, -heading);
+    // tilt = 0 puts the eye straight above the pivot; tilting swings it
+    // toward "south of the view" so the view looks toward heading-north.
+    let offset_dir = spin * (up * tilt.cos() - north * tilt.sin());
+    let cam_up = spin * (north * tilt.cos() + up * tilt.sin());
+    let eye = pivot + offset_dir * s.distance;
+    (eye, pivot, cam_up)
 }
 
-/// The forward / right / camera-up basis for a free-look yaw+pitch.
-fn free_look_basis(free_yaw: f32, free_pitch: f32) -> (Vec3, Vec3, Vec3) {
-    let yaw = free_yaw.to_radians();
-    let pitch = free_pitch.to_radians();
-    let fwd = Vec3::new(
-        yaw.sin() * pitch.cos(),
-        pitch.sin(),
-        yaw.cos() * pitch.cos(),
-    );
-    let world_up = Vec3::Y;
-    let right_dir = fwd.cross(world_up).normalize();
-    let up_dir = right_dir.cross(fwd).normalize();
-    (fwd, right_dir, up_dir)
+/// View matrix for the orbit camera. The pivot is always the look-at
+/// target, so it projects to the exact screen center.
+fn orbit_view_matrix(s: &OrbitState) -> Mat4 {
+    let (eye, pivot, cam_up) = orbit_eye_pivot_up(s);
+    Mat4::look_at_rh(eye, pivot, cam_up)
 }
 
-/// Camera world position for Site Orbit mode.
-fn site_orbit_camera_world_pos(s: &SiteOrbitState) -> Vec3 {
-    let site_pos = geo_to_world(s.common.site_lat as f64, s.common.site_lon as f64);
-    let site_dist = (s.distance - 1.0).max(0.05);
-    let bearing_rad = s.orbit_bearing.to_radians();
-    let elev_rad = s.orbit_elevation.to_radians();
-    let up = site_pos.normalize();
-    let ref_vec = if up.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
-    let east = ref_vec.cross(up).normalize();
-    let north = up.cross(east).normalize();
-    let horiz = north * bearing_rad.cos() + east * bearing_rad.sin();
-    let offset_dir = (horiz * elev_rad.cos() + up * elev_rad.sin()).normalize();
-    site_pos + offset_dir * site_dist
+/// Near-plane distance for a given surface distance: proportional to
+/// altitude (no z-fighting up close) and continuous (no pop at a
+/// threshold), clamped to a sane range.
+fn near_plane_for(surface_distance: f32) -> f32 {
+    (surface_distance * 0.1).clamp(2e-5, 0.01)
 }
 
-/// Camera world position for Planet Orbit mode.
-fn planet_orbit_camera_world_pos(s: &PlanetOrbitState) -> Vec3 {
-    // Camera sits at (0,0,distance) in view space; invert the globe rotation
-    let inv_rot = globe_rotation_matrix(s.center_lat, s.center_lon).inverse();
-    (inv_rot * Vec4::new(0.0, 0.0, s.distance, 1.0)).truncate()
-}
-
-/// Exponential (log-space) zoom step applied to a distance, with clamps.
-/// Positive `delta` zooms in (closer). Shared by scroll-zoom and W/S keys.
+/// Exponential (log-space) zoom step applied to a surface distance, with
+/// clamps. Positive `delta` zooms in (closer). Each scroll unit moves a
+/// consistent percentage of the altitude.
 fn zoom_distance(distance: f32, delta: f32) -> f32 {
-    // Convert distance to log space, shift, convert back. This makes each
-    // scroll tick a consistent percentage change.
-    let log_dist = distance.ln();
-    let log_min = MIN_DISTANCE.ln();
-    let log_max = MAX_DISTANCE.ln();
-    // Each scroll unit moves ~0.3% in log space (tuned for smooth feel)
-    let new_log = log_dist - delta * 0.003;
-    new_log.clamp(log_min, log_max).exp()
+    let new_log = distance.ln() - delta * 0.003;
+    new_log
+        .clamp(MIN_SURFACE_DIST.ln(), MAX_SURFACE_DIST.ln())
+        .exp()
 }
 
-/// W/S keyboard zoom step (different sensitivity from scroll-zoom).
-fn keyboard_zoom_distance(distance: f32, forward: f32, speed_mult: f32, dt: f32) -> f32 {
-    let zoom_speed = 1.0 * speed_mult * dt;
-    let log_dist = distance.ln();
-    let new_log = log_dist - forward * zoom_speed;
-    new_log.clamp(MIN_DISTANCE.ln(), MAX_DISTANCE.ln()).exp()
+/// Clamp a pivot latitude away from the poles (avoids gimbal flip).
+fn clamp_lat(lat: f32) -> f32 {
+    lat.clamp(-89.9, 89.9)
+}
+
+/// Wrap an angle to the ±180° range.
+fn wrap_deg(mut deg: f32) -> f32 {
+    while deg > 180.0 {
+        deg -= 360.0;
+    }
+    while deg < -180.0 {
+        deg += 360.0;
+    }
+    deg
 }
 
 impl Camera {
@@ -376,37 +263,25 @@ impl Camera {
 
     /// Create a camera centered on the given geographic coordinates.
     ///
-    /// Starts in the flat 2D view (matching the historical default view
-    /// mode) but seeds the site so a later switch to a 3D mode is centered
-    /// correctly. The 3D mode-specific state is materialized on demand by
-    /// the `switch_to_*` transitions.
+    /// Starts in the flat 2D view (the historical default view mode) with
+    /// the saved 3D camera hovering above the site, so a later switch to
+    /// 3D is centered correctly.
     pub fn centered_on(lat_deg: f64, lon_deg: f64) -> Self {
         Camera::Flat2D(Flat2D {
             view: Flat2DState::default(),
-            seed: Globe3DCommon::centered_on(lat_deg, lon_deg),
+            saved: OrbitState::over_site(Globe3DCommon::centered_on(lat_deg, lon_deg)),
         })
     }
 
     // ── Derived view mode ───────────────────────────────────────────
 
-    /// The [`ViewMode`] derived from the active variant. The Flat2D
-    /// variant is 2D; the three orbit variants are 3D. This is the single
-    /// source of truth — there is no separately-stored toggle to keep in
-    /// sync.
+    /// The [`ViewMode`] derived from the active variant. This is the
+    /// single source of truth — there is no separately-stored toggle to
+    /// keep in sync.
     pub fn view_mode(&self) -> ViewMode {
         match self {
             Camera::Flat2D(_) => ViewMode::Flat2D,
-            _ => ViewMode::Globe3D,
-        }
-    }
-
-    /// The 3D [`CameraMode`] of the active variant, or `None` in 2D.
-    pub fn camera_mode(&self) -> Option<CameraMode> {
-        match self {
-            Camera::Flat2D(_) => None,
-            Camera::PlanetOrbit(_) => Some(CameraMode::PlanetOrbit),
-            Camera::SiteOrbit(_) => Some(CameraMode::SiteOrbit),
-            Camera::FreeLook(_) => Some(CameraMode::FreeLook),
+            Camera::Orbit(_) => ViewMode::Globe3D,
         }
     }
 
@@ -419,7 +294,7 @@ impl Camera {
     pub fn flat_2d(&self) -> Option<&Flat2DState> {
         match self {
             Camera::Flat2D(f) => Some(&f.view),
-            _ => None,
+            Camera::Orbit(_) => None,
         }
     }
 
@@ -427,28 +302,41 @@ impl Camera {
     pub fn flat_2d_mut(&mut self) -> Option<&mut Flat2DState> {
         match self {
             Camera::Flat2D(f) => Some(&mut f.view),
-            _ => None,
+            Camera::Orbit(_) => None,
         }
     }
 
-    /// Shared 3D state (frustum + site). Live on the active 3D variant, or
-    /// the carried seed in 2D — so the site survives a 2D excursion.
-    fn common(&self) -> &Globe3DCommon {
+    /// The active orbit state, if the 3D view is active.
+    pub fn orbit_state(&self) -> Option<&OrbitState> {
         match self {
-            Camera::Flat2D(f) => &f.seed,
-            Camera::PlanetOrbit(s) => &s.common,
-            Camera::SiteOrbit(s) => &s.common,
-            Camera::FreeLook(s) => &s.common,
+            Camera::Flat2D(_) => None,
+            Camera::Orbit(s) => Some(s),
         }
+    }
+
+    /// The live orbit state in 3D, or the saved one in 2D.
+    fn orbit_or_saved_mut(&mut self) -> &mut OrbitState {
+        match self {
+            Camera::Flat2D(f) => &mut f.saved,
+            Camera::Orbit(s) => s,
+        }
+    }
+
+    fn orbit_or_saved(&self) -> &OrbitState {
+        match self {
+            Camera::Flat2D(f) => &f.saved,
+            Camera::Orbit(s) => s,
+        }
+    }
+
+    /// Shared 3D state (frustum + site). Live on the orbit variant, or
+    /// the carried camera in 2D — so the site survives a 2D excursion.
+    fn common(&self) -> &Globe3DCommon {
+        &self.orbit_or_saved().common
     }
 
     fn common_mut(&mut self) -> &mut Globe3DCommon {
-        match self {
-            Camera::Flat2D(f) => &mut f.seed,
-            Camera::PlanetOrbit(s) => &mut s.common,
-            Camera::SiteOrbit(s) => &mut s.common,
-            Camera::FreeLook(s) => &mut s.common,
-        }
+        &mut self.orbit_or_saved_mut().common
     }
 
     // ── Matrices ────────────────────────────────────────────────────
@@ -458,24 +346,18 @@ impl Camera {
     pub fn view_matrix(&self) -> Mat4 {
         match self {
             Camera::Flat2D(_) => Mat4::IDENTITY,
-            Camera::PlanetOrbit(s) => planet_orbit_view_matrix(s),
-            Camera::SiteOrbit(s) => site_orbit_view_matrix(s),
-            Camera::FreeLook(s) => free_look_view_matrix(s),
+            Camera::Orbit(s) => orbit_view_matrix(s),
         }
     }
 
     /// Perspective projection matrix.
     pub fn projection_matrix(&self) -> Mat4 {
-        let (fov_y, aspect, effective_dist) = match self {
+        let (fov_y, aspect, surface_dist) = match self {
             // 2D never paints through this matrix; return a benign frustum.
-            Camera::Flat2D(_) => (DEFAULT_FOV_Y, 1.0, DEFAULT_SITE_DISTANCE),
-            Camera::PlanetOrbit(s) => (s.common.fov_y, s.common.aspect, s.distance),
-            Camera::SiteOrbit(s) => (s.common.fov_y, s.common.aspect, s.distance),
-            Camera::FreeLook(s) => (s.common.fov_y, s.common.aspect, s.free_pos.length()),
+            Camera::Flat2D(_) => (DEFAULT_FOV_Y, 1.0, DEFAULT_SITE_SURFACE_DIST),
+            Camera::Orbit(s) => (s.common.fov_y, s.common.aspect, s.distance),
         };
-        // Adjust near plane based on distance — when very close, use tighter near plane
-        let near = if effective_dist < 1.1 { 0.0001 } else { 0.01 };
-        Mat4::perspective_rh_gl(fov_y, aspect, near, 100.0)
+        Mat4::perspective_rh_gl(fov_y, aspect, near_plane_for(surface_dist), 100.0)
     }
 
     /// Combined view-projection matrix.
@@ -490,14 +372,12 @@ impl Camera {
         geo_to_world(lat_deg, lon_deg)
     }
 
-    /// Camera position in world space. Meaningful only in 3D modes; the 2D
-    /// variant returns the historical planet-orbit default.
+    /// Camera position in world space. Meaningful only in 3D; the 2D
+    /// variant returns the historical default straight above the equator.
     pub fn camera_world_pos(&self) -> Vec3 {
         match self {
-            Camera::Flat2D(_) => Vec3::new(0.0, 0.0, DEFAULT_SITE_DISTANCE),
-            Camera::PlanetOrbit(s) => planet_orbit_camera_world_pos(s),
-            Camera::SiteOrbit(s) => site_orbit_camera_world_pos(s),
-            Camera::FreeLook(s) => s.free_pos,
+            Camera::Flat2D(_) => Vec3::new(0.0, 0.0, 1.0 + DEFAULT_SITE_SURFACE_DIST),
+            Camera::Orbit(s) => orbit_eye_pivot_up(s).0,
         }
     }
 
@@ -568,430 +448,135 @@ impl Camera {
 
     // ── Controls ────────────────────────────────────────────────────
 
-    /// Orbit the globe by screen-space delta (pixels).
-    /// Planet Orbit: rotates the globe. Site Orbit: changes bearing/elevation.
-    /// No-op in 2D and Free Look.
-    pub fn orbit(&mut self, dx: f32, dy: f32, viewport_height: f32) {
-        match self {
-            Camera::PlanetOrbit(s) => {
-                let sensitivity = s.common.fov_y / viewport_height;
-                // Grab-and-drag: dragging right moves the globe right (center goes west).
-                // Scale sensitivity by distance so close-up panning feels natural.
-                let dist_scale = (s.distance - 1.0).max(0.01);
-                let dlon = dx * sensitivity * (180.0 / std::f32::consts::PI) * dist_scale;
-                let dlat = dy * sensitivity * (180.0 / std::f32::consts::PI) * dist_scale;
-
-                s.center_lon -= dlon;
-                s.center_lat += dlat;
-
-                // Clamp latitude to avoid flipping
-                s.center_lat = s.center_lat.clamp(-89.9, 89.9);
-                // Wrap longitude
-                if s.center_lon > 180.0 {
-                    s.center_lon -= 360.0;
-                }
-                if s.center_lon < -180.0 {
-                    s.center_lon += 360.0;
-                }
-            }
-            Camera::SiteOrbit(s) => {
-                let sensitivity = s.common.fov_y / viewport_height;
-                // Grab-and-drag: dragging right orbits camera to the right (bearing decreases).
-                let dbearing = -dx * sensitivity * (180.0 / std::f32::consts::PI);
-                let delevation = -dy * sensitivity * (180.0 / std::f32::consts::PI);
-
-                s.orbit_bearing = (s.orbit_bearing + dbearing) % 360.0;
-                if s.orbit_bearing < 0.0 {
-                    s.orbit_bearing += 360.0;
-                }
-                s.orbit_elevation = (s.orbit_elevation + delevation).clamp(5.0, 175.0);
-            }
-            // In free look, orbit doesn't apply — use free_look() instead. 2D: no-op.
-            Camera::FreeLook(_) | Camera::Flat2D(_) => {}
-        }
-    }
-
-    /// Adjust camera tilt (pitch) and rotation (yaw) by screen-space delta.
-    /// Used by right-drag in orbit modes. No-op outside orbit modes.
-    pub fn tilt_rotate(&mut self, dx: f32, dy: f32, viewport_height: f32) {
-        let deg_per_rad = 180.0 / std::f32::consts::PI;
-        let (fov_y, tilt, rotation) = match self {
-            Camera::PlanetOrbit(s) => (s.common.fov_y, &mut s.tilt, &mut s.rotation),
-            Camera::SiteOrbit(s) => (s.common.fov_y, &mut s.tilt, &mut s.rotation),
-            Camera::FreeLook(_) | Camera::Flat2D(_) => return,
-        };
-        let sensitivity = fov_y / viewport_height;
-
-        *rotation += dx * sensitivity * deg_per_rad;
-        *tilt += dy * sensitivity * deg_per_rad;
-
-        // Clamp tilt to avoid flipping
-        *tilt = tilt.clamp(-89.0, 89.0);
-        // Wrap rotation
-        if *rotation > 180.0 {
-            *rotation -= 360.0;
-        }
-        if *rotation < -180.0 {
-            *rotation += 360.0;
-        }
-    }
-
-    /// Adjust free look direction (yaw/pitch) by screen-space delta.
-    /// Used by left-drag and right-drag in Free Look mode. No-op elsewhere.
-    pub fn free_look(&mut self, dx: f32, dy: f32, viewport_height: f32) {
-        let Camera::FreeLook(s) = self else {
-            return;
-        };
-        let sensitivity = s.common.fov_y / viewport_height;
-        let deg_per_rad = 180.0 / std::f32::consts::PI;
-
-        s.free_yaw += dx * sensitivity * deg_per_rad;
-        s.free_pitch -= dy * sensitivity * deg_per_rad;
-
-        s.free_pitch = s.free_pitch.clamp(-89.0, 89.0);
-        // Wrap yaw
-        if s.free_yaw > 180.0 {
-            s.free_yaw -= 360.0;
-        }
-        if s.free_yaw < -180.0 {
-            s.free_yaw += 360.0;
-        }
-    }
-
-    /// Move the free look camera by a directional vector relative to the camera.
-    /// `forward` = along look direction, `right` = perpendicular, `up` = world up.
-    /// `dt` is frame delta time in seconds. No-op outside Free Look.
-    pub fn free_move(&mut self, forward: f32, right: f32, up: f32, dt: f32) {
-        let Camera::FreeLook(s) = self else {
-            return;
-        };
-        let (fwd, right_dir, up_dir) = free_look_basis(s.free_yaw, s.free_pitch);
-
-        let velocity = s.free_speed * dt;
-        s.free_pos += fwd * forward * velocity;
-        s.free_pos += right_dir * right * velocity;
-        s.free_pos += up_dir * up * velocity;
-    }
-
-    /// Pan the orbit pivot by screen-space delta (middle mouse drag).
-    /// In orbit modes this shifts the center/pivot (same as [`Self::orbit`]).
+    /// Pan the pivot across the globe by a screen-space drag delta
+    /// (pixels). Grab feel: dragging right moves the globe right (the
+    /// pivot moves toward screen-left). Heading-aware — dragging up always
+    /// moves the pivot toward screen-up regardless of rotation — and
+    /// distance-scaled so close-up panning stays precise. No-op in 2D.
     pub fn pan_pivot(&mut self, dx: f32, dy: f32, viewport_height: f32) {
-        // Same as orbit for now — middle-drag shifts the center
-        self.orbit(dx, dy, viewport_height);
-    }
-
-    /// Translate the free look camera sideways relative to the screen plane.
-    /// Used by middle-drag in Free Look mode. No-op elsewhere.
-    pub fn free_translate(&mut self, dx: f32, dy: f32, viewport_height: f32) {
-        let Camera::FreeLook(s) = self else {
+        let Camera::Orbit(s) = self else {
             return;
         };
-        let (_, right_dir, up_dir) = free_look_basis(s.free_yaw, s.free_pitch);
+        let deg_per_px =
+            s.common.fov_y / viewport_height * (180.0 / std::f32::consts::PI) * s.distance;
+        let h = s.heading.to_radians();
+        // Screen-up corresponds to compass bearing `heading`; decompose
+        // the drag into north/east components of pivot motion. Dragging
+        // down (dy > 0) moves the pivot toward screen-up.
+        let dnorth = (dx * h.sin() + dy * h.cos()) * deg_per_px;
+        let deast = (-dx * h.cos() + dy * h.sin()) * deg_per_px;
 
-        let sensitivity = s.common.fov_y / viewport_height;
-        let dist_scale = (s.free_pos.length() - 1.0).max(0.01);
-        let scale = sensitivity * dist_scale;
-
-        s.free_pos -= right_dir * dx * scale;
-        s.free_pos += up_dir * dy * scale;
+        s.pivot_lat = clamp_lat(s.pivot_lat + dnorth);
+        // Scale longitude motion so panning speed is isotropic at high
+        // latitudes (a degree of longitude shrinks by cos(lat)).
+        let coslat = s.pivot_lat.to_radians().cos().max(0.01);
+        s.pivot_lon = wrap_deg(s.pivot_lon + deast / coslat);
     }
 
-    /// Zoom by scroll delta. Positive = zoom in (closer).
-    /// In Free Look, scroll adjusts movement speed. No-op in 2D (the 2D
-    /// path handles its own zoom on `Flat2DState`).
+    /// Adjust tilt and heading by a screen-space drag delta. Horizontal
+    /// drag rotates the heading; dragging up tilts toward the horizon.
+    /// No-op in 2D.
+    pub fn adjust_tilt_heading(&mut self, dx: f32, dy: f32, viewport_height: f32) {
+        let Camera::Orbit(s) = self else {
+            return;
+        };
+        let deg_per_px = s.common.fov_y / viewport_height * (180.0 / std::f32::consts::PI);
+        s.heading = wrap_deg(s.heading + dx * deg_per_px);
+        s.tilt = (s.tilt - dy * deg_per_px).clamp(0.0, MAX_TILT_DEG);
+    }
+
+    /// Zoom by scroll delta. Positive = zoom in (closer). No-op in 2D
+    /// (the 2D path handles its own zoom on `Flat2DState`).
     pub fn zoom(&mut self, delta: f32) {
-        match self {
-            Camera::FreeLook(s) => {
-                // In free look, scroll adjusts movement speed
-                let factor = 1.0 + delta * 0.003;
-                s.free_speed = (s.free_speed * factor).clamp(0.01, 50.0);
-            }
-            Camera::PlanetOrbit(s) => {
-                s.distance = zoom_distance(s.distance, delta);
-            }
-            Camera::SiteOrbit(s) => {
-                s.distance = zoom_distance(s.distance, delta);
-            }
-            Camera::Flat2D(_) => {}
+        if let Camera::Orbit(s) = self {
+            s.distance = zoom_distance(s.distance, delta);
         }
     }
 
     /// Center the camera on the given lat/lon and reset the view.
     ///
-    /// Updates the site for all 3D modes, and resets distance/orbit/free
-    /// state to defaults derived from the new center — matching the
-    /// historical `GlobeCamera::center_on`. In 2D this only records the new
-    /// site (the 2D projection re-centers off `viz_state.center_lat/lon`);
-    /// switching to a 3D mode later picks up the seeded site.
+    /// Records the new site and resets the orbit camera to hover above
+    /// it. In 2D this updates the *saved* camera (the 2D projection
+    /// re-centers off `viz_state.center_lat/lon`); switching to 3D later
+    /// picks it up.
     pub fn center_on(&mut self, lat_deg: f64, lon_deg: f64) {
-        let lat = lat_deg as f32;
-        let lon = lon_deg as f32;
-        match self {
-            Camera::Flat2D(f) => {
-                // Record the new site on the carried seed so a later switch
-                // to a 3D mode centers on it. The 2D projection itself
-                // centers via viz_state.center_lat/lon.
-                f.seed.site_lat = lat;
-                f.seed.site_lon = lon;
-            }
-            Camera::PlanetOrbit(s) => {
-                s.common.site_lat = lat;
-                s.common.site_lon = lon;
-                s.center_lat = lat;
-                s.center_lon = lon;
-                s.distance = DEFAULT_SITE_DISTANCE;
-                s.tilt = 0.0;
-                s.rotation = 0.0;
-            }
-            Camera::SiteOrbit(s) => {
-                s.common.site_lat = lat;
-                s.common.site_lon = lon;
-                s.center_lat = lat;
-                s.center_lon = lon;
-                s.distance = DEFAULT_SITE_DISTANCE;
-                s.orbit_bearing = 180.0;
-                s.orbit_elevation = 45.0;
-                s.tilt = 0.0;
-                s.rotation = 0.0;
-            }
-            Camera::FreeLook(s) => {
-                s.common.site_lat = lat;
-                s.common.site_lon = lon;
-                // Initialize free look at a reasonable position
-                s.free_pos = geo_to_world(lat_deg, lon_deg) * DEFAULT_SITE_DISTANCE;
-                s.free_yaw = (-lon + 180.0) % 360.0 - 180.0;
-                s.free_pitch = -lat;
-            }
-        }
+        let s = self.orbit_or_saved_mut();
+        s.common.site_lat = lat_deg as f32;
+        s.common.site_lon = lon_deg as f32;
+        *s = OrbitState::over_site(s.common);
     }
 
-    /// Re-center on the site without changing distance or zoom level.
-    pub fn recenter(&mut self) {
-        match self {
-            Camera::PlanetOrbit(s) => {
-                s.center_lat = s.common.site_lat;
-                s.center_lon = s.common.site_lon;
-                s.tilt = 0.0;
-                s.rotation = 0.0;
-            }
-            Camera::SiteOrbit(s) => {
-                s.center_lat = s.common.site_lat;
-                s.center_lon = s.common.site_lon;
-                s.orbit_bearing = 180.0;
-                s.orbit_elevation = 45.0;
-                s.tilt = 0.0;
-                s.rotation = 0.0;
-            }
-            Camera::FreeLook(_) | Camera::Flat2D(_) => {}
-        }
-    }
-
-    /// Reset camera to a safe default for the current mode. R key handler.
+    /// Reset the 3D camera to the default view above the site. R key
+    /// handler (the 2D branch of R is handled by the shortcut itself).
     pub fn reset(&mut self) {
-        match self {
-            Camera::PlanetOrbit(s) => {
-                s.center_lat = s.common.site_lat;
-                s.center_lon = s.common.site_lon;
-                s.distance = DEFAULT_SITE_DISTANCE;
-                s.tilt = 0.0;
-                s.rotation = 0.0;
-            }
-            Camera::SiteOrbit(s) => {
-                s.orbit_bearing = 180.0;
-                s.orbit_elevation = 45.0;
-                s.distance = DEFAULT_SITE_DISTANCE;
-                s.tilt = 0.0;
-                s.rotation = 0.0;
-            }
-            Camera::FreeLook(s) => {
-                // Reset to a default vantage point above the radar site
-                let pos = geo_to_world(s.common.site_lat as f64, s.common.site_lon as f64)
-                    * DEFAULT_SITE_DISTANCE;
-                s.free_pos = pos;
-                // Look toward the globe center
-                let dir = -pos.normalize();
-                s.free_yaw = dir.x.atan2(dir.z).to_degrees();
-                s.free_pitch = dir.y.asin().to_degrees();
-                s.free_speed = DEFAULT_FREE_SPEED;
-            }
-            Camera::Flat2D(_) => {}
+        if let Camera::Orbit(s) = self {
+            *s = OrbitState::over_site(s.common);
         }
     }
 
-    /// Focus camera on the radar site. F key handler.
+    /// Move the pivot back to the radar site, keeping distance, tilt and
+    /// heading. F key handler.
     pub fn focus_site(&mut self) {
-        match self {
-            Camera::PlanetOrbit(s) => {
-                s.center_lat = s.common.site_lat;
-                s.center_lon = s.common.site_lon;
-            }
-            Camera::SiteOrbit(s) => {
-                // Already orbiting the site; snap to looking north (camera south)
-                s.orbit_bearing = 180.0;
-            }
-            Camera::FreeLook(s) => {
-                // Move camera near the site and point toward it
-                let site_pos = geo_to_world(s.common.site_lat as f64, s.common.site_lon as f64);
-                s.free_pos = site_pos * 2.0;
-                let dir = (site_pos - s.free_pos).normalize();
-                s.free_yaw = dir.x.atan2(dir.z).to_degrees();
-                s.free_pitch = dir.y.asin().to_degrees();
-            }
-            Camera::Flat2D(_) => {}
+        if let Camera::Orbit(s) = self {
+            s.pivot_lat = clamp_lat(s.common.site_lat);
+            s.pivot_lon = wrap_deg(s.common.site_lon);
         }
     }
 
-    /// Align camera so North is up. N key handler.
+    /// Rotate the view so North is up, keeping tilt. N key handler.
     pub fn align_north(&mut self) {
-        match self {
-            Camera::PlanetOrbit(s) => {
-                s.rotation = 0.0;
-            }
-            Camera::SiteOrbit(s) => {
-                s.rotation = 0.0;
-                // Keep current bearing but remove tilt
-                s.tilt = 0.0;
-            }
-            Camera::FreeLook(_) | Camera::Flat2D(_) => {}
+        if let Camera::Orbit(s) = self {
+            s.heading = 0.0;
         }
     }
 
-    /// Level the horizon. L key handler.
-    pub fn level_horizon(&mut self) {
-        match self {
-            Camera::PlanetOrbit(s) => {
-                s.tilt = 0.0;
-            }
-            Camera::SiteOrbit(s) => {
-                s.tilt = 0.0;
-            }
-            Camera::FreeLook(s) => {
-                s.free_pitch = 0.0;
-            }
-            Camera::Flat2D(_) => {}
-        }
-    }
-
-    /// Move pivot/center to a specific geographic point. Used for double-click.
+    /// Move the pivot to a specific geographic point. Double-click handler.
     pub fn move_pivot_to(&mut self, lat_deg: f64, lon_deg: f64) {
-        match self {
-            Camera::PlanetOrbit(s) => {
-                s.center_lat = lat_deg as f32;
-                s.center_lon = lon_deg as f32;
-            }
-            Camera::SiteOrbit(s) => {
-                // In site orbit, double-click moves the orbit pivot (the site)
-                s.common.site_lat = lat_deg as f32;
-                s.common.site_lon = lon_deg as f32;
-            }
-            Camera::FreeLook(s) => {
-                // In free look, move to the clicked point
-                let target = geo_to_world(lat_deg, lon_deg);
-                // Position camera at current distance from the clicked point
-                let dist = s.free_pos.length();
-                s.free_pos = target * dist;
-                let dir = (target - s.free_pos).normalize();
-                s.free_yaw = dir.x.atan2(dir.z).to_degrees();
-                s.free_pitch = dir.y.asin().to_degrees();
-            }
-            Camera::Flat2D(_) => {}
+        if let Camera::Orbit(s) = self {
+            s.pivot_lat = clamp_lat(lat_deg as f32);
+            s.pivot_lon = wrap_deg(lon_deg as f32);
         }
     }
 
-    /// Handle WASD/arrow key movement. Returns true if any movement occurred.
-    /// `forward`: +1 = W/Up, -1 = S/Down
-    /// `right`: +1 = D/Right, -1 = A/Left
-    /// `up_down`: +1 = E, -1 = Q
+    /// Handle held-key movement. Returns true if any state changed.
+    /// `forward`: +1 = W (pivot toward screen-up), -1 = S
+    /// `right`: +1 = D (pivot toward screen-right), -1 = A
+    /// `rotate`: +1 = E (heading clockwise), -1 = Q
     /// `speed_mult`: 2.0 for Shift, 0.25 for Ctrl, 1.0 otherwise.
     /// `dt`: frame delta time in seconds.
     pub fn keyboard_move(
         &mut self,
         forward: f32,
         right: f32,
-        up_down: f32,
+        rotate: f32,
         speed_mult: f32,
         dt: f32,
     ) -> bool {
-        if forward == 0.0 && right == 0.0 && up_down == 0.0 {
+        let Camera::Orbit(s) = self else {
+            return false;
+        };
+        if forward == 0.0 && right == 0.0 && rotate == 0.0 {
             return false;
         }
 
-        let base_speed = 60.0; // degrees per second for orbit, or distance per second
-
-        match self {
-            Camera::PlanetOrbit(s) => {
-                // WASD/arrows pan the globe (same as lat/lon drag)
-                let speed = base_speed * speed_mult * dt;
-                // W = camera looks further north → center_lat increases
-                s.center_lat += forward * speed * 0.5;
-                // D = camera looks further east → center_lon increases
-                s.center_lon += right * speed * 0.5;
-
-                s.center_lat = s.center_lat.clamp(-89.9, 89.9);
-                if s.center_lon > 180.0 {
-                    s.center_lon -= 360.0;
-                }
-                if s.center_lon < -180.0 {
-                    s.center_lon += 360.0;
-                }
-
-                // W/S also zoom in Planet Orbit per the spec
-                if forward != 0.0 {
-                    s.distance = keyboard_zoom_distance(s.distance, forward, speed_mult, dt);
-                }
-            }
-            Camera::SiteOrbit(s) => {
-                // A/D rotate horizontally around site, W/S adjust distance
-                let speed = base_speed * speed_mult * dt;
-                s.orbit_bearing = (s.orbit_bearing + right * speed) % 360.0;
-                if s.orbit_bearing < 0.0 {
-                    s.orbit_bearing += 360.0;
-                }
-
-                // W/S adjust distance
-                if forward != 0.0 {
-                    s.distance = keyboard_zoom_distance(s.distance, forward, speed_mult, dt);
-                }
-
-                // Q/E roll the camera
-                if up_down != 0.0 {
-                    s.rotation += up_down * speed * 0.5;
-                    if s.rotation > 180.0 {
-                        s.rotation -= 360.0;
-                    }
-                    if s.rotation < -180.0 {
-                        s.rotation += 360.0;
-                    }
-                }
-            }
-            Camera::FreeLook(_) => {
-                // WASD = standard FPS movement
-                self.free_move(forward, right, up_down, dt * speed_mult);
-            }
-            Camera::Flat2D(_) => return false,
+        if forward != 0.0 || right != 0.0 {
+            // Pan the pivot, heading-aware and distance-scaled (capped so
+            // planet-scale panning stays controllable).
+            let rate = KEY_PAN_DEG_PER_SEC_PER_RADIUS * s.distance.min(1.0) * speed_mult * dt;
+            let h = s.heading.to_radians();
+            let dnorth = (forward * h.cos() - right * h.sin()) * rate;
+            let deast = (forward * h.sin() + right * h.cos()) * rate;
+            s.pivot_lat = clamp_lat(s.pivot_lat + dnorth);
+            let coslat = s.pivot_lat.to_radians().cos().max(0.01);
+            s.pivot_lon = wrap_deg(s.pivot_lon + deast / coslat);
+        }
+        if rotate != 0.0 {
+            s.heading = wrap_deg(s.heading + rotate * KEY_ROTATE_DEG_PER_SEC * speed_mult * dt);
         }
         true
     }
 
-    /// Reset pivot to default (Home key). Site for orbit modes.
-    pub fn reset_pivot(&mut self) {
-        match self {
-            Camera::PlanetOrbit(s) => {
-                s.center_lat = s.common.site_lat;
-                s.center_lon = s.common.site_lon;
-            }
-            Camera::SiteOrbit(_) => {
-                // Reset orbit pivot to site location
-                // (site_lat/site_lon already point to the site)
-            }
-            Camera::FreeLook(_) => {
-                self.focus_site();
-            }
-            Camera::Flat2D(_) => {}
-        }
-    }
-
-    /// Update the site position (for SiteOrbit mode) without moving the camera view.
+    /// Update the site position without moving the camera view.
     pub fn set_site(&mut self, lat_deg: f64, lon_deg: f64) {
         let c = self.common_mut();
         c.site_lat = lat_deg as f32;
@@ -1008,261 +593,87 @@ impl Camera {
     }
 
     // ── Mode transitions ────────────────────────────────────────────
-    //
-    // Each transition constructs the target variant from the current one,
-    // preserving the shared 3D state (`Globe3DCommon`) where it exists and
-    // deriving the new mode-specific fields. The historical `switch_mode`
-    // logic for entering/leaving Free Look is preserved exactly.
 
-    /// The shared 3D state to seed a new variant: the live 3D common in a
-    /// 3D mode, or the carried 2D seed (so the site survives the switch).
-    fn common_or_default(&self) -> Globe3DCommon {
-        *self.common()
-    }
-
-    /// Switch to Planet Orbit mode, preserving reasonable state.
-    pub fn switch_to_planet_orbit(&mut self) {
-        if matches!(self, Camera::PlanetOrbit(_)) {
-            return;
-        }
-        let common = self.common_or_default();
-        // Leaving Free Look: derive orbit center/distance from the free
-        // camera's world position (historical switch_mode behavior).
-        let (center_lat, center_lon, distance) = match self {
-            Camera::FreeLook(s) => {
-                let distance = s.free_pos.length().clamp(MIN_DISTANCE, MAX_DISTANCE);
-                let pos = s.free_pos.normalize();
-                let lat = pos.y.asin().to_degrees();
-                let lon = pos.x.atan2(pos.z).to_degrees();
-                (lat, lon, distance)
-            }
-            Camera::SiteOrbit(s) => (s.center_lat, s.center_lon, s.distance),
-            // From 2D: seed a fresh planet orbit centered on the site.
-            _ => (common.site_lat, common.site_lon, DEFAULT_SITE_DISTANCE),
-        };
-        *self = Camera::PlanetOrbit(PlanetOrbitState {
-            common,
-            center_lat,
-            center_lon,
-            distance,
-            tilt: 0.0,
-            rotation: 0.0,
-        });
-    }
-
-    /// Switch to Site Orbit mode, preserving reasonable state.
-    pub fn switch_to_site_orbit(&mut self) {
-        if matches!(self, Camera::SiteOrbit(_)) {
-            return;
-        }
-        let common = self.common_or_default();
-        // Leaving Free Look: derive orbit center/distance from the free
-        // camera's world position (historical switch_mode behavior).
-        let (center_lat, center_lon, distance, bearing, elevation) = match self {
-            Camera::FreeLook(s) => {
-                let distance = s.free_pos.length().clamp(MIN_DISTANCE, MAX_DISTANCE);
-                let pos = s.free_pos.normalize();
-                let lat = pos.y.asin().to_degrees();
-                let lon = pos.x.atan2(pos.z).to_degrees();
-                (lat, lon, distance, 180.0, 45.0)
-            }
-            Camera::PlanetOrbit(s) => (s.center_lat, s.center_lon, s.distance, 180.0, 45.0),
-            // From 2D: seed a fresh site orbit centered on the site.
-            _ => (
-                common.site_lat,
-                common.site_lon,
-                DEFAULT_SITE_DISTANCE,
-                180.0,
-                45.0,
-            ),
-        };
-        *self = Camera::SiteOrbit(SiteOrbitState {
-            common,
-            distance,
-            orbit_bearing: bearing,
-            orbit_elevation: elevation,
-            tilt: 0.0,
-            rotation: 0.0,
-            center_lat,
-            center_lon,
-        });
-    }
-
-    /// Switch to Free Look mode, preserving reasonable state.
-    pub fn switch_to_free_look(&mut self) {
-        if matches!(self, Camera::FreeLook(_)) {
-            return;
-        }
-        let common = self.common_or_default();
-        // Entering Free Look from an orbit mode: initialize free look state
-        // from the current orbit camera position and look direction
-        // (historical switch_mode behavior). From 2D, seed from the site.
-        let (free_pos, look_target) = match self {
-            Camera::PlanetOrbit(s) => (
-                planet_orbit_camera_world_pos(s),
-                geo_to_world(s.center_lat as f64, s.center_lon as f64),
-            ),
-            Camera::SiteOrbit(s) => (
-                site_orbit_camera_world_pos(s),
-                geo_to_world(s.common.site_lat as f64, s.common.site_lon as f64),
-            ),
-            _ => {
-                // From 2D: position above the site looking down at it.
-                let site = geo_to_world(common.site_lat as f64, common.site_lon as f64);
-                (site * DEFAULT_SITE_DISTANCE, site)
-            }
-        };
-        let dir = (look_target - free_pos).normalize();
-        let free_yaw = dir.x.atan2(dir.z).to_degrees();
-        let free_pitch = dir.y.asin().to_degrees();
-        *self = Camera::FreeLook(FreeLookState {
-            common,
-            free_pos,
-            free_yaw,
-            free_pitch,
-            free_speed: DEFAULT_FREE_SPEED,
-        });
-    }
-
-    /// Switch to the 3D mode matching the given [`CameraMode`].
-    pub fn switch_to_3d(&mut self, mode: CameraMode) {
-        match mode {
-            CameraMode::PlanetOrbit => self.switch_to_planet_orbit(),
-            CameraMode::SiteOrbit => self.switch_to_site_orbit(),
-            CameraMode::FreeLook => self.switch_to_free_look(),
+    /// Switch to the 3D globe, restoring the saved orbit camera (a fresh
+    /// session's saved camera hovers above the site). No-op if already 3D.
+    pub fn switch_to_globe(&mut self) {
+        if let Camera::Flat2D(f) = self {
+            *self = Camera::Orbit(f.saved);
         }
     }
 
-    /// Switch to the flat 2D view with the given 2D view state. Coming from
-    /// a 3D mode the 2D pan/zoom resets to whatever `state` carries (the
-    /// historical model stored 2D pan/zoom separately and never seeded it
-    /// from the 3D camera); the radar site is preserved on the carried seed
-    /// so a later switch back to 3D re-centers correctly.
+    /// Switch to the flat 2D view with the given 2D view state. The live
+    /// orbit camera is carried as `saved` so a later switch back to 3D
+    /// restores the exact view. No-op if already 2D.
     pub fn switch_to_flat_2d(&mut self, state: Flat2DState) {
-        if !matches!(self, Camera::Flat2D(_)) {
-            let seed = self.common_or_default();
-            *self = Camera::Flat2D(Flat2D { view: state, seed });
+        if let Camera::Orbit(s) = self {
+            *self = Camera::Flat2D(Flat2D {
+                view: state,
+                saved: *s,
+            });
         }
     }
 }
 
+// ── URL persistence ─────────────────────────────────────────────────
+
 /// Flattened camera values for URL persistence.
 ///
-/// The historical single-struct camera serialized every field at once;
-/// the enum only carries the active variant's fields, so this snapshot
-/// fills the rest with the historical defaults so old/new share-links
-/// round-trip. [`Camera::url_snapshot`] builds it; URL restore in
-/// `main.rs` reconstructs a variant from the saved `vm`/`cm` + these
-/// values.
+/// `distance` stays in the historical center-distance convention
+/// (`surface + 1.0`) on the wire so pre-overhaul links restore exactly;
+/// the codec converts at this boundary. `rotation` carries the heading
+/// (the historical `cr` wire field).
 #[derive(Clone, Copy)]
 pub struct UrlCameraSnapshot {
+    /// Camera distance from the globe *center*, in Earth radii.
     pub distance: f32,
     pub center_lat: f32,
     pub center_lon: f32,
     pub tilt: f32,
     pub rotation: f32,
-    pub orbit_bearing: f32,
-    pub orbit_elevation: f32,
-    pub free_pos: [f32; 3],
-    pub free_yaw: f32,
-    pub free_pitch: f32,
-    pub free_speed: f32,
 }
 
 impl Default for UrlCameraSnapshot {
     fn default() -> Self {
-        // Mirrors the historical `GlobeCamera::default()` field values so a
-        // link from a 2D session (no live 3D state) restores into the same
-        // 3D defaults the old code produced.
         Self {
-            distance: DEFAULT_SITE_DISTANCE,
+            distance: 1.0 + DEFAULT_SITE_SURFACE_DIST,
             center_lat: 0.0,
             center_lon: 0.0,
             tilt: 0.0,
             rotation: 0.0,
-            orbit_bearing: 180.0,
-            orbit_elevation: 45.0,
-            free_pos: [0.0, 0.0, DEFAULT_SITE_DISTANCE],
-            free_yaw: 0.0,
-            free_pitch: 0.0,
-            free_speed: DEFAULT_FREE_SPEED,
         }
     }
 }
 
 impl Camera {
-    /// Flatten the active variant's state for URL persistence, filling
-    /// non-owned fields with historical defaults. The site center seeds
-    /// `center_lat/lon` in 2D so a reloaded link re-centers correctly.
+    /// Flatten the camera state for URL persistence. In 2D the saved
+    /// orbit camera is snapshotted so a reloaded 2D link still restores
+    /// the last 3D view on a 2D → 3D toggle.
     pub fn url_snapshot(&self) -> UrlCameraSnapshot {
-        let mut snap = UrlCameraSnapshot::default();
-        match self {
-            Camera::Flat2D(_) => {}
-            Camera::PlanetOrbit(s) => {
-                snap.distance = s.distance;
-                snap.center_lat = s.center_lat;
-                snap.center_lon = s.center_lon;
-                snap.tilt = s.tilt;
-                snap.rotation = s.rotation;
-            }
-            Camera::SiteOrbit(s) => {
-                snap.distance = s.distance;
-                snap.center_lat = s.center_lat;
-                snap.center_lon = s.center_lon;
-                snap.tilt = s.tilt;
-                snap.rotation = s.rotation;
-                snap.orbit_bearing = s.orbit_bearing;
-                snap.orbit_elevation = s.orbit_elevation;
-            }
-            Camera::FreeLook(s) => {
-                snap.free_pos = [s.free_pos.x, s.free_pos.y, s.free_pos.z];
-                snap.free_yaw = s.free_yaw;
-                snap.free_pitch = s.free_pitch;
-                snap.free_speed = s.free_speed;
-            }
+        let s = self.orbit_or_saved();
+        UrlCameraSnapshot {
+            distance: 1.0 + s.distance,
+            center_lat: s.pivot_lat,
+            center_lon: s.pivot_lon,
+            tilt: s.tilt,
+            rotation: s.heading,
         }
-        snap
     }
 
-    /// Reconstruct a 3D camera from a saved URL snapshot for the given
-    /// [`CameraMode`], on a base camera that already has the site centered
-    /// (via [`Camera::centered_on`]). Mirrors the historical URL restore
-    /// that set each field directly on the single camera struct.
-    pub fn restore_from_url(&mut self, mode: CameraMode, snap: &UrlCameraSnapshot) {
-        let common = self.common_or_default();
-        match mode {
-            CameraMode::PlanetOrbit => {
-                *self = Camera::PlanetOrbit(PlanetOrbitState {
-                    common,
-                    center_lat: snap.center_lat,
-                    center_lon: snap.center_lon,
-                    distance: snap.distance,
-                    tilt: snap.tilt,
-                    rotation: snap.rotation,
-                });
-            }
-            CameraMode::SiteOrbit => {
-                *self = Camera::SiteOrbit(SiteOrbitState {
-                    common,
-                    distance: snap.distance,
-                    orbit_bearing: snap.orbit_bearing,
-                    orbit_elevation: snap.orbit_elevation,
-                    tilt: snap.tilt,
-                    rotation: snap.rotation,
-                    center_lat: snap.center_lat,
-                    center_lon: snap.center_lon,
-                });
-            }
-            CameraMode::FreeLook => {
-                *self = Camera::FreeLook(FreeLookState {
-                    common,
-                    free_pos: Vec3::new(snap.free_pos[0], snap.free_pos[1], snap.free_pos[2]),
-                    free_yaw: snap.free_yaw,
-                    free_pitch: snap.free_pitch,
-                    free_speed: snap.free_speed,
-                });
-            }
-        }
+    /// Reconstruct the 3D orbit camera from a saved URL snapshot, on a
+    /// base camera that already has the site centered (via
+    /// [`Camera::centered_on`]). All fields are clamped through the same
+    /// helpers the live controls use.
+    pub fn restore_from_url(&mut self, snap: &UrlCameraSnapshot) {
+        let common = *self.common();
+        *self = Camera::Orbit(OrbitState {
+            common,
+            pivot_lat: clamp_lat(snap.center_lat),
+            pivot_lon: wrap_deg(snap.center_lon),
+            distance: (snap.distance - 1.0).clamp(MIN_SURFACE_DIST, MAX_SURFACE_DIST),
+            tilt: snap.tilt.clamp(0.0, MAX_TILT_DEG),
+            heading: wrap_deg(snap.rotation),
+        });
     }
 }
 
@@ -1306,882 +717,482 @@ mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    /// A planet-orbit camera centered on the continental US.
-    fn planet() -> Camera {
-        let mut c = Camera::centered_on(39.0, -98.0);
-        c.switch_to_planet_orbit();
-        c
-    }
-
-    /// A planet-orbit camera with its aspect set from a fixed screen rect.
-    fn planet_with_rect() -> (Camera, Rect) {
+    /// An orbit camera over the continental US with a fixed screen rect.
+    fn orbit_with_rect() -> (Camera, Rect) {
         let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), eframe::egui::Vec2::new(800.0, 600.0));
-        let mut c = planet();
+        let mut c = Camera::centered_on(39.0, -98.0);
         c.set_aspect(rect);
+        c.switch_to_globe();
+        c.orbit_state().expect("switch_to_globe must enter Orbit");
         (c, rect)
     }
 
-    #[wasm_bindgen_test]
-    fn geo_to_world_unit_length() {
-        let v = Camera::geo_to_world(39.0, -98.0);
-        let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
-        assert!((len - 1.0).abs() < 1e-5);
+    fn orbit(c: &Camera) -> &OrbitState {
+        c.orbit_state().expect("camera must be in 3D")
     }
 
     #[wasm_bindgen_test]
-    fn geo_to_world_north_pole_is_y_up() {
-        let v = Camera::geo_to_world(90.0, 0.0);
-        assert!(v.x.abs() < 1e-5);
-        assert!((v.y - 1.0).abs() < 1e-5);
-        assert!(v.z.abs() < 1e-5);
+    fn default_is_flat_2d_and_centered_on_seeds_site() {
+        let c = Camera::centered_on(39.0, -98.0);
+        assert_eq!(c.view_mode(), ViewMode::Flat2D);
+        assert!(c.is_2d());
+        let Camera::Flat2D(f) = &c else {
+            unreachable!()
+        };
+        assert!((f.saved.common.site_lat - 39.0).abs() < 1e-4);
+        assert!((f.saved.common.site_lon - -98.0).abs() < 1e-4);
+        assert!((f.saved.pivot_lat - 39.0).abs() < 1e-4);
+        assert!((f.saved.distance - 0.10).abs() < 1e-6);
     }
 
     #[wasm_bindgen_test]
-    fn geo_to_world_equator_prime_meridian_is_pos_z() {
-        let v = Camera::geo_to_world(0.0, 0.0);
-        assert!(v.x.abs() < 1e-5);
-        assert!(v.y.abs() < 1e-5);
-        assert!((v.z - 1.0).abs() < 1e-5);
-    }
-
-    #[wasm_bindgen_test]
-    fn geo_to_world_round_trip_via_atan2() {
-        // The screen_to_geo conversion uses asin(y) and atan2(x, z); the
-        // inverse of geo_to_world should give the same lat/lon back.
-        for (lat, lon) in [(0.0, 0.0), (39.0, -98.0), (-30.0, 120.0), (45.0, 45.0)] {
-            let v = Camera::geo_to_world(lat, lon);
-            let lat_back = v.y.asin().to_degrees() as f64;
-            let lon_back = v.x.atan2(v.z).to_degrees() as f64;
-            assert!((lat_back - lat).abs() < 1e-3, "lat {} -> {}", lat, lat_back);
-            assert!((lon_back - lon).abs() < 1e-3, "lon {} -> {}", lon, lon_back);
+    fn switch_to_globe_enters_orbit_over_site_and_is_idempotent() {
+        let (mut c, _) = orbit_with_rect();
+        assert_eq!(c.view_mode(), ViewMode::Globe3D);
+        {
+            let s = orbit(&c);
+            assert!((s.pivot_lat - 39.0).abs() < 1e-4);
+            assert!((s.pivot_lon - -98.0).abs() < 1e-4);
+            assert_eq!(s.tilt, 0.0);
+            assert_eq!(s.heading, 0.0);
         }
-    }
-
-    /// A zoom on a planet-orbit camera reads back its distance.
-    fn planet_distance(c: &Camera) -> f32 {
-        match c {
-            Camera::PlanetOrbit(s) => s.distance,
-            _ => panic!("expected planet orbit"),
-        }
+        // Idempotent: switching again keeps the (possibly modified) state.
+        c.adjust_tilt_heading(50.0, -50.0, 600.0);
+        let tilt_before = orbit(&c).tilt;
+        c.switch_to_globe();
+        assert_eq!(orbit(&c).tilt, tilt_before);
     }
 
     #[wasm_bindgen_test]
-    fn zoom_in_decreases_distance() {
-        let mut c = planet();
-        let before = planet_distance(&c);
-        c.zoom(100.0);
-        assert!(planet_distance(&c) < before);
-    }
-
-    #[wasm_bindgen_test]
-    fn zoom_out_increases_distance() {
-        let mut c = planet();
-        let before = planet_distance(&c);
-        c.zoom(-100.0);
-        assert!(planet_distance(&c) > before);
-    }
-
-    #[wasm_bindgen_test]
-    fn zoom_clamps_to_min_max() {
-        let mut c = planet();
-        // Many ticks in one direction must not overshoot the bounds.
-        for _ in 0..1000 {
-            c.zoom(1000.0);
-        }
-        assert!(planet_distance(&c) >= 1.001);
-        for _ in 0..2000 {
-            c.zoom(-1000.0);
-        }
-        assert!(planet_distance(&c) <= 20.0);
-    }
-
-    #[wasm_bindgen_test]
-    fn zoom_is_symmetric_in_log_space_away_from_clamps() {
-        // Start from the middle of the log-distance range to avoid hitting
-        // MIN_DISTANCE/MAX_DISTANCE clamps mid-test.
-        let mut c = planet();
-        let mid = (1.001_f32.ln() + 20.0_f32.ln()).exp().sqrt();
-        if let Camera::PlanetOrbit(s) = &mut c {
-            s.distance = mid;
-        }
-        let start = planet_distance(&c);
-        c.zoom(50.0);
-        c.zoom(-50.0);
-        assert!(
-            ((planet_distance(&c) - start) / start).abs() < 1e-4,
-            "expected ~{}, got {}",
-            start,
-            planet_distance(&c)
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn center_on_updates_site_and_resets_view() {
-        // center_on on a site-orbit camera updates the site and resets the
-        // orbit angles to defaults.
-        let mut c = Camera::centered_on(39.0, -98.0);
-        c.switch_to_site_orbit();
+    fn two_d_excursion_round_trips_full_orbit_state() {
+        let (mut c, _) = orbit_with_rect();
+        // Put the camera in a distinctive pose.
+        c.move_pivot_to(41.5, -95.25);
+        c.adjust_tilt_heading(120.0, -80.0, 600.0);
         c.zoom(500.0);
-        c.center_on(45.0, -100.0);
-        let Camera::SiteOrbit(s) = &c else {
-            panic!("expected site orbit");
-        };
-        assert!((s.common.site_lat - 45.0).abs() < 1e-5);
-        assert!((s.common.site_lon - (-100.0)).abs() < 1e-5);
-        // Distance and orbit angles get reset.
-        assert!((s.orbit_bearing - 180.0).abs() < 1e-5);
-        assert!((s.orbit_elevation - 45.0).abs() < 1e-5);
-        assert!((s.distance - DEFAULT_SITE_DISTANCE).abs() < 1e-5);
-    }
-
-    #[wasm_bindgen_test]
-    fn default_camera_is_2d() {
-        let c = Camera::default();
-        assert!(c.is_2d());
-        assert_eq!(c.view_mode(), ViewMode::Flat2D);
-        assert_eq!(c.camera_mode(), None);
-    }
-
-    #[wasm_bindgen_test]
-    fn view_mode_derives_from_variant() {
-        let mut c = Camera::centered_on(39.0, -98.0);
-        assert_eq!(c.view_mode(), ViewMode::Flat2D);
-        c.switch_to_planet_orbit();
-        assert_eq!(c.view_mode(), ViewMode::Globe3D);
-        assert_eq!(c.camera_mode(), Some(CameraMode::PlanetOrbit));
-        c.switch_to_site_orbit();
-        assert_eq!(c.view_mode(), ViewMode::Globe3D);
-        assert_eq!(c.camera_mode(), Some(CameraMode::SiteOrbit));
-        c.switch_to_free_look();
-        assert_eq!(c.view_mode(), ViewMode::Globe3D);
-        assert_eq!(c.camera_mode(), Some(CameraMode::FreeLook));
+        let before = *orbit(&c);
+        // 2D excursion and back.
         c.switch_to_flat_2d(Flat2DState::default());
-        assert_eq!(c.view_mode(), ViewMode::Flat2D);
+        assert!(c.is_2d());
+        c.switch_to_globe();
+        let after = orbit(&c);
+        assert!((after.pivot_lat - before.pivot_lat).abs() < 1e-6);
+        assert!((after.pivot_lon - before.pivot_lon).abs() < 1e-6);
+        assert!((after.distance - before.distance).abs() < 1e-6);
+        assert!((after.tilt - before.tilt).abs() < 1e-6);
+        assert!((after.heading - before.heading).abs() < 1e-6);
     }
 
     #[wasm_bindgen_test]
-    fn switch_to_free_look_drops_then_orbit_recovers_distance() {
-        // Entering Free Look from planet orbit seeds free_pos from the orbit
-        // camera position; leaving back to orbit recovers a comparable
-        // distance. This pins the historical switch_mode round-trip.
-        let mut c = planet();
-        let d0 = planet_distance(&c);
-        c.switch_to_free_look();
-        let Camera::FreeLook(s) = &c else {
-            panic!("expected free look");
-        };
-        // free_pos length ≈ original orbit distance (planet orbit camera sits
-        // at `distance` from the globe center).
-        assert!(
-            (s.free_pos.length() - d0).abs() < 1e-3,
-            "{}",
-            s.free_pos.length()
-        );
-        c.switch_to_planet_orbit();
-        // Distance recovered within the clamp range.
-        let d1 = planet_distance(&c);
-        assert!((d1 - d0).abs() < 1e-3, "d0={d0} d1={d1}");
-    }
-
-    #[wasm_bindgen_test]
-    fn switch_to_same_mode_is_noop() {
-        let mut c = planet();
-        c.move_pivot_to(10.0, 20.0);
-        let Camera::PlanetOrbit(before) = c.clone() else {
-            panic!();
-        };
-        c.switch_to_planet_orbit(); // already planet → no reconstruction
-        let Camera::PlanetOrbit(after) = &c else {
-            panic!();
-        };
-        assert!((after.center_lat - before.center_lat).abs() < 1e-6);
-        assert!((after.center_lon - before.center_lon).abs() < 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn switch_preserves_site() {
-        // The radar site (common state) survives every 3D transition.
+    fn switch_to_flat_2d_is_noop_when_already_2d() {
         let mut c = Camera::centered_on(39.0, -98.0);
-        c.switch_to_planet_orbit();
-        c.switch_to_site_orbit();
-        c.switch_to_free_look();
-        let Camera::FreeLook(s) = &c else {
-            panic!("expected free look");
-        };
-        assert!(
-            (s.common.site_lat - 39.0).abs() < 1e-4,
-            "{}",
-            s.common.site_lat
-        );
-        assert!(
-            (s.common.site_lon - (-98.0)).abs() < 1e-4,
-            "{}",
-            s.common.site_lon
-        );
+        c.flat_2d_mut().unwrap().zoom = 4.0;
+        // Must not clobber the live 2D view with the passed default state.
+        c.switch_to_flat_2d(Flat2DState::default());
+        assert!((c.flat_2d().unwrap().zoom - 4.0).abs() < 1e-6);
     }
 
     #[wasm_bindgen_test]
-    fn free_look_state_not_leaked_into_orbit() {
-        // Type-level guarantee: a planet-orbit variant has no free_pos field
-        // to leak. We assert the variant type after a round-trip through free
-        // look, which is the by-construction property S4 buys us.
-        let mut c = planet();
-        c.switch_to_free_look();
-        c.free_move(1.0, 0.0, 0.0, 1.0); // perturb free_pos
-        c.switch_to_planet_orbit();
-        assert!(matches!(c, Camera::PlanetOrbit(_)));
-    }
-
-    /// The site center projects to screen and unprojects back to the same
-    /// lat/lon — a full geo → screen → geo round-trip through the view and
-    /// projection matrices.
-    #[wasm_bindgen_test]
-    fn site_center_geo_round_trips_through_screen() {
-        let (c, rect) = planet_with_rect();
-        let screen = c
-            .geo_to_screen(39.0, -98.0, rect)
-            .expect("site center must project (near side)");
-        // The center should land near the middle of the screen.
-        assert!((screen.x - rect.center().x).abs() < 1.0, "sx {}", screen.x);
-        assert!((screen.y - rect.center().y).abs() < 1.0, "sy {}", screen.y);
-
-        let (lat, lon) = c
-            .screen_to_geo(screen, rect)
-            .expect("center screen must hit the globe");
-        assert!((lat - 39.0).abs() < 1e-2, "lat {}", lat);
-        assert!((lon - (-98.0)).abs() < 1e-2, "lon {}", lon);
-    }
-
-    /// The screen rect's center unprojects to the near-side geographic point
-    /// and projects straight back to that same screen pixel.
-    #[wasm_bindgen_test]
-    fn rect_center_screen_to_geo_and_back() {
-        let (c, rect) = planet_with_rect();
-        let center = rect.center();
-        let (lat, lon) = c
-            .screen_to_geo(center, rect)
-            .expect("rect center hits the near side of the globe");
-        // Near side of a camera centered on the site → the site itself.
-        assert!((lat - 39.0).abs() < 1e-2, "lat {}", lat);
-        assert!((lon - (-98.0)).abs() < 1e-2, "lon {}", lon);
-
-        let back = c.geo_to_screen(lat, lon, rect).expect("must re-project");
-        assert!((back.x - center.x).abs() < 1.0);
-        assert!((back.y - center.y).abs() < 1.0);
-    }
-
-    /// A screen point well outside the projected globe disc misses the sphere,
-    /// so `screen_to_geo` returns `None`.
-    #[wasm_bindgen_test]
-    fn screen_to_geo_misses_outside_disc() {
-        let (c, rect) = planet_with_rect();
-        // A point far off the right edge (NDC x ≈ 5) — well outside the globe
-        // disc, so the unprojected ray misses the sphere.
-        let off = Pos2::new(rect.max.x + 2000.0, rect.center().y);
-        assert!(c.screen_to_geo(off, rect).is_none());
-    }
-
-    /// A geographic point on the far hemisphere is behind the globe and culled
-    /// by `geo_to_screen` (the back-face test in `world_to_screen`).
-    #[wasm_bindgen_test]
-    fn geo_to_screen_culls_far_hemisphere() {
-        let (c, rect) = planet_with_rect();
-        // Antipode of the site (39,-98) is (-39, 82) — directly behind the globe.
-        assert!(c.geo_to_screen(-39.0, 82.0, rect).is_none());
-    }
-
-    #[wasm_bindgen_test]
-    fn flat_2d_zoom_pan_round_trip() {
-        let mut c = Camera::default();
-        if let Some(s) = c.flat_2d_mut() {
-            s.zoom = 2.5;
-            s.pan_offset = Vec2::new(10.0, -5.0);
+    fn center_on_updates_site_and_resets_view_in_both_variants() {
+        // In 3D: re-pivots to the new site at defaults.
+        let (mut c, _) = orbit_with_rect();
+        c.adjust_tilt_heading(100.0, -100.0, 600.0);
+        c.center_on(35.3, -97.3);
+        {
+            let s = orbit(&c);
+            assert!((s.common.site_lat - 35.3).abs() < 1e-4);
+            assert!((s.pivot_lat - 35.3).abs() < 1e-4);
+            assert_eq!(s.tilt, 0.0);
+            assert_eq!(s.heading, 0.0);
+            assert!((s.distance - 0.10).abs() < 1e-6);
         }
-        let s = c.flat_2d().expect("flat 2d");
-        assert!((s.zoom - 2.5).abs() < 1e-6);
-        assert!((s.pan_offset.x - 10.0).abs() < 1e-6);
-        assert!((s.pan_offset.y + 5.0).abs() < 1e-6);
+        // In 2D: updates the saved camera the next 3D switch restores.
+        let mut c2 = Camera::centered_on(39.0, -98.0);
+        c2.center_on(44.9, -93.6);
+        c2.switch_to_globe();
+        let s2 = orbit(&c2);
+        assert!((s2.common.site_lat - 44.9).abs() < 1e-4);
+        assert!((s2.pivot_lat - 44.9).abs() < 1e-4);
     }
 
-    #[wasm_bindgen_test]
-    fn site_survives_round_trip_through_2d() {
-        // Switching 3D → 2D → 3D must keep the radar site (the carried seed).
-        let mut c = Camera::centered_on(39.0, -98.0);
-        c.switch_to_site_orbit();
-        c.switch_to_flat_2d(Flat2DState::default());
-        assert!(c.is_2d());
-        c.switch_to_planet_orbit();
-        let Camera::PlanetOrbit(s) = &c else {
-            panic!("expected planet orbit");
-        };
-        assert!((s.common.site_lat - 39.0).abs() < 1e-4);
-        assert!((s.common.site_lon - (-98.0)).abs() < 1e-4);
-        // A fresh planet orbit centers its look-at on the site.
-        assert!((s.center_lat - 39.0).abs() < 1e-4);
-        assert!((s.center_lon - (-98.0)).abs() < 1e-4);
-    }
+    // ---- Matrix invariants -------------------------------------------------
 
     #[wasm_bindgen_test]
-    fn url_snapshot_round_trips_each_3d_mode() {
-        // url_snapshot() → restore_from_url() preserves the variant-specific
-        // fields, mirroring the historical share-link round-trip.
-        for mode in [
-            CameraMode::PlanetOrbit,
-            CameraMode::SiteOrbit,
-            CameraMode::FreeLook,
-        ] {
-            let mut c = Camera::centered_on(39.0, -98.0);
-            c.switch_to_3d(mode);
-            // Perturb the active mode's state so defaults can't mask a bug.
-            c.zoom(50.0);
-            c.orbit(7.0, -3.0, 600.0);
-            c.free_look(5.0, 2.0, 600.0);
-            c.free_move(0.5, 0.0, 0.0, 1.0);
-
-            let snap = c.url_snapshot();
-            let mut restored = Camera::centered_on(39.0, -98.0);
-            restored.restore_from_url(mode, &snap);
-            assert_eq!(restored.camera_mode(), Some(mode));
-
-            // The view-projection matrix is the observable end product; equal
-            // matrices ⇒ identical rendered geometry.
-            let a = c.view_projection().to_cols_array();
-            let b = restored.view_projection().to_cols_array();
-            for (x, y) in a.iter().zip(b.iter()) {
-                assert!((x - y).abs() < 1e-4, "vp mismatch for {mode:?}: {x} vs {y}");
+    fn pivot_projects_to_screen_center_for_all_poses() {
+        let (mut c, rect) = orbit_with_rect();
+        let poses: &[(f64, f64, f32, f32, f32)] = &[
+            (39.0, -98.0, 0.0, 0.0, 0.10),
+            (39.0, -98.0, 45.0, 90.0, 0.10),
+            (39.0, -98.0, 85.0, -135.0, 0.001),
+            (-45.0, 170.0, 45.0, 30.0, 1.0),
+            (70.0, 10.0, 85.0, 179.0, 19.0),
+            (0.0, 0.0, 30.0, -90.0, 5.0),
+        ];
+        for &(lat, lon, tilt, heading, dist) in poses {
+            {
+                let Camera::Orbit(s) = &mut c else {
+                    unreachable!()
+                };
+                s.pivot_lat = lat as f32;
+                s.pivot_lon = lon as f32;
+                s.tilt = tilt;
+                s.heading = heading;
+                s.distance = dist;
             }
+            let px = c
+                .geo_to_screen(lat, lon, rect)
+                .expect("pivot must be visible");
+            // The pivot is the look-at target: exact screen center.
+            assert!(
+                (px.x - rect.center().x).abs() < 0.1 && (px.y - rect.center().y).abs() < 0.1,
+                "pivot off-center at tilt={tilt} heading={heading} dist={dist}: {px:?}"
+            );
         }
-    }
-}
-
-#[cfg(test)]
-mod coverage_tests {
-    use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test;
-
-    // Re-declared helpers (the sibling `mod tests` ones are private).
-    fn planet() -> Camera {
-        let mut c = Camera::centered_on(39.0, -98.0);
-        c.switch_to_planet_orbit();
-        c
-    }
-    fn site() -> Camera {
-        let mut c = Camera::centered_on(39.0, -98.0);
-        c.switch_to_site_orbit();
-        c
-    }
-    fn free() -> Camera {
-        let mut c = Camera::centered_on(39.0, -98.0);
-        c.switch_to_free_look();
-        c
-    }
-
-    fn planet_state(c: &Camera) -> &PlanetOrbitState {
-        match c {
-            Camera::PlanetOrbit(s) => s,
-            _ => panic!("expected planet orbit"),
-        }
-    }
-    fn site_state(c: &Camera) -> &SiteOrbitState {
-        match c {
-            Camera::SiteOrbit(s) => s,
-            _ => panic!("expected site orbit"),
-        }
-    }
-    fn free_state(c: &Camera) -> &FreeLookState {
-        match c {
-            Camera::FreeLook(s) => s,
-            _ => panic!("expected free look"),
-        }
-    }
-
-    // ── CameraMode enum: label / next / key_hint / default ──────────────
-
-    #[wasm_bindgen_test]
-    fn camera_mode_labels() {
-        assert_eq!(CameraMode::PlanetOrbit.label(), "Planet Orbit");
-        assert_eq!(CameraMode::SiteOrbit.label(), "Site Orbit");
-        assert_eq!(CameraMode::FreeLook.label(), "Free Look");
     }
 
     #[wasm_bindgen_test]
-    fn camera_mode_next_cycles() {
-        assert_eq!(CameraMode::PlanetOrbit.next(), CameraMode::SiteOrbit);
-        assert_eq!(CameraMode::SiteOrbit.next(), CameraMode::FreeLook);
-        assert_eq!(CameraMode::FreeLook.next(), CameraMode::PlanetOrbit);
-        // Three nexts return to start.
-        assert_eq!(
-            CameraMode::PlanetOrbit.next().next().next(),
-            CameraMode::PlanetOrbit
+    fn untilted_eye_sits_radially_above_pivot() {
+        let (mut c, _) = orbit_with_rect();
+        c.move_pivot_to(39.0, -98.0);
+        let pivot_dir = Camera::geo_to_world(39.0, -98.0);
+        let eye = c.camera_world_pos();
+        let expected = pivot_dir * (1.0 + orbit(&c).distance);
+        assert!((eye - expected).length() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn eye_distance_from_pivot_matches_state_under_tilt() {
+        let (mut c, _) = orbit_with_rect();
+        c.adjust_tilt_heading(200.0, -300.0, 600.0);
+        let s = orbit(&c);
+        let pivot = Camera::geo_to_world(s.pivot_lat as f64, s.pivot_lon as f64);
+        let eye = c.camera_world_pos();
+        assert!(((eye - pivot).length() - s.distance).abs() < 1e-5);
+    }
+
+    #[wasm_bindgen_test]
+    fn screen_geo_round_trips_near_center() {
+        let (c, rect) = orbit_with_rect();
+        let probe = Pos2::new(rect.center().x + 60.0, rect.center().y - 40.0);
+        let (lat, lon) = c.screen_to_geo(probe, rect).expect("on-globe probe");
+        let back = c.geo_to_screen(lat, lon, rect).expect("round trip");
+        assert!((back.x - probe.x).abs() < 0.5);
+        assert!((back.y - probe.y).abs() < 0.5);
+    }
+
+    #[wasm_bindgen_test]
+    fn near_plane_is_continuous_and_clamped() {
+        // Continuity across the historical 1.1-center-distance boundary.
+        let a = near_plane_for(0.0999);
+        let b = near_plane_for(0.1001);
+        assert!((a - b).abs() < 1e-4);
+        // Proportional in the mid range, clamped at both ends.
+        assert!((near_plane_for(0.05) - 0.005).abs() < 1e-7);
+        assert!((near_plane_for(MIN_SURFACE_DIST) - 1e-4).abs() < 1e-9);
+        assert_eq!(near_plane_for(0.0), 2e-5);
+        assert_eq!(near_plane_for(MAX_SURFACE_DIST), 0.01);
+    }
+
+    // ---- Zoom: no dead zone ------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn zoom_in_strictly_decreases_distance_until_min_with_no_plateau() {
+        let (mut c, _) = orbit_with_rect();
+        let mut prev = orbit(&c).distance;
+        let mut hit_min = false;
+        for _ in 0..3000 {
+            c.zoom(120.0);
+            let d = orbit(&c).distance;
+            if (d - MIN_SURFACE_DIST).abs() < 1e-9 {
+                hit_min = true;
+                break;
+            }
+            // Every tick before the clamp must strictly reduce distance —
+            // the regression test for the old 1.001..1.05 dead zone.
+            assert!(d < prev, "zoom plateaued at {d}");
+            prev = d;
+        }
+        assert!(hit_min, "zoom-in never reached MIN_SURFACE_DIST");
+        // One tick back out immediately increases distance.
+        c.zoom(-120.0);
+        assert!(orbit(&c).distance > MIN_SURFACE_DIST);
+    }
+
+    #[wasm_bindgen_test]
+    fn zoom_out_clamps_at_max() {
+        let (mut c, _) = orbit_with_rect();
+        for _ in 0..3000 {
+            c.zoom(-500.0);
+        }
+        assert!((orbit(&c).distance - MAX_SURFACE_DIST).abs() < 1e-6);
+    }
+
+    // ---- Drag controls -----------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn pan_is_heading_aware() {
+        let (mut c, _) = orbit_with_rect();
+        // Heading 0: drag right moves pivot west; drag down moves it north.
+        let lat0 = orbit(&c).pivot_lat;
+        let lon0 = orbit(&c).pivot_lon;
+        c.pan_pivot(50.0, 0.0, 600.0);
+        assert!(
+            orbit(&c).pivot_lon < lon0,
+            "drag right must move pivot west"
         );
-    }
+        c.pan_pivot(0.0, 50.0, 600.0);
+        assert!(
+            orbit(&c).pivot_lat > lat0,
+            "drag down must move pivot north"
+        );
 
-    #[wasm_bindgen_test]
-    fn camera_mode_key_hints() {
-        assert_eq!(CameraMode::SiteOrbit.key_hint(), "2");
-        assert_eq!(CameraMode::PlanetOrbit.key_hint(), "3");
-        assert_eq!(CameraMode::FreeLook.key_hint(), "4");
-    }
-
-    #[wasm_bindgen_test]
-    fn camera_mode_default_is_planet_orbit() {
-        assert_eq!(CameraMode::default(), CameraMode::PlanetOrbit);
-    }
-
-    // ── Accessors: is_2d / flat_2d / flat_2d_mut None paths ─────────────
-
-    #[wasm_bindgen_test]
-    fn is_2d_false_in_3d_modes() {
-        assert!(!planet().is_2d());
-        assert!(!site().is_2d());
-        assert!(!free().is_2d());
-        assert!(Camera::default().is_2d());
-    }
-
-    #[wasm_bindgen_test]
-    fn flat_2d_accessors_none_in_3d() {
-        let mut c = planet();
-        assert!(c.flat_2d().is_none());
-        assert!(c.flat_2d_mut().is_none());
-    }
-
-    #[wasm_bindgen_test]
-    fn flat_2d_accessor_some_in_2d() {
-        let c = Camera::default();
-        let v = c.flat_2d().expect("2d view present");
-        assert!((v.zoom - 1.0).abs() < 1e-6);
-    }
-
-    // ── Defaults of carried structs ─────────────────────────────────────
-
-    #[wasm_bindgen_test]
-    fn flat2dstate_default_values() {
-        let d = Flat2DState::default();
-        assert!((d.zoom - 1.0).abs() < 1e-6);
-        assert!(d.pan_offset.x.abs() < 1e-6 && d.pan_offset.y.abs() < 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn url_snapshot_default_matches_historical() {
-        let d = UrlCameraSnapshot::default();
-        assert!((d.distance - DEFAULT_SITE_DISTANCE).abs() < 1e-6);
-        assert!(d.center_lat.abs() < 1e-6 && d.center_lon.abs() < 1e-6);
-        assert!((d.orbit_bearing - 180.0).abs() < 1e-6);
-        assert!((d.orbit_elevation - 45.0).abs() < 1e-6);
-        assert!((d.free_pos[2] - DEFAULT_SITE_DISTANCE).abs() < 1e-6);
-        assert!((d.free_speed - DEFAULT_FREE_SPEED).abs() < 1e-6);
-    }
-
-    // ── orbit(): longitude wrap, latitude clamp (Planet) ────────────────
-
-    #[wasm_bindgen_test]
-    fn orbit_planet_clamps_latitude() {
-        let mut c = planet();
-        // Huge positive dy pushes center_lat well past the pole; clamp at 89.9.
-        c.orbit(0.0, 100000.0, 600.0);
-        assert!((planet_state(&c).center_lat - 89.9).abs() < 1e-3);
-        // Huge negative dy clamps at -89.9.
-        c.orbit(0.0, -200000.0, 600.0);
-        assert!((planet_state(&c).center_lat - (-89.9)).abs() < 1e-3);
-    }
-
-    #[wasm_bindgen_test]
-    fn orbit_planet_wraps_longitude_into_range() {
-        let mut c = planet();
-        // Drive longitude far in both directions; result must stay in [-180,180]
-        // after a single-step wrap each call.
-        for _ in 0..50 {
-            c.orbit(500.0, 0.0, 600.0);
-            let lon = planet_state(&c).center_lon;
-            assert!((-180.0..=180.0).contains(&lon), "lon out of range: {lon}");
+        // Heading 90 (view rotated clockwise, north at screen-left):
+        // dragging down moves the pivot toward screen-up = east.
+        let (mut c2, _) = orbit_with_rect();
+        {
+            let Camera::Orbit(s) = &mut c2 else {
+                unreachable!()
+            };
+            s.heading = 90.0;
         }
-        for _ in 0..120 {
-            c.orbit(-500.0, 0.0, 600.0);
-            let lon = planet_state(&c).center_lon;
-            assert!((-180.0..=180.0).contains(&lon), "lon out of range: {lon}");
+        let lon_before = orbit(&c2).pivot_lon;
+        let lat_before = orbit(&c2).pivot_lat;
+        c2.pan_pivot(0.0, 50.0, 600.0);
+        assert!(
+            orbit(&c2).pivot_lon > lon_before,
+            "heading 90: drag down = east"
+        );
+        assert!((orbit(&c2).pivot_lat - lat_before).abs() < 1e-3);
+    }
+
+    #[wasm_bindgen_test]
+    fn pan_sensitivity_scales_with_distance() {
+        let (mut near_cam, _) = orbit_with_rect();
+        let (mut far_cam, _) = orbit_with_rect();
+        {
+            let Camera::Orbit(s) = &mut far_cam else {
+                unreachable!()
+            };
+            s.distance = orbit(&near_cam).distance * 10.0;
         }
+        let lat0 = orbit(&near_cam).pivot_lat;
+        near_cam.pan_pivot(0.0, 30.0, 600.0);
+        far_cam.pan_pivot(0.0, 30.0, 600.0);
+        let near_delta = orbit(&near_cam).pivot_lat - lat0;
+        let far_delta = orbit(&far_cam).pivot_lat - lat0;
+        assert!((far_delta / near_delta - 10.0).abs() < 0.01);
     }
 
     #[wasm_bindgen_test]
-    fn orbit_site_wraps_bearing_and_clamps_elevation() {
-        let mut c = site();
-        // Drive bearing negative then positive; always normalized to [0,360).
-        for _ in 0..40 {
-            c.orbit(500.0, 0.0, 600.0);
-            let b = site_state(&c).orbit_bearing;
-            assert!((0.0..360.0).contains(&b), "bearing out of range: {b}");
-        }
-        // Elevation clamps to [5,175].
-        c.orbit(0.0, 100000.0, 600.0);
-        assert!(site_state(&c).orbit_elevation <= 175.0 + 1e-3);
-        c.orbit(0.0, -200000.0, 600.0);
-        assert!(site_state(&c).orbit_elevation >= 5.0 - 1e-3);
+    fn tilt_clamps_at_zero_and_max_heading_wraps() {
+        let (mut c, _) = orbit_with_rect();
+        // Massive drag down: tilt clamps at 0 (cannot go negative).
+        c.adjust_tilt_heading(0.0, 100_000.0, 600.0);
+        assert_eq!(orbit(&c).tilt, 0.0);
+        // Massive drag up: clamps at MAX_TILT_DEG — no zenith crossing.
+        c.adjust_tilt_heading(0.0, -100_000.0, 600.0);
+        assert_eq!(orbit(&c).tilt, MAX_TILT_DEG);
+        // Heading wraps into ±180.
+        c.adjust_tilt_heading(100_000.0, 0.0, 600.0);
+        let h = orbit(&c).heading;
+        assert!((-180.0..=180.0).contains(&h));
     }
 
     #[wasm_bindgen_test]
-    fn orbit_noop_in_free_and_2d() {
-        let mut f = free();
-        let before = free_state(&f).free_pos;
-        f.orbit(50.0, 50.0, 600.0);
-        let after = free_state(&f).free_pos;
-        assert!((before - after).length() < 1e-9);
-
-        let mut two = Camera::default();
-        two.orbit(50.0, 50.0, 600.0); // must not panic / change variant
-        assert!(two.is_2d());
-    }
-
-    // ── tilt_rotate(): clamp + wrap + no-op ─────────────────────────────
-
-    #[wasm_bindgen_test]
-    fn tilt_rotate_clamps_tilt_and_wraps_rotation() {
-        let mut c = planet();
-        c.tilt_rotate(0.0, 1_000_000.0, 600.0); // huge pitch
-        assert!(planet_state(&c).tilt <= 89.0 + 1e-3);
-        c.tilt_rotate(0.0, -2_000_000.0, 600.0);
-        assert!(planet_state(&c).tilt >= -89.0 - 1e-3);
-        // Rotation stays wrapped within (-180,180] band after each call.
-        let mut c2 = planet();
+    fn pivot_latitude_clamps_near_poles() {
+        let (mut c, _) = orbit_with_rect();
+        c.move_pivot_to(89.999, 0.0);
+        assert!((orbit(&c).pivot_lat - 89.9).abs() < 1e-4);
         for _ in 0..200 {
-            c2.tilt_rotate(500.0, 0.0, 600.0);
-            let r = planet_state(&c2).rotation;
-            assert!((-180.0..=180.0).contains(&r), "rotation out of range: {r}");
+            c.pan_pivot(0.0, 500.0, 600.0);
         }
+        assert!(orbit(&c).pivot_lat <= 89.9);
+    }
+
+    // ---- Keyboard ----------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn keyboard_move_never_changes_distance() {
+        let (mut c, _) = orbit_with_rect();
+        let d0 = orbit(&c).distance;
+        assert!(c.keyboard_move(1.0, 1.0, 1.0, 2.0, 0.016));
+        assert!(c.keyboard_move(-1.0, 0.0, 0.0, 1.0, 0.016));
+        assert_eq!(orbit(&c).distance, d0);
     }
 
     #[wasm_bindgen_test]
-    fn tilt_rotate_noop_in_free_and_2d() {
-        let mut f = free();
-        let before = (free_state(&f).free_yaw, free_state(&f).free_pitch);
-        f.tilt_rotate(40.0, 40.0, 600.0);
-        let after = (free_state(&f).free_yaw, free_state(&f).free_pitch);
-        assert!((before.0 - after.0).abs() < 1e-9 && (before.1 - after.1).abs() < 1e-9);
-
-        let mut two = Camera::default();
-        two.tilt_rotate(40.0, 40.0, 600.0);
-        assert!(two.is_2d());
-    }
-
-    // ── free_look(): pitch clamp + yaw wrap + no-op ─────────────────────
-
-    #[wasm_bindgen_test]
-    fn free_look_clamps_pitch_and_wraps_yaw() {
-        let mut c = free();
-        // Large negative dy raises pitch toward +89 (pitch -= dy*...).
-        c.free_look(0.0, -1_000_000.0, 600.0);
-        assert!(free_state(&c).free_pitch <= 89.0 + 1e-3);
-        c.free_look(0.0, 1_000_000.0, 600.0);
-        assert!(free_state(&c).free_pitch >= -89.0 - 1e-3);
-        // Yaw remains wrapped.
-        for _ in 0..200 {
-            c.free_look(500.0, 0.0, 600.0);
-            let y = free_state(&c).free_yaw;
-            assert!((-180.0..=180.0).contains(&y), "yaw out of range: {y}");
+    fn keyboard_move_pans_and_rotates() {
+        let (mut c, _) = orbit_with_rect();
+        let s0 = *orbit(&c);
+        // W pans north at heading 0.
+        assert!(c.keyboard_move(1.0, 0.0, 0.0, 1.0, 0.1));
+        assert!(orbit(&c).pivot_lat > s0.pivot_lat);
+        // D pans east at heading 0.
+        assert!(c.keyboard_move(0.0, 1.0, 0.0, 1.0, 0.1));
+        assert!(orbit(&c).pivot_lon > s0.pivot_lon);
+        // E rotates heading clockwise; wraps.
+        assert!(c.keyboard_move(0.0, 0.0, 1.0, 1.0, 0.1));
+        assert!(orbit(&c).heading > 0.0);
+        for _ in 0..100 {
+            c.keyboard_move(0.0, 0.0, 1.0, 2.0, 0.1);
         }
+        assert!((-180.0..=180.0).contains(&orbit(&c).heading));
     }
 
     #[wasm_bindgen_test]
-    fn free_look_noop_in_orbit_and_2d() {
-        let mut p = planet();
-        let before = planet_state(&p).center_lat;
-        p.free_look(40.0, 40.0, 600.0); // ignored in planet orbit
-        assert!((planet_state(&p).center_lat - before).abs() < 1e-9);
-
-        let mut two = Camera::default();
-        two.free_look(40.0, 40.0, 600.0);
-        assert!(two.is_2d());
-    }
-
-    // ── zoom(): free-look speed factor + clamp, 2D no-op ────────────────
-
-    #[wasm_bindgen_test]
-    fn zoom_freelook_scales_speed() {
-        let mut c = free();
-        // free_speed starts at DEFAULT_FREE_SPEED = 0.5; factor = 1 + 100*0.003 = 1.3
-        c.zoom(100.0);
-        assert!((free_state(&c).free_speed - 0.5 * 1.3).abs() < 1e-4);
+    fn keyboard_move_is_dt_scaled() {
+        let (mut a, _) = orbit_with_rect();
+        let (mut b, _) = orbit_with_rect();
+        let lat0 = orbit(&a).pivot_lat;
+        a.keyboard_move(1.0, 0.0, 0.0, 1.0, 0.02);
+        b.keyboard_move(1.0, 0.0, 0.0, 1.0, 0.04);
+        let da = orbit(&a).pivot_lat - lat0;
+        let db = orbit(&b).pivot_lat - lat0;
+        assert!((db / da - 2.0).abs() < 1e-3);
     }
 
     #[wasm_bindgen_test]
-    fn zoom_freelook_clamps_speed_range() {
-        let mut c = free();
-        for _ in 0..5000 {
-            c.zoom(1000.0); // positive → speed up
-        }
-        assert!(free_state(&c).free_speed <= 50.0 + 1e-3);
-        for _ in 0..10000 {
-            c.zoom(-1000.0); // negative → slow down
-        }
-        assert!(free_state(&c).free_speed >= 0.01 - 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn zoom_noop_in_2d() {
-        let mut c = Camera::default();
-        c.zoom(500.0);
-        assert!(c.is_2d());
-        // 2D zoom is handled on Flat2DState, not via Camera::zoom.
-        assert!((c.flat_2d().unwrap().zoom - 1.0).abs() < 1e-6);
-    }
-
-    // ── recenter / reset / focus_site / align_north / level_horizon ─────
-
-    #[wasm_bindgen_test]
-    fn recenter_resets_orbit_angles_keeps_distance() {
-        let mut c = planet();
-        c.zoom(100.0); // change distance
-        let dist = planet_state(&c).distance;
-        c.tilt_rotate(30.0, 30.0, 600.0);
-        c.move_pivot_to(10.0, 20.0);
-        c.recenter();
-        let s = planet_state(&c);
-        // Center snaps back to site; tilt/rotation cleared; distance untouched.
-        assert!((s.center_lat - 39.0).abs() < 1e-4);
-        assert!((s.center_lon - (-98.0)).abs() < 1e-4);
-        assert!(s.tilt.abs() < 1e-6 && s.rotation.abs() < 1e-6);
-        assert!((s.distance - dist).abs() < 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn reset_site_orbit_restores_defaults() {
-        let mut c = site();
-        c.zoom(200.0);
-        c.orbit(40.0, 40.0, 600.0);
-        c.reset();
-        let s = site_state(&c);
-        assert!((s.orbit_bearing - 180.0).abs() < 1e-5);
-        assert!((s.orbit_elevation - 45.0).abs() < 1e-5);
-        assert!((s.distance - DEFAULT_SITE_DISTANCE).abs() < 1e-5);
-        assert!(s.tilt.abs() < 1e-6 && s.rotation.abs() < 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn reset_freelook_restores_speed_and_points_at_center() {
-        let mut c = free();
-        c.zoom(100.0); // perturb speed
-        c.free_move(2.0, 1.0, 0.0, 1.0); // perturb pos
-        c.reset();
-        let s = free_state(&c);
-        assert!((s.free_speed - DEFAULT_FREE_SPEED).abs() < 1e-6);
-        // free_pos is on the site ray at DEFAULT_SITE_DISTANCE from the origin.
-        assert!((s.free_pos.length() - DEFAULT_SITE_DISTANCE).abs() < 1e-4);
-    }
-
-    #[wasm_bindgen_test]
-    fn focus_site_planet_snaps_center_to_site() {
-        let mut c = planet();
-        c.move_pivot_to(10.0, 20.0);
-        c.focus_site();
-        let s = planet_state(&c);
-        assert!((s.center_lat - s.common.site_lat).abs() < 1e-6);
-        assert!((s.center_lon - s.common.site_lon).abs() < 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn focus_site_site_orbit_sets_bearing_south() {
-        let mut c = site();
-        c.orbit(123.0, 0.0, 600.0); // move bearing off 180
-        c.focus_site();
-        assert!((site_state(&c).orbit_bearing - 180.0).abs() < 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn align_north_clears_rotation() {
-        let mut p = planet();
-        p.tilt_rotate(40.0, 0.0, 600.0);
-        p.align_north();
-        assert!(planet_state(&p).rotation.abs() < 1e-6);
-
-        let mut s = site();
-        s.tilt_rotate(40.0, 40.0, 600.0);
-        s.align_north();
-        // Site orbit align_north clears both rotation and tilt.
-        assert!(site_state(&s).rotation.abs() < 1e-6);
-        assert!(site_state(&s).tilt.abs() < 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn level_horizon_clears_tilt_or_pitch() {
-        let mut p = planet();
-        p.tilt_rotate(0.0, 40.0, 600.0);
-        p.level_horizon();
-        assert!(planet_state(&p).tilt.abs() < 1e-6);
-
-        let mut f = free();
-        f.free_look(0.0, -100.0, 600.0); // raise pitch
-        f.level_horizon();
-        assert!(free_state(&f).free_pitch.abs() < 1e-6);
-    }
-
-    // ── keyboard_move(): false on no input / 2d, true otherwise ─────────
-
-    #[wasm_bindgen_test]
-    fn keyboard_move_no_input_returns_false() {
-        let mut c = planet();
+    fn keyboard_move_reports_false_when_inert() {
+        let mut flat = Camera::centered_on(39.0, -98.0);
+        assert!(!flat.keyboard_move(1.0, 1.0, 1.0, 1.0, 0.016));
+        let (mut c, _) = orbit_with_rect();
         assert!(!c.keyboard_move(0.0, 0.0, 0.0, 1.0, 0.016));
     }
 
+    // ---- One-shot camera actions -------------------------------------------
+
     #[wasm_bindgen_test]
-    fn keyboard_move_2d_returns_false() {
-        let mut c = Camera::default();
-        assert!(!c.keyboard_move(1.0, 0.0, 0.0, 1.0, 0.016));
-        assert!(c.is_2d());
+    fn reset_restores_site_defaults() {
+        let (mut c, _) = orbit_with_rect();
+        c.move_pivot_to(10.0, 10.0);
+        c.adjust_tilt_heading(100.0, -100.0, 600.0);
+        c.zoom(1000.0);
+        c.reset();
+        let s = orbit(&c);
+        assert!((s.pivot_lat - 39.0).abs() < 1e-4);
+        assert!((s.pivot_lon - -98.0).abs() < 1e-4);
+        assert!((s.distance - 0.10).abs() < 1e-6);
+        assert_eq!(s.tilt, 0.0);
+        assert_eq!(s.heading, 0.0);
     }
 
     #[wasm_bindgen_test]
-    fn keyboard_move_planet_returns_true_and_moves() {
-        let mut c = planet();
-        let before = planet_state(&c).center_lat;
-        assert!(c.keyboard_move(1.0, 0.0, 0.0, 1.0, 0.1));
-        // forward>0 raises center_lat (before distance/zoom effects).
-        assert!(planet_state(&c).center_lat > before);
+    fn focus_site_moves_pivot_but_keeps_pose() {
+        let (mut c, _) = orbit_with_rect();
+        c.move_pivot_to(10.0, 10.0);
+        c.adjust_tilt_heading(100.0, -100.0, 600.0);
+        c.zoom(1000.0);
+        let (tilt, heading, dist) = {
+            let s = orbit(&c);
+            (s.tilt, s.heading, s.distance)
+        };
+        c.focus_site();
+        let s = orbit(&c);
+        assert!((s.pivot_lat - 39.0).abs() < 1e-4);
+        assert_eq!(s.tilt, tilt);
+        assert_eq!(s.heading, heading);
+        assert_eq!(s.distance, dist);
     }
 
     #[wasm_bindgen_test]
-    fn keyboard_move_site_wraps_bearing() {
-        let mut c = site();
-        // Large dt + right input drives bearing past 360; result normalized.
-        for _ in 0..50 {
-            assert!(c.keyboard_move(0.0, 1.0, 0.0, 4.0, 1.0));
-            let b = site_state(&c).orbit_bearing;
-            assert!((0.0..360.0).contains(&b), "bearing out of range: {b}");
-        }
+    fn align_north_zeroes_heading_only() {
+        let (mut c, _) = orbit_with_rect();
+        c.adjust_tilt_heading(100.0, -100.0, 600.0);
+        let tilt = orbit(&c).tilt;
+        c.align_north();
+        assert_eq!(orbit(&c).heading, 0.0);
+        assert_eq!(orbit(&c).tilt, tilt);
     }
 
-    // ── set_site / set_aspect ───────────────────────────────────────────
+    // ---- URL persistence ---------------------------------------------------
 
     #[wasm_bindgen_test]
-    fn set_site_updates_common_without_moving_view() {
-        let mut c = site();
-        let bearing_before = site_state(&c).orbit_bearing;
-        c.set_site(12.0, 34.0);
-        let s = site_state(&c);
-        assert!((s.common.site_lat - 12.0).abs() < 1e-4);
-        assert!((s.common.site_lon - 34.0).abs() < 1e-4);
-        // View angle untouched.
-        assert!((s.orbit_bearing - bearing_before).abs() < 1e-6);
-    }
+    fn url_snapshot_round_trips_orbit_state() {
+        let (mut c, _) = orbit_with_rect();
+        c.move_pivot_to(41.5, -95.25);
+        c.adjust_tilt_heading(120.0, -80.0, 600.0);
+        c.zoom(700.0);
+        let before = *orbit(&c);
+        let snap = c.url_snapshot();
+        // Wire distance keeps the historical center convention.
+        assert!((snap.distance - (1.0 + before.distance)).abs() < 1e-6);
 
-    #[wasm_bindgen_test]
-    fn set_site_works_in_2d_via_seed() {
-        // common_mut routes to the carried seed in 2D.
-        let mut c = Camera::default();
-        c.set_site(5.0, 6.0);
-        c.switch_to_planet_orbit();
-        let s = planet_state(&c);
-        assert!((s.common.site_lat - 5.0).abs() < 1e-4);
-        assert!((s.common.site_lon - 6.0).abs() < 1e-4);
+        let mut restored = Camera::centered_on(39.0, -98.0);
+        restored.restore_from_url(&snap);
+        let after = orbit(&restored);
+        assert!((after.pivot_lat - before.pivot_lat).abs() < 1e-5);
+        assert!((after.pivot_lon - before.pivot_lon).abs() < 1e-5);
+        assert!((after.distance - before.distance).abs() < 1e-5);
+        assert!((after.tilt - before.tilt).abs() < 1e-5);
+        assert!((after.heading - before.heading).abs() < 1e-5);
     }
 
     #[wasm_bindgen_test]
-    fn set_aspect_sets_ratio_and_guards_zero_height() {
-        let mut c = planet();
-        let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(800.0, 400.0));
-        c.set_aspect(rect);
-        // aspect = 800/400 = 2.0
-        match &c {
-            Camera::PlanetOrbit(s) => assert!((s.common.aspect - 2.0).abs() < 1e-5),
-            _ => panic!("planet"),
-        }
-        // Zero-height rect leaves aspect unchanged (no div-by-zero).
-        let bad = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(800.0, 0.0));
-        c.set_aspect(bad);
-        match &c {
-            Camera::PlanetOrbit(s) => assert!((s.common.aspect - 2.0).abs() < 1e-5),
-            _ => panic!("planet"),
-        }
-    }
-
-    // ── view_matrix / camera_world_pos 2D defaults ──────────────────────
-
-    #[wasm_bindgen_test]
-    fn view_matrix_identity_in_2d() {
-        let c = Camera::default();
-        let m = c.view_matrix();
-        let id = Mat4::IDENTITY.to_cols_array();
-        for (a, b) in m.to_cols_array().iter().zip(id.iter()) {
-            assert!((a - b).abs() < 1e-9);
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn camera_world_pos_2d_default() {
-        let c = Camera::default();
-        let p = c.camera_world_pos();
-        assert!(p.x.abs() < 1e-6 && p.y.abs() < 1e-6);
-        assert!((p.z - DEFAULT_SITE_DISTANCE).abs() < 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn camera_world_pos_freelook_is_free_pos() {
-        let c = free();
-        let s = free_state(&c);
-        let p = c.camera_world_pos();
-        assert!((p - s.free_pos).length() < 1e-6);
-    }
-
-    // ── static geo_to_world wrapper equals free fn ──────────────────────
-
-    #[wasm_bindgen_test]
-    fn static_geo_to_world_matches_inline_math() {
-        // Spot-check: lat 0, lon 90 → +X axis.
-        let v = Camera::geo_to_world(0.0, 90.0);
-        assert!((v.x - 1.0).abs() < 1e-5);
-        assert!(v.y.abs() < 1e-5);
-        assert!(v.z.abs() < 1e-5);
-    }
-
-    // ── switch_to_* idempotency for site & free ─────────────────────────
-
-    #[wasm_bindgen_test]
-    fn switch_to_site_orbit_idempotent() {
-        let mut c = site();
-        c.orbit(33.0, 0.0, 600.0);
-        let before = site_state(&c).orbit_bearing;
-        c.switch_to_site_orbit(); // already site → no reconstruction
-        assert!((site_state(&c).orbit_bearing - before).abs() < 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn switch_to_free_look_idempotent() {
-        let mut c = free();
-        c.free_move(1.0, 0.0, 0.0, 1.0);
-        let before = free_state(&c).free_pos;
-        c.switch_to_free_look(); // already free → unchanged
-        assert!((free_state(&c).free_pos - before).length() < 1e-9);
-    }
-
-    #[wasm_bindgen_test]
-    fn switch_to_3d_dispatches_each_mode() {
+    fn url_restore_clamps_out_of_range_fields() {
         let mut c = Camera::centered_on(39.0, -98.0);
-        c.switch_to_3d(CameraMode::SiteOrbit);
-        assert_eq!(c.camera_mode(), Some(CameraMode::SiteOrbit));
-        c.switch_to_3d(CameraMode::FreeLook);
-        assert_eq!(c.camera_mode(), Some(CameraMode::FreeLook));
-        c.switch_to_3d(CameraMode::PlanetOrbit);
-        assert_eq!(c.camera_mode(), Some(CameraMode::PlanetOrbit));
-    }
-
-    // ── move_pivot_to per-mode targets ──────────────────────────────────
-
-    #[wasm_bindgen_test]
-    fn move_pivot_to_planet_sets_center() {
-        let mut c = planet();
-        c.move_pivot_to(11.0, 22.0);
-        let s = planet_state(&c);
-        assert!((s.center_lat - 11.0).abs() < 1e-4);
-        assert!((s.center_lon - 22.0).abs() < 1e-4);
-        // Site (common) is NOT moved in planet orbit.
-        assert!((s.common.site_lat - 39.0).abs() < 1e-4);
+        c.restore_from_url(&UrlCameraSnapshot {
+            distance: 500.0,
+            center_lat: 95.0,
+            center_lon: 400.0,
+            tilt: -30.0,
+            rotation: 270.0,
+        });
+        let s = orbit(&c);
+        assert!((s.distance - MAX_SURFACE_DIST).abs() < 1e-6);
+        assert!((s.pivot_lat - 89.9).abs() < 1e-4);
+        assert!((-180.0..=180.0).contains(&s.pivot_lon));
+        assert_eq!(s.tilt, 0.0);
+        assert!((-180.0..=180.0).contains(&s.heading));
     }
 
     #[wasm_bindgen_test]
-    fn move_pivot_to_site_moves_the_site() {
-        let mut c = site();
-        c.move_pivot_to(11.0, 22.0);
-        let s = site_state(&c);
-        // In site orbit, double-click moves the orbit pivot (the site itself).
-        assert!((s.common.site_lat - 11.0).abs() < 1e-4);
-        assert!((s.common.site_lon - 22.0).abs() < 1e-4);
+    fn url_snapshot_in_2d_carries_saved_camera() {
+        let (mut c, _) = orbit_with_rect();
+        c.move_pivot_to(41.5, -95.25);
+        c.switch_to_flat_2d(Flat2DState::default());
+        let snap = c.url_snapshot();
+        assert!((snap.center_lat - 41.5).abs() < 1e-4);
+    }
+
+    // ---- Misc --------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn set_site_does_not_move_the_view() {
+        let (mut c, _) = orbit_with_rect();
+        let pivot_before = (orbit(&c).pivot_lat, orbit(&c).pivot_lon);
+        c.set_site(45.0, -100.0);
+        let s = orbit(&c);
+        assert!((s.common.site_lat - 45.0).abs() < 1e-4);
+        assert_eq!((s.pivot_lat, s.pivot_lon), pivot_before);
+    }
+
+    #[wasm_bindgen_test]
+    fn wrap_deg_uses_shortest_representation() {
+        assert!((wrap_deg(190.0) - -170.0).abs() < 1e-6);
+        assert!((wrap_deg(-190.0) - 170.0).abs() < 1e-6);
+        assert!((wrap_deg(720.0) - 0.0).abs() < 1e-6);
+        assert!((wrap_deg(179.0) - 179.0).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn controls_are_noops_in_2d() {
+        let mut c = Camera::centered_on(39.0, -98.0);
+        let saved_before = match &c {
+            Camera::Flat2D(f) => f.saved,
+            _ => unreachable!(),
+        };
+        c.pan_pivot(50.0, 50.0, 600.0);
+        c.adjust_tilt_heading(50.0, 50.0, 600.0);
+        c.zoom(120.0);
+        c.move_pivot_to(10.0, 10.0);
+        c.reset();
+        c.focus_site();
+        c.align_north();
+        let Camera::Flat2D(f) = &c else {
+            unreachable!()
+        };
+        assert_eq!(f.saved.pivot_lat, saved_before.pivot_lat);
+        assert_eq!(f.saved.tilt, saved_before.tilt);
+        assert_eq!(f.saved.distance, saved_before.distance);
     }
 }
