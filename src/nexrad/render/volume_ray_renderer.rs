@@ -113,24 +113,49 @@ vec2 sphere_intersect(vec3 ro, vec3 rd, float radius) {
     return vec2(-b - sq, -b + sq);
 }
 
-// ── Nearest-neighbor sweep sample (1 fetch instead of 4) ────────────
+// ── Sweep sampling ──────────────────────────────────────────────────
+//
+// Rows sit on a uniform azimuth grid produced by
+// core::volume_plan::plan_azimuth_bins: row i holds the radial nearest to
+// bearing i * 360/azimuth_count, and empty bins hold the below-threshold
+// sentinel. That makes the bin index pure arithmetic — no search — and lets
+// adjacent bins be blended without worrying about where the source array
+// happened to wrap.
+
+// Fetch one (azimuth bin, gate) cell. Returns -1.0 for sentinel/out-of-range.
+float fetch_cell(int si, int az, int gate) {
+    int idx = u_data_offset[si] + az * int(u_gate_count[si]) + gate;
+    int y = idx / u_tex_width;
+    int x = idx - y * u_tex_width;
+    float raw = float(texelFetch(u_volume_tex, ivec2(x, y), 0).r);
+    return (raw > 1.5) ? raw : -1.0;
+}
 
 float sample_sweep_nn(int si, float az_deg, float range_km) {
     float gc = u_gate_count[si];
     float ac = u_azimuth_count[si];
+    if (ac < 1.0) return -1.0;
 
     float gate_f = (range_km - u_first_gate_km[si]) / u_gate_interval_km[si];
     if (gate_f < 0.0 || gate_f >= gc) return -1.0;
 
     int gate = int(gate_f);
-    int az = int(mod(az_deg * ac / 360.0, ac));
 
-    int idx = u_data_offset[si] + az * int(gc) + gate;
-    int y = idx / u_tex_width;
-    int x = idx - y * u_tex_width;
-    float raw = float(texelFetch(u_volume_tex, ivec2(x, y), 0).r);
+    // Bin i is centered on bearing i * 360/ac, so the two bins bracketing this
+    // bearing are floor and floor+1, wrapping through 0 at the seam.
+    float bin_f = az_deg * ac / 360.0;
+    float bin_lo = floor(bin_f);
+    int az0 = int(mod(bin_lo, ac));
+    int az1 = int(mod(bin_lo + 1.0, ac));
+    float frac = bin_f - bin_lo;
 
-    return (raw > 1.5) ? raw : -1.0;
+    float v0 = fetch_cell(si, az0, gate);
+    float v1 = fetch_cell(si, az1, gate);
+
+    if (v0 < 0.0 && v1 < 0.0) return -1.0;
+    if (v0 < 0.0) return v1;
+    if (v1 < 0.0) return v0;
+    return mix(v0, v1, frac);
 }
 
 // ── Linear search for elevation bracket (faster than binary for ≤25) ─

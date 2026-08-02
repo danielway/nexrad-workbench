@@ -201,7 +201,6 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         struct SweepBlob {
             blob_buffer: js_sys::ArrayBuffer,
             header: SweepHeader,
-            total_values: usize,
         }
         let mut sweep_blobs: Vec<SweepBlob> = Vec::new();
 
@@ -223,11 +222,9 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 Err(_) => continue,
             };
 
-            let total_values = header.azimuth_count as usize * header.gate_count as usize;
             sweep_blobs.push(SweepBlob {
                 blob_buffer,
                 header,
-                total_values,
             });
         }
 
@@ -265,45 +262,74 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         for &plan_idx in &plan {
             let sb = &sweep_blobs[plan_idx];
             let header = &sb.header;
-            let total_values = sb.total_values;
+            let src_az_count = header.azimuth_count as usize;
+            let gate_count = header.gate_count as usize;
+            if src_az_count == 0 || gate_count == 0 {
+                continue;
+            }
 
-            if word_size == 1 {
-                // All sweeps are u8: copy raw bytes, no widening
-                let u8_view = js_sys::Uint8Array::new_with_byte_offset_and_length(
+            // Radial azimuths are irregular and start at an arbitrary angle, so
+            // resample onto a uniform grid the shader can index arithmetically
+            // instead of searching. Without this the shader's uniform-bin
+            // assumption puts a seam wherever the sorted array wraps.
+            let azimuths: Vec<f32> = {
+                let view = js_sys::Float32Array::new_with_byte_offset_and_length(
+                    &sb.blob_buffer,
+                    header.azimuths_offset,
+                    header.azimuth_count,
+                );
+                let mut v = vec![0f32; src_az_count];
+                view.copy_to(&mut v);
+                v
+            };
+            let bin_count = match choose_bin_count(median_azimuth_spacing_deg(&azimuths)) {
+                0 => continue, // fewer than two radials — nothing to resample onto
+                n => n as usize,
+            };
+            let bins = plan_azimuth_bins(&azimuths, bin_count as u32);
+
+            // One contiguous read of the source rows, then gather.
+            let src_word = header.data_word_size as usize;
+            let src_row_bytes = gate_count * src_word;
+            let src_bytes: Vec<u8> = {
+                let len = src_az_count * src_row_bytes;
+                let view = js_sys::Uint8Array::new_with_byte_offset_and_length(
                     &sb.blob_buffer,
                     header.gate_values_offset,
-                    total_values as u32,
+                    len as u32,
                 );
-                let prev_len = packed_data.len();
-                packed_data.resize(prev_len + total_values, 0);
-                u8_view.copy_to(&mut packed_data[prev_len..]);
-            } else if header.data_word_size == 1 {
-                // Mixed volume: widen this u8 sweep to u16
-                let u8_view = js_sys::Uint8Array::new_with_byte_offset_and_length(
-                    &sb.blob_buffer,
-                    header.gate_values_offset,
-                    total_values as u32,
-                );
-                let mut tmp = vec![0u8; total_values];
-                u8_view.copy_to(&mut tmp);
-                for &val in &tmp {
-                    packed_data.extend_from_slice(&(val as u16).to_le_bytes());
+                let mut v = vec![0u8; len];
+                view.copy_to(&mut v);
+                v
+            };
+
+            let out_row_bytes = gate_count * word_size as usize;
+            let base = packed_data.len();
+            // Bins with no radial within the gap threshold stay zero, which is
+            // the below-threshold sentinel the shader already rejects.
+            packed_data.resize(base + bin_count * out_row_bytes, 0);
+
+            for (bin_i, slot) in bins.iter().enumerate() {
+                let Some(src_i) = *slot else { continue };
+                let src_start = src_i as usize * src_row_bytes;
+                let dst_start = base + bin_i * out_row_bytes;
+                if src_word == word_size as usize {
+                    packed_data[dst_start..dst_start + out_row_bytes]
+                        .copy_from_slice(&src_bytes[src_start..src_start + src_row_bytes]);
+                } else {
+                    // Mixed-width volume: widen this u8 sweep to u16.
+                    for g in 0..gate_count {
+                        let v = src_bytes[src_start + g] as u16;
+                        packed_data[dst_start + g * 2..dst_start + g * 2 + 2]
+                            .copy_from_slice(&v.to_le_bytes());
+                    }
                 }
-            } else {
-                // Native u16: copy raw bytes directly
-                let u8_view = js_sys::Uint8Array::new_with_byte_offset_and_length(
-                    &sb.blob_buffer,
-                    header.gate_values_offset,
-                    (total_values * 2) as u32,
-                );
-                let prev_len = packed_data.len();
-                packed_data.resize(prev_len + total_values * 2, 0);
-                u8_view.copy_to(&mut packed_data[prev_len..]);
             }
 
             sweep_meta_vec.push(VolumeRenderSweepMeta {
                 elevation_deg: header.mean_elevation as f64,
-                azimuth_count: header.azimuth_count,
+                // Now a uniform bin count, not the raw radial count.
+                azimuth_count: bin_count as u32,
                 gate_count: header.gate_count,
                 first_gate_km: header.first_gate_range_km,
                 gate_interval_km: header.gate_interval_km,
@@ -313,7 +339,7 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 offset: header.offset as f64,
             });
 
-            data_offset += total_values as u32;
+            data_offset += (bin_count * gate_count) as u32;
         }
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
