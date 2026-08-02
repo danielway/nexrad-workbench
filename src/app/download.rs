@@ -60,6 +60,15 @@ impl WorkbenchApp {
             if is_cache_hit {
                 self.state.status_message = format!("Loaded from cache: {}", scan.file_name);
 
+                // Records are already in IDB — hold the ledger entry in
+                // AwaitingTimeline until a refresh actually shows them, so
+                // the per-frame anchor pump can't re-request into the gap.
+                self.acquisition.request_ledger.note_ingested(
+                    scan_ts,
+                    crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+                    js_sys::Date::now(),
+                );
+
                 // Cache hit: skip ingest, go straight to decode.
                 // Ghost stays until timeline refresh shows the real scan.
                 self.state.download_progress.phase = crate::state::DownloadPhase::Decoding;
@@ -160,6 +169,15 @@ impl WorkbenchApp {
                 message: message.clone(),
                 scan_start_secs: Some(*scan_start),
             });
+
+            // Short-backoff suppression so the reactive pumps don't hammer a
+            // failing endpoint; evicts on its own so automatic retry stays
+            // possible (explicit retries bypass the reducers entirely).
+            self.acquisition.request_ledger.note_failed(
+                *scan_start,
+                crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+                js_sys::Date::now(),
+            );
 
             // Mark this scan's acquisition operation as failed
             if let Some(op_id) = self

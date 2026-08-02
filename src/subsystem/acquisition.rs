@@ -20,7 +20,7 @@
 //! refactors may collapse one into the other; this seam is intentionally
 //! left visible so the move can happen incrementally.
 
-use crate::core::acquisition::PrefetchSettle;
+use crate::core::acquisition::{PrefetchSettle, RequestLedger};
 use crate::data::MainThreadStore;
 use crate::nexrad::AcquisitionCoordinator;
 use crate::state::AcquisitionState;
@@ -55,6 +55,10 @@ pub(crate) struct Acquisition {
     /// finalization (or via the confirm modal for long spans) and drained by
     /// `pump_selection_fetch`, which fetches every scan in the range.
     pub selection_fetch_target: Option<SelectionFetchTarget>,
+    /// Ledger of recently requested scans — the dedup input that survives
+    /// queue clears and bridges the ingest→timeline-refresh blackout (see
+    /// [`crate::core::acquisition::RequestLedger`]).
+    pub request_ledger: RequestLedger,
 }
 
 /// A committed bulk-download request for a selected timeline range.
@@ -86,6 +90,7 @@ impl Acquisition {
             visible_listing_settle: PrefetchSettle::default(),
             listing_backoff: std::collections::HashMap::new(),
             selection_fetch_target: None,
+            request_ledger: RequestLedger::default(),
         }
     }
 }

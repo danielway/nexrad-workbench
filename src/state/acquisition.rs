@@ -254,8 +254,8 @@ impl AcquisitionState {
         self.update_queue_state();
     }
 
-    /// Cancel all pending and active operations (selection change: cancel all + rebuild).
-    #[cfg(test)]
+    /// Cancel all pending and active operations (cache clear, selection
+    /// change: cancel all + rebuild).
     pub(crate) fn cancel_all(&mut self) {
         let now = js_sys::Date::now();
         for op in self.operations.iter_mut() {

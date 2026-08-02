@@ -144,6 +144,8 @@ impl WorkbenchApp {
                 listing: listing.as_ref(),
                 queued_scan_starts: &queued_scan_starts,
                 cache_match_tolerance_secs: crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+                ledger: &self.acquisition.request_ledger,
+                now_ms: js_sys::Date::now(),
             };
             acquisition_core::decide_anchor_fast_path(&env, &self.timeline.scans)
         };
@@ -193,6 +195,7 @@ impl WorkbenchApp {
             &queued_scan_starts,
             &self.timeline.scans,
             crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+            &self.acquisition.request_ledger,
         )
     }
 
@@ -229,9 +232,15 @@ impl WorkbenchApp {
             return;
         }
         let site_id = self.state.viz_state.site_id.clone();
+        let now_ms = js_sys::Date::now();
         let items: Vec<QueueItem> = intents
             .into_iter()
             .map(|i| {
+                self.acquisition.request_ledger.note_enqueued(
+                    i.scan_start,
+                    i.elevation_filter,
+                    now_ms,
+                );
                 let op_id = self.acquisition.state.create_operation(
                     state::OperationKind::ArchiveDownload {
                         site_id: site_id.clone(),

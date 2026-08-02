@@ -79,6 +79,15 @@ impl WorkbenchApp {
                 // Build timeline from metadata
                 self.timeline.scans = RadarTimeline::from_metadata(metadata);
 
+                // Reconcile the request ledger against what the timeline now
+                // actually holds: satisfied requests retire, ingested-but-
+                // missing cuts become Unavailable, stale entries age out.
+                self.acquisition.request_ledger.observe_timeline(
+                    &self.timeline.scans,
+                    crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+                    js_sys::Date::now(),
+                );
+
                 // Get time ranges (may be non-contiguous)
                 let ranges = self.timeline.scans.time_ranges();
                 if !ranges.is_empty() {
@@ -178,6 +187,16 @@ impl WorkbenchApp {
         // and derive the displayed timestamp from it, so the render lookup
         // and timeline position match the stored blob exactly.
         let scan_start_secs = result.scan_key.scan_start.as_secs_f64();
+
+        // The scan's data is now in IDB but the timeline hasn't observed it
+        // yet — hold the ledger entry in AwaitingTimeline across that gap
+        // (matched within tolerance because this key is the re-keyed
+        // volume-header time, not the listing timestamp it was enqueued as).
+        self.acquisition.request_ledger.note_ingested(
+            scan_start_secs as i64,
+            crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+            js_sys::Date::now(),
+        );
         self.set_active_scan(
             result.scan_key.clone(),
             result.elevation_numbers,
@@ -517,6 +536,17 @@ impl WorkbenchApp {
             message: message.clone(),
             scan_timestamp_secs: failed_scan_timestamp_secs,
         });
+
+        // A failed ingest means the fetched scan never reached IDB — move
+        // its ledger entry to the short Failed backoff so re-fetch becomes
+        // possible without a per-frame storm.
+        if let Some(ts) = failed_scan_timestamp_secs {
+            self.acquisition.request_ledger.note_failed(
+                ts as i64,
+                crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+                js_sys::Date::now(),
+            );
+        }
 
         // When the worker reports that the requested (elevation, product) has
         // no pre-computed sweep, clear the stale canvas so the user sees what

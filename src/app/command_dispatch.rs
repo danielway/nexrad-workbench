@@ -537,6 +537,20 @@ impl WorkbenchApp {
             // gone, so drop it rather than holding a stale frame with a
             // discrepancy caption.
             self.clear_display_no_scan();
+            // Reset the acquisition machinery to match the now-empty cache:
+            // the queue, its drawer operations, the progress ghosts, the
+            // prefetch settle (its resolved marker would otherwise suppress
+            // the window pump until the playhead moves), and the request
+            // ledger. The anchor pump then issues exactly ONE fetch for the
+            // playhead scan, held Pending in the ledger through the whole
+            // multi-second IDB-wipe blackout — this is what stops the old
+            // ~25x re-request storm. An armed range selection deliberately
+            // survives (it re-fills its span after the wipe).
+            self.acquisition.coordinator.download_queue.clear();
+            self.acquisition.state.cancel_all();
+            self.state.download_progress.clear();
+            self.acquisition.prefetch_settle = crate::core::acquisition::PrefetchSettle::default();
+            self.acquisition.request_ledger.clear();
         } else {
             // Cache loader is busy; replay the request on the next frame.
             self.state.push_command(crate::core::Intent::ClearCache);

@@ -216,25 +216,18 @@ pub(crate) struct ListingSnapshot<'a> {
     pub boundaries: Vec<ScanBoundary>,
 }
 
-/// Whether a candidate scan is already cached for the active scope or is
-/// already in the download queue — a synchronous, in-memory check. The
-/// download path makes the authoritative IDB-backed decision as a backstop.
-///
-/// `queued_scan_starts` is the shell's snapshot of every queue item's
-/// `scan_start` (any state — a Done item still suppresses re-enqueue, exactly
-/// like the queue's own `find_by_scan_start`).
-pub(crate) fn prefetch_already_satisfied(
-    intent: &ScanFetchIntent,
-    queued_scan_starts: &[i64],
+/// Whether the timeline holds a scan matching `scan_start` (within tolerance)
+/// that satisfies `elevation_filter` — the single "already cached for this
+/// scope" predicate shared by the dedup guard and the request ledger.
+fn timeline_satisfies(
     timeline: &RadarTimeline,
+    scan_start: i64,
+    elevation_filter: Option<u8>,
     cache_match_tolerance_secs: i64,
 ) -> bool {
-    if queued_scan_starts.contains(&intent.scan_start) {
-        return true;
-    }
     timeline.scans.iter().any(|s| {
-        (s.start_time as i64 - intent.scan_start).abs() < cache_match_tolerance_secs
-            && match intent.elevation_filter {
+        (s.start_time as i64 - scan_start).abs() < cache_match_tolerance_secs
+            && match elevation_filter {
                 // Fixed cut: satisfied once that elevation is stored.
                 Some(elev) => s.sweeps.iter().any(|sw| sw.elevation_number == elev),
                 // Whole volume (Latest): treat any cached sweep as enough —
@@ -243,6 +236,227 @@ pub(crate) fn prefetch_already_satisfied(
                 None => !s.sweeps.is_empty(),
             }
     })
+}
+
+/// Whether the timeline holds any scan matching `scan_start` within tolerance,
+/// regardless of which sweeps are cached.
+fn timeline_has_scan(timeline: &RadarTimeline, scan_start: i64, tolerance_secs: i64) -> bool {
+    timeline
+        .scans
+        .iter()
+        .any(|s| (s.start_time as i64 - scan_start).abs() < tolerance_secs)
+}
+
+/// Whether a candidate scan is already cached for the active scope, already
+/// in the download queue, or suppressed by the request ledger — a
+/// synchronous, in-memory check. The download path makes the authoritative
+/// IDB-backed decision as a backstop.
+///
+/// `queued_scan_starts` is the shell's snapshot of every queue item's
+/// `scan_start` (any state — a Done item still suppresses re-enqueue, exactly
+/// like the queue's own `find_by_scan_start`). The ledger covers the windows
+/// the other two inputs can't see: the queue self-clears the moment it drains
+/// (before ingest lands), and the timeline only reflects a fetched scan after
+/// an async IDB round-trip — during a cache clear, seconds later.
+pub(crate) fn prefetch_already_satisfied(
+    intent: &ScanFetchIntent,
+    queued_scan_starts: &[i64],
+    timeline: &RadarTimeline,
+    cache_match_tolerance_secs: i64,
+    ledger: &RequestLedger,
+    now_ms: f64,
+) -> bool {
+    if queued_scan_starts.contains(&intent.scan_start) {
+        return true;
+    }
+    if ledger.suppresses(intent, cache_match_tolerance_secs, now_ms) {
+        return true;
+    }
+    timeline_satisfies(
+        timeline,
+        intent.scan_start,
+        intent.elevation_filter,
+        cache_match_tolerance_secs,
+    )
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Request ledger — dedup that survives queue clears and timeline blackouts
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Backstop TTL for `Pending` / `AwaitingTimeline` ledger entries: a lost
+/// outcome (dropped channel, dead worker) can never suppress a re-fetch
+/// forever. Generous — a normal fetch+ingest+refresh cycle is well under it.
+pub(crate) const LEDGER_PENDING_TTL_MS: f64 = 60_000.0;
+
+/// How long a `Failed` ledger entry suppresses automatic re-requests. Short:
+/// transient network errors deserve a retry, just not one per frame. The
+/// explicit failed-cell/queue-sheet retry path bypasses the reducers (and
+/// this ledger) entirely, so a user-driven retry is never delayed.
+pub(crate) const LEDGER_FAILED_BACKOFF_MS: f64 = 15_000.0;
+
+/// Lifecycle state of one requested scan in the [`RequestLedger`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LedgerState {
+    /// Enqueued; download/ingest not yet finished. Suppresses (TTL-bounded).
+    Pending { since_ms: f64 },
+    /// Ingest (or an IDB cache hit) completed — the data is in IndexedDB but
+    /// the timeline hasn't observed it yet. This is the blackout window the
+    /// queue and timeline can't cover. Suppresses (TTL-bounded).
+    AwaitingTimeline { since_ms: f64 },
+    /// A timeline refresh saw the scan but the requested elevation isn't in
+    /// it — the volume genuinely lacks that cut. Suppresses matching-filter
+    /// requests for the rest of the session (zero-byte IDB cache hits never
+    /// trip the auto-fetch cap, so without this the re-request loop would
+    /// run forever).
+    Unavailable,
+    /// The download failed. Suppresses within a short backoff, then evicts
+    /// so automatic retry is possible.
+    Failed { at_ms: f64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LedgerEntry {
+    /// The elevation scope the request was made under.
+    elevation_filter: Option<u8>,
+    state: LedgerState,
+}
+
+/// In-memory ledger of recently requested scans, keyed by listing
+/// `scan_start`. Third dedup input to [`prefetch_already_satisfied`],
+/// alongside the queue snapshot and the timeline: it survives the queue's
+/// clear-on-drain and bridges the ingest→timeline-refresh gap (which a cache
+/// clear stretches to seconds), so the per-frame anchor pump can't storm
+/// re-requests into that blackout. Pure and fully headless.
+#[derive(Debug, Default)]
+pub(crate) struct RequestLedger {
+    entries: std::collections::HashMap<i64, LedgerEntry>,
+}
+
+impl RequestLedger {
+    /// Record an enqueue. Overwrites any prior entry for the scan — the
+    /// caller's dedup already decided this request should go out.
+    pub(crate) fn note_enqueued(
+        &mut self,
+        scan_start: i64,
+        elevation_filter: Option<u8>,
+        now_ms: f64,
+    ) {
+        self.entries.insert(
+            scan_start,
+            LedgerEntry {
+                elevation_filter,
+                state: LedgerState::Pending { since_ms: now_ms },
+            },
+        );
+    }
+
+    /// Record that a scan's data reached IndexedDB (worker ingest finished,
+    /// or the download path took an IDB cache hit). The key may be the
+    /// worker's re-keyed volume-header time, so the entry is matched within
+    /// `tolerance_secs` of the listing key it was enqueued under.
+    pub(crate) fn note_ingested(&mut self, scan_start: i64, tolerance_secs: i64, now_ms: f64) {
+        let state = LedgerState::AwaitingTimeline { since_ms: now_ms };
+        if let Some(e) = self.entry_near_mut(scan_start, tolerance_secs) {
+            e.state = state;
+        } else {
+            self.entries.insert(
+                scan_start,
+                LedgerEntry {
+                    elevation_filter: None,
+                    state,
+                },
+            );
+        }
+    }
+
+    /// Record a failed download for the scan.
+    pub(crate) fn note_failed(&mut self, scan_start: i64, tolerance_secs: i64, now_ms: f64) {
+        let state = LedgerState::Failed { at_ms: now_ms };
+        if let Some(e) = self.entry_near_mut(scan_start, tolerance_secs) {
+            e.state = state;
+        } else {
+            self.entries.insert(
+                scan_start,
+                LedgerEntry {
+                    elevation_filter: None,
+                    state,
+                },
+            );
+        }
+    }
+
+    /// Reconcile the ledger against a freshly loaded timeline: entries whose
+    /// request is now satisfied are retired; `AwaitingTimeline` entries whose
+    /// scan appears *without* the requested elevation become `Unavailable`
+    /// (the volume lacks that cut); expired `Pending`/`AwaitingTimeline` and
+    /// aged-out `Failed` entries are evicted.
+    pub(crate) fn observe_timeline(
+        &mut self,
+        timeline: &RadarTimeline,
+        tolerance_secs: i64,
+        now_ms: f64,
+    ) {
+        self.entries.retain(|&scan_start, e| {
+            if timeline_satisfies(timeline, scan_start, e.elevation_filter, tolerance_secs) {
+                return false;
+            }
+            match &mut e.state {
+                LedgerState::Pending { since_ms } => now_ms - *since_ms <= LEDGER_PENDING_TTL_MS,
+                LedgerState::AwaitingTimeline { since_ms } => {
+                    if timeline_has_scan(timeline, scan_start, tolerance_secs) {
+                        // The scan landed but the requested cut isn't in it.
+                        e.state = LedgerState::Unavailable;
+                        true
+                    } else {
+                        // The refresh predates this ingest (or was the cache
+                        // clear's synthetic empty timeline) — keep waiting,
+                        // bounded by the TTL.
+                        now_ms - *since_ms <= LEDGER_PENDING_TTL_MS
+                    }
+                }
+                LedgerState::Unavailable => true,
+                LedgerState::Failed { at_ms } => now_ms - *at_ms <= LEDGER_FAILED_BACKOFF_MS,
+            }
+        });
+    }
+
+    /// Whether this intent should be suppressed right now.
+    pub(crate) fn suppresses(
+        &self,
+        intent: &ScanFetchIntent,
+        tolerance_secs: i64,
+        now_ms: f64,
+    ) -> bool {
+        self.entries.iter().any(|(&scan_start, e)| {
+            (scan_start - intent.scan_start).abs() < tolerance_secs
+                && match e.state {
+                    LedgerState::Pending { since_ms }
+                    | LedgerState::AwaitingTimeline { since_ms } => {
+                        now_ms - since_ms <= LEDGER_PENDING_TTL_MS
+                    }
+                    // Unavailable is scoped to the elevation that proved
+                    // missing; a different scope may still be fetchable.
+                    LedgerState::Unavailable => e.elevation_filter == intent.elevation_filter,
+                    LedgerState::Failed { at_ms } => now_ms - at_ms <= LEDGER_FAILED_BACKOFF_MS,
+                }
+        })
+    }
+
+    /// Forget everything (cache clear).
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    fn entry_near_mut(&mut self, scan_start: i64, tolerance_secs: i64) -> Option<&mut LedgerEntry> {
+        let key = self
+            .entries
+            .keys()
+            .filter(|&&k| (k - scan_start).abs() < tolerance_secs)
+            .min_by_key(|&&k| (k - scan_start).abs())
+            .copied()?;
+        self.entries.get_mut(&key)
+    }
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -358,6 +572,10 @@ pub(crate) struct AnchorFastPathEnv<'a> {
     pub queued_scan_starts: &'a [i64],
     /// `crate::SCAN_CACHE_MATCH_TOLERANCE_SECS`.
     pub cache_match_tolerance_secs: i64,
+    /// The acquisition subsystem's request ledger.
+    pub ledger: &'a RequestLedger,
+    /// `js_sys::Date::now()`.
+    pub now_ms: f64,
 }
 
 /// The debounce-free remedy for "scrub into a shadow = blank canvas": if
@@ -388,6 +606,8 @@ pub(crate) fn decide_anchor_fast_path(
         env.queued_scan_starts,
         timeline,
         env.cache_match_tolerance_secs,
+        env.ledger,
+        env.now_ms,
     ) {
         return None;
     }
@@ -455,6 +675,7 @@ pub(crate) fn reduce_window_intents(
     queued_scan_starts: &[i64],
     timeline: &RadarTimeline,
     cache_match_tolerance_secs: i64,
+    ledger: &RequestLedger,
 ) -> WindowIntentActions {
     let mut intents: Vec<ScanFetchIntent> = Vec::new();
     let mut missing_days: Vec<&WindowDayInput<'_>> = Vec::new();
@@ -509,7 +730,14 @@ pub(crate) fn reduce_window_intents(
     intents.sort_by_key(|i| i.scan_start);
     intents.dedup_by_key(|i| i.scan_start);
     intents.retain(|i| {
-        !prefetch_already_satisfied(i, queued_scan_starts, timeline, cache_match_tolerance_secs)
+        !prefetch_already_satisfied(
+            i,
+            queued_scan_starts,
+            timeline,
+            cache_match_tolerance_secs,
+            ledger,
+            now_ms,
+        )
     });
 
     WindowIntentActions {
@@ -1383,14 +1611,18 @@ mod reducer_tests {
             &intent(1300, Some(1)),
             &[999, 1300],
             &tl,
-            TOL
+            TOL,
+            &RequestLedger::default(),
+            0.0
         ));
         // Only an exact scan_start match counts as queued.
         assert!(!prefetch_already_satisfied(
             &intent(1300, Some(1)),
             &[1299, 1301],
             &tl,
-            TOL
+            TOL,
+            &RequestLedger::default(),
+            0.0
         ));
     }
 
@@ -1404,21 +1636,27 @@ mod reducer_tests {
             &intent(1300, Some(1)),
             &[],
             &tl,
-            TOL
+            TOL,
+            &RequestLedger::default(),
+            0.0
         ));
         // The stored elevation doesn't match the filter → not satisfied.
         assert!(!prefetch_already_satisfied(
             &intent(1300, Some(2)),
             &[],
             &tl,
-            TOL
+            TOL,
+            &RequestLedger::default(),
+            0.0
         ));
         // Exactly at tolerance is NOT a match (strict <).
         assert!(!prefetch_already_satisfied(
             &intent(1305 - TOL, Some(1)),
             &[],
             &tl,
-            TOL
+            TOL,
+            &RequestLedger::default(),
+            0.0
         ));
     }
 
@@ -1432,7 +1670,9 @@ mod reducer_tests {
             &intent(1300, None),
             &[],
             &tl,
-            TOL
+            TOL,
+            &RequestLedger::default(),
+            0.0
         ));
         // …but a sweepless scan record does not.
         let tl = RadarTimeline {
@@ -1442,8 +1682,156 @@ mod reducer_tests {
             &intent(1300, None),
             &[],
             &tl,
-            TOL
+            TOL,
+            &RequestLedger::default(),
+            0.0
         ));
+    }
+
+    // ── RequestLedger ───────────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn ledger_pending_suppresses_until_ttl() {
+        let mut led = RequestLedger::default();
+        led.note_enqueued(1300, Some(1), 0.0);
+        // Suppresses any scope while pending (matches queue semantics).
+        assert!(led.suppresses(&intent(1300, Some(1)), TOL, 10.0));
+        assert!(led.suppresses(&intent(1300, None), TOL, 10.0));
+        // A different scan is untouched.
+        assert!(!led.suppresses(&intent(9_000, Some(1)), TOL, 10.0));
+        // Past the TTL the lost-outcome backstop lifts suppression.
+        assert!(!led.suppresses(&intent(1300, Some(1)), TOL, LEDGER_PENDING_TTL_MS + 1.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn ledger_storm_regression_queue_drain_and_empty_timeline_still_suppress() {
+        // The exact cache-clear storm scenario: intent enqueued, the queue
+        // snapshot has already self-cleared on drain, and the timeline is
+        // empty (held hostage by the IDB wipe) — the ledger alone must
+        // suppress the re-request.
+        let mut led = RequestLedger::default();
+        led.note_enqueued(1300, Some(1), 0.0);
+        let tl = empty_timeline();
+        assert!(prefetch_already_satisfied(
+            &intent(1300, Some(1)),
+            &[], // queue drained
+            &tl, // timeline blackout
+            TOL,
+            &led,
+            5_000.0
+        ));
+        // After ingest, the AwaitingTimeline phase keeps covering the
+        // ingest→refresh gap (ingest re-keys within tolerance).
+        led.note_ingested(1304, TOL, 6_000.0);
+        assert!(prefetch_already_satisfied(
+            &intent(1300, Some(1)),
+            &[],
+            &tl,
+            TOL,
+            &led,
+            7_000.0
+        ));
+    }
+
+    #[wasm_bindgen_test]
+    fn ledger_observe_timeline_retires_satisfied_and_marks_unavailable() {
+        let mut led = RequestLedger::default();
+        // Request A: elevation 1, which the refreshed timeline will hold.
+        led.note_enqueued(1300, Some(1), 0.0);
+        led.note_ingested(1300, TOL, 1.0);
+        // Request B: elevation 7 of a scan that lands WITHOUT that cut.
+        led.note_enqueued(2300, Some(7), 0.0);
+        led.note_ingested(2300, TOL, 1.0);
+        let tl = RadarTimeline {
+            scans: vec![
+                cached_scan(1300.0, vec![sweep(1, 1300.0, 1310.0)]),
+                cached_scan(2300.0, vec![sweep(1, 2300.0, 2310.0)]),
+            ],
+        };
+        led.observe_timeline(&tl, TOL, 2.0);
+        // A is satisfied → retired; a fresh identical intent goes through.
+        assert!(!led.suppresses(&intent(1300, Some(1)), TOL, 3.0));
+        // B's volume lacks cut 7 → Unavailable: suppressed for that scope
+        // forever (no TTL), but other scopes stay fetchable.
+        assert!(led.suppresses(&intent(2300, Some(7)), TOL, LEDGER_PENDING_TTL_MS * 10.0));
+        assert!(!led.suppresses(&intent(2300, Some(4)), TOL, 3.0));
+        assert!(!led.suppresses(&intent(2300, None), TOL, 3.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn ledger_awaiting_survives_a_refresh_that_predates_the_scan() {
+        // A timeline refresh that doesn't contain the scan at all (e.g. the
+        // cache clear's synthetic empty timeline, or a racing older load)
+        // must NOT conclude Unavailable — keep waiting under the TTL.
+        let mut led = RequestLedger::default();
+        led.note_enqueued(1300, Some(1), 0.0);
+        led.note_ingested(1300, TOL, 1.0);
+        led.observe_timeline(&empty_timeline(), TOL, 2.0);
+        assert!(led.suppresses(&intent(1300, Some(1)), TOL, 3.0));
+        // The TTL backstop still evicts eventually.
+        led.observe_timeline(&empty_timeline(), TOL, LEDGER_PENDING_TTL_MS + 2.0);
+        assert!(!led.suppresses(&intent(1300, Some(1)), TOL, LEDGER_PENDING_TTL_MS + 3.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn ledger_failed_backs_off_briefly_then_allows_retry() {
+        let mut led = RequestLedger::default();
+        led.note_enqueued(1300, Some(1), 0.0);
+        led.note_failed(1300, TOL, 100.0);
+        // Within the backoff → suppressed.
+        assert!(led.suppresses(
+            &intent(1300, Some(1)),
+            TOL,
+            100.0 + LEDGER_FAILED_BACKOFF_MS
+        ));
+        // Past it → automatic retry allowed.
+        assert!(!led.suppresses(
+            &intent(1300, Some(1)),
+            TOL,
+            101.0 + LEDGER_FAILED_BACKOFF_MS
+        ));
+        // observe_timeline also evicts aged-out failures.
+        led.observe_timeline(&empty_timeline(), TOL, 200.0 + LEDGER_FAILED_BACKOFF_MS);
+        assert!(!led.suppresses(
+            &intent(1300, Some(1)),
+            TOL,
+            200.0 + LEDGER_FAILED_BACKOFF_MS
+        ));
+    }
+
+    #[wasm_bindgen_test]
+    fn ledger_unavailable_retires_once_data_appears() {
+        // A scope marked Unavailable is re-checked on every refresh: if a
+        // later whole-volume fetch stores the cut, the entry retires.
+        let mut led = RequestLedger::default();
+        led.note_enqueued(1300, Some(7), 0.0);
+        led.note_ingested(1300, TOL, 1.0);
+        led.observe_timeline(
+            &RadarTimeline {
+                scans: vec![cached_scan(1300.0, vec![sweep(1, 1300.0, 1310.0)])],
+            },
+            TOL,
+            2.0,
+        );
+        assert!(led.suppresses(&intent(1300, Some(7)), TOL, 3.0));
+        led.observe_timeline(
+            &RadarTimeline {
+                scans: vec![cached_scan(1300.0, vec![sweep(7, 1300.0, 1310.0)])],
+            },
+            TOL,
+            4.0,
+        );
+        assert!(!led.suppresses(&intent(1300, Some(7)), TOL, 5.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn ledger_clear_forgets_everything() {
+        let mut led = RequestLedger::default();
+        led.note_enqueued(1300, Some(1), 0.0);
+        led.note_failed(2300, TOL, 0.0);
+        led.clear();
+        assert!(!led.suppresses(&intent(1300, Some(1)), TOL, 1.0));
+        assert!(!led.suppresses(&intent(2300, Some(1)), TOL, 1.0));
     }
 
     // ── prefetch_signature ──────────────────────────────────────────────────
@@ -1587,6 +1975,11 @@ mod reducer_tests {
 
     // ── decide_anchor_fast_path ─────────────────────────────────────────────
 
+    /// Leaked empty ledger for env construction in tests (tiny, test-only).
+    fn empty_ledger() -> &'static RequestLedger {
+        Box::leak(Box::new(RequestLedger::default()))
+    }
+
     fn anchor_env<'a>(
         listing: Option<&'a ListingSnapshot<'a>>,
         queued: &'a [i64],
@@ -1599,6 +1992,8 @@ mod reducer_tests {
             listing,
             queued_scan_starts: queued,
             cache_match_tolerance_secs: TOL,
+            ledger: empty_ledger(),
+            now_ms: 0.0,
         }
     }
 
@@ -1816,7 +2211,15 @@ mod reducer_tests {
         let mut plan = window(1350, 1700);
         plan.anchor_at_or_before = Some(1360); // → b, which also intersects
         let days = vec![present_day(day(2021, 1, 1), D1_FILES)];
-        let a = reduce_window_intents(&plan, &days, 0.0, &[], &empty_timeline(), TOL);
+        let a = reduce_window_intents(
+            &plan,
+            &days,
+            0.0,
+            &[],
+            &empty_timeline(),
+            TOL,
+            &RequestLedger::default(),
+        );
 
         // b + c intersect; the anchor's duplicate b collapses; sorted by start.
         let got: Vec<(&str, i64, i64)> = a
@@ -1838,7 +2241,15 @@ mod reducer_tests {
         let mut plan = window(2000, 2100);
         plan.anchor_at_or_before = Some(1999);
         let days = vec![present_day(day(2021, 1, 1), D1_FILES)];
-        let a = reduce_window_intents(&plan, &days, 0.0, &[], &empty_timeline(), TOL);
+        let a = reduce_window_intents(
+            &plan,
+            &days,
+            0.0,
+            &[],
+            &empty_timeline(),
+            TOL,
+            &RequestLedger::default(),
+        );
         let got: Vec<&str> = a.enqueue.iter().map(|i| i.file_name.as_str()).collect();
         assert_eq!(got, vec!["c"]);
     }
@@ -1850,7 +2261,15 @@ mod reducer_tests {
 
         // Plain missing date → pending + fetched.
         let days = vec![missing_day(day(2021, 1, 1))];
-        let a = reduce_window_intents(&plan, &days, now_ms, &[], &empty_timeline(), TOL);
+        let a = reduce_window_intents(
+            &plan,
+            &days,
+            now_ms,
+            &[],
+            &empty_timeline(),
+            TOL,
+            &RequestLedger::default(),
+        );
         assert!(a.listing_pending);
         assert_eq!(a.fetch_listings, vec![day(2021, 1, 1)]);
         assert!(a.enqueue.is_empty());
@@ -1858,20 +2277,44 @@ mod reducer_tests {
         // Backed off (now < until) → still pending, but no fetch.
         let mut d = missing_day(day(2021, 1, 1));
         d.backoff_until_ms = Some(now_ms + 1.0);
-        let a = reduce_window_intents(&plan, &[d], now_ms, &[], &empty_timeline(), TOL);
+        let a = reduce_window_intents(
+            &plan,
+            &[d],
+            now_ms,
+            &[],
+            &empty_timeline(),
+            TOL,
+            &RequestLedger::default(),
+        );
         assert!(a.listing_pending);
         assert!(a.fetch_listings.is_empty());
 
         // Backoff expired exactly at now (now < until is false) → fetched.
         let mut d = missing_day(day(2021, 1, 1));
         d.backoff_until_ms = Some(now_ms);
-        let a = reduce_window_intents(&plan, &[d], now_ms, &[], &empty_timeline(), TOL);
+        let a = reduce_window_intents(
+            &plan,
+            &[d],
+            now_ms,
+            &[],
+            &empty_timeline(),
+            TOL,
+            &RequestLedger::default(),
+        );
         assert_eq!(a.fetch_listings, vec![day(2021, 1, 1)]);
 
         // A listing request already in flight → pending, no duplicate fetch.
         let mut d = missing_day(day(2021, 1, 1));
         d.listing_request_pending = true;
-        let a = reduce_window_intents(&plan, &[d], now_ms, &[], &empty_timeline(), TOL);
+        let a = reduce_window_intents(
+            &plan,
+            &[d],
+            now_ms,
+            &[],
+            &empty_timeline(),
+            TOL,
+            &RequestLedger::default(),
+        );
         assert!(a.listing_pending);
         assert!(a.fetch_listings.is_empty());
     }
@@ -1883,18 +2326,42 @@ mod reducer_tests {
 
         // Reactive/lookback plans (no gate): even a future date counts.
         let days = vec![missing_day(day(2021, 1, 2))];
-        let a = reduce_window_intents(&plan, &days, 0.0, &[], &empty_timeline(), TOL);
+        let a = reduce_window_intents(
+            &plan,
+            &days,
+            0.0,
+            &[],
+            &empty_timeline(),
+            TOL,
+            &RequestLedger::default(),
+        );
         assert!(a.listing_pending);
 
         // Selection plans gate on today: the future date is ignored…
         plan.skip_missing_after = Some(today);
-        let a = reduce_window_intents(&plan, &days, 0.0, &[], &empty_timeline(), TOL);
+        let a = reduce_window_intents(
+            &plan,
+            &days,
+            0.0,
+            &[],
+            &empty_timeline(),
+            TOL,
+            &RequestLedger::default(),
+        );
         assert!(!a.listing_pending);
         assert!(a.fetch_listings.is_empty());
 
         // …but today itself (date <= today) still counts as fetchable.
         let days = vec![missing_day(today)];
-        let a = reduce_window_intents(&plan, &days, 0.0, &[], &empty_timeline(), TOL);
+        let a = reduce_window_intents(
+            &plan,
+            &days,
+            0.0,
+            &[],
+            &empty_timeline(),
+            TOL,
+            &RequestLedger::default(),
+        );
         assert!(a.listing_pending);
         assert_eq!(a.fetch_listings, vec![today]);
     }
@@ -1908,7 +2375,15 @@ mod reducer_tests {
         let tl = RadarTimeline {
             scans: vec![cached_scan(1600.0, vec![sweep(2, 1600.0, 1610.0)])],
         };
-        let a = reduce_window_intents(&plan, &days, 0.0, &[1300], &tl, TOL);
+        let a = reduce_window_intents(
+            &plan,
+            &days,
+            0.0,
+            &[1300],
+            &tl,
+            TOL,
+            &RequestLedger::default(),
+        );
         let got: Vec<&str> = a.enqueue.iter().map(|i| i.file_name.as_str()).collect();
         assert_eq!(got, vec!["a"]);
     }
@@ -1922,7 +2397,15 @@ mod reducer_tests {
             present_day(day(2021, 1, 2), &[("late", 5000, 5300)]),
             present_day(day(2021, 1, 1), &[("early", 1000, 1300)]),
         ];
-        let a = reduce_window_intents(&plan, &days, 0.0, &[], &empty_timeline(), TOL);
+        let a = reduce_window_intents(
+            &plan,
+            &days,
+            0.0,
+            &[],
+            &empty_timeline(),
+            TOL,
+            &RequestLedger::default(),
+        );
         let got: Vec<&str> = a.enqueue.iter().map(|i| i.file_name.as_str()).collect();
         assert_eq!(got, vec!["early", "late"]);
     }
