@@ -59,6 +59,13 @@ pub(crate) fn render_canvas_with_geo(
                 // Update camera aspect ratio
                 state.viz_state.camera.set_aspect(rect);
 
+                // Advance any camera fly-to transition (pure core math;
+                // the shell only supplies dt and keeps frames coming).
+                let dt = ctx.input(|i| i.stable_dt.min(0.1));
+                if state.viz_state.camera.tick_animation(dt) {
+                    ctx.request_repaint();
+                }
+
                 // Draw the 3D globe via PaintCallback
                 draw_globe(
                     ui,

@@ -63,6 +63,10 @@ const KEY_PAN_DEG_PER_SEC_PER_RADIUS: f32 = 120.0;
 /// both fall back to their centered/delta variants.
 const GRAB_MAX_TILT_DEG: f32 = 60.0;
 
+/// Fly-to time constant (seconds): the exponential approach covers ~63%
+/// of the remaining distance per TAU, so transitions settle in ~1 s.
+const FLY_TO_TAU_SECS: f32 = 0.25;
+
 // ── Flat 2D ─────────────────────────────────────────────────────────
 
 /// State for the flat 2D top-down view.
@@ -153,6 +157,10 @@ pub struct OrbitState {
     /// 0 = north up, positive = view rotates clockwise on screen.
     /// Wrapped to ±180.
     pub heading: f32,
+    /// Active fly-to target while a transition is animating (see
+    /// [`Camera::fly_to`] / [`Camera::tick_animation`]). Any direct input
+    /// cancels it so the camera never fights the user.
+    pub anim: Option<OrbitTarget>,
 }
 
 impl OrbitState {
@@ -164,9 +172,32 @@ impl OrbitState {
             distance: DEFAULT_SITE_SURFACE_DIST,
             tilt: 0.0,
             heading: 0.0,
+            anim: None,
             common,
         }
     }
+
+    /// The pose a share-link or a completed animation should land on: the
+    /// fly-to target while one is in flight, else the live pose.
+    fn target_pose(&self) -> OrbitTarget {
+        self.anim.unwrap_or(OrbitTarget {
+            pivot_lat: self.pivot_lat,
+            pivot_lon: self.pivot_lon,
+            distance: self.distance,
+            tilt: self.tilt,
+            heading: self.heading,
+        })
+    }
+}
+
+/// A destination pose for an animated camera transition.
+#[derive(Clone, Copy)]
+pub struct OrbitTarget {
+    pub pivot_lat: f32,
+    pub pivot_lon: f32,
+    pub distance: f32,
+    pub tilt: f32,
+    pub heading: f32,
 }
 
 /// The camera state machine: the flat 2D view or the 3D orbit camera.
@@ -462,6 +493,7 @@ impl Camera {
         let Camera::Orbit(s) = self else {
             return;
         };
+        s.anim = None; // direct input cancels any fly-to
         let deg_per_px =
             s.common.fov_y / viewport_height * (180.0 / std::f32::consts::PI) * s.distance;
         let h = s.heading.to_radians();
@@ -485,6 +517,7 @@ impl Camera {
         let Camera::Orbit(s) = self else {
             return;
         };
+        s.anim = None; // direct input cancels any fly-to
         let deg_per_px = s.common.fov_y / viewport_height * (180.0 / std::f32::consts::PI);
         s.heading = wrap_deg(s.heading + dx * deg_per_px);
         s.tilt = (s.tilt - dy * deg_per_px).clamp(0.0, MAX_TILT_DEG);
@@ -494,6 +527,7 @@ impl Camera {
     /// (the 2D path handles its own zoom on `Flat2DState`).
     pub fn zoom(&mut self, delta: f32) {
         if let Camera::Orbit(s) = self {
+            s.anim = None; // direct input cancels any fly-to
             s.distance = zoom_distance(s.distance, delta);
         }
     }
@@ -514,6 +548,7 @@ impl Camera {
         let Camera::Orbit(s) = self else {
             return;
         };
+        s.anim = None; // direct input cancels any fly-to
         let old_dist = s.distance;
         s.distance = zoom_distance(old_dist, delta);
         if let Some((alat, alon)) = anchor {
@@ -548,6 +583,7 @@ impl Camera {
         let Camera::Orbit(s) = self else {
             return false;
         };
+        s.anim = None; // direct input cancels any fly-to
         s.pivot_lat = clamp_lat(s.pivot_lat + (from_lat - to_lat) as f32);
         s.pivot_lon = wrap_deg(s.pivot_lon + wrap_deg((from_lon - to_lon) as f32));
         true
@@ -566,36 +602,103 @@ impl Camera {
         *s = OrbitState::over_site(s.common);
     }
 
-    /// Reset the 3D camera to the default view above the site. R key
-    /// handler (the 2D branch of R is handled by the shortcut itself).
+    /// Reset the 3D camera to the default view above the site (animated).
+    /// R key handler (the 2D branch of R is handled by the shortcut itself).
     pub fn reset(&mut self) {
         if let Camera::Orbit(s) = self {
-            *s = OrbitState::over_site(s.common);
+            let d = OrbitState::over_site(s.common);
+            self.fly_to(OrbitTarget {
+                pivot_lat: d.pivot_lat,
+                pivot_lon: d.pivot_lon,
+                distance: d.distance,
+                tilt: d.tilt,
+                heading: d.heading,
+            });
         }
     }
 
-    /// Move the pivot back to the radar site, keeping distance, tilt and
+    /// Fly the pivot back to the radar site, keeping distance, tilt and
     /// heading. F key handler.
     pub fn focus_site(&mut self) {
         if let Camera::Orbit(s) = self {
-            s.pivot_lat = clamp_lat(s.common.site_lat);
-            s.pivot_lon = wrap_deg(s.common.site_lon);
+            let mut target = s.target_pose();
+            target.pivot_lat = s.common.site_lat;
+            target.pivot_lon = s.common.site_lon;
+            self.fly_to(target);
         }
     }
 
-    /// Rotate the view so North is up, keeping tilt. N key handler.
+    /// Rotate the view so North is up (animated), keeping tilt. N key
+    /// handler.
     pub fn align_north(&mut self) {
         if let Camera::Orbit(s) = self {
-            s.heading = 0.0;
+            let mut target = s.target_pose();
+            target.heading = 0.0;
+            self.fly_to(target);
         }
     }
 
-    /// Move the pivot to a specific geographic point. Double-click handler.
+    /// Fly the pivot to a specific geographic point. Double-click handler.
     pub fn move_pivot_to(&mut self, lat_deg: f64, lon_deg: f64) {
         if let Camera::Orbit(s) = self {
-            s.pivot_lat = clamp_lat(lat_deg as f32);
-            s.pivot_lon = wrap_deg(lon_deg as f32);
+            let mut target = s.target_pose();
+            target.pivot_lat = lat_deg as f32;
+            target.pivot_lon = lon_deg as f32;
+            self.fly_to(target);
         }
+    }
+
+    // ── Fly-to animation ────────────────────────────────────────────
+
+    /// Begin an animated transition toward `target` (clamped through the
+    /// same helpers the live controls use). No-op in 2D.
+    pub fn fly_to(&mut self, target: OrbitTarget) {
+        if let Camera::Orbit(s) = self {
+            s.anim = Some(OrbitTarget {
+                pivot_lat: clamp_lat(target.pivot_lat),
+                pivot_lon: wrap_deg(target.pivot_lon),
+                distance: target.distance.clamp(MIN_SURFACE_DIST, MAX_SURFACE_DIST),
+                tilt: target.tilt.clamp(0.0, MAX_TILT_DEG),
+                heading: wrap_deg(target.heading),
+            });
+        }
+    }
+
+    /// Advance an active fly-to by `dt` seconds: an exponential
+    /// (critically-damped first-order) approach toward the target, with
+    /// distance interpolated in log space (constant perceived zoom rate)
+    /// and longitude/heading along the shortest arc. Snaps and clears the
+    /// target once every delta is below threshold. Returns true while a
+    /// transition is still animating (the shell requests a repaint).
+    pub fn tick_animation(&mut self, dt: f32) -> bool {
+        let Camera::Orbit(s) = self else {
+            return false;
+        };
+        let Some(t) = s.anim else {
+            return false;
+        };
+        let alpha = 1.0 - (-dt.max(0.0) / FLY_TO_TAU_SECS).exp();
+        s.pivot_lat += (t.pivot_lat - s.pivot_lat) * alpha;
+        s.pivot_lon = wrap_deg(s.pivot_lon + wrap_deg(t.pivot_lon - s.pivot_lon) * alpha);
+        s.heading = wrap_deg(s.heading + wrap_deg(t.heading - s.heading) * alpha);
+        s.tilt += (t.tilt - s.tilt) * alpha;
+        let log_dist = s.distance.ln() + (t.distance.ln() - s.distance.ln()) * alpha;
+        s.distance = log_dist.exp();
+
+        let arrived = (t.pivot_lat - s.pivot_lat).abs() < 0.005
+            && wrap_deg(t.pivot_lon - s.pivot_lon).abs() < 0.005
+            && wrap_deg(t.heading - s.heading).abs() < 0.01
+            && (t.tilt - s.tilt).abs() < 0.01
+            && (t.distance.ln() - s.distance.ln()).abs() < 0.001;
+        if arrived {
+            s.pivot_lat = t.pivot_lat;
+            s.pivot_lon = t.pivot_lon;
+            s.heading = t.heading;
+            s.tilt = t.tilt;
+            s.distance = t.distance;
+            s.anim = None;
+        }
+        true
     }
 
     /// Handle held-key movement. Returns true if any state changed.
@@ -618,6 +721,7 @@ impl Camera {
         if forward == 0.0 && right == 0.0 && rotate == 0.0 {
             return false;
         }
+        s.anim = None; // direct input cancels any fly-to
 
         if forward != 0.0 || right != 0.0 {
             // Pan the pivot, heading-aware and distance-scaled (capped so
@@ -664,13 +768,21 @@ impl Camera {
 
     /// Switch to the flat 2D view with the given 2D view state. The live
     /// orbit camera is carried as `saved` so a later switch back to 3D
-    /// restores the exact view. No-op if already 2D.
+    /// restores the exact view; an in-flight fly-to is completed (the
+    /// destination is where the user intended to be). No-op if already 2D.
     pub fn switch_to_flat_2d(&mut self, state: Flat2DState) {
         if let Camera::Orbit(s) = self {
-            *self = Camera::Flat2D(Flat2D {
-                view: state,
-                saved: *s,
-            });
+            let t = s.target_pose();
+            let saved = OrbitState {
+                common: s.common,
+                pivot_lat: t.pivot_lat,
+                pivot_lon: t.pivot_lon,
+                distance: t.distance,
+                tilt: t.tilt,
+                heading: t.heading,
+                anim: None,
+            };
+            *self = Camera::Flat2D(Flat2D { view: state, saved });
         }
     }
 }
@@ -708,15 +820,16 @@ impl Default for UrlCameraSnapshot {
 impl Camera {
     /// Flatten the camera state for URL persistence. In 2D the saved
     /// orbit camera is snapshotted so a reloaded 2D link still restores
-    /// the last 3D view on a 2D → 3D toggle.
+    /// the last 3D view on a 2D → 3D toggle. An in-flight fly-to
+    /// snapshots its *target* — a shared link captures the destination.
     pub fn url_snapshot(&self) -> UrlCameraSnapshot {
-        let s = self.orbit_or_saved();
+        let t = self.orbit_or_saved().target_pose();
         UrlCameraSnapshot {
-            distance: 1.0 + s.distance,
-            center_lat: s.pivot_lat,
-            center_lon: s.pivot_lon,
-            tilt: s.tilt,
-            rotation: s.heading,
+            distance: 1.0 + t.distance,
+            center_lat: t.pivot_lat,
+            center_lon: t.pivot_lon,
+            tilt: t.tilt,
+            rotation: t.heading,
         }
     }
 
@@ -733,6 +846,7 @@ impl Camera {
             distance: (snap.distance - 1.0).clamp(MIN_SURFACE_DIST, MAX_SURFACE_DIST),
             tilt: snap.tilt.clamp(0.0, MAX_TILT_DEG),
             heading: wrap_deg(snap.rotation),
+            anim: None,
         });
     }
 
@@ -857,6 +971,16 @@ mod tests {
         c.orbit_state().expect("camera must be in 3D")
     }
 
+    /// Run any active fly-to to completion with fixed dt steps.
+    fn settle(c: &mut Camera) {
+        for _ in 0..500 {
+            if !c.tick_animation(0.05) {
+                return;
+            }
+        }
+        panic!("fly-to did not converge within 500 ticks");
+    }
+
     #[wasm_bindgen_test]
     fn default_is_flat_2d_and_centered_on_seeds_site() {
         let c = Camera::centered_on(39.0, -98.0);
@@ -894,6 +1018,7 @@ mod tests {
         let (mut c, _) = orbit_with_rect();
         // Put the camera in a distinctive pose.
         c.move_pivot_to(41.5, -95.25);
+        settle(&mut c);
         c.adjust_tilt_heading(120.0, -80.0, 600.0);
         c.zoom(500.0);
         let before = *orbit(&c);
@@ -1229,6 +1354,7 @@ mod tests {
     fn pivot_latitude_clamps_near_poles() {
         let (mut c, _) = orbit_with_rect();
         c.move_pivot_to(89.999, 0.0);
+        settle(&mut c);
         assert!((orbit(&c).pivot_lat - 89.9).abs() < 1e-4);
         for _ in 0..200 {
             c.pan_pivot(0.0, 500.0, 600.0);
@@ -1292,9 +1418,11 @@ mod tests {
     fn reset_restores_site_defaults() {
         let (mut c, _) = orbit_with_rect();
         c.move_pivot_to(10.0, 10.0);
+        settle(&mut c);
         c.adjust_tilt_heading(100.0, -100.0, 600.0);
         c.zoom(1000.0);
         c.reset();
+        settle(&mut c);
         let s = orbit(&c);
         assert!((s.pivot_lat - 39.0).abs() < 1e-4);
         assert!((s.pivot_lon - -98.0).abs() < 1e-4);
@@ -1307,6 +1435,7 @@ mod tests {
     fn focus_site_moves_pivot_but_keeps_pose() {
         let (mut c, _) = orbit_with_rect();
         c.move_pivot_to(10.0, 10.0);
+        settle(&mut c);
         c.adjust_tilt_heading(100.0, -100.0, 600.0);
         c.zoom(1000.0);
         let (tilt, heading, dist) = {
@@ -1314,6 +1443,7 @@ mod tests {
             (s.tilt, s.heading, s.distance)
         };
         c.focus_site();
+        settle(&mut c);
         let s = orbit(&c);
         assert!((s.pivot_lat - 39.0).abs() < 1e-4);
         assert_eq!(s.tilt, tilt);
@@ -1327,8 +1457,118 @@ mod tests {
         c.adjust_tilt_heading(100.0, -100.0, 600.0);
         let tilt = orbit(&c).tilt;
         c.align_north();
+        settle(&mut c);
         assert_eq!(orbit(&c).heading, 0.0);
-        assert_eq!(orbit(&c).tilt, tilt);
+        assert!((orbit(&c).tilt - tilt).abs() < 1e-4);
+    }
+
+    // ---- Fly-to animation --------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn fly_to_converges_monotonically() {
+        let (mut c, _) = orbit_with_rect();
+        c.fly_to(OrbitTarget {
+            pivot_lat: 45.0,
+            pivot_lon: -80.0,
+            distance: 1.5,
+            tilt: 40.0,
+            heading: 90.0,
+        });
+        // The live pose is untouched until ticked.
+        assert!((orbit(&c).pivot_lat - 39.0).abs() < 1e-4);
+        let mut prev_lat_gap = (45.0 - orbit(&c).pivot_lat).abs();
+        let mut prev_log_gap = (1.5f32.ln() - orbit(&c).distance.ln()).abs();
+        let mut ticks = 0;
+        while c.tick_animation(0.016) {
+            ticks += 1;
+            assert!(ticks < 2000, "did not converge");
+            let lat_gap = (45.0 - orbit(&c).pivot_lat).abs();
+            let log_gap = (1.5f32.ln() - orbit(&c).distance.ln()).abs();
+            assert!(lat_gap <= prev_lat_gap + 1e-6, "lat gap grew");
+            assert!(log_gap <= prev_log_gap + 1e-6, "log-distance gap grew");
+            prev_lat_gap = lat_gap;
+            prev_log_gap = log_gap;
+        }
+        let s = orbit(&c);
+        assert!(s.anim.is_none());
+        assert_eq!(s.pivot_lat, 45.0);
+        assert_eq!(s.distance, 1.5);
+        assert_eq!(s.tilt, 40.0);
+        assert_eq!(s.heading, 90.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn fly_to_takes_the_shortest_arc() {
+        let (mut c, _) = orbit_with_rect();
+        {
+            let Camera::Orbit(s) = &mut c else {
+                unreachable!()
+            };
+            s.heading = 179.0;
+        }
+        let mut target = orbit(&c).target_pose();
+        target.heading = -179.0;
+        c.fly_to(target);
+        // 179 → −179 is 2° across the wrap, not 358° back through 0.
+        c.tick_animation(0.016);
+        let h = orbit(&c).heading;
+        assert!(
+            wrap_deg(h - 179.0).abs() < 2.0,
+            "heading went the long way: {h}"
+        );
+        settle(&mut c);
+        assert!((wrap_deg(orbit(&c).heading - -179.0)).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn direct_input_cancels_fly_to() {
+        let (mut c, _) = orbit_with_rect();
+        c.move_pivot_to(45.0, -80.0);
+        assert!(orbit(&c).anim.is_some());
+        c.pan_pivot(5.0, 5.0, 600.0);
+        assert!(orbit(&c).anim.is_none());
+
+        c.move_pivot_to(45.0, -80.0);
+        c.zoom(120.0);
+        assert!(orbit(&c).anim.is_none());
+
+        c.move_pivot_to(45.0, -80.0);
+        c.keyboard_move(1.0, 0.0, 0.0, 1.0, 0.016);
+        assert!(orbit(&c).anim.is_none());
+
+        c.move_pivot_to(45.0, -80.0);
+        c.adjust_tilt_heading(5.0, 5.0, 600.0);
+        assert!(orbit(&c).anim.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn url_snapshot_reads_the_fly_to_target_mid_flight() {
+        let (mut c, _) = orbit_with_rect();
+        c.move_pivot_to(45.0, -80.0);
+        // Not yet ticked: live pose is still the site, but a link shared
+        // now captures the destination.
+        let snap = c.url_snapshot();
+        assert!((snap.center_lat - 45.0).abs() < 1e-4);
+        assert!((snap.center_lon - -80.0).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn switch_to_2d_completes_the_fly_to() {
+        let (mut c, _) = orbit_with_rect();
+        c.move_pivot_to(45.0, -80.0);
+        c.switch_to_flat_2d(Flat2DState::default());
+        c.switch_to_globe();
+        let s = orbit(&c);
+        assert!((s.pivot_lat - 45.0).abs() < 1e-4);
+        assert!(s.anim.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn tick_animation_is_inert_when_idle_or_2d() {
+        let (mut c, _) = orbit_with_rect();
+        assert!(!c.tick_animation(0.016));
+        let mut flat = Camera::centered_on(39.0, -98.0);
+        assert!(!flat.tick_animation(0.016));
     }
 
     // ---- URL persistence ---------------------------------------------------
@@ -1337,6 +1577,7 @@ mod tests {
     fn url_snapshot_round_trips_orbit_state() {
         let (mut c, _) = orbit_with_rect();
         c.move_pivot_to(41.5, -95.25);
+        settle(&mut c);
         c.adjust_tilt_heading(120.0, -80.0, 600.0);
         c.zoom(700.0);
         let before = *orbit(&c);
