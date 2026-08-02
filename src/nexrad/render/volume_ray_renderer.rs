@@ -1,9 +1,16 @@
 //! Volumetric ray-march renderer for 3D radar data.
 //!
 //! Renders all elevation sweeps simultaneously as a semi-transparent volume.
-//! A full-screen quad is drawn; the fragment shader fires a ray through each pixel,
-//! steps through the radar volume shell, and samples radar data via trilinear
-//! interpolation across azimuth, range, and elevation dimensions.
+//! A full-screen quad is drawn; the fragment shader fires a ray through each
+//! pixel, marches the interval where the radar's own coverage intersects that
+//! ray, and at each step inverts the 4/3-earth beam geometry to find which
+//! sweep and gate illuminate the point — blending bilinearly in azimuth and
+//! range within a sweep, then linearly across the bracketing elevation pair.
+//!
+//! The packed volume this consumes is prepared by `core::volume_plan`, which
+//! guarantees the two properties the addressing here depends on: sweeps in
+//! ascending elevation-angle order with no duplicates, and rows on a uniform
+//! azimuth grid. See `docs/RENDERING.md` for the full pipeline.
 
 use crate::core::volume_plan::{derive_shell_extents, ShellExtents};
 use crate::core::RenderProcessing;

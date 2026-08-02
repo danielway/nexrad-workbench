@@ -291,51 +291,84 @@ When the user enables 3D volume rendering, the entire volume coverage
 pattern (every elevation sweep) is rendered together as a
 semi-transparent shell using ray marching.
 
-**Data layout.** All sweep gate values are concatenated into one
-linear buffer and uploaded as a 4096-wide 2D texture in `R8UI` (1-byte
-products) or `R16UI` (2-byte products). Per-sweep metadata —
-elevation, gate count, azimuth count, first-gate range, gate
-interval, byte offset into the buffer, scale, offset — is uploaded as
-fixed-length uniform arrays of length 25 (`MAX_SWEEPS`). Indexing into
-the packed texture uses
-`y = idx / tex_width; x = idx - y * tex_width` and `texelFetch` with
-no filtering — for ray marching we want exact integer addressing, not
-interpolation.
+**Assembly (`core::volume_plan`, executed by the worker packer).** The
+shader's addressing assumes two things raw NEXRAD data does not
+provide, so the pure decisions in `core/volume_plan.rs` establish them
+before upload:
+
+- **Ascending, deduped elevations.** Sweeps arrive ordered by
+  elevation *number*, which SAILS/MRLE rescans and split cuts leave
+  non-monotonic in *angle*. `plan_volume_sweeps` sorts by true angle
+  and keeps one sweep per distinct angle (within 0.15°), preferring
+  the greatest range coverage — the surveillance half of a split cut —
+  and breaking ties toward the freshest rescan.
+- **A uniform azimuth grid.** Radial azimuths are irregular, start at
+  an arbitrary angle, and can be missing. `plan_azimuth_bins` maps
+  each uniform bin to its nearest radial, wrap-aware, leaving a bin
+  empty when nothing falls within 1.5× the median spacing (the same
+  gap rule the 2D path applies). Empty bins carry the below-threshold
+  sentinel, so gaps read as gaps rather than smear.
+
+**Data layout.** Resampled sweep rows are concatenated into one linear
+buffer and uploaded as a 4096-wide 2D texture in `R8UI` (1-byte
+products) or `R16UI` (2-byte products), clamped to
+`GL_MAX_TEXTURE_SIZE` (widening the row before giving up). Per-sweep
+metadata — elevation, gate count, azimuth *bin* count, first-gate
+range, gate interval, offset into the buffer, scale, offset — is
+uploaded as fixed-length uniform arrays of length 25 (`MAX_SWEEPS`);
+post-dedup no operational VCP comes close to that. Indexing uses
+`y = idx / tex_width; x = idx - y * tex_width` and `texelFetch`: the
+integer formats can't be hardware-filtered, so interpolation is done
+explicitly in the shader.
 
 **Ray march.** A fullscreen quad is drawn into a half-resolution FBO
 (`RESOLUTION_DIVISOR = 2`). For each pixel:
 
 1. Reconstruct a world-space ray from `u_inv_view_projection` and
    `u_camera_pos`.
-2. Intersect against an inner sphere (Earth surface, ~1.003) and an
-   outer sphere (`1.003 + max_beam_height / earth_radius`), producing
-   a march interval clipped to the radar shell.
-3. Cheap early-out: project the midpoint of the interval onto the
-   site direction; discard if the angular distance exceeds
-   `max_range_km / earth_radius` with a 0.7 margin. This kills the
-   ~90% of globe pixels that are nowhere near the radar.
-4. Adaptive `MAX_STEPS = 96` march. At each step convert the world
-   point to (azimuth, range, elevation) about the site, find the
-   bracketing elevation pair (linear scan over ≤25 sweeps), sample
-   nearest-neighbor in (gate, azimuth) on each, and trilinearly
-   interpolate.
-5. Front-to-back compositing with an `ALPHA_CUTOFF = 0.95` early
-   termination and a `density_cutoff` user knob to suppress thin
+2. Intersect against the inner sphere (data shell, ~1.003), the outer
+   sphere (`inner + max_beam_height / earth_radius`), **and a
+   site-centred bounding sphere** enclosing everything within one max
+   slant range of the radar. All three extents come from the loaded
+   sweeps via `derive_shell_extents` — not from fixed constants. The
+   site sphere is both the early-out for far-away pixels and what
+   keeps the step near gate scale: without it the interval was a
+   globe-scale chord and a single step could span tens of kilometres.
+3. `MAX_STEPS = 96` through the clipped interval, with the first
+   sample jittered by interleaved gradient noise. A fixed offset put
+   every ray's samples on shells of constant camera distance, which is
+   what produced concentric rings and horizontal slabs.
+4. At each step, invert the 4/3-earth beam geometry to recover
+   `(elevation, slant range)` from the sample's ground arc and height
+   — the reference implementation and its round-trip tests live in
+   `core::volume_plan::beam_from_ground_position`, and the GLSL is a
+   line-by-line transcription. Find the bracketing elevation pair
+   (linear scan over ≤25 sweeps), bilinearly sample each in azimuth
+   and range, convert to physical units with **that sweep's own**
+   scale/offset, then blend across elevation.
+5. Front-to-back Beer–Lambert compositing:
+   `alpha = 1 - exp(-sigma * ds_km)` with extinction derived from a
+   gamma curve over the value range. `ALPHA_CUTOFF = 0.99` early-
+   terminates and a `density_cutoff` user knob suppresses thin
    reflectivity below a threshold.
 
-Sampled values run through the same `(raw - offset) / scale`
-conversion and the same color LUT as the 2D path — the LUT texture is
-borrowed from the flat renderer. The half-resolution result is then
-blit to the main framebuffer with a trivial textured-quad shader.
+Colour comes from the same LUT as the 2D path (the texture is borrowed
+from the flat renderer), but **opacity does not** — the LUT's alpha
+ramp saturates around 25 dBZ, so using it as extinction pinned nearly
+every in-cloud sample to the same value and rendered the volume as a
+first-hit isosurface. The half-resolution result is blit to the main
+framebuffer with a trivial textured-quad shader.
 
 **Trade-offs.** Half resolution is the dominant performance lever —
-each pixel walks the ray independently with no acceleration
-structure, and 4× fewer pixels means 4× fewer marches. Nearest-
-neighbor in (gate, azimuth) costs one `texelFetch` per sample versus
-four for bilinear; the trilinear blend across elevation pairs hides
-most of the visible aliasing. The packed-texture layout sidesteps
-WebGL2's lack of 3D texture arrays for integer formats, at the cost
-of computing a 1D→2D index in the shader.
+each pixel walks the ray independently with no acceleration structure,
+and 4× fewer pixels means 4× fewer marches. Sampling costs four
+`texelFetch` calls per sweep per step; the site-sphere clip pays for
+that by cutting the wasted march outside the radar domain. Resampling
+azimuth on the CPU keeps the shader's bin index pure arithmetic rather
+than a per-step binary search, at no memory cost for a full-rotation
+sweep (bin count equals radial count). The packed-texture layout
+sidesteps WebGL2's lack of 3D texture arrays for integer formats, at
+the cost of computing a 1D→2D index in the shader.
 
 **Why two 3D renderers.** The surface patch is much cheaper than the
 volume march and is what the user sees most of the time on the globe;
