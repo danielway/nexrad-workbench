@@ -5,6 +5,7 @@
 //! steps through the radar volume shell, and samples radar data via trilinear
 //! interpolation across azimuth, range, and elevation dimensions.
 
+use crate::core::volume_plan::{derive_shell_extents, ShellExtents};
 use crate::core::RenderProcessing;
 use crate::core::VolumeSweepMeta;
 use crate::geo::Camera;
@@ -72,6 +73,7 @@ uniform float u_site_lon_rad;
 // Volume bounds
 uniform float u_inner_radius;   // ~1.003
 uniform float u_outer_radius;   // ~1.003 + max_beam_height/6371
+uniform float u_bound_radius;   // site-centred bounding sphere, unit-sphere units
 uniform float u_max_range_km;
 
 // Data texture (packed values in R8UI or R16UI 2D texture)
@@ -104,13 +106,25 @@ const float ALPHA_CUTOFF = 0.95;
 
 // ── Ray-sphere intersection ──────────────────────────────────────────
 
-vec2 sphere_intersect(vec3 ro, vec3 rd, float radius) {
-    float b = dot(ro, rd);
-    float c = dot(ro, ro) - radius * radius;
+// Returns (t_near, t_far); an inverted interval means the ray missed.
+vec2 sphere_intersect_at(vec3 ro, vec3 rd, vec3 center, float radius) {
+    vec3 oc = ro - center;
+    float b = dot(oc, rd);
+    float c = dot(oc, oc) - radius * radius;
     float disc = b * b - c;
     if (disc < 0.0) return vec2(1e20, -1e20);
     float sq = sqrt(disc);
     return vec2(-b - sq, -b + sq);
+}
+
+vec2 sphere_intersect(vec3 ro, vec3 rd, float radius) {
+    return sphere_intersect_at(ro, rd, vec3(0.0), radius);
+}
+
+// Interleaved gradient noise (Jimenez 2014): analytic, no texture, and well
+// distributed over a pixel neighbourhood, so the half-res blit averages it.
+float interleaved_gradient_noise(vec2 p) {
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
 }
 
 // ── Sweep sampling ──────────────────────────────────────────────────
@@ -190,9 +204,17 @@ void main() {
     // If outer sphere missed entirely, skip
     if (t_outer.x > t_outer.y) discard;
 
+    // Clip to the radar's own neighbourhood. Everything sampleable lies within
+    // one max slant range of the site — a few hundred km out of a globe-scale
+    // chord. This is both the early-out for far-away pixels and, crucially,
+    // what keeps the step size below down near gate scale instead of tens of km.
+    vec3 site_center = u_site_pos * u_inner_radius;
+    vec2 t_site = sphere_intersect_at(ro, rd, site_center, u_bound_radius);
+    if (t_site.x > t_site.y) discard;
+
     // Determine march range
-    float t_start = max(t_outer.x, 0.0);
-    float t_end = t_outer.y;
+    float t_start = max(max(t_outer.x, t_site.x), 0.0);
+    float t_end = min(t_outer.y, t_site.y);
 
     // Clip to inner sphere (don't render inside earth)
     if (t_inner.x < t_inner.y && t_inner.x > 0.0) {
@@ -200,14 +222,6 @@ void main() {
     }
     if (t_start >= t_end) discard;
 
-    // Early discard: test if midpoint of the ray is within radar range
-    // This cheaply kills ~90% of pixels on the globe that are far from the site
-    vec3 mid_pt = normalize(ro + rd * ((t_start + t_end) * 0.5));
-    float cos_mid = dot(mid_pt, u_site_pos);
-    float cos_max_angle = cos(u_max_range_km / EARTH_RADIUS);
-    if (cos_mid < cos_max_angle * 0.7) discard;  // 0.7 = generous margin
-
-    // Adaptive step size — target ~64-96 steps through the shell
     float march_range = t_end - t_start;
     float step = march_range / float(MAX_STEPS);
 
@@ -227,7 +241,11 @@ void main() {
     vec3 accum_color = vec3(0.0);
     float accum_alpha = 0.0;
 
-    float t = t_start + step * 0.5;  // offset by half-step to avoid aliasing
+    // Jitter the first sample within its step. A constant offset puts every
+    // ray's samples on shells of constant camera distance, which is exactly the
+    // concentric-ring and horizontal-slab pattern; noise turns that structured
+    // aliasing into fine dither the half-res blit averages away.
+    float t = t_start + step * interleaved_gradient_noise(gl_FragCoord.xy);
     for (int i = 0; i < MAX_STEPS; i++) {
         if (t >= t_end || accum_alpha >= ALPHA_CUTOFF) break;
 
@@ -346,6 +364,7 @@ pub struct VolumeRayRenderer {
     u_site_lon_rad: Option<glow::UniformLocation>,
     u_inner_radius: Option<glow::UniformLocation>,
     u_outer_radius: Option<glow::UniformLocation>,
+    u_bound_radius: Option<glow::UniformLocation>,
     u_max_range_km: Option<glow::UniformLocation>,
     u_tex_width: Option<glow::UniformLocation>,
     u_sweep_count: Option<glow::UniformLocation>,
@@ -366,6 +385,8 @@ pub struct VolumeRayRenderer {
     sweep_count: i32,
     site_lat: f64,
     site_lon: f64,
+    /// March bounds derived from the loaded sweeps, refreshed on every upload.
+    extents: ShellExtents,
 }
 
 impl VolumeRayRenderer {
@@ -398,6 +419,7 @@ impl VolumeRayRenderer {
         let u_site_lon_rad = get("u_site_lon_rad");
         let u_inner_radius = get("u_inner_radius");
         let u_outer_radius = get("u_outer_radius");
+        let u_bound_radius = get("u_bound_radius");
         let u_max_range_km = get("u_max_range_km");
         let u_tex_width = get("u_tex_width");
         let u_sweep_count = get("u_sweep_count");
@@ -528,6 +550,7 @@ impl VolumeRayRenderer {
             u_site_lon_rad,
             u_inner_radius,
             u_outer_radius,
+            u_bound_radius,
             u_max_range_km,
             u_tex_width,
             u_sweep_count,
@@ -547,6 +570,7 @@ impl VolumeRayRenderer {
             sweep_count: 0,
             site_lat: 0.0,
             site_lon: 0.0,
+            extents: derive_shell_extents(&[]),
         }
     }
 
@@ -570,6 +594,9 @@ impl VolumeRayRenderer {
         self.site_lat = site_lat;
         self.site_lon = site_lon;
         self.sweep_count = sweeps.len().min(MAX_SWEEPS) as i32;
+        // Bound the march by what this volume actually contains, rather than by
+        // a fixed 300 km / 20° shell that clipped long-range sweeps short.
+        self.extents = derive_shell_extents(&sweeps[..self.sweep_count as usize]);
 
         let bytes_per_value = word_size as usize;
 
@@ -787,16 +814,12 @@ impl VolumeRayRenderer {
             gl.uniform_1_f32(self.u_site_lat_rad.as_ref(), lat_rad as f32);
             gl.uniform_1_f32(self.u_site_lon_rad.as_ref(), lon_rad as f32);
 
-            // Volume bounds
-            let inner_radius = 1.003f32;
-            let max_elev_rad = 20.0f32.to_radians();
-            let max_range = 300.0f32;
-            let max_height_km = max_range * max_elev_rad.sin() + 10.0;
-            let outer_radius = inner_radius + max_height_km / 6371.0;
-
-            gl.uniform_1_f32(self.u_inner_radius.as_ref(), inner_radius);
-            gl.uniform_1_f32(self.u_outer_radius.as_ref(), outer_radius);
-            gl.uniform_1_f32(self.u_max_range_km.as_ref(), 300.0);
+            // Volume bounds, derived from the loaded sweeps.
+            let e = self.extents;
+            gl.uniform_1_f32(self.u_inner_radius.as_ref(), e.inner_radius);
+            gl.uniform_1_f32(self.u_outer_radius.as_ref(), e.outer_radius);
+            gl.uniform_1_f32(self.u_bound_radius.as_ref(), e.bound_radius);
+            gl.uniform_1_f32(self.u_max_range_km.as_ref(), e.max_range_km);
 
             gl.uniform_1_i32(self.u_tex_width.as_ref(), self.tex_width);
             gl.uniform_1_i32(self.u_sweep_count.as_ref(), self.sweep_count);

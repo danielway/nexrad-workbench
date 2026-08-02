@@ -195,6 +195,90 @@ pub(crate) fn plan_azimuth_bins(azimuths: &[f32], bin_count: u32) -> Vec<Option<
         .collect()
 }
 
+// ── Shell extents ───────────────────────────────────────────────────────────
+
+/// Mean Earth radius, km. Also the unit-sphere scale the 3-D renderers use:
+/// one unit of world space is this many kilometres.
+pub(crate) const EARTH_RADIUS_KM: f32 = 6371.0;
+
+/// Effective Earth radius under standard atmospheric refraction (the 4/3-Earth
+/// model). A radar beam bends slightly downward relative to a straight line, and
+/// pretending the Earth is 4/3 its true size lets the beam be treated as
+/// straight — the standard operational approximation.
+pub(crate) const EFFECTIVE_EARTH_RADIUS_KM: f32 = EARTH_RADIUS_KM * 4.0 / 3.0;
+
+/// Unit-sphere radius at which radar data sits, matching
+/// `globe_radar_renderer::PATCH_RADIUS` so the volume and the flat surface
+/// patch occupy the same shell.
+pub(crate) const RADAR_SHELL_INNER_RADIUS: f32 = 1.003;
+
+/// Height of the beam centre above the Earth's surface, in km, for a given
+/// slant range and elevation angle under the 4/3-Earth model.
+pub(crate) fn beam_height_km(range_km: f32, elevation_deg: f32) -> f32 {
+    let re = EFFECTIVE_EARTH_RADIUS_KM;
+    let sin_e = elevation_deg.to_radians().sin();
+    (range_km * range_km + re * re + 2.0 * range_km * re * sin_e).sqrt() - re
+}
+
+/// Bounds of the region a volume ray march needs to visit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ShellExtents {
+    /// Unit-sphere radius of the shell floor (ground level).
+    pub inner_radius: f32,
+    /// Unit-sphere radius of the shell ceiling (top of the highest beam).
+    pub outer_radius: f32,
+    /// Farthest slant range any sweep carries data to, km.
+    pub max_range_km: f32,
+    /// Height of the highest sampleable beam centre, km.
+    pub max_height_km: f32,
+    /// Radius, in unit-sphere units, of a sphere centred on the radar that
+    /// encloses every sampleable point. Clipping the march to this instead of
+    /// to the whole globe is what keeps the step size near gate scale.
+    pub bound_radius: f32,
+}
+
+/// Slack on the bounding sphere so interpolation at the very edge of the data
+/// isn't clipped by rounding.
+const BOUND_MARGIN: f32 = 1.02;
+
+/// Derive the march bounds from the sweeps actually present.
+///
+/// Replaces a hardcoded 300 km / 20° shell that both over-marched (the ray
+/// interval came from the whole globe) and under-covered (reflectivity reaches
+/// 460 km, so the far third of every long-range sweep was clipped away).
+pub(crate) fn derive_shell_extents(sweeps: &[crate::core::VolumeSweepMeta]) -> ShellExtents {
+    let mut max_range_km: f32 = 0.0;
+    let mut max_height_km: f32 = 0.0;
+
+    for s in sweeps {
+        // Gate coverage is the authoritative extent: it is what the shader's
+        // own gate_count bound allows it to sample.
+        let coverage = s.first_gate_km + s.gate_count as f32 * s.gate_interval_km;
+        max_range_km = max_range_km.max(coverage);
+        max_height_km = max_height_km.max(beam_height_km(coverage, s.elevation_deg));
+    }
+
+    if max_range_km <= 0.0 {
+        // No usable sweeps — a degenerate but non-inverted shell.
+        return ShellExtents {
+            inner_radius: RADAR_SHELL_INNER_RADIUS,
+            outer_radius: RADAR_SHELL_INNER_RADIUS,
+            max_range_km: 0.0,
+            max_height_km: 0.0,
+            bound_radius: 0.0,
+        };
+    }
+
+    ShellExtents {
+        inner_radius: RADAR_SHELL_INNER_RADIUS,
+        outer_radius: RADAR_SHELL_INNER_RADIUS + max_height_km / EARTH_RADIUS_KM,
+        max_range_km,
+        max_height_km,
+        // Every sampleable point lies within one max slant range of the radar.
+        bound_radius: max_range_km * BOUND_MARGIN / EARTH_RADIUS_KM,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,5 +585,128 @@ mod azimuth_tests {
         let bins = plan_azimuth_bins(&[0.0], 4);
         assert_eq!(bins[0], Some(0));
         assert_eq!(bins[2], None);
+    }
+}
+
+#[cfg(test)]
+mod extent_tests {
+    use super::*;
+    use crate::core::VolumeSweepMeta;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn sweep(elevation_deg: f32, gate_count: u32, gate_interval_km: f32) -> VolumeSweepMeta {
+        VolumeSweepMeta {
+            elevation_deg,
+            azimuth_count: 720,
+            gate_count,
+            first_gate_km: 2.125,
+            gate_interval_km,
+            max_range_km: 460.0,
+            data_offset: 0,
+            scale: 2.0,
+            offset: 66.0,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn beam_height_matches_the_textbook_reference_point() {
+        // The canonical figure: the 0.5° beam centre is a bit over 5 km above
+        // ground at 230 km under standard refraction.
+        let h = beam_height_km(230.0, 0.5);
+        assert!((h - 5.1).abs() < 0.3, "0.5° at 230 km gave {h} km");
+    }
+
+    #[wasm_bindgen_test]
+    fn beam_height_agrees_with_the_small_angle_approximation() {
+        // h ≈ r·sin(θ) + r²/(2·Re′) is the standard two-term form. Agreeing
+        // with it across the operational envelope pins the exact formula
+        // against an independently derived oracle.
+        for &range in &[10.0f32, 50.0, 100.0, 230.0, 300.0, 460.0] {
+            for &elev in &[0.5f32, 1.5, 5.0, 12.0, 19.5] {
+                let exact = beam_height_km(range, elev);
+                let approx = range * elev.to_radians().sin()
+                    + range * range / (2.0 * EFFECTIVE_EARTH_RADIUS_KM);
+                // The approximation drops higher-order terms, so allow a
+                // relative slack that grows with the answer.
+                let tolerance = 0.02 * exact.abs().max(1.0) + 0.05;
+                assert!(
+                    (exact - approx).abs() <= tolerance,
+                    "{range} km at {elev}°: exact {exact}, approx {approx}"
+                );
+            }
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn beam_height_exceeds_the_flat_earth_answer() {
+        // Curvature lifts the beam; a flat-earth bound would clip the top of
+        // the volume off. At long range the difference is kilometres.
+        let range = 300.0;
+        let flat = range * 0.5f32.to_radians().sin();
+        let curved = beam_height_km(range, 0.5);
+        assert!(curved > flat + 4.0, "flat {flat}, curved {curved}");
+    }
+
+    #[wasm_bindgen_test]
+    fn beam_height_rises_with_range_and_with_elevation() {
+        assert!(beam_height_km(200.0, 0.5) > beam_height_km(100.0, 0.5));
+        assert!(beam_height_km(200.0, 5.0) > beam_height_km(200.0, 0.5));
+        assert!(beam_height_km(0.0, 0.5).abs() < 1e-3);
+    }
+
+    #[wasm_bindgen_test]
+    fn extents_follow_the_longest_sweep_not_a_fixed_300km() {
+        // A 460 km surveillance cut plus shorter Doppler cuts.
+        let sweeps = vec![
+            sweep(0.5, 1832, 0.25),  // ~460 km
+            sweep(1.5, 1200, 0.25),  // ~302 km
+            sweep(19.5, 1200, 0.25), // ~302 km, steep
+        ];
+        let e = derive_shell_extents(&sweeps);
+        assert!(
+            (e.max_range_km - 460.1).abs() < 1.0,
+            "max_range {}",
+            e.max_range_km
+        );
+        // The 19.5° cut at 300 km is the ceiling, not the 0.5° cut at 460 km.
+        let expected_top = beam_height_km(302.125, 19.5);
+        assert!((e.max_height_km - expected_top).abs() < 0.1);
+        assert!(e.max_height_km > 100.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_shell_encloses_every_sampleable_point() {
+        let sweeps = vec![sweep(0.5, 1832, 0.25), sweep(19.5, 1200, 0.25)];
+        let e = derive_shell_extents(&sweeps);
+
+        // Outer radius sits above the highest beam, inner at the data shell.
+        assert_eq!(e.inner_radius, RADAR_SHELL_INNER_RADIUS);
+        assert!(e.outer_radius > e.inner_radius);
+        let ceiling_km = (e.outer_radius - e.inner_radius) * EARTH_RADIUS_KM;
+        assert!(ceiling_km >= e.max_height_km - 1e-3);
+
+        // The bounding sphere reaches past the farthest gate of every sweep.
+        for s in &sweeps {
+            let coverage = s.first_gate_km + s.gate_count as f32 * s.gate_interval_km;
+            assert!(e.bound_radius * EARTH_RADIUS_KM >= coverage);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn extents_grow_monotonically_with_coverage() {
+        let short = derive_shell_extents(&[sweep(0.5, 1200, 0.25)]);
+        let long = derive_shell_extents(&[sweep(0.5, 1832, 0.25)]);
+        assert!(long.max_range_km > short.max_range_km);
+        assert!(long.max_height_km > short.max_height_km);
+        assert!(long.outer_radius > short.outer_radius);
+        assert!(long.bound_radius > short.bound_radius);
+    }
+
+    #[wasm_bindgen_test]
+    fn empty_input_yields_a_degenerate_but_non_inverted_shell() {
+        let e = derive_shell_extents(&[]);
+        assert_eq!(e.max_range_km, 0.0);
+        assert_eq!(e.bound_radius, 0.0);
+        assert!(e.outer_radius >= e.inner_radius);
     }
 }
