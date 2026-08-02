@@ -99,6 +99,10 @@ uniform float u_value_min;
 uniform float u_value_range;
 
 const float EARTH_RADIUS = 6371.0;
+// 4/3-earth model: standard atmospheric refraction bends the beam slightly
+// downward, and inflating the earth's radius by 4/3 lets it be treated as
+// straight. Must match core::volume_plan::EFFECTIVE_EARTH_RADIUS_KM.
+const float EFFECTIVE_EARTH_RADIUS = 6371.0 * 4.0 / 3.0;
 
 // Tuning constants
 const int MAX_STEPS = 96;
@@ -217,7 +221,7 @@ void main() {
     // Clip to the radar's own neighbourhood. Everything sampleable lies within
     // one max slant range of the site — a few hundred km out of a globe-scale
     // chord. This is both the early-out for far-away pixels and, crucially,
-    // what keeps the step size below down near gate scale instead of tens of km.
+    // what keeps the step size down near gate scale instead of tens of km.
     vec3 site_center = u_site_pos * u_inner_radius;
     vec2 t_site = sphere_intersect_at(ro, rd, site_center, u_bound_radius);
     if (t_site.x > t_site.y) discard;
@@ -261,38 +265,46 @@ void main() {
 
         vec3 pos = ro + rd * t;
 
-        // Height above unit sphere surface (in km)
+        // Height above the data shell (in km)
         float r = length(pos);
         float h_km = (r - u_inner_radius) * EARTH_RADIUS;
 
-        // Ground distance from site — use cheap dot product approximation
-        // cos(angle) ≈ dot(normalize(pos), site_pos), then ground_dist ≈ acos(cos) * R
-        // But acos is expensive. Use: dist² ≈ 2R²(1-cos) for small angles
+        // Ground arc from the site along the earth's surface.
         vec3 p_surf = pos / r;  // normalize
-        float cos_gd = dot(p_surf, u_site_pos);
+        float cos_gd = clamp(dot(p_surf, u_site_pos), -1.0, 1.0);
+        float ground_arc_km = acos(cos_gd) * EARTH_RADIUS;
 
-        // Quick range check using squared chord distance (avoids acos)
-        // chord² = 2(1 - cos(θ)), ground_dist² ≈ R²·chord² for small angles
-        float chord2 = 2.0 * (1.0 - cos_gd);
-        float ground_dist2_km = chord2 * EARTH_RADIUS * EARTH_RADIUS;
-        float max_r2 = u_max_range_km * u_max_range_km;
-
-        if (ground_dist2_km > max_r2) {
+        if (ground_arc_km > u_max_range_km) {
             t += step;
             continue;
         }
 
-        // Full computation only for in-range samples
-        float ground_dist_km = sqrt(ground_dist2_km);
-        float range_km = sqrt(ground_dist2_km + h_km * h_km);
+        // Invert the 4/3-earth beam geometry to recover which beam illuminates
+        // this point. A line-by-line transcription of
+        // core::volume_plan::beam_from_ground_position, which is round-trip
+        // tested against the forward map. The flat-earth version this replaces
+        // ignored curvature, misplacing the elevation angle by more than a cut
+        // separation at long range and landing samples in the wrong cones.
+        float phi = ground_arc_km / EFFECTIVE_EARTH_RADIUS;
+        float sin_phi = sin(phi);
+        float cos_phi = cos(phi);
+
+        float el_deg;
+        float range_km;
+        if (abs(sin_phi) < 1e-9) {
+            el_deg = 90.0;
+            range_km = h_km;
+        } else {
+            float theta = atan(cos_phi - EFFECTIVE_EARTH_RADIUS / (EFFECTIVE_EARTH_RADIUS + h_km),
+                               sin_phi);
+            el_deg = degrees(theta);
+            range_km = (EFFECTIVE_EARTH_RADIUS + h_km) * sin_phi / cos(theta);
+        }
 
         if (range_km < 1.0) {
             t += step;
             continue;
         }
-
-        // Elevation angle
-        float el_deg = degrees(atan(h_km, ground_dist_km));
 
         // Find bracketing sweeps
         int si = find_sweep_bracket(el_deg);

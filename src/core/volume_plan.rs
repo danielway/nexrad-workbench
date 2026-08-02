@@ -220,6 +220,55 @@ pub(crate) fn beam_height_km(range_km: f32, elevation_deg: f32) -> f32 {
     (range_km * range_km + re * re + 2.0 * range_km * re * sin_e).sqrt() - re
 }
 
+/// Ground arc distance from the radar, in km, for a beam at the given slant
+/// range and elevation angle under the 4/3-Earth model.
+///
+/// The companion of [`beam_height_km`]: together they are the forward map from
+/// radar coordinates `(range, elevation)` to earth coordinates `(arc, height)`.
+///
+/// Rust has no caller — the ray marcher does this in GLSL. It exists as the
+/// tested oracle that pins [`beam_from_ground_position`], which the shader
+/// transcribes line for line.
+#[allow(dead_code)]
+pub(crate) fn beam_ground_arc_km(range_km: f32, elevation_deg: f32) -> f32 {
+    let re = EFFECTIVE_EARTH_RADIUS_KM;
+    let theta = elevation_deg.to_radians();
+    re * (range_km * theta.cos()).atan2(re + range_km * theta.sin())
+}
+
+/// Invert the beam geometry: given where a point sits relative to the radar,
+/// recover which beam would illuminate it.
+///
+/// Returns `(elevation_deg, slant_range_km)` for a point `ground_arc_km` along
+/// the surface from the radar and `height_km` above it. This is what the ray
+/// marcher needs — it walks world-space positions and must ask "which sweep and
+/// which gate is this?" — and it is the exact inverse of [`beam_height_km`] /
+/// [`beam_ground_arc_km`], so a point placed by the forward map is recovered by
+/// this one.
+///
+/// The flat-earth version this replaces ignored curvature entirely, which at
+/// 300 km misplaces the elevation angle by more than a full VCP cut separation
+/// and lands samples in the wrong pair of cones.
+///
+/// Rust has no caller: this runs per sample inside the fragment shader, which
+/// transcribes it line for line. Keeping the reference here is what makes the
+/// geometry testable at all — see the round-trip test against the forward map.
+#[allow(dead_code)]
+pub(crate) fn beam_from_ground_position(ground_arc_km: f32, height_km: f32) -> (f32, f32) {
+    let re = EFFECTIVE_EARTH_RADIUS_KM;
+    let phi = ground_arc_km / re; // arc subtended at the earth's centre
+    let (sin_phi, cos_phi) = phi.sin_cos();
+
+    // Directly overhead the arc vanishes and the beam is vertical.
+    if sin_phi.abs() < 1e-9 {
+        return (90.0, height_km);
+    }
+
+    let theta = (cos_phi - re / (re + height_km)).atan2(sin_phi);
+    let range = (re + height_km) * sin_phi / theta.cos();
+    (theta.to_degrees(), range)
+}
+
 /// Bounds of the region a volume ray march needs to visit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ShellExtents {
@@ -652,6 +701,61 @@ mod extent_tests {
         assert!(beam_height_km(200.0, 0.5) > beam_height_km(100.0, 0.5));
         assert!(beam_height_km(200.0, 5.0) > beam_height_km(200.0, 0.5));
         assert!(beam_height_km(0.0, 0.5).abs() < 1e-3);
+    }
+
+    #[wasm_bindgen_test]
+    fn inverting_the_beam_geometry_round_trips() {
+        // Place a point with the forward map, recover it with the inverse.
+        // This is the contract the shader's transcription relies on.
+        for &range in &[5.0f32, 25.0, 100.0, 230.0, 300.0, 460.0] {
+            for &elev in &[0.5f32, 0.9, 1.5, 3.1, 6.4, 12.0, 19.5] {
+                let h = beam_height_km(range, elev);
+                let s = beam_ground_arc_km(range, elev);
+                let (elev_back, range_back) = beam_from_ground_position(s, h);
+                assert!(
+                    (elev_back - elev).abs() < 0.01,
+                    "{range} km at {elev}°: recovered {elev_back}°"
+                );
+                assert!(
+                    (range_back - range).abs() < 0.05,
+                    "{range} km at {elev}°: recovered {range_back} km"
+                );
+            }
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn the_flat_earth_answer_is_wrong_by_more_than_a_cut_separation() {
+        // Why this phase exists: at long range the flat-earth elevation angle
+        // is off by more than the 0.4-0.9° gap between VCP cuts, so samples
+        // land in the wrong pair of cones.
+        let (elev, _) = beam_from_ground_position(300.0, beam_height_km(300.0, 0.5));
+        let flat = (beam_height_km(300.0, 0.5) / 300.0).atan().to_degrees();
+        assert!((elev - 0.5).abs() < 0.01, "curved inverse gave {elev}");
+        assert!(
+            flat - elev > 0.9,
+            "flat-earth error was only {}°",
+            flat - elev
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn beam_geometry_is_well_behaved_at_the_radar() {
+        // Zero arc means straight up; zero range means at the antenna.
+        let (elev, range) = beam_from_ground_position(0.0, 4.0);
+        assert_eq!(elev, 90.0);
+        assert!((range - 4.0).abs() < 1e-3);
+
+        let (_, range) = beam_from_ground_position(0.001, 0.0);
+        assert!(range.abs() < 0.01);
+    }
+
+    #[wasm_bindgen_test]
+    fn ground_arc_shortens_as_the_beam_steepens() {
+        // At a fixed slant range, a steeper beam covers less ground.
+        assert!(beam_ground_arc_km(200.0, 0.5) > beam_ground_arc_km(200.0, 19.5));
+        // And a near-horizontal beam's arc is close to its slant range.
+        assert!((beam_ground_arc_km(100.0, 0.5) - 100.0).abs() < 1.0);
     }
 
     #[wasm_bindgen_test]
