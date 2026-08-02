@@ -164,3 +164,35 @@ still drives them the same way.
       down / Retry / Skip all act on the correct operation.
 - [ ] Scan inspector: per-tilt "Fetch", "Fetch whole scan", and "Loop from here".
 - [ ] Clear cache and Wipe all behave, and the app recovers without a reload.
+
+## I. Volumetric renderer overhaul
+
+Six commits reworking `VolumeRayRenderer` and the volume packer against the
+artifacts visible in the 3-D view (missing slabs, azimuth seam, ring banding,
+stepped isosurface). The decisions are headlessly tested in
+`core::volume_plan`; these confirm the GPU side matches. Enable "Volume
+Rendering" in the right panel with the view in Globe 3D.
+
+- [ ] **Nothing regressed to blank.** The volume renders at all — a GLSL
+      compile failure logs "uniform not found" warnings and shows nothing.
+- [ ] Load a storm on a SAILS-active VCP (212): no missing low-level slab, no
+      venetian-blind gaps between elevation cones.
+- [ ] Orbit the camera across radar north: no hard vertical seam, and no radial
+      streaks fanning out through clear-air gaps.
+- [ ] Top-down and low oblique views: no concentric ring banding; any residual
+      undersampling reads as fine noise rather than shells.
+- [ ] Long-range reflectivity is visible past 300 km, out to the sweep's real
+      extent (~460 km), with no hard circular cutoff.
+- [ ] Orbiting does not change apparent density — opacity is now view- and
+      step-independent.
+- [ ] Storm cores read as translucent volume with visible interior structure,
+      not a hard first-hit surface. The opacity slider spans a useful range
+      (its visual meaning was deliberately recalibrated).
+- [ ] Anvil tops at long range sit at plausible altitudes, and cone placement
+      agrees with the 2-D tilt view at range.
+- [ ] Scrub with the volume enabled: it updates per scan without leaking or
+      stalling (the texture is now reused across same-shaped uploads).
+- [ ] Frame time is acceptable on an integrated GPU; if grazing rays look
+      undersampled, `MAX_STEPS` is the knob.
+- [ ] 2-D regression pass: scrub, elevation/product switch, hover probe. No
+      shared code was touched, so this should be unaffected.
