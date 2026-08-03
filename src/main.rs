@@ -89,10 +89,11 @@ const SELECTION_BULK_CONFIRM_SECS: f64 = 6.0 * 3600.0;
 const SELECTION_FETCH_DEADLINE_SECS: f64 = 30.0;
 
 /// Approximate compressed bytes per volume scan, used only to estimate a
-/// selection's download size in the confirm modal. The S3 listing exposes no
-/// file sizes, so this is a rough, tunable constant rather than a measured
-/// value.
-const AVG_SCAN_BYTES: u64 = 5 * 1024 * 1024;
+/// selection's download size. The S3 listing exposes no file sizes, so this is
+/// a rough, tunable constant rather than a measured value. Defined in
+/// [`core::domain::ops`] and re-exported here for the existing
+/// `crate::AVG_SCAN_BYTES` call sites.
+use core::AVG_SCAN_BYTES;
 
 /// How long a live stream keeps ingesting after the playhead detaches (the
 /// user scrubbed away to browse) before it auto-stops. Bounds background S3

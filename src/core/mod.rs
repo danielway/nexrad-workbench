@@ -62,7 +62,10 @@ pub(crate) use domain::forecast::{
 // Consumed only by test modules today; in a bin crate that reads as unused.
 #[allow(unused_imports)]
 pub(crate) use domain::forecast::RateSource;
-pub(crate) use domain::ops::OperationId;
+pub(crate) use domain::ops::{
+    describe_operation, operation_bytes, shows_in_activity_list, AcquisitionOperation,
+    DownloadPhase, OperationId, OperationKind, OperationStatus, AVG_SCAN_BYTES,
+};
 pub(crate) use domain::playback::{
     format_lag, macro_frame_bounds, BucketGranularity, FreezeAt, LoopBasis, LoopMode, LoopPreset,
     MacroFrameInputs, MacroPlaybackState, PlaybackDirection, PlaybackMode, PlaybackSpeed,

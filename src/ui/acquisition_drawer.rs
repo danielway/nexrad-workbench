@@ -167,7 +167,7 @@ fn render_queue_tab(
                     ui.label(RichText::new(icon).size(10.0).color(color));
 
                     // Description
-                    let desc = AcquisitionState::operation_description(&op.kind);
+                    let desc = crate::core::describe_operation(&op.kind);
                     ui.label(
                         RichText::new(&desc)
                             .size(10.0)
@@ -370,7 +370,7 @@ fn render_network_tab(
                     NetworkGroupKey::Operation(id) => acquisition
                         .state
                         .find(*id)
-                        .map(|op| AcquisitionState::operation_description(&op.kind))
+                        .map(|op| crate::core::describe_operation(&op.kind))
                         .unwrap_or_else(|| format!("Op #{}", id)),
                     NetworkGroupKey::RealtimeScan {
                         site_id,

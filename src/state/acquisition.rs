@@ -3,39 +3,10 @@
 
 use std::collections::VecDeque;
 
-use crate::core::OperationId;
-
-use super::DownloadPhase;
+use crate::core::{AcquisitionOperation, OperationId, OperationKind, OperationStatus};
 
 /// Maximum operations retained in the ring buffer.
 const MAX_RETAINED: usize = 200;
-
-/// The kind of acquisition operation.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum OperationKind {
-    /// Archive listing fetch (S3 LIST).
-    #[allow(dead_code)] // Drawer vocabulary; listing fetches don't create operations today.
-    ArchiveListing {
-        site_id: String,
-        date: chrono::NaiveDate,
-    },
-    /// Archive scan download (S3 GET for a volume file).
-    ArchiveDownload {
-        site_id: String,
-        file_name: String,
-        scan_start: i64,
-        scan_end: i64,
-    },
-    /// Realtime chunk acquisition.
-    RealtimeChunk {
-        site_id: String,
-        chunk_index: u32,
-        is_start: bool,
-        is_end: bool,
-        /// Volume start timestamp (Unix seconds) shared by all chunks in the same scan.
-        scan_timestamp: i64,
-    },
-}
 
 /// Key for grouping network requests in the drawer's Network tab.
 ///
@@ -53,33 +24,6 @@ pub(crate) enum NetworkGroupKey {
     },
     /// Requests not correlated to any operation.
     Ungrouped,
-}
-
-/// Status of an acquisition operation.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum OperationStatus {
-    /// Waiting in queue.
-    Queued,
-    /// Currently downloading/processing.
-    Active,
-    /// Successfully completed.
-    Completed { duration_ms: f64, bytes: u64 },
-    /// Failed with an error message.
-    Failed { error: String },
-    /// Cancelled by user or selection change.
-    Cancelled,
-}
-
-/// A single acquisition operation.
-#[derive(Clone, Debug)]
-pub(crate) struct AcquisitionOperation {
-    pub id: OperationId,
-    pub kind: OperationKind,
-    pub status: OperationStatus,
-    pub started_at_ms: Option<f64>,
-    pub completed_at_ms: Option<f64>,
-    /// Current pipeline phase.
-    pub phase: DownloadPhase,
 }
 
 /// Per-chunk latency metrics for streaming mode.
@@ -170,7 +114,6 @@ impl AcquisitionState {
             status: OperationStatus::Queued,
             started_at_ms: None,
             completed_at_ms: None,
-            phase: DownloadPhase::Idle,
         };
 
         // Evict oldest if at capacity
@@ -191,15 +134,6 @@ impl AcquisitionState {
         if let Some(op) = self.find_mut(id) {
             op.status = OperationStatus::Active;
             op.started_at_ms = Some(js_sys::Date::now());
-            op.phase = DownloadPhase::Downloading;
-        }
-    }
-
-    /// Update the phase of an active operation.
-    #[cfg(test)]
-    pub(crate) fn set_phase(&mut self, id: OperationId, phase: DownloadPhase) {
-        if let Some(op) = self.find_mut(id) {
-            op.phase = phase;
         }
     }
 
@@ -210,7 +144,6 @@ impl AcquisitionState {
             let duration_ms = op.started_at_ms.map(|s| now - s).unwrap_or(0.0);
             op.status = OperationStatus::Completed { duration_ms, bytes };
             op.completed_at_ms = Some(now);
-            op.phase = DownloadPhase::Done;
         }
         self.update_queue_state();
     }
@@ -227,7 +160,6 @@ impl AcquisitionState {
         if let Some(op) = self.find_mut(id) {
             op.status = OperationStatus::Failed { error };
             op.completed_at_ms = Some(js_sys::Date::now());
-            op.phase = DownloadPhase::Done;
         }
         self.update_queue_state();
     }
@@ -276,7 +208,6 @@ impl AcquisitionState {
             op.status = OperationStatus::Queued;
             op.started_at_ms = None;
             op.completed_at_ms = None;
-            op.phase = DownloadPhase::Idle;
         }
         // Move to front of pending operations
         if let Some(idx) = self.operations.iter().position(|o| o.id == id) {
@@ -445,63 +376,6 @@ impl AcquisitionState {
     #[cfg(test)]
     pub(crate) fn clear_latencies(&mut self) {
         self.chunk_latencies.clear();
-    }
-
-    /// Get a short description for an operation kind.
-    pub(crate) fn operation_description(kind: &OperationKind) -> String {
-        match kind {
-            OperationKind::ArchiveListing { site_id, date } => {
-                format!("List {} {}", site_id, date)
-            }
-            OperationKind::ArchiveDownload {
-                site_id, file_name, ..
-            } => {
-                // Extract the HHMMSS time portion following the first `_`.
-                // Every slice is taken with `get` (char-boundary-safe): the
-                // outer `get(..i+7)` only guarantees a 6-byte string, but a
-                // multi-byte char inside it would make the inner byte offsets
-                // (0/2/4) land mid-codepoint, so byte-indexing `&t[0..2]` would
-                // panic the egui frame on a malformed (non-ASCII) name. Any
-                // `None` falls back to the raw file name.
-                //
-                // NB: this anchors on the first `_` (variable position),
-                // whereas `archive_index::parse_timestamp_from_name` reads a
-                // fixed position-13 window — different rules, so not factored
-                // into a shared helper.
-                let time_part = file_name
-                    .find('_')
-                    .and_then(|i| file_name.get(i + 1..i + 7))
-                    .and_then(|t| {
-                        Some(format!(
-                            "{}:{}:{}",
-                            t.get(0..2)?,
-                            t.get(2..4)?,
-                            t.get(4..6)?
-                        ))
-                    })
-                    .unwrap_or_else(|| file_name.clone());
-                format!("{} {}", site_id, time_part)
-            }
-            OperationKind::RealtimeChunk {
-                site_id,
-                chunk_index,
-                scan_timestamp,
-                ..
-            } => {
-                // Format scan timestamp as HH:MM:SS UTC for display
-                let dt = chrono::DateTime::from_timestamp(*scan_timestamp, 0);
-                if let Some(dt) = dt {
-                    format!(
-                        "{} live {} chunk #{}",
-                        site_id,
-                        dt.format("%H:%M:%S"),
-                        chunk_index
-                    )
-                } else {
-                    format!("{} chunk #{}", site_id, chunk_index)
-                }
-            }
-        }
     }
 
     /// Return the `NetworkGroupKey` for an operation.
@@ -693,40 +567,7 @@ mod tests {
         assert!(!acq.is_paused());
     }
 
-    // ── operation_description: UTF-8 guard ──────────────────────────────────
-
-    /// The HHMMSS extraction must never panic on a multi-byte filename. A name
-    /// whose 6-byte window after the first `_` straddles a multi-byte char makes
-    /// the interior byte offsets land mid-codepoint; byte-slicing would panic the
-    /// egui frame, so we degrade to the raw file name instead.
-    #[wasm_bindgen_test]
-    fn operation_description_does_not_panic_on_multibyte_name() {
-        // "é" is two bytes (0xC3 0xA9). After the first '_', the 6-byte window
-        // is "1é234?" with multi-byte boundaries inside — get(0..2) splits 'é'.
-        let kind = OperationKind::ArchiveDownload {
-            site_id: "KDMX".to_string(),
-            file_name: "KDMX_1é2345_V06".to_string(),
-            scan_start: 1000,
-            scan_end: 1300,
-        };
-        let desc = AcquisitionState::operation_description(&kind);
-        // No panic, and it falls back to including the raw file name.
-        assert!(desc.contains("KDMX_1é2345_V06"), "got: {desc}");
-
-        // A clean ASCII name still parses to HH:MM:SS.
-        let ascii = OperationKind::ArchiveDownload {
-            site_id: "KDMX".to_string(),
-            file_name: "KDMX20240501_123456_V06".to_string(),
-            scan_start: 1000,
-            scan_end: 1300,
-        };
-        // First '_' is at the date/time boundary, so the 6 chars after it are
-        // "123456" → "12:34:56".
-        assert_eq!(
-            AcquisitionState::operation_description(&ascii),
-            "KDMX 12:34:56"
-        );
-    }
+    // `describe_operation` moved to `core::domain::ops` with its tests.
 
     // ── latency_summary: percentile / average math ──────────────────────────
 
@@ -1013,7 +854,7 @@ mod coverage_tests {
     // ── create_operation: ids, default fields, queue activation ──────────────
 
     /// IDs are monotonically increasing starting from 1, and creating the first
-    /// operation flips an Empty queue to Running. New ops start Queued/Idle.
+    /// operation flips an Empty queue to Running. New ops start Queued.
     #[wasm_bindgen_test]
     fn create_operation_assigns_increasing_ids_and_starts_queue() {
         let mut acq = AcquisitionState::default();
@@ -1029,7 +870,6 @@ mod coverage_tests {
         // Default field values on a fresh op.
         let op = acq.find(a).unwrap();
         assert_eq!(op.status, OperationStatus::Queued);
-        assert_eq!(op.phase, DownloadPhase::Idle);
         assert!(op.started_at_ms.is_none());
         assert!(op.completed_at_ms.is_none());
     }
@@ -1067,50 +907,32 @@ mod coverage_tests {
         let a = acq.create_operation(download_kind(1000));
         // 999 does not exist.
         acq.mark_active(999);
-        acq.set_phase(999, DownloadPhase::Decoding);
         acq.mark_completed(999, 5);
         acq.mark_failed(999, "x".to_string());
         acq.cancel_operation(999);
         acq.retry_failed(999);
-        // The real op is untouched: still Queued/Idle.
+        // The real op is untouched: still Queued.
         let op = acq.find(a).unwrap();
         assert_eq!(op.status, OperationStatus::Queued);
-        assert_eq!(op.phase, DownloadPhase::Idle);
         // find on a missing id is None.
         assert!(acq.find(999).is_none());
     }
 
-    /// `set_phase` updates only the phase, leaving status untouched.
-    #[wasm_bindgen_test]
-    fn set_phase_updates_phase_only() {
-        let mut acq = AcquisitionState::default();
-        let a = acq.create_operation(download_kind(1000));
-        acq.mark_active(a);
-        acq.set_phase(a, DownloadPhase::Ingesting);
-        let op = acq.find(a).unwrap();
-        assert_eq!(op.phase, DownloadPhase::Ingesting);
-        assert_eq!(op.status, OperationStatus::Active);
-        // Move to a different phase.
-        acq.set_phase(a, DownloadPhase::Decoding);
-        assert_eq!(acq.find(a).unwrap().phase, DownloadPhase::Decoding);
-    }
-
     // ── mark_active / mark_completed field effects ───────────────────────────
 
-    /// `mark_active` sets status Active and phase Downloading.
+    /// `mark_active` sets status Active and stamps the start time.
     #[wasm_bindgen_test]
-    fn mark_active_sets_status_and_phase() {
+    fn mark_active_sets_status_and_start_time() {
         let mut acq = AcquisitionState::default();
         let a = acq.create_operation(download_kind(1000));
         acq.mark_active(a);
         let op = acq.find(a).unwrap();
         assert_eq!(op.status, OperationStatus::Active);
-        assert_eq!(op.phase, DownloadPhase::Downloading);
         assert!(op.started_at_ms.is_some());
     }
 
-    /// `mark_completed` records the byte count, sets phase Done, and (being the
-    /// only op) settles the queue to Empty.
+    /// `mark_completed` records the byte count and (being the only op) settles
+    /// the queue to Empty.
     #[wasm_bindgen_test]
     fn mark_completed_records_bytes_and_settles_empty() {
         let mut acq = AcquisitionState::default();
@@ -1118,7 +940,6 @@ mod coverage_tests {
         acq.mark_active(a);
         acq.mark_completed(a, 4096);
         let op = acq.find(a).unwrap();
-        assert_eq!(op.phase, DownloadPhase::Done);
         assert!(op.completed_at_ms.is_some());
         match op.status {
             OperationStatus::Completed { bytes, .. } => assert_eq!(bytes, 4096),
@@ -1212,7 +1033,6 @@ mod coverage_tests {
         // Inserted before the first pending op (queued), after the completed one.
         assert_eq!(order(&acq), vec![done, failed, queued]);
         assert_eq!(acq.find(failed).unwrap().status, OperationStatus::Queued);
-        assert_eq!(acq.find(failed).unwrap().phase, DownloadPhase::Idle);
         assert_eq!(acq.queue_state, QueueState::Running);
     }
 
@@ -1306,37 +1126,6 @@ mod coverage_tests {
         acq2.mark_active(c);
         acq2.mark_completed(c, 1);
         assert_eq!(acq2.failed_operation_for_scan_start(2000, 60), None);
-    }
-
-    // ── operation_description: listing + realtime branches ───────────────────
-
-    /// `operation_description` for ArchiveListing renders "List SITE DATE".
-    #[wasm_bindgen_test]
-    fn operation_description_listing() {
-        let kind = listing_kind("KDMX", 2024, 5, 1);
-        assert_eq!(
-            AcquisitionState::operation_description(&kind),
-            "List KDMX 2024-05-01"
-        );
-    }
-
-    /// `operation_description` for a RealtimeChunk with a valid timestamp formats
-    /// "SITE live HH:MM:SS chunk #N"; an unrepresentable timestamp degrades to
-    /// "SITE chunk #N".
-    #[wasm_bindgen_test]
-    fn operation_description_realtime_valid_and_invalid_ts() {
-        // 3661s = 01:01:01 UTC.
-        let valid = chunk_kind("KDMX", 7, 3661);
-        assert_eq!(
-            AcquisitionState::operation_description(&valid),
-            "KDMX live 01:01:01 chunk #7"
-        );
-        // i64::MAX is not a representable timestamp → fallback branch.
-        let invalid = chunk_kind("KABR", 2, i64::MAX);
-        assert_eq!(
-            AcquisitionState::operation_description(&invalid),
-            "KABR chunk #2"
-        );
     }
 
     // ── network_group_key / scan_group_key / scan_group_description ───────────

@@ -1,5 +1,6 @@
 //! Session and performance statistics for the status bar.
 
+use crate::core::DownloadPhase;
 use crate::nexrad::NetworkStats;
 
 /// Active pipeline phase flags (3 high-level groups).
@@ -216,21 +217,6 @@ impl SessionStats {
             parts.join(" \u{00b7} ")
         }
     }
-}
-
-/// Which phase of the download pipeline the current file is in.
-#[derive(Default, Clone, Copy, Debug, PartialEq)]
-pub(crate) enum DownloadPhase {
-    #[default]
-    Idle,
-    /// Fetching from AWS S3.
-    Downloading,
-    /// Worker is splitting, decompressing, decoding, and storing in IDB.
-    Ingesting,
-    /// Worker is decoding and rendering the sweep.
-    Decoding,
-    /// Complete.
-    Done,
 }
 
 /// Tracks download progress for timeline ghost markers and pipeline display.

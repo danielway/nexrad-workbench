@@ -18,7 +18,8 @@
 use super::colors::{acquisition as acq_colors, ui as ui_colors};
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::Intent;
-use crate::state::{format_bytes, AcquisitionState, AppState, OperationKind, OperationStatus};
+use crate::core::{operation_bytes, shows_in_activity_list};
+use crate::state::{format_bytes, AppState, OperationStatus};
 use crate::subsystem::{Acquisition, Chrome};
 use eframe::egui::{self, RichText, ScrollArea, Vec2};
 use egui_phosphor::regular as icons;
@@ -40,34 +41,6 @@ impl Layer for QueueSheetLayer {
     fn render(&self, ctx: &mut LayoutCtx) {
         draw_queue_sheet(ctx.ctx, ctx.state, ctx.acquisition, ctx.chrome);
     }
-}
-
-/// Estimated byte size of an operation's download for the queue-sheet readout.
-///
-/// Completed operations carry their real transferred byte count. Active /
-/// queued operations have no real size — the S3 listing in this client's
-/// `nexrad-data` version exposes only file names, not sizes, and per-sweep
-/// blob sizes live in IDB
-/// behind an async read we don't add this phase. So in-flight/queued archive
-/// downloads fall back to a flat per-scan estimate, the same idiom the
-/// range-download modal uses. Returns `None` for kinds with no meaningful size
-/// (listings, realtime chunks) or cancelled/failed ops.
-fn operation_estimated_bytes(status: &OperationStatus, kind: &OperationKind) -> Option<u64> {
-    match status {
-        OperationStatus::Completed { bytes, .. } => Some(*bytes),
-        OperationStatus::Queued | OperationStatus::Active => match kind {
-            OperationKind::ArchiveDownload { .. } => Some(crate::AVG_SCAN_BYTES),
-            _ => None,
-        },
-        OperationStatus::Failed { .. } | OperationStatus::Cancelled => None,
-    }
-}
-
-/// Whether an operation belongs in the user-facing queue sheet's list. We show
-/// archive downloads (the user's "downloads") in any state, and hide listings /
-/// realtime-chunk bookkeeping (those are plumbing, surfaced in the dev drawer).
-fn shows_in_queue_sheet(kind: &OperationKind) -> bool {
-    matches!(kind, OperationKind::ArchiveDownload { .. })
 }
 
 fn draw_queue_sheet(
@@ -163,7 +136,7 @@ fn render_operation_list(
         .operations
         .iter()
         .rev()
-        .filter(|op| shows_in_queue_sheet(&op.kind))
+        .filter(|op| shows_in_activity_list(&op.kind))
         .cloned()
         .collect();
 
@@ -196,12 +169,12 @@ fn render_operation_list(
                     };
                     ui.label(RichText::new(icon).size(11.0).color(color));
 
-                    let desc = AcquisitionState::operation_description(&op.kind);
+                    let desc = crate::core::describe_operation(&op.kind);
                     ui.label(RichText::new(&desc).size(11.0).color(value_color));
 
                     // Size column: real bytes when completed, "~N MB" estimate
                     // otherwise.
-                    if let Some(bytes) = operation_estimated_bytes(&op.status, &op.kind) {
+                    if let Some(bytes) = operation_bytes(&op.status, &op.kind) {
                         let est = !matches!(op.status, OperationStatus::Completed { .. });
                         let prefix = if est { "~" } else { "" };
                         ui.label(
@@ -312,87 +285,5 @@ fn render_policy_section(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
         .changed()
     {
         state.pause_stream_while_reviewing = pause_stream;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test;
-
-    fn download_kind() -> OperationKind {
-        OperationKind::ArchiveDownload {
-            site_id: "KDMX".to_string(),
-            file_name: "KDMX_1000".to_string(),
-            scan_start: 1000,
-            scan_end: 1300,
-        }
-    }
-
-    /// Completed ops report their real transferred bytes (no estimate).
-    #[wasm_bindgen_test]
-    fn completed_op_uses_real_bytes() {
-        let s = OperationStatus::Completed {
-            duration_ms: 1000.0,
-            bytes: 7_654_321,
-        };
-        assert_eq!(
-            operation_estimated_bytes(&s, &download_kind()),
-            Some(7_654_321)
-        );
-    }
-
-    /// Queued / active archive downloads fall back to the flat per-scan
-    /// estimate (real S3 sizes aren't available to the client).
-    #[wasm_bindgen_test]
-    fn queued_and_active_archive_downloads_estimate_avg_scan_bytes() {
-        for s in [OperationStatus::Queued, OperationStatus::Active] {
-            assert_eq!(
-                operation_estimated_bytes(&s, &download_kind()),
-                Some(crate::AVG_SCAN_BYTES)
-            );
-        }
-    }
-
-    /// Failed / cancelled ops, and non-download kinds, carry no size readout.
-    #[wasm_bindgen_test]
-    fn no_estimate_for_failed_cancelled_or_non_download() {
-        assert_eq!(
-            operation_estimated_bytes(
-                &OperationStatus::Failed { error: "x".into() },
-                &download_kind()
-            ),
-            None
-        );
-        assert_eq!(
-            operation_estimated_bytes(&OperationStatus::Cancelled, &download_kind()),
-            None
-        );
-        let listing = OperationKind::ArchiveListing {
-            site_id: "KDMX".into(),
-            date: chrono::NaiveDate::from_ymd_opt(2024, 5, 1).unwrap(),
-        };
-        assert_eq!(
-            operation_estimated_bytes(&OperationStatus::Queued, &listing),
-            None
-        );
-    }
-
-    /// Only archive downloads appear in the user-facing sheet; listing /
-    /// realtime plumbing is hidden (it lives in the dev drawer).
-    #[wasm_bindgen_test]
-    fn only_archive_downloads_show_in_sheet() {
-        assert!(shows_in_queue_sheet(&download_kind()));
-        assert!(!shows_in_queue_sheet(&OperationKind::ArchiveListing {
-            site_id: "KDMX".into(),
-            date: chrono::NaiveDate::from_ymd_opt(2024, 5, 1).unwrap(),
-        }));
-        assert!(!shows_in_queue_sheet(&OperationKind::RealtimeChunk {
-            site_id: "KDMX".into(),
-            chunk_index: 1,
-            is_start: true,
-            is_end: false,
-            scan_timestamp: 1000,
-        }));
     }
 }
