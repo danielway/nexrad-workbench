@@ -260,6 +260,9 @@ impl AcquisitionState {
     }
 
     /// Number of queued operations.
+    // As with `active_count`: the activity surface counts stages in
+    // `core::activity`, so this survives only as a tested container invariant.
+    #[allow(dead_code)]
     pub(crate) fn queued_count(&self) -> usize {
         self.operations
             .iter()

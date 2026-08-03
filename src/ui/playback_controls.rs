@@ -6,8 +6,7 @@ use super::overflow_menu::overflow_menu;
 use super::timeline::format_timestamp_compact;
 use crate::core::{LoopMode, PlaybackMode, PlaybackSpeed};
 use crate::state::{AppMode, AppState, WidthTier};
-use crate::subsystem::Acquisition;
-use eframe::egui::{self, Color32, RichText, Vec2};
+use eframe::egui::{self, Color32, RichText};
 
 /// Render the datetime picker popup for jumping to a specific time.
 pub(super) fn render_datetime_picker_popup(
@@ -211,8 +210,6 @@ pub(super) fn render_playback_controls(
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
-    acquisition: &mut Acquisition,
-    chrome: &mut crate::subsystem::Chrome,
     activity_vm: &crate::core::activity::ActivityVm,
 ) {
     let use_local = state.use_local_time;
@@ -441,7 +438,7 @@ pub(super) fn render_playback_controls(
 
     // Push session stats to the right
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        render_session_stats(ui, state, playback, acquisition, chrome, activity_vm);
+        render_session_stats(ui, state, activity_vm);
     });
 }
 
@@ -708,101 +705,20 @@ fn render_stream_activity(ui: &mut egui::Ui, state: &AppState, live: &crate::sub
     }
 }
 
-/// Render session statistics (right-aligned in the bottom bar).
+/// Render the right-hand cluster of the transport row.
 ///
-/// Layout (right-to-left): FPS | pipeline (clickable) | download | cache
-#[allow(clippy::too_many_arguments)]
+/// Everything that used to live here — FPS, the DL/PROC/GPU pipeline lamps,
+/// the request/bytes readout, the COI badge — moved into the activity sheet's
+/// Details disclosure, where it is available to every user rather than only
+/// behind `?dev=true`. What remains is the ambient activity chip plus the
+/// Advanced-only cache control.
 fn render_session_stats(
     ui: &mut egui::Ui,
     state: &mut AppState,
-    playback: &mut crate::subsystem::Playback,
-    acquisition: &mut Acquisition,
-    chrome: &mut crate::subsystem::Chrome,
     activity_vm: &crate::core::activity::ActivityVm,
 ) {
     let dark = state.is_dark;
-
-    // FPS (rightmost) — read value before mutable borrow
-    let fps = state.session_stats.avg_fps;
-    let active_count = state.session_stats.active_request_count;
-    let request_count = state.session_stats.session_request_count;
-    let transferred = state.session_stats.format_transferred();
     let cache_size = state.session_stats.format_cache_size();
-
-    // FPS, pipeline indicator, network metrics, and COI badge are all
-    // dev-mode-only diagnostics — hidden by default.
-    if state.dev_mode {
-        if let Some(fps) = fps {
-            ui.label(
-                RichText::new(format!("{:.0} fps", fps))
-                    .size(11.0)
-                    .color(ui_colors::value(dark)),
-            );
-            ui.separator();
-        }
-
-        // Pipeline status — clickable phase boxes open detail modal
-        render_pipeline_indicator(ui, state, playback, chrome);
-
-        // Download group: requests + transferred
-        // Use service worker aggregate if available, otherwise fall back to channel stats
-        let sw_total = state.network_aggregate.total_requests;
-        let (display_count, display_transferred) = if sw_total > 0 {
-            (
-                sw_total,
-                crate::state::format_bytes(state.network_aggregate.total_bytes),
-            )
-        } else {
-            (request_count, transferred)
-        };
-
-        if active_count > 0 {
-            ui.label(
-                RichText::new(format!("({} active)", active_count))
-                    .size(10.0)
-                    .italics()
-                    .color(ui_colors::ACTIVE),
-            );
-        }
-        if display_count > 0 {
-            // Clickable to toggle acquisition drawer (subsumes network log modal)
-            let queued = acquisition.state.queued_count();
-            let req_text = if queued > 0 {
-                format!("{}r / {} | {}q", display_count, display_transferred, queued)
-            } else {
-                format!("{}r / {}", display_count, display_transferred)
-            };
-
-            let drawer_icon = if acquisition.state.drawer_expanded {
-                egui_phosphor::regular::CARET_DOWN
-            } else {
-                egui_phosphor::regular::CARET_UP
-            };
-
-            if ui
-                .add(
-                    egui::Label::new(
-                        RichText::new(format!("{} {}", drawer_icon, req_text))
-                            .size(10.0)
-                            .color(ui_colors::value(dark)),
-                    )
-                    .sense(egui::Sense::click()),
-                )
-                .on_hover_text("Click to toggle acquisition drawer")
-                .clicked()
-            {
-                acquisition.state.drawer_expanded = !acquisition.state.drawer_expanded;
-            }
-            ui.separator();
-        }
-
-        // Cross-origin isolation indicator
-        if state.cross_origin_isolated {
-            ui.label(RichText::new("COI").size(9.0).color(ui_colors::SUCCESS))
-                .on_hover_text("Cross-Origin Isolated: SharedArrayBuffer available");
-            ui.separator();
-        }
-    }
 
     // Ambient activity chip (spec §5) — for ALL users, always visible
     // including idle. Opens the activity sheet. The dev-only metrics above
@@ -823,135 +739,5 @@ fn render_session_stats(
                 .size(10.0)
                 .color(ui_colors::value(dark)),
         );
-    }
-}
-
-/// Render pipeline phase indicator boxes (3 high-level groups).
-///
-/// Shows a row of small clickable phase labels (DL, PROC, GPU). Active or
-/// recently-completed phases are highlighted; idle ones are dimmed.
-/// Clicking any phase opens the detailed stats modal.
-/// The indicator stays visible for 1.5 s after the last phase completes
-/// so the user can see which stages ran.
-fn render_pipeline_indicator(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    _playback: &mut crate::subsystem::Playback,
-    chrome: &mut crate::subsystem::Chrome,
-) {
-    let pipeline = &state.session_stats.pipeline;
-    let progress = &state.download_progress;
-    let dark = state.is_dark;
-
-    // Each entry: (label, is_lit)
-    // "lit" means actively running OR recently completed (within linger window)
-    let dl_lit = pipeline.phase_visible(pipeline.downloading > 0, pipeline.last_download_done_ms);
-    let proc_lit = pipeline.phase_visible(pipeline.processing, pipeline.last_processing_done_ms);
-    let gpu_lit = pipeline.phase_visible(pipeline.rendering, pipeline.last_render_done_ms);
-
-    // Show batch count on DL when doing a multi-file download
-    let dl_label: String = if progress.is_batch() {
-        format!(
-            "DL {}/{}",
-            (progress.batch_completed + 1).min(progress.batch_total),
-            progress.batch_total
-        )
-    } else if pipeline.downloading > 1 {
-        "DL+".to_string()
-    } else {
-        "DL".to_string()
-    };
-
-    let phases: &[(&str, bool)] = &[(&dl_label, dl_lit), ("PROC", proc_lit), ("GPU", gpu_lit)];
-
-    // Also show compact latency summary after the indicator
-    let has_any_timing = state.session_stats.median_chunk_latency_ms.is_some()
-        || state.session_stats.median_processing_time_ms.is_some()
-        || state.session_stats.avg_render_time_ms.is_some();
-
-    let summary_text = if has_any_timing {
-        Some(state.session_stats.format_latency_stats())
-    } else {
-        None
-    };
-
-    // Wider when showing batch count
-    let base_width = if progress.is_batch() { 140.0 } else { 110.0 };
-    let summary_width = summary_text
-        .as_ref()
-        .map(|s| s.len() as f32 * 6.0 + 16.0)
-        .unwrap_or(0.0);
-    let indicator_width = base_width + summary_width;
-
-    // Use a fixed-width left-to-right sub-layout so phases read correctly
-    // and don't consume all remaining horizontal space in the parent R-to-L layout.
-    let mut clicked = false;
-    ui.allocate_ui_with_layout(
-        Vec2::new(indicator_width, ui.available_height()),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            let anim_time = ui.ctx().input(|i| i.time);
-            let pulse = (0.5 + 0.5 * (anim_time * 3.0).sin()) as f32;
-
-            for (i, (label, lit)) in phases.iter().enumerate() {
-                if i > 0 {
-                    ui.label(
-                        RichText::new("\u{203A}")
-                            .size(9.0)
-                            .color(Color32::from_rgb(70, 70, 80)),
-                    );
-                }
-                let color = if *lit {
-                    // Pulse the active phase for visual emphasis
-                    let base = ui_colors::ACTIVE;
-                    let alpha = (180.0 + 75.0 * pulse) as u8;
-                    Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
-                } else if dark {
-                    Color32::from_rgb(55, 55, 65)
-                } else {
-                    Color32::from_rgb(180, 180, 190)
-                };
-                let btn = ui.add(
-                    egui::Button::new(RichText::new(*label).size(9.0).monospace().color(color))
-                        .frame(false),
-                );
-                if btn.clicked() {
-                    clicked = true;
-                }
-                btn.on_hover_text("Click for detailed timing breakdown");
-            }
-
-            // Compact latency summary inline after the indicator
-            if let Some(ref summary) = summary_text {
-                ui.add_space(4.0);
-                let btn = ui.add(
-                    egui::Button::new(
-                        RichText::new(summary)
-                            .size(10.0)
-                            .color(ui_colors::value(dark)),
-                    )
-                    .frame(false),
-                );
-                if btn.clicked() {
-                    clicked = true;
-                }
-                btn.on_hover_text("Click for detailed timing breakdown");
-            }
-        },
-    );
-
-    if clicked {
-        chrome.stats_detail_open = !chrome.stats_detail_open;
-    }
-
-    ui.separator();
-
-    // Request repaint while lingering so phases fade out smoothly
-    if pipeline.should_show() && !pipeline.is_active() {
-        ui.ctx().request_repaint();
-    }
-    // Also repaint during batch downloads for pulse animation
-    if progress.is_active() {
-        ui.ctx().request_repaint();
     }
 }

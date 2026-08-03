@@ -166,8 +166,6 @@ fn draw_bottom_panel(
                         timeline,
                         live,
                         playback,
-                        acquisition,
-                        chrome,
                         activity_vm,
                     );
                 });

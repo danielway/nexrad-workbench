@@ -3,24 +3,27 @@
 use crate::core::{DownloadPhase, ThroughputWindow, WorkerLoad};
 use crate::nexrad::NetworkStats;
 
-/// Active pipeline phase flags (3 high-level groups).
+/// In-flight flags for the two pipeline stages the main thread owns directly.
 ///
-/// Each group tracks both a live flag and a "last completed" timestamp (ms).
-/// The UI uses the timestamp to keep groups visually lit for a short period
-/// after they finish, so the user can see which stages ran even when they
-/// complete within a single frame.
+/// The old three-lamp DL/PROC/GPU indicator (and its "recently completed"
+/// linger timestamps) is gone: the activity surface shows real per-stage
+/// counts instead, derived in [`crate::core::activity`]. What survives here is
+/// the pair of flags the shell genuinely needs — `rendering` feeds the
+/// view-model's GPU-in-flight input, and `processing` gates the live-mode
+/// render request.
 #[derive(Default, Clone)]
 pub(crate) struct PipelineStatus {
-    /// Number of active downloads (group 1: Download).
-    pub downloading: u32,
-    /// Whether processing is in progress: ingest + decode in worker (group 2: Processing).
+    /// Whether processing is in progress: ingest + decode in worker.
+    ///
+    /// Hand-maintained, and therefore *not* the activity surface's source of
+    /// truth — that comes from the decode workers' own pending maps via
+    /// [`SessionStats::worker_load`], which cannot drift.
     pub processing: bool,
-    /// Whether GPU rendering/upload is in progress (group 3: Rendering).
+    /// Whether GPU rendering/upload is in progress.
     pub rendering: bool,
 
-    /// Timestamp (ms since epoch) when each group last completed.
-    /// Used by the UI to keep indicators lit briefly after completion.
-    pub last_download_done_ms: f64,
+    /// Timestamps (ms since epoch) of the last completion, kept as a liveness
+    /// signal for debugging stuck pipelines.
     pub last_processing_done_ms: f64,
     pub last_render_done_ms: f64,
 
@@ -29,37 +32,6 @@ pub(crate) struct PipelineStatus {
 }
 
 impl PipelineStatus {
-    /// How long (in ms) a phase stays "recently completed" in the UI.
-    const LINGER_MS: f64 = 1500.0;
-
-    /// Whether a phase is active or recently completed.
-    pub(crate) fn phase_visible(&self, active: bool, last_done_ms: f64) -> bool {
-        if active {
-            return true;
-        }
-        if last_done_ms <= 0.0 {
-            return false;
-        }
-        let now = js_sys::Date::now();
-        (now - last_done_ms) < Self::LINGER_MS
-    }
-
-    pub(crate) fn is_active(&self) -> bool {
-        self.downloading > 0 || self.processing || self.rendering
-    }
-
-    /// Whether the indicator row should be shown at all.
-    pub(crate) fn should_show(&self) -> bool {
-        if self.is_active() {
-            return true;
-        }
-        // Show if any group completed recently
-        let now = js_sys::Date::now();
-        (now - self.last_download_done_ms) < Self::LINGER_MS
-            || (now - self.last_processing_done_ms) < Self::LINGER_MS
-            || (now - self.last_render_done_ms) < Self::LINGER_MS
-    }
-
     /// Mark processing phase as completed (ingest + decode finished).
     pub(crate) fn mark_processing_done(&mut self) {
         self.processing = false;
@@ -168,7 +140,6 @@ impl SessionStats {
         self.session_request_count = network_stats.total_count();
         self.session_transferred_bytes = network_stats.bytes_transferred();
         self.active_request_count = network_stats.active_count();
-        self.pipeline.downloading = self.active_request_count;
     }
 
     /// Record a frame time sample from `stable_dt`, updating the FPS average.
@@ -221,27 +192,6 @@ impl SessionStats {
             None => ms,
         });
     }
-
-    /// Format latency statistics for display.
-    pub(crate) fn format_latency_stats(&self) -> String {
-        let mut parts = Vec::new();
-
-        if let Some(latency) = self.median_chunk_latency_ms {
-            parts.push(format!("dl: {:.0}ms", latency));
-        }
-        if let Some(proc_time) = self.median_processing_time_ms {
-            parts.push(format!("proc: {:.0}ms", proc_time));
-        }
-        if let Some(render) = self.avg_render_time_ms {
-            parts.push(format!("gpu: {:.0}ms", render));
-        }
-
-        if parts.is_empty() {
-            "\u{2014}".to_string()
-        } else {
-            parts.join(" \u{00b7} ")
-        }
-    }
 }
 
 /// Tracks download progress for timeline ghost markers and pipeline display.
@@ -259,8 +209,6 @@ pub(crate) struct DownloadProgress {
     pub active_scans: Vec<(i64, i64)>,
     /// Phase of the currently active file.
     pub phase: DownloadPhase,
-    /// Batch total file count.
-    pub batch_total: u32,
     /// Number of files completed so far.
     pub batch_completed: u32,
     /// Scan boundaries of files downloaded but still being ingested/decoded/rendered.
@@ -269,11 +217,6 @@ pub(crate) struct DownloadProgress {
 }
 
 impl DownloadProgress {
-    /// Whether this is a multi-file batch download.
-    pub(crate) fn is_batch(&self) -> bool {
-        self.batch_total > 1
-    }
-
     /// Whether any download operation is active.
     pub(crate) fn is_active(&self) -> bool {
         self.phase != DownloadPhase::Idle && self.phase != DownloadPhase::Done
@@ -377,19 +320,6 @@ mod tests {
         assert!((v - 100.0).abs() < 0.001, "EMA converged to {v}");
     }
 
-    // ── DownloadProgress::is_batch ──
-
-    #[wasm_bindgen_test]
-    fn is_batch_boundary() {
-        let mut p = DownloadProgress::default();
-        p.batch_total = 0;
-        assert!(!p.is_batch());
-        p.batch_total = 1;
-        assert!(!p.is_batch(), "single file is not a batch");
-        p.batch_total = 2;
-        assert!(p.is_batch());
-    }
-
     // ── DownloadProgress::is_active precedence matrix ──
 
     #[wasm_bindgen_test]
@@ -437,57 +367,6 @@ mod coverage_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    // ── PipelineStatus::is_active branch matrix ──
-
-    #[wasm_bindgen_test]
-    fn pipeline_is_active_all_idle_is_false() {
-        let p = PipelineStatus::default();
-        assert!(!p.is_active());
-    }
-
-    #[wasm_bindgen_test]
-    fn pipeline_is_active_downloading_count() {
-        let mut p = PipelineStatus::default();
-        p.downloading = 1;
-        assert!(p.is_active(), "downloading > 0 is active");
-        p.downloading = 0;
-        assert!(!p.is_active(), "downloading == 0 alone is not active");
-    }
-
-    #[wasm_bindgen_test]
-    fn pipeline_is_active_processing_flag() {
-        let mut p = PipelineStatus::default();
-        p.processing = true;
-        assert!(p.is_active());
-    }
-
-    #[wasm_bindgen_test]
-    fn pipeline_is_active_rendering_flag() {
-        let mut p = PipelineStatus::default();
-        p.rendering = true;
-        assert!(p.is_active());
-    }
-
-    // ── PipelineStatus::phase_visible deterministic branches ──
-    // (The `now - last_done_ms < LINGER_MS` branch reads js_sys::Date::now()
-    //  and is intentionally not asserted; only the deterministic branches are.)
-
-    #[wasm_bindgen_test]
-    fn phase_visible_active_short_circuits_true() {
-        let p = PipelineStatus::default();
-        // active == true returns true regardless of last_done_ms (even <= 0).
-        assert!(p.phase_visible(true, 0.0));
-        assert!(p.phase_visible(true, -100.0));
-    }
-
-    #[wasm_bindgen_test]
-    fn phase_visible_inactive_with_no_completion_is_false() {
-        let p = PipelineStatus::default();
-        // Not active and last_done_ms <= 0.0 → false (never completed).
-        assert!(!p.phase_visible(false, 0.0));
-        assert!(!p.phase_visible(false, -1.0));
-    }
-
     // ── PipelineStatus mark_* deterministic side effects ──
     // (The timestamp itself comes from js_sys::Date::now() and is not asserted;
     //  the flag clears and ever_active set are deterministic.)
@@ -532,7 +411,7 @@ mod coverage_tests {
     // ── SessionStats::update_from_network_stats ──
 
     #[wasm_bindgen_test]
-    fn update_from_network_stats_copies_counts_and_mirrors_downloading() {
+    fn update_from_network_stats_copies_counts() {
         let net = NetworkStats::new();
         // request_started increments both active and total counts.
         net.request_started();
@@ -547,23 +426,16 @@ mod coverage_tests {
         assert_eq!(s.session_request_count, 3, "total requests");
         assert_eq!(s.active_request_count, 2, "active = started - completed");
         assert_eq!(s.session_transferred_bytes, 4096);
-        // pipeline.downloading mirrors active_request_count.
-        assert_eq!(s.pipeline.downloading, 2);
     }
 
     #[wasm_bindgen_test]
     fn update_from_network_stats_zero_state() {
         let net = NetworkStats::new();
         let mut s = SessionStats::new();
-        s.pipeline.downloading = 7; // pre-existing value should be overwritten
         s.update_from_network_stats(&net);
         assert_eq!(s.session_request_count, 0);
         assert_eq!(s.active_request_count, 0);
         assert_eq!(s.session_transferred_bytes, 0);
-        assert_eq!(
-            s.pipeline.downloading, 0,
-            "downloading reset to active count"
-        );
     }
 
     // ── SessionStats::format_cache_size / format_transferred (delegate to format_bytes) ──
@@ -591,44 +463,6 @@ mod coverage_tests {
         assert_eq!(s.format_transferred(), "512 B");
     }
 
-    // ── SessionStats::format_latency_stats combinations ──
-
-    #[wasm_bindgen_test]
-    fn format_latency_stats_empty_is_emdash() {
-        let s = SessionStats::new();
-        assert_eq!(s.format_latency_stats(), "\u{2014}");
-    }
-
-    #[wasm_bindgen_test]
-    fn format_latency_stats_single_part() {
-        let mut s = SessionStats::new();
-        s.median_chunk_latency_ms = Some(42.7);
-        // {:.0} rounds 42.7 → 43.
-        assert_eq!(s.format_latency_stats(), "dl: 43ms");
-    }
-
-    #[wasm_bindgen_test]
-    fn format_latency_stats_all_parts_ordered_and_joined() {
-        let mut s = SessionStats::new();
-        s.median_chunk_latency_ms = Some(10.0);
-        s.median_processing_time_ms = Some(20.0);
-        s.avg_render_time_ms = Some(30.0);
-        // Order is dl, proc, gpu joined by " · " (U+00B7 with surrounding spaces).
-        assert_eq!(
-            s.format_latency_stats(),
-            "dl: 10ms \u{00b7} proc: 20ms \u{00b7} gpu: 30ms"
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn format_latency_stats_partial_skips_none() {
-        let mut s = SessionStats::new();
-        // Only proc and gpu present; dl is None and omitted.
-        s.median_processing_time_ms = Some(5.0);
-        s.avg_render_time_ms = Some(8.0);
-        assert_eq!(s.format_latency_stats(), "proc: 5ms \u{00b7} gpu: 8ms");
-    }
-
     // ── DownloadPhase default ──
 
     #[wasm_bindgen_test]
@@ -645,7 +479,6 @@ mod coverage_tests {
         p.active_scans.push((3, 4));
         p.in_flight_scans.push((5, 6));
         p.phase = DownloadPhase::Decoding;
-        p.batch_total = 9;
         p.batch_completed = 4;
 
         p.clear();
@@ -654,7 +487,6 @@ mod coverage_tests {
         assert!(p.active_scans.is_empty());
         assert!(p.in_flight_scans.is_empty());
         assert_eq!(p.phase, DownloadPhase::Idle);
-        assert_eq!(p.batch_total, 0);
         assert_eq!(p.batch_completed, 0);
         assert!(!p.is_active(), "cleared progress is inactive");
     }

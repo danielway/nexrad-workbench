@@ -347,9 +347,9 @@ impl WorkbenchApp {
                 // for it and don't blank — leave the live partial in place.
             }
             DesiredDisplay::Cached(identity) => {
-                if self.render.coordinator.request_render_for(identity)
-                    && !self.state.session_stats.pipeline.processing
-                {
+                if self.render.coordinator.request_render_for(identity) {
+                    // Was guarded by `&& !pipeline.processing`, which only ever
+                    // skipped a redundant `true = true`.
                     self.state.session_stats.pipeline.processing = true;
                 }
             }
