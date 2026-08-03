@@ -8,24 +8,6 @@ use crate::core::{AcquisitionOperation, OperationId, OperationKind, OperationSta
 /// Maximum operations retained in the ring buffer.
 const MAX_RETAINED: usize = 200;
 
-/// Key for grouping network requests in the drawer's Network tab.
-///
-/// Realtime chunks are grouped by scan (site + timestamp) so that all chunks
-/// in the same volume appear under one collapsible header.  Other operations
-/// are keyed by their individual `OperationId`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum NetworkGroupKey {
-    /// A single acquisition operation (archive download, listing, realtime).
-    Operation(OperationId),
-    /// All realtime chunks sharing the same volume/scan timestamp.
-    RealtimeScan {
-        site_id: String,
-        scan_timestamp: i64,
-    },
-    /// Requests not correlated to any operation.
-    Ungrouped,
-}
-
 /// Per-chunk latency metrics for streaming mode.
 #[derive(Clone, Debug)]
 pub(crate) struct ChunkLatencyMetrics {
@@ -49,14 +31,6 @@ pub(crate) enum QueueState {
     Empty,
 }
 
-/// Which tab is active in the acquisition drawer.
-#[derive(Clone, Debug, PartialEq, Default)]
-pub(crate) enum DrawerTab {
-    #[default]
-    Queue,
-    Network,
-}
-
 /// Latency summary statistics.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LatencySummary {
@@ -75,16 +49,8 @@ pub(crate) struct AcquisitionState {
     pub operations: VecDeque<AcquisitionOperation>,
     /// Current queue state.
     pub queue_state: QueueState,
-    /// Whether the acquisition drawer is expanded.
-    pub drawer_expanded: bool,
-    /// Drawer height in pixels (user-resizable).
-    pub drawer_height: f32,
-    /// Active drawer tab.
-    pub active_tab: DrawerTab,
     /// Per-chunk latency metrics for the current streaming session.
     pub chunk_latencies: Vec<ChunkLatencyMetrics>,
-    /// Set of expanded network groups in the drawer.
-    pub expanded_network_groups: std::collections::HashSet<NetworkGroupKey>,
 }
 
 impl Default for AcquisitionState {
@@ -93,11 +59,7 @@ impl Default for AcquisitionState {
             next_id: 1,
             operations: VecDeque::with_capacity(MAX_RETAINED),
             queue_state: QueueState::Empty,
-            drawer_expanded: false,
-            drawer_height: 250.0,
-            active_tab: DrawerTab::Queue,
             chunk_latencies: Vec::new(),
-            expanded_network_groups: std::collections::HashSet::<NetworkGroupKey>::new(),
         }
     }
 }
@@ -382,52 +344,6 @@ impl AcquisitionState {
     #[cfg(test)]
     pub(crate) fn clear_latencies(&mut self) {
         self.chunk_latencies.clear();
-    }
-
-    /// Return the `NetworkGroupKey` for an operation.
-    ///
-    /// Realtime chunks get grouped by scan timestamp; everything else
-    /// by operation ID.
-    pub(crate) fn network_group_key(op: &AcquisitionOperation) -> NetworkGroupKey {
-        match &op.kind {
-            OperationKind::RealtimeChunk {
-                site_id,
-                scan_timestamp,
-                ..
-            } => NetworkGroupKey::RealtimeScan {
-                site_id: site_id.clone(),
-                scan_timestamp: *scan_timestamp,
-            },
-            _ => NetworkGroupKey::Operation(op.id),
-        }
-    }
-
-    /// Return a scan-level group key for an operation kind.
-    ///
-    /// For realtime chunks this returns `Some((site_id, scan_timestamp))` so
-    /// that all chunks belonging to the same volume are grouped together in
-    /// the network tab. For other operation kinds returns `None`.
-    #[cfg(test)]
-    pub(crate) fn scan_group_key(kind: &OperationKind) -> Option<(String, i64)> {
-        match kind {
-            OperationKind::RealtimeChunk {
-                site_id,
-                scan_timestamp,
-                ..
-            } => Some((site_id.clone(), *scan_timestamp)),
-            _ => None,
-        }
-    }
-
-    /// Human-readable description for a scan-level group (all chunks sharing
-    /// the same `scan_timestamp`).
-    pub(crate) fn scan_group_description(site_id: &str, scan_timestamp: i64) -> String {
-        let dt = chrono::DateTime::from_timestamp(scan_timestamp, 0);
-        if let Some(dt) = dt {
-            format!("{} live scan {}", site_id, dt.format("%H:%M:%SZ"))
-        } else {
-            format!("{} live scan {}", site_id, scan_timestamp)
-        }
     }
 
     /// Find an operation by ID (mutable).
@@ -863,13 +779,6 @@ mod coverage_tests {
         }
     }
 
-    fn listing_kind(site: &str, y: i32, m: u32, d: u32) -> OperationKind {
-        OperationKind::ArchiveListing {
-            site_id: site.to_string(),
-            date: chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap(),
-        }
-    }
-
     // ── create_operation: ids, default fields, queue activation ──────────────
 
     /// IDs are monotonically increasing starting from 1, and creating the first
@@ -1147,63 +1056,6 @@ mod coverage_tests {
         assert_eq!(acq2.failed_operation_for_scan_start(2000, 60), None);
     }
 
-    // ── network_group_key / scan_group_key / scan_group_description ───────────
-
-    /// Realtime chunks group by (site, scan_timestamp); all other kinds group by
-    /// their individual operation id.
-    #[wasm_bindgen_test]
-    fn network_group_key_realtime_vs_other() {
-        let mut acq = AcquisitionState::default();
-        let dl_id = acq.create_operation(download_kind(1000));
-        let chunk_id = acq.create_operation(chunk_kind("KDMX", 4, 1700));
-
-        let dl = acq.find(dl_id).unwrap();
-        assert_eq!(
-            AcquisitionState::network_group_key(dl),
-            NetworkGroupKey::Operation(dl_id)
-        );
-
-        let chunk = acq.find(chunk_id).unwrap();
-        assert_eq!(
-            AcquisitionState::network_group_key(chunk),
-            NetworkGroupKey::RealtimeScan {
-                site_id: "KDMX".to_string(),
-                scan_timestamp: 1700,
-            }
-        );
-    }
-
-    /// `scan_group_key` returns Some only for realtime chunks; None for download
-    /// and listing kinds.
-    #[wasm_bindgen_test]
-    fn scan_group_key_some_only_for_realtime() {
-        assert_eq!(
-            AcquisitionState::scan_group_key(&chunk_kind("KDMX", 1, 4242)),
-            Some(("KDMX".to_string(), 4242))
-        );
-        assert_eq!(AcquisitionState::scan_group_key(&download_kind(1000)), None);
-        assert_eq!(
-            AcquisitionState::scan_group_key(&listing_kind("KDMX", 2024, 5, 1)),
-            None
-        );
-    }
-
-    /// `scan_group_description` formats a valid timestamp as "SITE live scan
-    /// HH:MM:SSZ"; an unrepresentable timestamp falls back to the raw integer.
-    #[wasm_bindgen_test]
-    fn scan_group_description_valid_and_invalid() {
-        // ts 0 → 00:00:00Z UTC.
-        assert_eq!(
-            AcquisitionState::scan_group_description("KDMX", 0),
-            "KDMX live scan 00:00:00Z"
-        );
-        // Unrepresentable → raw integer fallback.
-        assert_eq!(
-            AcquisitionState::scan_group_description("KABR", i64::MAX),
-            format!("KABR live scan {}", i64::MAX)
-        );
-    }
-
     // ── record_chunk_latency / clear_latencies ───────────────────────────────
 
     /// Recording a chunk with no first-radial time leaves end-to-end latency None
@@ -1261,13 +1113,9 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn type_defaults() {
         assert_eq!(QueueState::default(), QueueState::Empty);
-        assert_eq!(DrawerTab::default(), DrawerTab::Queue);
         let acq = AcquisitionState::default();
-        assert!(!acq.drawer_expanded);
-        assert!((acq.drawer_height - 250.0).abs() < 1e-6);
-        assert_eq!(acq.active_tab, DrawerTab::Queue);
         assert!(acq.operations.is_empty());
-        assert!(acq.expanded_network_groups.is_empty());
+        assert!(acq.chunk_latencies.is_empty());
     }
 
     // ── latency_summary p95 boundary for a larger n ──────────────────────────

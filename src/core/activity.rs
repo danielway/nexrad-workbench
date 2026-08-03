@@ -101,6 +101,9 @@ pub(crate) struct ActivityDevInputs {
     /// Most recent render sub-phase timings, as `(label, ms)` pairs in
     /// pipeline order. `None` until a render has completed.
     pub render_phases: Option<[(&'static str, f64); 4]>,
+    /// Live chunk latency: `(avg fetch ms, p95 fetch ms, avg end-to-end ms)`.
+    /// `None` until the live stream has produced samples.
+    pub chunk_latency: Option<(f64, f64, Option<f64>)>,
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -253,6 +256,8 @@ pub(crate) struct ActivityDetailVm {
     pub ingest_phases: Option<[(&'static str, f64); 6]>,
     /// Most recent render sub-phase timings, `(label, ms)` in pipeline order.
     pub render_phases: Option<[(&'static str, f64); 4]>,
+    /// Live chunk latency: `(avg fetch ms, p95 fetch ms, avg end-to-end ms)`.
+    pub chunk_latency: Option<(f64, f64, Option<f64>)>,
     /// Scans the ledger has given up on: the volume genuinely lacks the
     /// requested cut, so no amount of retrying will produce it.
     pub unavailable: u32,
@@ -358,6 +363,7 @@ impl ActivityVm {
                 vcp_forecast_available: dev.vcp_forecast_available,
                 ingest_phases: dev.ingest_phases,
                 render_phases: dev.render_phases,
+                chunk_latency: dev.chunk_latency,
                 unavailable: inputs.ledger.unavailable,
             }),
         }

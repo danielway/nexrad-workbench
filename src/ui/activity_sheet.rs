@@ -571,6 +571,20 @@ fn render_dev_rows(
     for (label, ms) in detail.render_phases.iter().flatten() {
         detail_row(ui, label, format!("{ms:.1} ms"), label_color, value_color);
     }
+    if let Some((avg, p95, e2e)) = detail.chunk_latency {
+        detail_row(
+            ui,
+            "Live chunk latency",
+            match e2e {
+                Some(e2e) => {
+                    format!("{avg:.0} ms avg / {p95:.0} ms p95 / {e2e:.0} ms end-to-end")
+                }
+                None => format!("{avg:.0} ms avg / {p95:.0} ms p95"),
+            },
+            label_color,
+            value_color,
+        );
+    }
     if let Some(fps) = detail.fps {
         detail_row(
             ui,

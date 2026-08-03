@@ -663,6 +663,11 @@ impl WorkbenchApp {
                             ("GPU upload", d.gpu_upload_ms),
                         ]
                     }),
+                    chunk_latency: self
+                        .acquisition
+                        .state
+                        .latency_summary()
+                        .map(|l| (l.avg_fetch_ms, l.p95_fetch_ms, l.avg_e2e_ms)),
                 }),
         })
     }

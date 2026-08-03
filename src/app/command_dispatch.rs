@@ -681,13 +681,14 @@ mod probe_tests {
 mod dispatch_tests {
     use super::{dispatch_state_only, CommandOutcome, DispatchState};
     use crate::core::transport::LiveStopPlacement;
+    use crate::core::OperationStatus;
     use crate::core::{
         ElevationSelection, FrameNow, GeoLayer, Intent, LiveExitReason, LivePhase, LoopPreset,
         OperationId,
     };
     use crate::nexrad::acquisition::archive_index::{ArchiveFileMeta, ArchiveListing};
     use crate::state::acquisition::QueueState;
-    use crate::state::{OperationKind, OperationStatus};
+    use crate::state::OperationKind;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     /// Owns the real state bundle the dispatcher mutates, plus the

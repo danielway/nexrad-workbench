@@ -1,6 +1,5 @@
 //! Bottom panel UI: orchestrates the timeline, playback controls, and session statistics.
 
-use super::acquisition_drawer::render_acquisition_drawer;
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::PlaybackMode;
 use crate::state::AppState;
@@ -94,10 +93,6 @@ fn draw_bottom_panel(
         ctx.request_repaint_after(std::time::Duration::from_millis(33));
     }
 
-    // The acquisition drawer is reachable only via the dev-mode-only network
-    // metric label. Force it closed when dev mode is off so a previously
-    // expanded drawer doesn't linger after the user toggles dev off.
-    let drawer_expanded = state.dev_mode && acquisition.state.drawer_expanded;
     // Sized to the content layout (timeline + spacing + controls ~24 +
     // frame margins). Stays constant across macro/micro because the
     // timeline locks its own height in render_timeline.
@@ -107,53 +102,15 @@ fn draw_bottom_panel(
     let max_panel_height =
         ctx.input(|i| i.viewport_rect().height()) - top_bar_height - min_central_height;
 
-    // When the drawer is expanded, a resize handle, separator, and inter-widget
-    // spacing are rendered between the drawer and the controls. Account for that
-    // overhead so the controls aren't pushed below the window edge.
-    let drawer_spacing_overhead = 14.0;
-    let drawer_height = if drawer_expanded {
-        let max_drawer = (max_panel_height - controls_height - drawer_spacing_overhead).max(0.0);
-        acquisition.state.drawer_height.min(max_drawer)
-    } else {
-        0.0
-    };
-    let total_height = if drawer_expanded {
-        controls_height + drawer_spacing_overhead + drawer_height
-    } else {
-        controls_height
-    };
+    // The panel is exactly the transport row plus the timeline strip. The
+    // resizable dev acquisition drawer that used to stack above it is gone —
+    // its queue and network content lives in the activity sheet now.
+    let _ = max_panel_height;
+    let total_height = controls_height;
 
     egui::TopBottomPanel::bottom("bottom_panel")
         .exact_height(total_height)
         .show(ctx, |ui| {
-            // Render acquisition drawer above normal controls when expanded
-            if drawer_expanded {
-                // Resize handle: thin draggable strip
-                let resize_response = ui.allocate_response(
-                    egui::Vec2::new(ui.available_width(), 4.0),
-                    egui::Sense::drag(),
-                );
-                if resize_response.dragged() {
-                    // Dragging up increases height, dragging down decreases
-                    let delta = -resize_response.drag_delta().y;
-                    acquisition.state.drawer_height =
-                        (acquisition.state.drawer_height + delta).clamp(100.0, 600.0);
-                }
-                if resize_response.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-                }
-
-                render_acquisition_drawer(
-                    ui,
-                    state,
-                    live,
-                    acquisition,
-                    drawer_height - 4.0,
-                    chrome,
-                );
-                ui.separator();
-            }
-
             ui.vertical(|ui| {
                 // Transport/controls row ABOVE the timeline strip (spec §5
                 // bottom cluster: "transport row … above the timeline").

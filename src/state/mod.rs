@@ -25,11 +25,11 @@ pub(crate) mod theme;
 pub(crate) mod url_state;
 mod viz;
 
-pub(crate) use acquisition::{AcquisitionState, DrawerTab, NetworkGroupKey};
+pub(crate) use acquisition::AcquisitionState;
 // The operation vocabulary lives in `core::domain::ops` (the pure activity
 // view-model reads it, and `core` may not import `state`). Re-exported here so
 // existing `crate::state::OperationKind`-style paths keep resolving.
-pub(crate) use crate::core::{DownloadPhase, OperationKind, OperationStatus};
+pub(crate) use crate::core::{DownloadPhase, OperationKind};
 pub(crate) use app_mode::{derive_app_mode, AppMode};
 pub(crate) use calendar::{aggregate_buckets, bucket_tap_target, TimeBucket};
 pub(crate) use layer::LayerState;

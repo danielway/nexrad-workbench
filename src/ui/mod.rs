@@ -15,7 +15,6 @@
 //! parallel [`Overlay`](canvas_overlays::Overlay) registry inside the
 //! canvas's central panel.
 
-pub(crate) mod acquisition_drawer;
 mod activity_chip;
 mod activity_sheet;
 mod alerts_modal;
