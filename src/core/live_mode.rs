@@ -431,26 +431,6 @@ impl LiveModeState {
         0.5 + 0.5 * (self.pulse_phase * std::f32::consts::TAU).sin()
     }
 
-    /// Format status text for display.
-    #[cfg(test)]
-    pub(crate) fn status_text(&self, now: f64) -> String {
-        match self.phase {
-            LivePhase::Idle => String::new(),
-            LivePhase::AcquiringLock => {
-                let elapsed = self.phase_elapsed_secs(now) as i32;
-                format!("Acquiring lock... {}s", elapsed)
-            }
-            LivePhase::Streaming => {
-                format!("LIVE ({} chunks)", self.chunks_received)
-            }
-            LivePhase::WaitingForChunk => "Waiting for chunk...".to_string(),
-            LivePhase::Error => self
-                .error_message
-                .clone()
-                .unwrap_or_else(|| "Unknown error".to_string()),
-        }
-    }
-
     /// Handle a realtime streaming result and update state accordingly.
     ///
     /// This is the main integration point between the RealtimeChannel and
@@ -1404,50 +1384,6 @@ mod coverage_tests {
         // phase 0.75 → 0.5 + 0.5*sin(3π/2) = 0.0
         s.pulse_phase = 0.75;
         assert!(s.pulse_alpha().abs() < 1e-6);
-    }
-
-    // ── status_text ──
-
-    #[wasm_bindgen_test]
-    fn status_text_idle_is_empty() {
-        let s = LiveModeState::new();
-        assert_eq!(s.status_text(999.0), "");
-    }
-
-    #[wasm_bindgen_test]
-    fn status_text_acquiring_lock_shows_truncated_elapsed() {
-        let mut s = LiveModeState::new();
-        s.phase = LivePhase::AcquiringLock;
-        s.phase_started_at = Some(100.0);
-        // elapsed 5.9s truncates to 5
-        assert_eq!(s.status_text(105.9), "Acquiring lock... 5s");
-    }
-
-    #[wasm_bindgen_test]
-    fn status_text_streaming_shows_chunk_count() {
-        let mut s = LiveModeState::new();
-        s.phase = LivePhase::Streaming;
-        s.chunks_received = 42;
-        assert_eq!(s.status_text(0.0), "LIVE (42 chunks)");
-    }
-
-    #[wasm_bindgen_test]
-    fn status_text_waiting_is_fixed_string() {
-        let mut s = LiveModeState::new();
-        s.phase = LivePhase::WaitingForChunk;
-        assert_eq!(s.status_text(0.0), "Waiting for chunk...");
-    }
-
-    #[wasm_bindgen_test]
-    fn status_text_error_uses_message_or_fallback() {
-        let mut s = LiveModeState::new();
-        s.phase = LivePhase::Error;
-        // With a message.
-        s.error_message = Some("connection timeout".to_string());
-        assert_eq!(s.status_text(0.0), "connection timeout");
-        // Without a message → fallback.
-        s.error_message = None;
-        assert_eq!(s.status_text(0.0), "Unknown error");
     }
 
     // ── record_last_radial selective updates ──

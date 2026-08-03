@@ -60,6 +60,10 @@ pub(crate) struct Live {
     /// Consumers read the plan (countdown, next-target) and live-scan from here
     /// instead of a copy written back onto `LiveModeState`.
     pub frame_projection: Option<Projection>,
+    /// This frame's live-status view-model — the single snapshot every live
+    /// surface (LIVE button, activity chip, now-cap, mode badge, mobile)
+    /// projects from. Rebuilt at the end of [`Live::refresh`].
+    pub frame_status: crate::core::LiveStatus,
 }
 
 impl Live {
@@ -71,6 +75,7 @@ impl Live {
             app_mode: AppMode::default(),
             engine: new_shared_engine(),
             frame_projection: None,
+            frame_status: crate::core::LiveStatus::default(),
         }
     }
 
@@ -173,6 +178,14 @@ impl Live {
                 .find_scan_at_timestamp(inputs.playback.playback_position())
                 .is_some(),
         );
+        // Last: the status snapshot reads the projection adopted above.
+        self.frame_status = crate::core::derive_live_status(crate::core::LiveStatusInputs {
+            mode_state: &self.mode_state,
+            countdown_secs: self.countdown_remaining_secs(now),
+            tethered: playhead_live,
+            playback_position_secs: inputs.playback.playback_position(),
+            now_secs: now,
+        });
     }
 }
 
