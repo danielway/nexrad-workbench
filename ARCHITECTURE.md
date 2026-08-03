@@ -329,11 +329,19 @@ executed by the `Effect` runtime (`app/effects.rs`).
 │          │                             │ • Processing    │
 │          │                             │ • 3D Options    │
 ├──────────┴─────────────────────────────┴─────────────────┤
-│ Acquisition Drawer (expandable: queue + network tabs)    │
-├──────────────────────────────────────────────────────────┤
-│ Bottom: Timeline | Playback Controls | Stats             │
+│ Bottom: Timeline | Playback Controls | Activity chip     │
 └──────────────────────────────────────────────────────────┘
 ```
+
+**Acquisition transparency** is one surface, not several. The always-visible
+activity chip (`ui/activity_chip.rs`, shared by the desktop transport row and
+the mobile top bar) opens the activity sheet (`ui/activity_sheet.rs`), which
+carries the stage strip, throughput, download list, policy toggles, and a
+collapsed Details disclosure. Both render a single per-frame projection,
+`core::activity::ActivityVm`, so they cannot disagree. The former dev-only
+surfaces — the DL/PROC/GPU pipeline lamps, the Performance modal, the network
+log modal, and the expandable acquisition drawer — were folded into it; what
+was genuinely dev-only now lives inside Details behind `dev_mode`.
 
 When `AppState::is_mobile` is true, `ui/mobile/` replaces this desktop layout
 with dedicated mobile chrome (tabs, scrubber, gesture handling, auto-hide).

@@ -55,7 +55,7 @@ effect boundary is the new piece.
 | Seam | Role | Today (2026-07) |
 |---|---|---|
 | `Intent` ([intent.rs](../src/core/intent.rs)) | **Intents in** | Defined in the core (the old `AppCommand` name is gone). UI code pushes intents via `AppState::push_command`; the main loop drains and dispatches them. Remaining gap: the interactive panels' direct `&mut` writes (the deferred P5 batch below). Goal: `Intent` becomes the *only* way the UI changes anything. |
-| `subsystem::Derived` ([derived.rs](../src/subsystem/derived.rs)) | **View-model out** | Exists but minimal — a small per-frame cache; panels still read subsystem internals directly at scale. `DiagnosticsVm` is the one complete per-panel view-model (the pattern to propagate). Goal: a *complete* per-panel view-model the panels read exclusively. |
+| `subsystem::Derived` ([derived.rs](../src/subsystem/derived.rs)) | **View-model out** | Exists but minimal — a small per-frame cache; panels still read subsystem internals directly at scale. `DiagnosticsVm` and `core::activity::ActivityVm` are the complete per-panel view-models (the pattern to propagate). Goal: a *complete* per-panel view-model the panels read exclusively. |
 | The subsystems + `AppState` | **State owners** | Exist (S1) and are thin/clean. The decision mass that used to live in `src/app/*` has been extracted into pure core reducers (see the status note below); `src/app/*` is now assemble → reduce → execute shells. |
 | `Effect` ([effect.rs](../src/core/effect.rs)) | **Effects out** | Exists; executed by the shell runtime [`WorkbenchApp::apply_effects`](../src/app/effects.rs). Carries the simple cross-cutting effects (URL push, prefs save, geolocation). Heavy per-decision effects use local action enums — the `resolve_prev_sweep -> PrevSweepAction` idiom ([playback_manager.rs](../src/core/playback_manager.rs)) — now generalized into the Env/Slices/Actions reducer pattern (see ARCHITECTURE.md). |
 
@@ -276,6 +276,29 @@ in the P5 entry below and CORE_SHELL_MIGRATION_LOG.md §4.
   [`core::acquisition`](../src/core/acquisition.rs) and
   `app/acquisition_intent.rs` is a thin execute-in-field-order shell.)*
   `streaming.rs` stays de-scoped per the carve-out.
+
+- **P7 — Acquisition transparency (M). ✅ DONE.** The activity surface is the
+  second complete `intent → core → view-model → shell` slice.
+  [`core::activity`](../src/core/activity.rs) owns `ActivityVm::build`, which
+  reconciles what were four independent, mutually-disagreeing notions of "in
+  flight" (the operation queue, the decode workers' pending maps, the request
+  ledger's ingest→timeline blackout, and raw HTTP counters) into one set of
+  disjoint stage counts plus a single headline number. The chip
+  (`ui/activity_chip.rs`) and the sheet (`ui/activity_sheet.rs`) are exhaustive
+  `match`es over that value and emit intents; neither counts, filters, or
+  mutates anything. Supporting pure pieces: `ThroughputWindow` and
+  `throughput_delta_sample` in [`core::domain::telemetry`], `WorkerLoad` in
+  [`core::domain::worker`], `RequestLedger::summarize` /
+  `awaiting_scan_starts`, and the operation vocabulary re-homed into
+  [`core::domain::ops`] (a prerequisite: `core` may not import `state`, so the
+  container stays in `state::AcquisitionState` while the vocabulary moved
+  down). ~55 headless tests, including the reconciliation rules that are the
+  point of the module (`chip_count_ignores_http_in_flight`,
+  `settling_excludes_scans_a_live_op_already_covers`,
+  `processing_and_settling_never_change_the_headline_count`,
+  `stale_worker_load_does_not_report_processing`). Three dev-only UI surfaces
+  (`stats_modal.rs`, `network_panel.rs`, `acquisition_drawer.rs`) and the
+  pipeline-lamp indicator were deleted into it.
 
 **Reference slice (do first): Diagnostics overlays — NWS alerts + mPING + GPS.**
 Cleanest existing seams, off the render hot path, high QA value. Steps: define

@@ -146,13 +146,20 @@ collection time is not yet late if the ingest-lag window hasn't elapsed.
   preset, LIVE button) above the timeline.
 - **Timeline** — a thin **minimap** sliver (whole-session coverage, doubles as
   fast navigation) above the **main strip**.
-- **Status chip** — tiny, near the transport; hidden when idle; "↓ 2" with a
-  spinner when acquiring; tap opens the queue sheet.
+- **Activity chip** — tiny, near the transport (and in the mobile top bar);
+  always present so its absence is never ambiguous: a muted "Up to date" when
+  idle, "↓ 2 Downloading" with a pulse when acquiring. Tap opens the activity
+  sheet.
 - **Scan inspector** — popover/sheet opened from a scan (right-click on desktop,
   long-press on touch): lists every sweep with tilt, size, cache state, per-chunk
   progress, tap-to-fetch.
-- **Queue sheet** — active/queued downloads with sizes, cancel/retry, and
-  acquisition policy toggles.
+- **Activity sheet** — the single acquisition-transparency surface: a stage
+  strip (Queued › Downloading › Processing › Finishing) with live counts,
+  rolling throughput, active/queued/recent downloads with sizes and
+  cancel/retry, the acquisition policy toggles, and a collapsed **Details**
+  disclosure holding session totals and the recent-request log. Deep
+  diagnostics (per-phase timings, worker queue depth, FPS, cross-origin
+  isolation, VCP forecast) appear inside Details only in developer mode.
 
 ## 5. The Timeline
 
@@ -282,7 +289,7 @@ mode — it is a tether state.
   to bound S3 chunk polling; "return to live" stays instant for any realistic
   browsing detour.
 - **Policy:** a data-saver toggle ("pause live stream while reviewing") in the
-  queue sheet stops the stream immediately for metered connections. Default off;
+  activity sheet stops the stream immediately for metered connections. Default off;
   the 60-min idle-stop is the safety backstop for the default case.
 
 ## 7. Loop System
@@ -462,11 +469,26 @@ scrubbing doesn't churn the LRU order.
 
 ### 10.5 Aggregate status
 
-The status chip ("↓ 3" + spinner) opens the **queue sheet** — a list with sizes,
-cancel/retry, and policy toggles: *auto-fetch while scrubbing* and *pause live
-stream while reviewing* (data-saver). A Wi-Fi-only toggle is not implementable in
-a browser (no reliable network-type API); `navigator.connection.saveData` may
-later seed the data-saver default.
+The activity chip ("↓ 3 Downloading", or "Up to date" when idle) opens the
+**activity sheet**: the stage strip, throughput, the download list with sizes
+and cancel/retry, and policy toggles: *auto-fetch while scrubbing* and *pause
+live stream while reviewing* (data-saver). A Wi-Fi-only toggle is not
+implementable in a browser (no reliable network-type API);
+`navigator.connection.saveData` may later seed the data-saver default.
+
+**One number, one meaning.** The chip's count is *scans still to fetch* —
+queued plus downloading — and nothing else. Decoding and post-ingest settling
+change the word, never the number, so the count always matches the actionable
+rows in the sheet. The stages draw on disjoint sources (the operation queue,
+the decode workers' pending jobs, the request ledger's ingest→timeline
+blackout), so a scan is never counted twice. Raw HTTP requests in flight —
+which include archive listings the user never asked for — are deliberately
+excluded from every user-facing count and surface only as a developer row.
+
+**Throughput, not ETA.** The sheet shows a rolling 10-second transfer rate. It
+shows no ETA: queued scan sizes are only a flat per-scan estimate (the S3
+listing exposes no sizes), so a remaining-time figure would be an estimate
+built on an estimate. An idle window renders as "—", never a fabricated 0 B/s.
 
 ## 11. States, Failure & Canvas Honesty
 
@@ -576,7 +598,7 @@ back/forward navigation works naturally.
   headers are absent; structure is conveyed by containment.
 - **Level 1 (via zoom):** scan structure, ghosts + countdown, loop presets, speed
   control.
-- **Level 2 (power):** scan inspector, manual fetch, queue sheet + policies,
+- **Level 2 (power):** scan inspector, manual fetch, activity sheet + policies,
   keyboard map, UTC. Vocabulary may use real terms (tilt, VCP).
 
 ## 15. Risks, Accessibility & Mitigations
@@ -665,12 +687,12 @@ deleted in the June 2026 docs cleanup.)
 - **Archive calendar layout:** ships a 1-D zoomable UTC-day lane (deliberate
   height-budget tradeoff), not a 2-D week-by-day grid; the grid is a possible
   future enhancement (§16).
-- **Manual download management:** stays demoted; the queue sheet shows what the
+- **Manual download management:** stays demoted; the activity sheet shows what the
   system did, plus cancel/retry and policy toggles.
 - **Tablet tier:** out of scope this pass; touch devices ≥600px get the desktop
   layout.
 - **Wi-Fi-only toggle:** not implementable in a browser (no reliable
-  network-type API); the queue sheet ships "auto-fetch while scrubbing" and
+  network-type API); the activity sheet ships "auto-fetch while scrubbing" and
   "pause live stream while reviewing".
 - **Scan inspector entry:** right-click a scan (desktop), long-press (touch). The
   old map-probe "Inspector" tool is renamed "Data probe" to free the word.

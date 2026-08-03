@@ -85,8 +85,9 @@ fn render_developer_section(
         .show(ui, |ui| {
             ui.checkbox(&mut state.dev_mode, "Developer mode")
                 .on_hover_text(
-                    "Show network metrics, pipeline timings, FPS, and the COI badge \
-                     in the status bar. Adds ?dev=true to the URL when enabled.",
+                    "Add deep diagnostics — per-phase timings, worker queue depth, \
+                     FPS, and cross-origin isolation — to the activity sheet's Details \
+                     section. Adds ?dev=true to the URL when enabled.",
                 );
         });
 }
