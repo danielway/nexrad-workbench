@@ -17,7 +17,7 @@
 //! Red is reserved exclusively for this concept: muted red ([`NOW_IDLE`]) as
 //! an invitation, bright pulsing red ([`LIVE_ACTIVE`]) while live.
 
-use crate::core::Intent;
+use crate::core::{Intent, LiveStatus, LiveTether};
 use crate::state::AppState;
 use crate::ui::colors::timeline::{LIVE_ACTIVE, NOW_IDLE};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Sense, Stroke, StrokeKind};
@@ -31,45 +31,35 @@ pub(super) fn render_now_affordance(
     painter: &Painter,
     state: &mut AppState,
     live: &crate::subsystem::Live,
-    playback: &crate::subsystem::Playback,
     frame: &super::TimelineFrame<'_>,
 ) -> Option<Rect> {
     let overlay_rect = &frame.rects.overlay;
     let now_ts = frame.now_secs;
     let now_x = frame.ts_to_x(now_ts);
-    let live_state = if live.is_detached(&playback.state) {
-        NowCapState::Detached
-    } else if live.mode_state.is_active() {
-        NowCapState::Attached
+    let status = live.frame_status;
+    // Pulse only while data is genuinely moving (connecting/receiving), so
+    // motion means exactly one thing; a merely-tethered wait holds steady.
+    let pulse = if status.activity.is_animated() {
+        live.mode_state.pulse_alpha()
     } else {
-        NowCapState::Idle
+        0.0
     };
-    let pulse = live.mode_state.pulse_alpha();
 
     if now_x >= overlay_rect.left() && now_x <= overlay_rect.right() {
-        render_inline_now(ui, painter, state, overlay_rect, now_x, live_state, pulse)
+        render_inline_now(ui, painter, state, overlay_rect, now_x, &status, pulse)
     } else {
         // "Now" is off-screen — pin a "jump to live" chip to the nearest edge,
         // pointing back toward now.
         let on_left = now_x < overlay_rect.left();
-        render_edge_chip(ui, painter, state, live, overlay_rect, live_state, on_left)
-    }
-}
-
-/// The three states of the live-edge affordance.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum NowCapState {
-    /// No stream session.
-    Idle,
-    /// Streaming with the playhead attached (pinned to now or replaying).
-    Attached,
-    /// Streaming in the background with the playhead detached (browsing).
-    Detached,
-}
-
-impl NowCapState {
-    fn is_streaming(self) -> bool {
-        !matches!(self, NowCapState::Idle)
+        render_edge_chip(
+            ui,
+            painter,
+            state,
+            overlay_rect,
+            status.tether,
+            pulse,
+            on_left,
+        )
     }
 }
 
@@ -81,9 +71,10 @@ fn render_inline_now(
     state: &mut AppState,
     overlay_rect: &Rect,
     now_x: f32,
-    live_state: NowCapState,
+    status: &LiveStatus,
     pulse: f32,
 ) -> Option<Rect> {
+    let live_state = status.tether;
     let is_live = live_state.is_streaming();
     let base = if is_live { LIVE_ACTIVE } else { NOW_IDLE };
 
@@ -120,18 +111,23 @@ fn render_inline_now(
     // the affordance is glanceable and its hit target no longer depends on an
     // invisible, zoom-dependent band.
     let label = match live_state {
-        NowCapState::Attached => format!("{} LIVE", egui_phosphor::regular::BROADCAST),
-        NowCapState::Detached => format!("{} REJOIN", egui_phosphor::regular::BROADCAST),
-        NowCapState::Idle => format!("{} GO LIVE", egui_phosphor::regular::BROADCAST),
+        // While waiting for the next chunk the cap carries its countdown
+        // ("◉ LIVE · 12s") — glanceable proof the stream is alive.
+        LiveTether::Tethered => match status.cap_suffix() {
+            Some(suffix) => format!("{} LIVE {suffix}", egui_phosphor::regular::BROADCAST),
+            None => format!("{} LIVE", egui_phosphor::regular::BROADCAST),
+        },
+        LiveTether::Detached => format!("{} REJOIN", egui_phosphor::regular::BROADCAST),
+        LiveTether::None => format!("{} GO LIVE", egui_phosphor::regular::BROADCAST),
     };
     let cap_rect = cap_geometry(painter, overlay_rect, now_x, &label);
 
     let resp = ui
         .interact(cap_rect, ui.id().with("now_live_cap"), Sense::click())
         .on_hover_text(match live_state {
-            NowCapState::Attached => "Streaming live — click to stop",
-            NowCapState::Detached => "Stream running in background — click to rejoin live",
-            NowCapState::Idle => "Stream live from now",
+            LiveTether::Tethered => "Streaming live — click to stop",
+            LiveTether::Detached => "Stream running in background — click to rejoin live",
+            LiveTether::None => "Stream live from now",
         });
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -142,12 +138,12 @@ fn render_inline_now(
 
     if resp.clicked() {
         state.push_command(match live_state {
-            NowCapState::Attached => {
+            LiveTether::Tethered => {
                 Intent::StopLive(crate::core::transport::LiveStopPlacement::LiveEdge)
             }
             // Instant re-pin — the stream never stopped.
-            NowCapState::Detached => Intent::ReturnToLive,
-            NowCapState::Idle => Intent::GoLive,
+            LiveTether::Detached => Intent::ReturnToLive,
+            LiveTether::None => Intent::GoLive,
         });
     }
 
@@ -161,9 +157,9 @@ fn render_edge_chip(
     ui: &mut egui::Ui,
     painter: &Painter,
     state: &mut AppState,
-    live: &crate::subsystem::Live,
     overlay_rect: &Rect,
-    live_state: NowCapState,
+    live_state: LiveTether,
+    pulse: f32,
     on_left: bool,
 ) -> Option<Rect> {
     let is_live = live_state.is_streaming();
@@ -196,14 +192,14 @@ fn render_edge_chip(
     let resp = ui
         .interact(chip_rect, ui.id().with("now_live_chip"), Sense::click())
         .on_hover_text(match live_state {
-            NowCapState::Detached => "Stream running — jump back to live",
+            LiveTether::Detached => "Stream running — jump back to live",
             _ => "Jump to now and stream live",
         });
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    let fill = cap_fill(base, is_live, resp.hovered(), live.mode_state.pulse_alpha());
+    let fill = cap_fill(base, is_live, resp.hovered(), pulse);
     painter.rect_filled(chip_rect, 3.0, fill);
     painter.rect_stroke(
         chip_rect,
@@ -220,9 +216,9 @@ fn render_edge_chip(
         // Intents drain in order, so the centering lands before the attach.
         state.push_command(Intent::CenterTimelineOnNow);
         match live_state {
-            NowCapState::Detached => state.push_command(Intent::ReturnToLive),
-            NowCapState::Idle => state.push_command(Intent::GoLive),
-            NowCapState::Attached => {}
+            LiveTether::Detached => state.push_command(Intent::ReturnToLive),
+            LiveTether::None => state.push_command(Intent::GoLive),
+            LiveTether::Tethered => {}
         }
     }
 
@@ -294,20 +290,6 @@ fn label_size(painter: &Painter, label: &str) -> (egui::Vec2, egui::FontId) {
 mod coverage_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
-
-    // ── NowCapState::is_streaming ──────────────────────────────────────
-    // Idle is the only non-streaming state.
-
-    #[wasm_bindgen_test]
-    fn is_streaming_idle_is_false() {
-        assert!(!NowCapState::Idle.is_streaming());
-    }
-
-    #[wasm_bindgen_test]
-    fn is_streaming_attached_and_detached_are_true() {
-        assert!(NowCapState::Attached.is_streaming());
-        assert!(NowCapState::Detached.is_streaming());
-    }
 
     // ── cap_fill ───────────────────────────────────────────────────────
     // Only assert the deterministic (alpha == 255, or alpha-only) branches.

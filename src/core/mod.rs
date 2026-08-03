@@ -94,11 +94,7 @@ pub(crate) use live_mode::{
     should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase, StreamActivity,
 };
 pub(crate) use live_radar_model::LiveRadarModel;
-// `LiveTether` is consumed by the UI surfaces landing in the next commit; in a
-// bin crate the re-export reads as unused until then.
-#[allow(unused_imports)]
-pub(crate) use live_status::LiveTether;
-pub(crate) use live_status::{derive_live_status, LiveStatus, LiveStatusInputs};
+pub(crate) use live_status::{derive_live_status, LiveStatus, LiveStatusInputs, LiveTether};
 pub(crate) use persist::{decide_persist, persist_due, PersistDecision};
 pub(crate) use streaming_filter::StreamingFilter;
 pub(crate) use streaming_plan::{ChunkProjectedTimes, ChunkProjectionInfo, StreamingPlan};

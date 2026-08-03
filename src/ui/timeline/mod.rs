@@ -649,7 +649,7 @@ pub(super) fn render_timeline(
     // indicator and the control to start/stop it. When now is on-screen it's
     // an inline line + clickable cap; when scrolled off it's an edge chip.
     // Returns the rect it occupies so the seek handler ignores clicks on it.
-    let now_affordance_rect = render_now_affordance(ui, &painter, state, live, playback, &frame);
+    let now_affordance_rect = render_now_affordance(ui, &painter, state, live, &frame);
 
     // Draw selection range labels (boundaries and duration)
     if let Some((range_start, range_end)) = playback.state.selection_range() {

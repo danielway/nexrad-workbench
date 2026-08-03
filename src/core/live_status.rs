@@ -31,6 +31,13 @@ pub(crate) enum LiveTether {
     Detached,
 }
 
+impl LiveTether {
+    /// Whether a stream session exists at all (tethered or backgrounded).
+    pub(crate) fn is_streaming(self) -> bool {
+        !matches!(self, LiveTether::None)
+    }
+}
+
 /// Frame-cached live-status snapshot: pure data, no egui types. Built by
 /// [`derive_live_status`]; read from [`crate::subsystem::Live::frame_status`].
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -116,15 +123,7 @@ pub(crate) fn derive_live_status(inputs: LiveStatusInputs<'_>) -> LiveStatus {
     }
 }
 
-// Projected by the UI surfaces landing in the next commit; until then only
-// tests consume these, which a bin crate reads as dead code.
-#[allow(dead_code)]
 impl LiveStatus {
-    /// Whether a stream is running at all (regardless of tether).
-    pub(crate) fn is_streaming(&self) -> bool {
-        self.activity != StreamActivity::Off
-    }
-
     /// Short trailing readout for the activity chip / top-bar badge:
     /// what the stream is doing, with the part that visibly moves (chunk
     /// count, countdown, stall duration). `None` when no stream is running.
@@ -205,7 +204,7 @@ mod coverage_tests {
         });
         assert_eq!(status.tether, LiveTether::None);
         assert_eq!(status.activity, StreamActivity::Off);
-        assert!(!status.is_streaming());
+        assert!(!status.tether.is_streaming());
     }
 
     #[wasm_bindgen_test]
@@ -217,7 +216,7 @@ mod coverage_tests {
             ..inputs(&s)
         });
         assert_eq!(status.tether, LiveTether::Tethered);
-        assert!(status.is_streaming());
+        assert!(status.tether.is_streaming());
     }
 
     #[wasm_bindgen_test]
@@ -472,6 +471,15 @@ mod coverage_tests {
         assert_eq!(LiveStatus::default().hover_text(), None);
     }
 
+    // ── LiveTether::is_streaming ──
+
+    #[wasm_bindgen_test]
+    fn tether_is_streaming_only_when_a_session_exists() {
+        assert!(!LiveTether::None.is_streaming());
+        assert!(LiveTether::Tethered.is_streaming());
+        assert!(LiveTether::Detached.is_streaming());
+    }
+
     // ── default ──
 
     #[wasm_bindgen_test]
@@ -483,7 +491,7 @@ mod coverage_tests {
         assert_eq!(d.countdown_secs, None);
         assert_eq!(d.lag_secs, None);
         assert_eq!(d.data_age_secs, None);
-        assert!(!d.is_streaming());
+        assert!(!d.tether.is_streaming());
         assert_eq!(d.cap_suffix(), None);
     }
 }

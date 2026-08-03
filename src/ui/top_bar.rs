@@ -41,7 +41,7 @@ fn draw_top_bar(
     state: &mut AppState,
     _timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
-    playback: &crate::subsystem::Playback,
+    _playback: &crate::subsystem::Playback,
     diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
     diagnostics_vm: &crate::core::diagnostics::DiagnosticsVm,
@@ -136,7 +136,7 @@ fn draw_top_bar(
                     }
                 }
 
-                render_mode_badge(ui, live, playback);
+                render_mode_badge(ui, live);
 
                 ui.separator();
 
@@ -791,11 +791,7 @@ fn format_age(age_ms: f64) -> String {
 /// menu (Go Live / Stop streaming) — the canonical way to enter or
 /// leave Live. The Live pulse animation and streaming detail text are
 /// preserved.
-pub(super) fn render_mode_badge(
-    ui: &mut egui::Ui,
-    live: &crate::subsystem::Live,
-    playback: &crate::subsystem::Playback,
-) {
+pub(super) fn render_mode_badge(ui: &mut egui::Ui, live: &crate::subsystem::Live) {
     let mode = live.app_mode;
     let color = crate::ui::colors::mode::color(mode);
 
@@ -842,33 +838,10 @@ pub(super) fn render_mode_badge(
     };
     inner.response.on_hover_text(hover_text);
 
-    // Live-only trailing detail: chunk count, countdown, or elapsed acquire time.
+    // Live-only trailing detail: what the stream is doing right now, from
+    // this frame's `LiveStatus` snapshot (single source for all surfaces).
     if mode == AppMode::Live {
-        use crate::core::LivePhase;
-        let now = playback.state.playback_position();
-        let phase = live.mode_state.phase;
-        let detail = match phase {
-            LivePhase::AcquiringLock => {
-                let elapsed = live.mode_state.phase_elapsed_secs(now) as i32;
-                format!("acquiring lock... {}s", elapsed)
-            }
-            LivePhase::Streaming => {
-                format!("({} chunks) receiving...", live.mode_state.chunks_received)
-            }
-            LivePhase::WaitingForChunk => {
-                if let Some(remaining) = live.countdown_remaining_secs(now) {
-                    format!(
-                        "({} chunks) next in {}s",
-                        live.mode_state.chunks_received,
-                        remaining.ceil() as i32
-                    )
-                } else {
-                    format!("({} chunks)", live.mode_state.chunks_received)
-                }
-            }
-            _ => String::new(),
-        };
-        if !detail.is_empty() {
+        if let Some(detail) = live.frame_status.detail_text() {
             ui.label(
                 RichText::new(detail)
                     .size(12.0)

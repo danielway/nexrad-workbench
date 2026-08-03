@@ -36,16 +36,15 @@ pub(crate) mod ui {
 pub(crate) mod live {
     use super::Color32;
 
-    /// Orange - acquiring lock/connecting. Part of the live palette; the
-    /// transport-row badge moved to a stateful LIVE button, so this is reserved
-    /// for the queue sheet / connection detail next phase.
-    #[allow(dead_code)] // Doc above: reserved for the queue-sheet / connection-detail phase.
+    /// Orange - degraded-but-recoverable: the activity chip's stalled state
+    /// and the mobile stall readout (a stall is not the routine blue, and red
+    /// stays reserved for the live edge and errors).
     pub(crate) const ACQUIRING: Color32 = Color32::from_rgb(255, 180, 50);
     /// Red - actively streaming.
     pub(crate) const STREAMING: Color32 = Color32::from_rgb(255, 80, 80);
-    /// Blue - waiting for next chunk. Reserved alongside [`ACQUIRING`] for the
-    /// next-phase queue sheet / countdown chrome.
-    #[allow(dead_code)] // Doc above: reserved for the queue-sheet / countdown chrome phase.
+    /// Blue - waiting for next chunk. Reserved for future countdown chrome;
+    /// the activity chip carries the waiting state in neutral label tones.
+    #[allow(dead_code)] // Doc above: reserved for future countdown chrome.
     pub(crate) const WAITING: Color32 = Color32::from_rgb(100, 180, 255);
 }
 

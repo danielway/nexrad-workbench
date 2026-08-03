@@ -123,17 +123,6 @@ pub(crate) enum StreamActivity {
 }
 
 impl StreamActivity {
-    /// Short lower-case word for the activity chip.
-    pub(crate) fn label(&self) -> &'static str {
-        match self {
-            StreamActivity::Off => "off",
-            StreamActivity::Connecting => "connecting",
-            StreamActivity::Receiving => "receiving",
-            StreamActivity::Waiting => "waiting",
-            StreamActivity::Stalled => "stalled",
-        }
-    }
-
     /// Whether the chip should animate. Only true while data is actually
     /// moving, so motion means exactly one thing.
     pub(crate) fn is_animated(&self) -> bool {
@@ -902,19 +891,6 @@ mod tests {
         assert!(!StreamActivity::Waiting.is_animated());
         assert!(!StreamActivity::Stalled.is_animated());
         assert!(!StreamActivity::Off.is_animated());
-    }
-
-    #[wasm_bindgen_test]
-    fn every_activity_has_a_label() {
-        for a in [
-            StreamActivity::Off,
-            StreamActivity::Connecting,
-            StreamActivity::Receiving,
-            StreamActivity::Waiting,
-            StreamActivity::Stalled,
-        ] {
-            assert!(!a.label().is_empty());
-        }
     }
 
     #[wasm_bindgen_test]

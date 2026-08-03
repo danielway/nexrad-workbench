@@ -156,6 +156,7 @@ fn render_transport_row(
 
         ui.add_space(2.0);
         render_live_button(ui, state, live, btn_h);
+        render_stream_health(ui, live);
         render_speed_button(ui, playback, btn_h);
         render_loop_button(ui, state, playback, interactive);
 
@@ -291,6 +292,27 @@ fn render_live_button(
         .clicked()
     {
         state.push_command(crate::core::Intent::GoLive);
+    }
+}
+
+/// Compact stream-health readout beside the mobile LIVE button. The ~360 px
+/// transport row has no room for the desktop activity chip, so only the state
+/// that demands attention surfaces here: a stalled stream. Healthy activity
+/// (receiving / waiting) is carried by the LIVE button itself.
+fn render_stream_health(ui: &mut egui::Ui, live: &crate::subsystem::Live) {
+    use crate::core::StreamActivity;
+    let status = &live.frame_status;
+    if status.activity != StreamActivity::Stalled {
+        return;
+    }
+    let resp = ui.label(
+        RichText::new(format!("{} stalled", egui_phosphor::regular::WAVE_SINE))
+            .size(10.0)
+            .monospace()
+            .color(crate::ui::colors::live::ACQUIRING),
+    );
+    if let Some(hover) = status.hover_text() {
+        resp.on_hover_text(hover);
     }
 }
 

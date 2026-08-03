@@ -658,28 +658,31 @@ fn render_live_button(
 /// the fact the LIVE button used to carry alone.
 ///
 /// Renders nothing when there is no stream, so it costs no chrome in the common
-/// archive case. When there is one it names the activity and shows the running
-/// chunk count, which is the part that visibly moves: a number that ticks up is
-/// unambiguous evidence of ingestion in a way a static fill never was. The
-/// glyph pulses only while data is genuinely moving, so motion means exactly
-/// one thing. Neutral/amber tones only — the accent budget's red stays with the
-/// live edge and the tether.
+/// archive case. When there is one it projects [`crate::core::LiveStatus`]'s
+/// `detail_text` — the activity word plus whatever visibly moves (the chunk
+/// count ticking up, the "next in ~Ns" countdown, the stall duration growing):
+/// a changing number is unambiguous evidence of ingestion in a way a static
+/// fill never was. The glyph pulses only while data is genuinely moving, so
+/// motion means exactly one thing. Neutral/amber tones only — the accent
+/// budget's red stays with the live edge and the tether.
 fn render_stream_activity(ui: &mut egui::Ui, state: &AppState, live: &crate::subsystem::Live) {
     use crate::core::StreamActivity;
 
-    let activity = live.mode_state.stream_activity(state.frame_now.secs());
-    if activity == StreamActivity::Off {
-        return;
-    }
+    let status = &live.frame_status;
+    let Some(detail) = status.detail_text() else {
+        return; // No stream — the chip costs no chrome in the archive case.
+    };
 
     let dark = state.is_dark;
-    let color = match activity {
-        StreamActivity::Stalled => live::WAITING,
+    let color = match status.activity {
+        // Amber, not blue: a stall is degraded, and blue is the routine
+        // "waiting" tone elsewhere in the live palette.
+        StreamActivity::Stalled => live::ACQUIRING,
         StreamActivity::Receiving => ui_colors::value(dark),
         _ => ui_colors::label(dark),
     };
     // The pulse is applied to alpha so the chip breathes without changing hue.
-    let color = if activity.is_animated() {
+    let color = if status.activity.is_animated() {
         let pulse = live.mode_state.pulse_alpha();
         let alpha = (150.0 + 105.0 * pulse) as u8;
         Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
@@ -687,20 +690,18 @@ fn render_stream_activity(ui: &mut egui::Ui, state: &AppState, live: &crate::sub
         color
     };
 
-    let chunks = live.mode_state.chunks_received;
-    let text = format!(
-        "{} {} · {chunks}",
-        egui_phosphor::regular::WAVE_SINE,
-        activity.label()
-    );
-    ui.label(RichText::new(text).size(10.0).monospace().color(color))
-        .on_hover_text(match activity {
-            StreamActivity::Connecting => "Connecting to the live feed",
-            StreamActivity::Receiving => "Receiving live data now",
-            StreamActivity::Waiting => "Stream healthy — waiting for the next chunk",
-            StreamActivity::Stalled => "No data has arrived for a while",
-            StreamActivity::Off => "",
-        });
+    let text = format!("{} {detail}", egui_phosphor::regular::WAVE_SINE);
+    let resp = ui.label(RichText::new(text).size(11.0).monospace().color(color));
+    if let Some(hover) = status.hover_text() {
+        resp.on_hover_text(hover);
+    }
+
+    // The countdown must keep ticking even at the detached 1 s repaint
+    // cadence (same pattern as the timeline's in-flight cells).
+    if status.countdown_secs.is_some() {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(500));
+    }
 }
 
 /// Render session statistics (right-aligned in the bottom bar).
