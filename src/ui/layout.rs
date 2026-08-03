@@ -118,6 +118,11 @@ pub(crate) struct LayoutCtx<'a> {
     /// Read-only diagnostics projection (severity-sorted alerts in view) for the
     /// alerts chip + list modal — "view-model out" for the P2 reference slice.
     pub diagnostics_vm: &'a crate::core::diagnostics::DiagnosticsVm,
+    /// Read-only acquisition projection: the reconciled activity state, stage
+    /// counts, throughput, and (when the sheet is open) the operation and
+    /// network rows. The chip, the activity sheet, and the mobile top bar all
+    /// render from this one value, so they cannot disagree.
+    pub activity_vm: &'a crate::core::activity::ActivityVm,
     /// Still `&mut`, legitimately: these are transient egui form buffers
     /// (site filter/zip entry, event form fields, mPING key input) that are
     /// two-way bound to widgets and deliberately live outside `AppState`.

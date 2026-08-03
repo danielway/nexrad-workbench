@@ -604,6 +604,49 @@ impl WorkbenchApp {
         stats.throughput.prune(now_ms);
     }
 
+    /// Assemble this frame's activity view-model.
+    ///
+    /// Pure gathering: every decision (which counter is authoritative for
+    /// which stage, how stages are deduplicated, when a worker load is stale)
+    /// lives in [`core::activity`] and is tested headlessly there.
+    fn build_activity_vm(&self) -> core::activity::ActivityVm {
+        let now_ms = self.state.frame_now.millis();
+        let stats = &self.state.session_stats;
+        core::activity::ActivityVm::build(core::activity::ActivityInputs {
+            now_ms,
+            operations: &self.acquisition.state.operations,
+            queue_paused: self.acquisition.state.is_paused(),
+            ledger: self.acquisition.request_ledger.summarize(now_ms),
+            awaiting_scan_starts: &self.acquisition.request_ledger.awaiting_scan_starts(now_ms),
+            worker: stats.worker_load,
+            last_worker_outcome_ms: stats.last_worker_outcome_ms,
+            gpu_render_in_flight: stats.pipeline.rendering,
+            throughput: &stats.throughput,
+            http_in_flight: stats.active_request_count,
+            session_requests: stats.session_request_count,
+            session_bytes: stats.session_transferred_bytes,
+            sw_aggregate: &self.state.network_aggregate,
+            recent_requests: &self.state.recent_network_requests,
+            cache_size_bytes: stats.cache_size_bytes,
+            streaming: self.live.mode_state.is_active(),
+            stream_activity: self
+                .live
+                .mode_state
+                .stream_activity(self.state.frame_now.secs()),
+            sheet_open: self.chrome.queue_sheet_open,
+            dev: self
+                .state
+                .dev_mode
+                .then_some(core::activity::ActivityDevInputs {
+                    fps: stats.avg_fps,
+                    cross_origin_isolated: self.state.cross_origin_isolated,
+                    avg_fetch_ms: stats.median_chunk_latency_ms,
+                    avg_processing_ms: stats.median_processing_time_ms,
+                    avg_render_ms: stats.avg_render_time_ms,
+                }),
+        })
+    }
+
     /// Refresh every per-frame acquisition telemetry input.
     ///
     /// All of it feeds the activity surface, so none of it is dev-gated. The
@@ -923,6 +966,11 @@ impl eframe::App for WorkbenchApp {
             derived.visible_bounds,
         );
 
+        // Activity view-model: the one reconciled answer to "what is the app
+        // doing?", built once from this frame's inputs so the chip, the sheet
+        // and the mobile bar all read the same numbers.
+        let activity_vm = self.build_activity_vm();
+
         let is_mobile = self.state.is_mobile;
         let mut layout_ctx = ui::LayoutCtx {
             ctx,
@@ -935,6 +983,7 @@ impl eframe::App for WorkbenchApp {
             diagnostics: &self.diagnostics,
             derived: &derived,
             diagnostics_vm: &diagnostics_vm,
+            activity_vm: &activity_vm,
             modals: &mut self.modals,
         };
         ui::render_layout(is_mobile, &mut layout_ctx);

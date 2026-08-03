@@ -37,65 +37,12 @@ impl Layer for MobileTopBarLayer {
             ctx.ctx,
             ctx.state,
             ctx.live,
-            ctx.acquisition,
             ctx.diagnostics,
             ctx.derived,
             ctx.diagnostics_vm,
+            ctx.activity_vm,
             ctx.chrome,
         );
-    }
-}
-
-/// Compact mobile acquiring chip (spec §5): a pulsing "↓ N" while downloads
-/// are active/queued and a red failure tick when downloads failed; hidden when
-/// idle. Tap opens the queue sheet. The mobile home for the desktop status
-/// chip — mobile has no bottom transport, so this lives in the top bar.
-fn render_mobile_acquiring_chip(
-    ui: &mut egui::Ui,
-    acquisition: &crate::subsystem::Acquisition,
-    chrome: &mut crate::subsystem::Chrome,
-) {
-    let in_flight = acquisition.state.active_count() + acquisition.state.queued_count();
-    let failed = acquisition.state.failed_scan_starts().len();
-    if in_flight == 0 && failed == 0 {
-        return;
-    }
-
-    ui.add_space(8.0);
-    if failed > 0 {
-        let label = format!("{} {}", egui_phosphor::regular::WARNING, failed);
-        if ui
-            .add(
-                egui::Button::new(
-                    RichText::new(label)
-                        .size(12.0)
-                        .strong()
-                        .color(super::super::colors::acquisition::FAILED),
-                )
-                .frame(false),
-            )
-            .clicked()
-        {
-            chrome.queue_sheet_open = true;
-        }
-    }
-    if in_flight > 0 {
-        let anim = ui.ctx().input(|i| i.time);
-        let pulse = (0.5 + 0.5 * (anim * 3.0).sin()) as f32;
-        let base = super::super::colors::ui::ACTIVE;
-        let alpha = (150.0 + 105.0 * pulse) as u8;
-        let tint = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha);
-        let label = format!("{} {}", egui_phosphor::regular::ARROW_DOWN, in_flight);
-        if ui
-            .add(
-                egui::Button::new(RichText::new(label).size(12.0).strong().color(tint))
-                    .frame(false),
-            )
-            .clicked()
-        {
-            chrome.queue_sheet_open = true;
-        }
-        ui.ctx().request_repaint();
     }
 }
 
@@ -132,10 +79,10 @@ fn draw_mobile_top_bar(
     ctx: &egui::Context,
     state: &mut AppState,
     live: &crate::subsystem::Live,
-    acquisition: &crate::subsystem::Acquisition,
     diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
     diagnostics_vm: &crate::core::diagnostics::DiagnosticsVm,
+    activity_vm: &crate::core::activity::ActivityVm,
     chrome: &mut crate::subsystem::Chrome,
 ) {
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
@@ -263,7 +210,8 @@ fn draw_mobile_top_bar(
                     // Acquiring indicator (spec §5 status chip, mobile home):
                     // a compact "↓ N" / failure tick that opens the queue
                     // sheet. Hidden when idle. Left of the version stamp.
-                    render_mobile_acquiring_chip(ui, acquisition, chrome);
+                    ui.add_space(8.0);
+                    super::super::activity_chip::render_activity_chip(ui, activity_vm, state, 12.0);
                 });
             });
 

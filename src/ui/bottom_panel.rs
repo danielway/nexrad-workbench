@@ -36,6 +36,7 @@ impl Layer for BottomPanelLayer {
             ctx.acquisition,
             ctx.derived,
             ctx.chrome,
+            ctx.activity_vm,
         );
     }
 }
@@ -51,6 +52,7 @@ fn draw_bottom_panel(
     acquisition: &mut Acquisition,
     derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
+    activity_vm: &crate::core::activity::ActivityVm,
 ) {
     let dt = ctx.input(|i| i.stable_dt);
 
@@ -166,6 +168,7 @@ fn draw_bottom_panel(
                         playback,
                         acquisition,
                         chrome,
+                        activity_vm,
                     );
                 });
 

@@ -65,6 +65,7 @@ pub(crate) struct DispatchState<'a> {
     pub acquisition: &'a mut subsystem::Acquisition,
     pub live: &'a mut subsystem::Live,
     pub diagnostics: &'a mut subsystem::Diagnostics,
+    pub chrome: &'a mut subsystem::Chrome,
 }
 
 /// Handle the intents that are pure state transitions. Returns `Some(intent)`
@@ -104,6 +105,7 @@ pub(crate) fn dispatch_state_only(
             s.acquisition.state.resume();
             outcome.pump_queue = true;
         }
+        Intent::SetActivitySheetOpen(open) => s.chrome.queue_sheet_open = open,
         Intent::RetryFailed(op_id) => {
             s.retry_failed(op_id);
             outcome.pump_queue = true;
@@ -394,6 +396,7 @@ impl WorkbenchApp {
                 acquisition: &mut self.acquisition,
                 live: &mut self.live,
                 diagnostics: &mut self.diagnostics,
+                chrome: &mut self.chrome,
             };
             dispatch_state_only(cmd, &mut bundle, outcome)
         };
@@ -456,6 +459,7 @@ impl WorkbenchApp {
             | Intent::ClearLoop
             | Intent::PauseQueue
             | Intent::ResumeQueue
+            | Intent::SetActivitySheetOpen(_)
             | Intent::RetryFailed(_)
             | Intent::FetchScan { .. }
             | Intent::SkipFailed(_)
@@ -681,6 +685,7 @@ mod dispatch_tests {
         acquisition: crate::subsystem::Acquisition,
         live: crate::subsystem::Live,
         diagnostics: crate::subsystem::Diagnostics,
+        chrome: crate::subsystem::Chrome,
         outcome: CommandOutcome,
     }
 
@@ -692,6 +697,7 @@ mod dispatch_tests {
                 acquisition: crate::subsystem::Acquisition::new(crate::data::MainThreadStore::new()),
                 live: crate::subsystem::Live::new(crate::nexrad::RealtimeChannel::new()),
                 diagnostics: crate::subsystem::Diagnostics::new(),
+                chrome: crate::subsystem::Chrome::new(),
                 outcome: CommandOutcome::default(),
             }
         }
@@ -705,6 +711,7 @@ mod dispatch_tests {
                 acquisition: &mut self.acquisition,
                 live: &mut self.live,
                 diagnostics: &mut self.diagnostics,
+                chrome: &mut self.chrome,
             };
             dispatch_state_only(intent, &mut bundle, &mut self.outcome)
         }

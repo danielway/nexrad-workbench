@@ -58,6 +58,8 @@ pub(crate) enum Intent {
     PauseQueue,
     /// Resume the acquisition queue.
     ResumeQueue,
+    /// Open or close the activity sheet.
+    SetActivitySheetOpen(bool),
     /// Retry a failed operation.
     RetryFailed(OperationId),
     /// Explicitly fetch one archive scan (scan inspector's tap-to-fetch).

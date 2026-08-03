@@ -16,6 +16,7 @@
 //! canvas's central panel.
 
 pub(crate) mod acquisition_drawer;
+mod activity_chip;
 mod alerts_modal;
 mod bottom_panel;
 mod canvas;

@@ -213,6 +213,7 @@ pub(super) fn render_playback_controls(
     playback: &mut crate::subsystem::Playback,
     acquisition: &mut Acquisition,
     chrome: &mut crate::subsystem::Chrome,
+    activity_vm: &crate::core::activity::ActivityVm,
 ) {
     let use_local = state.use_local_time;
     let advanced = state.show_advanced();
@@ -440,7 +441,7 @@ pub(super) fn render_playback_controls(
 
     // Push session stats to the right
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        render_session_stats(ui, state, playback, acquisition, chrome);
+        render_session_stats(ui, state, playback, acquisition, chrome, activity_vm);
     });
 }
 
@@ -710,12 +711,14 @@ fn render_stream_activity(ui: &mut egui::Ui, state: &AppState, live: &crate::sub
 /// Render session statistics (right-aligned in the bottom bar).
 ///
 /// Layout (right-to-left): FPS | pipeline (clickable) | download | cache
+#[allow(clippy::too_many_arguments)]
 fn render_session_stats(
     ui: &mut egui::Ui,
     state: &mut AppState,
     playback: &mut crate::subsystem::Playback,
     acquisition: &mut Acquisition,
     chrome: &mut crate::subsystem::Chrome,
+    activity_vm: &crate::core::activity::ActivityVm,
 ) {
     let dark = state.is_dark;
 
@@ -801,10 +804,11 @@ fn render_session_stats(
         }
     }
 
-    // Acquisition status chip (spec §5) — for ALL users, hidden when idle.
-    // Opens the user-facing queue sheet. The dev-only metrics above are
-    // separate; this is the always-on ambient indicator.
-    render_status_chip(ui, acquisition, chrome);
+    // Ambient activity chip (spec §5) — for ALL users, always visible
+    // including idle. Opens the activity sheet. The dev-only metrics above
+    // are separate.
+    super::activity_chip::render_activity_chip(ui, activity_vm, state, 11.0);
+    ui.separator();
 
     // Cache group (size + clear button) — Advanced only. A Level-0 viewer
     // (spec §14) sees a clean transport, not a cache readout or a destructive
@@ -819,79 +823,6 @@ fn render_session_stats(
                 .size(10.0)
                 .color(ui_colors::value(dark)),
         );
-    }
-}
-
-/// The acquisition status chip (spec §5): a tiny ambient indicator near the
-/// transport, visible to ALL users and hidden when idle. Shows "↓ N" with a
-/// spinning pulse while downloads are active/queued, and a red failure tick +
-/// count when downloads have failed (red = failure only, per the accent rule).
-/// Tapping it opens the user-facing queue sheet.
-fn render_status_chip(
-    ui: &mut egui::Ui,
-    acquisition: &Acquisition,
-    chrome: &mut crate::subsystem::Chrome,
-) {
-    let active = acquisition.state.active_count();
-    let queued = acquisition.state.queued_count();
-    let failed = acquisition.state.failed_scan_starts().len();
-    let in_flight = active + queued;
-
-    // Idle (nothing acquiring, nothing failed): hidden entirely.
-    if in_flight == 0 && failed == 0 {
-        return;
-    }
-
-    // Build the chip label. The down-arrow + count reads as "downloading N";
-    // a pulsing tint conveys motion (routine work, never alarm).
-    let mut clicked = false;
-
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-
-        if in_flight > 0 {
-            // Pulse the arrow so motion = acquisition activity.
-            let anim = ui.ctx().input(|i| i.time);
-            let pulse = (0.5 + 0.5 * (anim * 3.0).sin()) as f32;
-            let base = ui_colors::ACTIVE;
-            let alpha = (150.0 + 105.0 * pulse) as u8;
-            let tint = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha);
-            let label = format!("{} {}", egui_phosphor::regular::ARROW_DOWN, in_flight);
-            let resp = ui.add(
-                egui::Button::new(RichText::new(label).size(11.0).strong().color(tint))
-                    .frame(false),
-            );
-            if resp.clicked() {
-                clicked = true;
-            }
-            resp.on_hover_text("Downloads in progress — click for the download queue");
-            // Keep the pulse animating.
-            ui.ctx().request_repaint();
-        }
-
-        if failed > 0 {
-            // Red failure tick + count (accent rule: red = failure).
-            let label = format!("{} {}", egui_phosphor::regular::WARNING, failed);
-            let resp = ui.add(
-                egui::Button::new(
-                    RichText::new(label)
-                        .size(11.0)
-                        .strong()
-                        .color(super::colors::acquisition::FAILED),
-                )
-                .frame(false),
-            );
-            if resp.clicked() {
-                clicked = true;
-            }
-            resp.on_hover_text("Some downloads failed — click to retry");
-        }
-    });
-
-    ui.separator();
-
-    if clicked {
-        chrome.queue_sheet_open = true;
     }
 }
 
