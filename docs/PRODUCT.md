@@ -265,6 +265,19 @@ mode — it is a tether state.
   (the dominant use case). The default live experience is **single-frame
   following**; the pinned loop (§7) is opt-in via the loop preset, one tap away.
   Switching sites while tethered re-tethers on the new site.
+- **Stopping:** stop is explicit and symmetric with go-live. While tethered,
+  the timeline now-cap ("◉ LIVE"), the transport LIVE button, and **Shift+L**
+  all stop the stream at the live edge; on mobile (which has no now-cap) the
+  tethered LIVE button owns stop. Stop ≠ freeze: pause-while-tethered keeps
+  the stream filling the cache, stop tears the channel down. A status line
+  confirms the stop.
+- **Streaming visibility:** all live surfaces project one per-frame
+  `LiveStatus` view-model, so "is data actually arriving?" reads the same
+  everywhere. The transport activity chip carries the moving part —
+  "receiving · 12", "next in ~40s · 12", or an amber "stalled — no data for
+  2:00" — the tethered now-cap carries the countdown ("◉ LIVE · 12s"), and
+  pulsing is reserved for data genuinely moving (connecting/receiving), never
+  for a routine wait.
 - **Idle-stop:** while detached, background streaming auto-stops after **60 min**
   to bound S3 chunk polling; "return to live" stays instant for any realistic
   browsing detour.
@@ -506,8 +519,10 @@ only.
 | Loop handles | Hang below the strip; ≥44pt targets |
 
 **Keyboard:** Space play/pause · ←/→ frame step · Shift+←/→ scan step · I/O loop
-in/out · plain **L** go-live (one-way re-tether) · +/− timeline zoom anchored at
-the playhead · **[** / **]** speed down/up. Camera pan uses WASD (the arrow keys
+in/out · plain **L** go-live (one-way re-tether) · **Shift+L** stop live (the
+explicit inverse; neither key is a toggle, so go-live can never accidentally
+stop the stream) · +/− timeline zoom anchored at the playhead · **[** / **]**
+speed down/up. Camera pan uses WASD (the arrow keys
 no longer pan the camera); in 3D, **Q/E** rotate the heading and **R/F/N**
 reset / focus the site / align north via animated fly-to. **1/2** select 2D/3D;
 **T** toggles.
