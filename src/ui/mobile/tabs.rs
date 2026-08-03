@@ -214,8 +214,9 @@ fn render_transport_row(
 
 /// Stateful LIVE button (spec §7, mobile twin of the desktop transport's). One
 /// glance/one tap to the live edge wherever the user is:
-/// - **Tethered** (`AppMode::Live`): solid red "● LIVE"; tap freezes the feed
-///   (mobile has no now-line cap, so the LIVE button owns stop here).
+/// - **Tethered** (`AppMode::Live`): solid red "● LIVE"; tap stops the stream
+///   in place (mobile has no now-line cap, so the LIVE button owns stop here;
+///   freezing without stopping stays with the play/pause control).
 /// - **Detached** (stream running in background): hollow "● LIVE"; tap rejoins.
 /// - **No stream** (idle): hollow "● GO LIVE"; tap starts a stream.
 fn render_live_button(
@@ -248,7 +249,7 @@ fn render_live_button(
                     .fill(fill)
                     .min_size(egui::vec2(0.0, btn_h)),
             )
-            .on_hover_text("Tethered to live — tap to freeze")
+            .on_hover_text("Streaming live — tap to stop")
             .clicked()
         {
             state.push_command(crate::core::Intent::StopLive(

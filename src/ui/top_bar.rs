@@ -787,10 +787,11 @@ fn format_age(age_ms: f64) -> String {
 
 /// Render the unified mode badge (Idle / Archive / Live) in the top bar.
 /// Drawn as a colored pill (~20% alpha fill + colored border) so the
-/// active mode is glanceable. Clicking the pill opens a small action
-/// menu (Go Live / Stop streaming) — the canonical way to enter or
-/// leave Live. The Live pulse animation and streaming detail text are
-/// preserved.
+/// active mode is glanceable. Indicator-only: entering/leaving Live
+/// happens through the timeline now-cap, the transport LIVE button, or
+/// `L` / `Shift+L` — a fourth control this far from the timeline would
+/// dilute rather than clarify. While Live, the pill pulses and trails
+/// the stream's `LiveStatus` detail text.
 pub(super) fn render_mode_badge(ui: &mut egui::Ui, live: &crate::subsystem::Live) {
     let mode = live.app_mode;
     let color = crate::ui::colors::mode::color(mode);

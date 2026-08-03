@@ -171,6 +171,14 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
+        key_label: "Shift+L",
+        description: "Stop live stream",
+        pressed: |i| i.modifiers.shift_only() && i.key_pressed(egui::Key::L),
+        enabled: always_enabled,
+        handler: handle_stop_live,
+    },
+    OneShotShortcut {
+        section: SECTION_PLAYBACK,
         key_label: "P",
         description: "Cycle product",
         pressed: |i| no_mods(i, egui::Key::P),
@@ -704,6 +712,26 @@ fn handle_go_live(
     state.push_command(crate::core::Intent::ReturnToLive);
 }
 
+/// Shift+L stop live: the explicit inverse of L, kept on a separate combo so
+/// go-live can never accidentally tear the stream down (L stays one-way).
+/// Gated on an active stream so an idle press doesn't fire
+/// `reduce_stop_live`'s status toast; `LiveEdge` placement matches the
+/// now-cap and LIVE-button stops.
+fn handle_stop_live(
+    state: &mut AppState,
+    live: &mut crate::subsystem::Live,
+    _timeline: &crate::subsystem::Timeline,
+    _playback: &mut crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
+    _: &egui::Context,
+) {
+    if live.mode_state.is_active() {
+        state.push_command(crate::core::Intent::StopLive(
+            crate::core::transport::LiveStopPlacement::LiveEdge,
+        ));
+    }
+}
+
 fn handle_cycle_product(
     state: &mut AppState,
     _live: &mut crate::subsystem::Live,
@@ -995,6 +1023,54 @@ mod tests {
                 h.section
             );
         }
+    }
+
+    /// Drive `handle_stop_live` directly with the real state bundle.
+    fn run_stop_live(live_phase: crate::core::LivePhase) -> Vec<crate::core::Intent> {
+        let mut state = crate::state::AppState::default();
+        let mut live = crate::subsystem::Live::new(crate::nexrad::RealtimeChannel::new());
+        live.mode_state.phase = live_phase;
+        let timeline = crate::subsystem::Timeline::default();
+        let mut playback = crate::subsystem::Playback::default();
+        let mut chrome = crate::subsystem::Chrome::new();
+        let ctx = egui::Context::default();
+        state.drain_commands(); // discard the bootstrap RefreshTimeline
+        handle_stop_live(
+            &mut state,
+            &mut live,
+            &timeline,
+            &mut playback,
+            &mut chrome,
+            &ctx,
+        );
+        state.drain_commands()
+    }
+
+    #[wasm_bindgen_test]
+    fn stop_live_shortcut_emits_live_edge_stop_while_streaming() {
+        let cmds = run_stop_live(crate::core::LivePhase::Streaming);
+        assert_eq!(
+            cmds,
+            vec![crate::core::Intent::StopLive(
+                crate::core::transport::LiveStopPlacement::LiveEdge
+            )]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn stop_live_shortcut_is_a_noop_when_idle() {
+        // No stream → no intent, so reduce_stop_live's "Live mode stopped"
+        // toast can't fire from an idle keypress.
+        assert!(run_stop_live(crate::core::LivePhase::Idle).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn go_live_and_stop_live_are_separate_registry_entries() {
+        // L must stay one-way (go-live) and Shift+L one-way (stop) — a single
+        // toggle key was rejected as accidental-stop-prone.
+        let labels: Vec<_> = ONE_SHOT_SHORTCUTS.iter().map(|s| s.key_label).collect();
+        assert!(labels.contains(&"L"));
+        assert!(labels.contains(&"Shift+L"));
     }
 
     #[wasm_bindgen_test]

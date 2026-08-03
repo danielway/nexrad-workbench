@@ -260,12 +260,12 @@ pub(super) fn render_playback_controls(
     render_datetime_picker_popup(ui, state, picker, live, playback);
 
     // Persistent, stateful LIVE button (spec §7). Always present in the
-    // transport row: solid "● LIVE" while tethered, hollow "● LIVE · m:ss
-    // behind" while a background stream runs detached (click re-tethers), and
-    // hollow "● GO LIVE" with no stream (click starts one). The `L` key
-    // re-tethers / starts a stream; stopping the stream is owned by the timeline
-    // now-line cap.
-    render_live_button(ui, state, live, playback);
+    // transport row: solid "● LIVE" while tethered (click stops the stream),
+    // hollow "● LIVE · m:ss behind" while a background stream runs detached
+    // (click re-tethers), and hollow "● GO LIVE" with no stream (click starts
+    // one). `L` re-tethers / starts a stream; `Shift+L` stops it; the timeline
+    // now-line cap mirrors all three states.
+    render_live_button(ui, state, live);
     // The tether's companion: whether data is actually still arriving. Silent
     // when there is no stream.
     render_stream_activity(ui, state, live);
@@ -571,11 +571,12 @@ fn render_utc_toggle(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 /// Persistent, stateful LIVE button (spec §7). Three states, always present so
-/// the live edge is one glance/one tap away no matter where the user is:
+/// the live edge — and the stream's off switch — is one glance/one click away
+/// no matter where the user is:
 ///
 /// - **Tethered** (playhead attached, `AppMode::Live`): solid red "● LIVE".
-///   Stopping the stream stays with the now-line cap, so this state is
-///   an indicator — clicking is a no-op.
+///   Click stops the stream (`StopLive(LiveEdge)`), mirroring the timeline
+///   now-cap: the most prominent live control is also the off switch.
 /// - **Detached** (stream running, playhead browsing): hollow "● LIVE · m:ss
 ///   behind" where the lag is wall-now − playhead. Click re-tethers
 ///   (`ReturnToLive`).
@@ -589,12 +590,7 @@ fn render_utc_toggle(ui: &mut egui::Ui, state: &mut AppState) {
 /// chip [`render_stream_activity`] renders beside it — a single control's fill
 /// cannot honestly encode two independent booleans, which is why "am I
 /// downloading?" used to be indistinguishable from "am I locked to now?".
-fn render_live_button(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    live: &crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
-) {
+fn render_live_button(ui: &mut egui::Ui, state: &mut AppState, live: &crate::subsystem::Live) {
     let dot = egui_phosphor::regular::BROADCAST;
     let tethered = live.app_mode == AppMode::Live;
     let streaming = live.mode_state.is_active();
@@ -614,15 +610,22 @@ fn render_live_button(
             .size(11.0)
             .strong()
             .color(Color32::WHITE);
-        ui.add(egui::Button::new(label).fill(fill))
-            .on_hover_text("Tethered to the live edge");
+        if ui
+            .add(egui::Button::new(label).fill(fill))
+            .on_hover_text("Streaming live — click to stop")
+            .clicked()
+        {
+            state.push_command(crate::core::Intent::StopLive(
+                crate::core::transport::LiveStopPlacement::LiveEdge,
+            ));
+        }
         return;
     }
 
     if streaming {
         // Detached background stream: hollow outline + lag readout. One click
         // snaps back to the live edge.
-        let lag = state.frame_now.secs() - playback.state.playback_position();
+        let lag = live.frame_status.lag_secs.unwrap_or(0.0);
         let label = RichText::new(format!(
             "{dot} LIVE · {} behind",
             crate::core::format_lag(lag)
