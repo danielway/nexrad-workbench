@@ -53,9 +53,10 @@ pub(crate) struct Diagnostics {
     /// Not persisted across reloads (geolocation permission is per-session
     /// in many browsers).
     pub gps: GpsState,
-    /// Service worker network monitor. Lazily initialized the first time
-    /// dev mode becomes active so the listener isn't attached when the
-    /// user can't see the metrics.
+    /// Service worker network monitor, attached once at startup for every
+    /// user — it is the high-fidelity source behind the activity surface's
+    /// throughput and recent-request readouts, not a dev-only diagnostic.
+    /// `None` only when there is no service-worker container to listen on.
     pub network_monitor: Option<NetworkMonitor>,
 }
 

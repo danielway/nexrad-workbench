@@ -80,7 +80,7 @@ pub(crate) use domain::radar::{RadarTimeline, Scan, ScanBoundary, ScanMetadata, 
 #[allow(unused_imports)]
 pub(crate) use domain::radar::{Radial, TimeRange};
 pub(crate) use domain::telemetry::{
-    throughput_delta_sample, NetworkAggregate, NetworkRequest, ThroughputWindow,
+    throughput_delta_sample, NetworkAggregate, NetworkRequest, ThroughputSample, ThroughputWindow,
 };
 pub(crate) use domain::time::FrameNow;
 pub(crate) use domain::view::ViewState;

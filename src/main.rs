@@ -565,66 +565,89 @@ impl WorkbenchApp {
             log::warn!("Not cross-origin isolated: SharedArrayBuffer unavailable");
         }
 
-        // Attach the service-worker network monitor only in dev mode. When
-        // toggled on later, `update_network_stats` will lazily attach it.
-        if app.state.dev_mode {
-            app.diagnostics.network_monitor = subsystem::NetworkMonitor::new();
-        }
+        // Attach the service-worker network monitor for every user: it is the
+        // high-fidelity source behind the activity surface's throughput and
+        // recent-request readouts, not a dev-only diagnostic. `new()` still
+        // returns `None` when there is no service-worker container to listen
+        // on, which is a real runtime condition, not a mode.
+        app.diagnostics.network_monitor = subsystem::NetworkMonitor::new();
 
         app
     }
 
     /// Feed the rolling throughput window from the cumulative byte counter.
     ///
-    /// This is the always-available fallback source: it diffs
-    /// `NetworkStats::bytes_transferred()` frame to frame, so it needs no
-    /// service worker and no changes to the async download path. It is
-    /// frame-paced, so it contributes at most one sample per frame.
+    /// This is the fallback source, used when the service worker produced no
+    /// metrics this frame (no SW registered yet, or an unsupported browser).
+    /// It diffs `NetworkStats::bytes_transferred()` frame to frame, so it needs
+    /// no service worker and no changes to the async download path, but it is
+    /// frame-paced and carries no per-request detail.
+    ///
+    /// `already_sampled` suppresses the delta so the same bytes aren't counted
+    /// twice when both sources are live. The counter is still advanced, so the
+    /// fallback stays correctly rebased for any later frame that needs it.
     ///
     /// Pruning runs unconditionally — an idle window must decay back to "no
     /// rate" rather than freezing on the last value it saw.
-    fn sample_throughput(&mut self) {
+    fn sample_throughput(&mut self, already_sampled: bool) {
         let now_ms = self.state.frame_now.millis();
         let stats = &mut self.state.session_stats;
         let total = stats.session_transferred_bytes;
-        if let Some(sample) = core::throughput_delta_sample(stats.last_total_bytes, total, now_ms) {
-            stats.throughput.push(sample, now_ms);
+        if !already_sampled {
+            if let Some(sample) =
+                core::throughput_delta_sample(stats.last_total_bytes, total, now_ms)
+            {
+                stats.throughput.push(sample, now_ms);
+            }
         }
         stats.last_total_bytes = total;
         stats.throughput.prune(now_ms);
     }
 
-    /// Start live mode streaming for the current site.
-    fn update_network_stats(&mut self) {
+    /// Refresh every per-frame acquisition telemetry input.
+    ///
+    /// All of it feeds the activity surface, so none of it is dev-gated. The
+    /// one thing that stays conditional is URL→operation correlation, which is
+    /// O(operations) per request and only affects grouped display inside a
+    /// collapsed disclosure — see below.
+    fn capture_activity_telemetry(&mut self) {
         // Update session stats from live network statistics
         let network_stats = self.acquisition.coordinator.download_channel.stats();
         self.state
             .session_stats
             .update_from_network_stats(&network_stats);
-        self.sample_throughput();
         self.state.session_stats.worker_load = self.render.coordinator.worker_load();
 
-        // Service worker metrics are only collected in dev mode. Lazily
-        // attach the listener the first time dev mode becomes active.
-        if !self.state.dev_mode {
-            return;
-        }
-        if self.diagnostics.network_monitor.is_none() {
-            self.diagnostics.network_monitor = subsystem::NetworkMonitor::new();
-        }
-
-        // Drain service worker network metrics into app state
+        // Drain service-worker metrics. These carry real per-request byte
+        // counts and timestamps, so they are the preferred throughput source;
+        // `sample_throughput` falls back to the cumulative counter only when
+        // this yields nothing.
+        let mut sampled_from_monitor = false;
         if let Some(ref monitor) = self.diagnostics.network_monitor {
             self.state.network_aggregate = monitor.aggregate();
             let mut pending = monitor.take_pending();
             if !pending.is_empty() {
-                // Correlate each new request exactly once, then append to
-                // the app-level ring. The previous implementation
-                // re-cloned and re-correlated the entire ring every frame
-                // regardless of whether anything had changed.
+                let now_ms = self.state.frame_now.millis();
+                // Correlation is only read by the grouped network list behind
+                // the activity sheet's Details disclosure. It is a linear scan
+                // of the (up to 200) retained operations per request, so we
+                // skip it entirely while nothing is looking.
+                let correlate = self.chrome.queue_sheet_open;
                 for req in pending.iter_mut() {
-                    req.operation_id = self.acquisition.state.correlate_network_request(&req.url);
+                    req.operation_id = if correlate {
+                        self.acquisition.state.correlate_network_request(&req.url)
+                    } else {
+                        None
+                    };
+                    self.state.session_stats.throughput.push(
+                        core::ThroughputSample {
+                            at_ms: req.timestamp_ms,
+                            bytes: req.bytes,
+                        },
+                        now_ms,
+                    );
                 }
+                sampled_from_monitor = true;
                 let ring = &mut self.state.recent_network_requests;
                 ring.reserve(pending.len());
                 for req in pending {
@@ -635,6 +658,8 @@ impl WorkbenchApp {
                 }
             }
         }
+
+        self.sample_throughput(sampled_from_monitor);
     }
 
     /// Push current app state to the URL bar and save user preferences (throttled).
@@ -807,7 +832,7 @@ impl eframe::App for WorkbenchApp {
         self.pump_selection_fetch(ctx);
         self.sync_prev_sweep_texture();
         self.request_render_if_needed();
-        self.update_network_stats();
+        self.capture_activity_telemetry();
         self.persist_url_state(ctx);
 
         // 14-17. FRAME SNAPSHOT: materialize the per-frame state UI reads.
