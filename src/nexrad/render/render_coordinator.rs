@@ -248,6 +248,15 @@ impl RenderCoordinator {
         }
     }
 
+    /// Outstanding worker jobs, or an empty load when no pool exists (worker
+    /// creation failed, or hasn't been attempted yet).
+    pub(crate) fn worker_load(&self) -> crate::core::WorkerLoad {
+        self.worker
+            .as_ref()
+            .map(WorkerPool::load)
+            .unwrap_or_default()
+    }
+
     /// Try to create a new decode worker pool (retry after failure).
     pub(crate) fn create_worker(&mut self, ctx: eframe::egui::Context) -> Result<(), String> {
         match WorkerPool::new(ctx, default_pool_size()) {

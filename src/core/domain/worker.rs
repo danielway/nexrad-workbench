@@ -8,6 +8,56 @@
 
 use crate::core::ScanMetadata;
 
+/// How much work the decode-worker pool is carrying right now.
+///
+/// Each field counts jobs that have been posted to a worker but whose result
+/// message has not yet come back to the main thread. That interval covers
+/// `postMessage` transit, time queued inside the worker's single-threaded
+/// event loop, and the decode itself — the main thread cannot distinguish
+/// them without a progress wire message, and this type deliberately does not
+/// pretend to. "Processing" means *submitted and unreturned*, nothing finer.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WorkerLoad {
+    /// Archive volume ingests (split → decompress → decode → store).
+    pub ingest: usize,
+    /// Live per-chunk ingests.
+    pub chunk_ingest: usize,
+    /// Archive sweep renders.
+    pub render: usize,
+    /// Live sweep renders.
+    pub render_live: usize,
+    /// Whole-volume packs for the 3-D ray marcher.
+    pub volume: usize,
+    /// Requests posted before the worker signalled `ready`, still parked in
+    /// its local queue.
+    pub queued_pre_ready: usize,
+}
+
+impl WorkerLoad {
+    /// Total outstanding jobs across every bucket.
+    #[allow(dead_code)] // Read by the activity view-model; pinned by tests meanwhile.
+    pub(crate) fn total(&self) -> usize {
+        self.ingest
+            + self.chunk_ingest
+            + self.render
+            + self.render_live
+            + self.volume
+            + self.queued_pre_ready
+    }
+
+    /// Field-wise sum, for folding a pool's per-worker loads into one figure.
+    pub(crate) fn merge(a: Self, b: Self) -> Self {
+        Self {
+            ingest: a.ingest + b.ingest,
+            chunk_ingest: a.chunk_ingest + b.chunk_ingest,
+            render: a.render + b.render,
+            render_live: a.render_live + b.render_live,
+            volume: a.volume + b.volume,
+            queued_pre_ready: a.queued_pre_ready + b.queued_pre_ready,
+        }
+    }
+}
+
 /// Context for an ingest request.
 pub(crate) struct IngestContext {
     /// Typed identifier for the volume being ingested. Built once at
@@ -222,6 +272,67 @@ mod coverage_tests {
             planned_sweep_count: Some(14),
             sweeps: None,
         }
+    }
+
+    fn load(ingest: usize, render: usize, volume: usize) -> WorkerLoad {
+        WorkerLoad {
+            ingest,
+            render,
+            volume,
+            ..WorkerLoad::default()
+        }
+    }
+
+    // ── WorkerLoad ──────────────────────────────────────────────────────────
+
+    /// `merge` sums each bucket independently — no bucket bleeds into another,
+    /// so a pool's ingest count stays an ingest count.
+    #[wasm_bindgen_test]
+    fn worker_load_merge_sums_each_bucket() {
+        let a = WorkerLoad {
+            ingest: 1,
+            chunk_ingest: 2,
+            render: 3,
+            render_live: 4,
+            volume: 5,
+            queued_pre_ready: 6,
+        };
+        let b = WorkerLoad {
+            ingest: 10,
+            chunk_ingest: 20,
+            render: 30,
+            render_live: 40,
+            volume: 50,
+            queued_pre_ready: 60,
+        };
+        let merged = WorkerLoad::merge(a, b);
+        assert_eq!(merged.ingest, 11);
+        assert_eq!(merged.chunk_ingest, 22);
+        assert_eq!(merged.render, 33);
+        assert_eq!(merged.render_live, 44);
+        assert_eq!(merged.volume, 55);
+        assert_eq!(merged.queued_pre_ready, 66);
+    }
+
+    /// `total` counts every bucket, including the pre-ready queue — a request
+    /// parked before the worker booted is still outstanding work.
+    #[wasm_bindgen_test]
+    fn worker_load_total_is_the_field_sum() {
+        assert_eq!(WorkerLoad::default().total(), 0);
+        assert_eq!(load(2, 3, 1).total(), 6);
+        let with_queue = WorkerLoad {
+            queued_pre_ready: 4,
+            ..load(1, 1, 1)
+        };
+        assert_eq!(with_queue.total(), 7);
+    }
+
+    /// Merging with the identity leaves a load unchanged.
+    #[wasm_bindgen_test]
+    fn worker_load_merge_with_default_is_identity() {
+        let a = load(3, 4, 5);
+        assert_eq!(WorkerLoad::merge(a, WorkerLoad::default()), a);
+        assert_eq!(WorkerLoad::merge(WorkerLoad::default(), a), a);
     }
 
     #[wasm_bindgen_test]

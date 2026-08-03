@@ -18,7 +18,14 @@ impl WorkbenchApp {
             self.handle_cache_load_outcome(result);
         }
 
-        for outcome in self.render.coordinator.try_recv() {
+        let outcomes = self.render.coordinator.try_recv();
+        if !outcomes.is_empty() {
+            // Liveness stamp for the worker-load staleness backstop: as long as
+            // results keep arriving, a non-zero pending count is real work
+            // rather than a leaked entry from a dead worker.
+            self.state.session_stats.last_worker_outcome_ms = self.state.frame_now.millis();
+        }
+        for outcome in outcomes {
             match outcome {
                 nexrad::WorkerOutcome::Ingested(result) => {
                     self.handle_ingested_outcome(result);

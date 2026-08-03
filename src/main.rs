@@ -602,6 +602,7 @@ impl WorkbenchApp {
             .session_stats
             .update_from_network_stats(&network_stats);
         self.sample_throughput();
+        self.state.session_stats.worker_load = self.render.coordinator.worker_load();
 
         // Service worker metrics are only collected in dev mode. Lazily
         // attach the listener the first time dev mode becomes active.

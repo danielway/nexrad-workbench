@@ -12,7 +12,7 @@ mod types;
 pub(crate) use pool::{default_pool_size, WorkerPool};
 pub(crate) use types::{VolumeRenderContext, WorkerOutcome};
 
-use crate::core::{ChunkIngestContext, IngestContext, RenderContext};
+use crate::core::{ChunkIngestContext, IngestContext, RenderContext, WorkerLoad};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -233,6 +233,23 @@ impl DecodeWorker {
     pub(crate) fn try_recv(&mut self) -> Vec<WorkerOutcome> {
         self.flush_queue();
         self.results.borrow_mut().drain(..).collect()
+    }
+
+    /// Jobs this worker has been given whose result hasn't come back yet.
+    ///
+    /// The correlation maps *are* the outstanding-work ledger: an entry is
+    /// inserted when a request is posted and removed when its response is
+    /// matched, so their lengths are exactly the in-flight count. No extra
+    /// bookkeeping and no wire-protocol change needed.
+    pub(crate) fn load(&self) -> WorkerLoad {
+        WorkerLoad {
+            ingest: self.pending_ingest.borrow().len(),
+            chunk_ingest: self.pending_chunk_ingest.borrow().len(),
+            render: self.pending_render.borrow().len(),
+            render_live: self.pending_render_live.borrow().len(),
+            volume: self.pending_volume.borrow().len(),
+            queued_pre_ready: self.queue.len(),
+        }
     }
 }
 

@@ -91,7 +91,7 @@ pub(crate) use domain::viz::{
 pub(crate) use domain::volume::VolumeElevationRoster;
 pub(crate) use domain::worker::{
     CacheLoadResult, ChunkIngestContext, ChunkIngestResult, DecodeResult, IngestContext,
-    IngestResult, RenderContext, VolumeData, VolumeSweepMeta,
+    IngestResult, RenderContext, VolumeData, VolumeSweepMeta, WorkerLoad,
 };
 pub(crate) use effect::{Effect, LocationResult};
 pub(crate) use geo_layers::GeoLayer;

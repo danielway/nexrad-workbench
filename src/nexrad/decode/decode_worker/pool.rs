@@ -14,6 +14,7 @@
 
 use super::DecodeWorker;
 use super::WorkerOutcome;
+use crate::core::WorkerLoad;
 use eframe::egui;
 
 /// Index of the worker that exclusively handles live chunk ingest and
@@ -145,6 +146,15 @@ impl WorkerPool {
             out.extend(worker.try_recv());
         }
         out
+    }
+
+    /// Outstanding jobs summed across the pool, for the activity surface's
+    /// "processing" readout.
+    pub(crate) fn load(&self) -> WorkerLoad {
+        self.workers
+            .iter()
+            .map(DecodeWorker::load)
+            .fold(WorkerLoad::default(), WorkerLoad::merge)
     }
 }
 

@@ -1,6 +1,6 @@
 //! Session and performance statistics for the status bar.
 
-use crate::core::{DownloadPhase, ThroughputWindow};
+use crate::core::{DownloadPhase, ThroughputWindow, WorkerLoad};
 use crate::nexrad::NetworkStats;
 
 /// Active pipeline phase flags (3 high-level groups).
@@ -140,6 +140,21 @@ pub(crate) struct SessionStats {
     /// throughput source can diff against it. Only meaningful alongside
     /// [`Self::throughput`].
     pub last_total_bytes: u64,
+
+    /// Snapshot of decode-worker queue depth, refreshed once per frame from
+    /// the render coordinator. This is the authoritative "processing" figure
+    /// for the activity surface — derived from the correlation maps rather
+    /// than hand-maintained, so it cannot drift out of sync the way a
+    /// manually set flag can.
+    pub worker_load: WorkerLoad,
+
+    /// When the main thread last consumed a worker outcome (ms since epoch).
+    ///
+    /// A worker that dies mid-job leaks its pending-map entry forever, which
+    /// would pin "processing" on permanently. The activity view-model treats
+    /// a load that hasn't moved in a long time as stale and reports zero —
+    /// a missing indicator is better than a stuck one.
+    pub last_worker_outcome_ms: f64,
 }
 
 impl SessionStats {
