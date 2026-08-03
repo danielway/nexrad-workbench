@@ -574,6 +574,26 @@ impl WorkbenchApp {
         app
     }
 
+    /// Feed the rolling throughput window from the cumulative byte counter.
+    ///
+    /// This is the always-available fallback source: it diffs
+    /// `NetworkStats::bytes_transferred()` frame to frame, so it needs no
+    /// service worker and no changes to the async download path. It is
+    /// frame-paced, so it contributes at most one sample per frame.
+    ///
+    /// Pruning runs unconditionally — an idle window must decay back to "no
+    /// rate" rather than freezing on the last value it saw.
+    fn sample_throughput(&mut self) {
+        let now_ms = self.state.frame_now.millis();
+        let stats = &mut self.state.session_stats;
+        let total = stats.session_transferred_bytes;
+        if let Some(sample) = core::throughput_delta_sample(stats.last_total_bytes, total, now_ms) {
+            stats.throughput.push(sample, now_ms);
+        }
+        stats.last_total_bytes = total;
+        stats.throughput.prune(now_ms);
+    }
+
     /// Start live mode streaming for the current site.
     fn update_network_stats(&mut self) {
         // Update session stats from live network statistics
@@ -581,6 +601,7 @@ impl WorkbenchApp {
         self.state
             .session_stats
             .update_from_network_stats(&network_stats);
+        self.sample_throughput();
 
         // Service worker metrics are only collected in dev mode. Lazily
         // attach the listener the first time dev mode becomes active.

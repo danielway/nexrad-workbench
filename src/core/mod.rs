@@ -79,7 +79,9 @@ pub(crate) use domain::prefs::UserPreferences;
 pub(crate) use domain::radar::{RadarTimeline, Scan, ScanBoundary, ScanMetadata, Sweep};
 #[allow(unused_imports)]
 pub(crate) use domain::radar::{Radial, TimeRange};
-pub(crate) use domain::telemetry::{NetworkAggregate, NetworkRequest};
+pub(crate) use domain::telemetry::{
+    throughput_delta_sample, NetworkAggregate, NetworkRequest, ThroughputWindow,
+};
 pub(crate) use domain::time::FrameNow;
 pub(crate) use domain::view::ViewState;
 pub(crate) use domain::viz::{

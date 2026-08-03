@@ -1,6 +1,6 @@
 //! Session and performance statistics for the status bar.
 
-use crate::core::DownloadPhase;
+use crate::core::{DownloadPhase, ThroughputWindow};
 use crate::nexrad::NetworkStats;
 
 /// Active pipeline phase flags (3 high-level groups).
@@ -130,6 +130,16 @@ pub(crate) struct SessionStats {
 
     /// Most recent render timing breakdown (for detail modal).
     pub last_render_detail: Option<RenderTimingDetail>,
+
+    /// Rolling transfer-rate window behind the activity surface's throughput
+    /// readout. Fed each frame from service-worker request metrics when they
+    /// are available, and from a [`NetworkStats`] counter delta otherwise.
+    pub throughput: ThroughputWindow,
+
+    /// Last value read from the cumulative byte counter, so the fallback
+    /// throughput source can diff against it. Only meaningful alongside
+    /// [`Self::throughput`].
+    pub last_total_bytes: u64,
 }
 
 impl SessionStats {
