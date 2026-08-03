@@ -186,5 +186,5 @@ fn draw_bottom_panel(
             });
         });
 
-    // Stats detail is now a proper modal rendered via `StatsModalLayer`.
+    // Performance diagnostics live in the activity sheet's Details section.
 }

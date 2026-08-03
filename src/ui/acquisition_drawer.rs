@@ -63,11 +63,10 @@ pub(crate) fn render_acquisition_drawer(
                     {
                         state.push_command(Intent::PauseQueue);
                     }
-                } else {
-                    // Network tab: link to full log
-                    if ui.small_button("Full Log").clicked() {
-                        chrome.network_log_open = true;
-                    }
+                } else if ui.small_button("Full log").clicked() {
+                    // The full request log now lives in the activity sheet's
+                    // Details disclosure, available to every user.
+                    chrome.activity_sheet_open = true;
                 }
             });
         });

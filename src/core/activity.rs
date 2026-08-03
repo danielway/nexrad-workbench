@@ -92,6 +92,15 @@ pub(crate) struct ActivityDevInputs {
     pub avg_fetch_ms: Option<f64>,
     pub avg_processing_ms: Option<f64>,
     pub avg_render_ms: Option<f64>,
+    /// Whether a live VCP has been seen, so the forecast diagnostics are
+    /// worth offering.
+    pub vcp_forecast_available: bool,
+    /// Most recent ingest sub-phase timings, as `(label, ms)` pairs in
+    /// pipeline order. `None` until an ingest has completed.
+    pub ingest_phases: Option<[(&'static str, f64); 6]>,
+    /// Most recent render sub-phase timings, as `(label, ms)` pairs in
+    /// pipeline order. `None` until a render has completed.
+    pub render_phases: Option<[(&'static str, f64); 4]>,
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -239,6 +248,11 @@ pub(crate) struct ActivityDetailVm {
     pub avg_fetch_ms: Option<f64>,
     pub avg_processing_ms: Option<f64>,
     pub avg_render_ms: Option<f64>,
+    pub vcp_forecast_available: bool,
+    /// Most recent ingest sub-phase timings, `(label, ms)` in pipeline order.
+    pub ingest_phases: Option<[(&'static str, f64); 6]>,
+    /// Most recent render sub-phase timings, `(label, ms)` in pipeline order.
+    pub render_phases: Option<[(&'static str, f64); 4]>,
     /// Scans the ledger has given up on: the volume genuinely lacks the
     /// requested cut, so no amount of retrying will produce it.
     pub unavailable: u32,
@@ -341,6 +355,9 @@ impl ActivityVm {
                 avg_fetch_ms: dev.avg_fetch_ms,
                 avg_processing_ms: dev.avg_processing_ms,
                 avg_render_ms: dev.avg_render_ms,
+                vcp_forecast_available: dev.vcp_forecast_available,
+                ingest_phases: dev.ingest_phases,
+                render_phases: dev.render_phases,
                 unavailable: inputs.ledger.unavailable,
             }),
         }

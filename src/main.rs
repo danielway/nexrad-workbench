@@ -643,6 +643,26 @@ impl WorkbenchApp {
                     avg_fetch_ms: stats.median_chunk_latency_ms,
                     avg_processing_ms: stats.median_processing_time_ms,
                     avg_render_ms: stats.avg_render_time_ms,
+                    vcp_forecast_available: self.live.mode_state.volume_start_plan.is_some()
+                        || self.live.mode_state.last_completed_volume.is_some(),
+                    ingest_phases: stats.last_ingest_detail.as_ref().map(|d| {
+                        [
+                            ("Split", d.split_ms),
+                            ("Decompress", d.decompress_ms),
+                            ("Decode", d.decode_ms),
+                            ("Extract", d.extract_ms),
+                            ("Store (IDB)", d.store_ms),
+                            ("Index", d.index_ms),
+                        ]
+                    }),
+                    render_phases: stats.last_render_detail.as_ref().map(|d| {
+                        [
+                            ("IDB fetch", d.fetch_ms),
+                            ("Deserialize", d.deser_ms),
+                            ("Marshal", d.marshal_ms),
+                            ("GPU upload", d.gpu_upload_ms),
+                        ]
+                    }),
                 }),
         })
     }

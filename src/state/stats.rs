@@ -170,11 +170,6 @@ impl SessionStats {
         format_bytes(self.cache_size_bytes)
     }
 
-    /// Format transferred bytes for display (e.g., "12.0 MB").
-    pub(crate) fn format_transferred(&self) -> String {
-        format_bytes(self.session_transferred_bytes)
-    }
-
     /// Record a fetch latency sample, updating the running average.
     pub(crate) fn record_fetch_latency(&mut self, ms: f64) {
         const ALPHA: f64 = 0.2;
@@ -438,7 +433,7 @@ mod coverage_tests {
         assert_eq!(s.session_transferred_bytes, 0);
     }
 
-    // ── SessionStats::format_cache_size / format_transferred (delegate to format_bytes) ──
+    // ── SessionStats::format_cache_size (delegates to format_bytes) ──
 
     #[wasm_bindgen_test]
     fn format_cache_size_units() {
@@ -451,16 +446,6 @@ mod coverage_tests {
         assert_eq!(s.format_cache_size(), "1 MB");
         s.cache_size_bytes = 1024 * 1024 * 1024;
         assert_eq!(s.format_cache_size(), "1.0 GB");
-    }
-
-    #[wasm_bindgen_test]
-    fn format_transferred_uses_transferred_bytes() {
-        let mut s = SessionStats::new();
-        s.session_transferred_bytes = 12 * 1024 * 1024; // 12 MB exactly
-        assert_eq!(s.format_transferred(), "12 MB");
-        // Below 1 KB renders as raw bytes.
-        s.session_transferred_bytes = 512;
-        assert_eq!(s.format_transferred(), "512 B");
     }
 
     // ── DownloadPhase default ──

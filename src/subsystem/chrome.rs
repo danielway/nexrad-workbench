@@ -43,12 +43,8 @@ pub(crate) struct Chrome {
     /// `Some` doubles as the open flag; the range is the modal's own snapshot,
     /// independent of the live selection.
     pub range_download_modal: Option<(f64, f64)>,
-    /// Whether the stats/perf modal is open.
-    pub stats_detail_open: bool,
     /// Whether the VCP forecast diagnostics modal is open.
     pub vcp_forecast_open: bool,
-    /// Whether the network log modal is open.
-    pub network_log_open: bool,
     /// Whether the activity sheet (spec §5/§10: pipeline stages, active /
     /// queued / recent downloads, throughput, and acquisition policy toggles)
     /// is open. Opened by the ambient activity chip in either layout.

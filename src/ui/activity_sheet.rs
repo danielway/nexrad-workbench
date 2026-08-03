@@ -395,11 +395,12 @@ fn render_details(
     ui: &mut egui::Ui,
     state: &mut AppState,
     vm: &ActivityVm,
-    chrome: &crate::subsystem::Chrome,
+    chrome: &mut crate::subsystem::Chrome,
     dark: bool,
 ) {
     let label_color = ui_colors::label(dark);
     let value_color = ui_colors::value(dark);
+    let mut open_vcp_forecast = false;
 
     let header = egui::CollapsingHeader::new(RichText::new("Details").size(11.0).strong())
         .open(Some(chrome.activity_details_open))
@@ -444,6 +445,25 @@ fn render_details(
                     }
                 });
 
+            // The VCP forecast diagnostics, previously reached from the
+            // Performance modal. Dev-only and deliberately last.
+            if let Some(detail) = &vm.detail {
+                if ui
+                    .add_enabled(
+                        detail.vcp_forecast_available,
+                        egui::Button::new("VCP forecast diagnostics").small(),
+                    )
+                    .on_hover_text(
+                        "Compare VCP-based predictions against observed sweeps for the \
+                         current live volume",
+                    )
+                    .on_disabled_hover_text("Available after a live VCP message has been received")
+                    .clicked()
+                {
+                    open_vcp_forecast = true;
+                }
+            }
+
             ui.add_space(4.0);
             render_network_list(ui, vm, label_color, value_color);
         });
@@ -454,6 +474,9 @@ fn render_details(
         state.push_command(Intent::SetActivityDetailsOpen(
             !chrome.activity_details_open,
         ));
+    }
+    if open_vcp_forecast {
+        chrome.vcp_forecast_open = true;
     }
 }
 
@@ -541,6 +564,12 @@ fn render_dev_rows(
             label_color,
             value_color,
         );
+    }
+    for (label, ms) in detail.ingest_phases.iter().flatten() {
+        detail_row(ui, label, format!("{ms:.1} ms"), label_color, value_color);
+    }
+    for (label, ms) in detail.render_phases.iter().flatten() {
+        detail_row(ui, label, format!("{ms:.1} ms"), label_color, value_color);
     }
     if let Some(fps) = detail.fps {
         detail_row(

@@ -50,13 +50,11 @@ use super::event_modal::EventModalLayer;
 use super::left_panel::LeftPanelLayer;
 use super::mobile::{MobileChromeLayer, MobileSettingsModalLayer, MobileTopBarLayer};
 use super::mping_modal::MpingModalLayer;
-use super::network_panel::NetworkLogLayer;
 use super::range_download_modal::RangeDownloadModalLayer;
 use super::right_panel::RightPanelLayer;
 use super::scan_inspector::ScanInspectorLayer;
 use super::shortcuts::ShortcutsHelpLayer;
 use super::site_modal::SiteModalLayer;
-use super::stats_modal::StatsModalLayer;
 use super::top_bar::TopBarLayer;
 use super::vcp_forecast_modal::VcpForecastModalLayer;
 use super::wipe_modal::WipeModalLayer;
@@ -173,9 +171,7 @@ pub(crate) fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
             &RangeDownloadModalLayer,  // z=35
             &ActivitySheetLayer,       // z=37
             &ScanInspectorLayer,       // z=38
-            &StatsModalLayer,          // z=40
             &VcpForecastModalLayer,    // z=50
-            &NetworkLogLayer,          // z=60
             &EventModalLayer,          // z=70
             &AlertsModalsLayer,        // z=80
             &MpingModalLayer,          // z=90
@@ -195,9 +191,7 @@ pub(crate) fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
             &RangeDownloadModalLayer,  // z=35
             &ActivitySheetLayer,       // z=37
             &ScanInspectorLayer,       // z=38
-            &StatsModalLayer,          // z=40
             &VcpForecastModalLayer,    // z=50
-            &NetworkLogLayer,          // z=60
             &EventModalLayer,          // z=70
             &AlertsModalsLayer,        // z=80
             &MpingModalLayer,          // z=90

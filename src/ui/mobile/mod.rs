@@ -109,9 +109,7 @@ fn any_overlay_open(
         || chrome.scan_inspector.is_some()
         || chrome.wipe_modal_open
         || chrome.range_download_modal.is_some()
-        || chrome.stats_detail_open
         || chrome.vcp_forecast_open
-        || chrome.network_log_open
         || chrome.event_modal_open
         || chrome.shortcuts_help_visible
         || picker_open
