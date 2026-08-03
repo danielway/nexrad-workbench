@@ -322,6 +322,23 @@ struct LedgerEntry {
     state: LedgerState,
 }
 
+/// Live ledger state counts, for the activity surface.
+///
+/// `awaiting_timeline` is the one figure no other structure has: it is the
+/// window where a scan's data is already in IndexedDB but the timeline hasn't
+/// observed it, so the queue reports nothing and the timeline shows nothing.
+/// Without it the activity chip would claim "up to date" mid-ingest.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(dead_code)] // Consumed by the activity view-model; pinned by tests meanwhile.
+pub(crate) struct LedgerSummary {
+    /// Scans in the ingest→timeline-refresh blackout.
+    pub awaiting_timeline: u32,
+    /// Scans that landed without the requested elevation — session-permanent.
+    pub unavailable: u32,
+    /// Recently failed scans still inside their retry backoff.
+    pub failed_backoff: u32,
+}
+
 /// In-memory ledger of recently requested scans, keyed by listing
 /// `scan_start`. Third dedup input to [`prefetch_already_satisfied`],
 /// alongside the queue snapshot and the timeline: it survives the queue's
@@ -446,6 +463,56 @@ impl RequestLedger {
     /// Forget everything (cache clear).
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
+    }
+
+    /// Count the ledger's live states for the activity surface.
+    ///
+    /// Expired entries are excluded rather than reported: an entry past its
+    /// TTL no longer suppresses anything, so counting it would show work that
+    /// isn't happening. This is a read-only view — eviction still belongs to
+    /// [`Self::observe_timeline`].
+    #[allow(dead_code)] // Consumed by the activity view-model; pinned by tests meanwhile.
+    pub(crate) fn summarize(&self, now_ms: f64) -> LedgerSummary {
+        let mut summary = LedgerSummary::default();
+        for e in self.entries.values() {
+            match e.state {
+                LedgerState::AwaitingTimeline { since_ms } => {
+                    if now_ms - since_ms <= LEDGER_PENDING_TTL_MS {
+                        summary.awaiting_timeline += 1;
+                    }
+                }
+                LedgerState::Unavailable => summary.unavailable += 1,
+                LedgerState::Failed { at_ms } => {
+                    if now_ms - at_ms <= LEDGER_FAILED_BACKOFF_MS {
+                        summary.failed_backoff += 1;
+                    }
+                }
+                // `Pending` overlaps the queue's own Queued/Active operations,
+                // which are the authority for those stages. Counting it here
+                // would double-count the same scan.
+                LedgerState::Pending { .. } => {}
+            }
+        }
+        summary
+    }
+
+    /// Scan starts currently in the ingest→timeline blackout, TTL-filtered.
+    ///
+    /// The activity view-model subtracts any of these that a live operation
+    /// already accounts for, so a scan can never be counted in two stages at
+    /// once.
+    #[allow(dead_code)] // Consumed by the activity view-model; pinned by tests meanwhile.
+    pub(crate) fn awaiting_scan_starts(&self, now_ms: f64) -> Vec<i64> {
+        self.entries
+            .iter()
+            .filter(|(_, e)| match e.state {
+                LedgerState::AwaitingTimeline { since_ms } => {
+                    now_ms - since_ms <= LEDGER_PENDING_TTL_MS
+                }
+                _ => false,
+            })
+            .map(|(&k, _)| k)
+            .collect()
     }
 
     fn entry_near_mut(&mut self, scan_start: i64, tolerance_secs: i64) -> Option<&mut LedgerEntry> {
@@ -1832,6 +1899,85 @@ mod reducer_tests {
         led.clear();
         assert!(!led.suppresses(&intent(1300, Some(1)), TOL, 1.0));
         assert!(!led.suppresses(&intent(2300, Some(1)), TOL, 1.0));
+    }
+
+    // ── LedgerSummary / awaiting_scan_starts ────────────────────────────────
+
+    /// Ingested-but-not-yet-observed scans are the "finishing" figure the
+    /// activity surface needs — the one window neither the queue nor the
+    /// timeline covers.
+    #[wasm_bindgen_test]
+    fn summarize_counts_awaiting_timeline_within_ttl() {
+        let mut led = RequestLedger::default();
+        led.note_enqueued(1300, Some(1), 0.0);
+        led.note_ingested(1300, TOL, 10.0);
+        let s = led.summarize(20.0);
+        assert_eq!(s.awaiting_timeline, 1);
+        assert_eq!(s.unavailable, 0);
+        assert_eq!(s.failed_backoff, 0);
+    }
+
+    /// `Pending` is deliberately not counted: those scans are still Queued or
+    /// Active operations, and the operation ledger is the authority there.
+    /// Counting both would show the same scan in two stages at once.
+    #[wasm_bindgen_test]
+    fn summarize_ignores_pending_entries() {
+        let mut led = RequestLedger::default();
+        led.note_enqueued(1300, Some(1), 0.0);
+        assert_eq!(led.summarize(1.0), LedgerSummary::default());
+    }
+
+    /// An entry past its TTL no longer suppresses anything, so it must not be
+    /// reported as in-progress work either.
+    #[wasm_bindgen_test]
+    fn summarize_drops_expired_entries() {
+        let mut led = RequestLedger::default();
+        led.note_ingested(1300, TOL, 0.0);
+        assert_eq!(led.summarize(0.0).awaiting_timeline, 1);
+        assert_eq!(
+            led.summarize(LEDGER_PENDING_TTL_MS + 1.0).awaiting_timeline,
+            0
+        );
+
+        let mut failed = RequestLedger::default();
+        failed.note_failed(2300, TOL, 0.0);
+        assert_eq!(failed.summarize(0.0).failed_backoff, 1);
+        assert_eq!(
+            failed
+                .summarize(LEDGER_FAILED_BACKOFF_MS + 1.0)
+                .failed_backoff,
+            0
+        );
+    }
+
+    /// `Unavailable` is session-permanent, so it has no TTL to expire past.
+    #[wasm_bindgen_test]
+    fn summarize_counts_unavailable_without_expiry() {
+        let mut led = RequestLedger::default();
+        led.note_enqueued(1300, Some(7), 0.0);
+        led.note_ingested(1300, TOL, 1.0);
+        // A refresh sees the scan but not elevation 7 → Unavailable.
+        led.observe_timeline(
+            &RadarTimeline {
+                scans: vec![cached_scan(1300.0, vec![sweep(1, 1300.0, 1310.0)])],
+            },
+            TOL,
+            2.0,
+        );
+        assert_eq!(led.summarize(2.0).unavailable, 1);
+        assert_eq!(led.summarize(1e9).unavailable, 1);
+    }
+
+    /// The scan-start list mirrors the summary's TTL filtering, so the
+    /// view-model's double-count subtraction sees exactly the counted scans.
+    #[wasm_bindgen_test]
+    fn awaiting_scan_starts_respects_ttl() {
+        let mut led = RequestLedger::default();
+        led.note_ingested(1300, TOL, 0.0);
+        assert_eq!(led.awaiting_scan_starts(5.0), vec![1300]);
+        assert!(led
+            .awaiting_scan_starts(LEDGER_PENDING_TTL_MS + 1.0)
+            .is_empty());
     }
 
     // ── prefetch_signature ──────────────────────────────────────────────────
