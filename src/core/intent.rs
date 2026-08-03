@@ -60,6 +60,16 @@ pub(crate) enum Intent {
     ResumeQueue,
     /// Open or close the activity sheet.
     SetActivitySheetOpen(bool),
+    /// Expand or collapse the activity sheet's Details disclosure.
+    SetActivityDetailsOpen(bool),
+    /// Retry every failed download at once. A single intent rather than a UI
+    /// loop over `RetryFailed`, so "which failures are retryable" stays a core
+    /// decision instead of leaking into the shell.
+    RetryAllFailed,
+    /// Data-saving policy: auto-fetch scans while scrubbing.
+    SetAutofetchWhileScrubbing(bool),
+    /// Data-saving policy: stop the live stream when the playhead detaches.
+    SetPauseStreamWhileReviewing(bool),
     /// Retry a failed operation.
     RetryFailed(OperationId),
     /// Explicitly fetch one archive scan (scan inspector's tap-to-fetch).

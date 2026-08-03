@@ -268,6 +268,9 @@ impl AcquisitionState {
     }
 
     /// Number of active operations.
+    // The activity surface counts stages in `core::activity` instead, so this
+    // survives only as a container-level invariant the tests below pin.
+    #[allow(dead_code)]
     pub(crate) fn active_count(&self) -> usize {
         self.operations
             .iter()
@@ -455,6 +458,19 @@ impl AcquisitionState {
                 ) => Some(*scan_start),
                 _ => None,
             })
+            .collect()
+    }
+
+    /// Ids of every currently-Failed archive download, oldest first — the
+    /// targets of a "retry all" sweep.
+    pub(crate) fn failed_operation_ids(&self) -> Vec<OperationId> {
+        self.operations
+            .iter()
+            .filter(|op| {
+                matches!(op.status, OperationStatus::Failed { .. })
+                    && matches!(op.kind, OperationKind::ArchiveDownload { .. })
+            })
+            .map(|op| op.id)
             .collect()
     }
 

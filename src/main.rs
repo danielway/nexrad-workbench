@@ -633,7 +633,7 @@ impl WorkbenchApp {
                 .live
                 .mode_state
                 .stream_activity(self.state.frame_now.secs()),
-            sheet_open: self.chrome.queue_sheet_open,
+            sheet_open: self.chrome.activity_sheet_open,
             dev: self
                 .state
                 .dev_mode
@@ -675,7 +675,7 @@ impl WorkbenchApp {
                 // the activity sheet's Details disclosure. It is a linear scan
                 // of the (up to 200) retained operations per request, so we
                 // skip it entirely while nothing is looking.
-                let correlate = self.chrome.queue_sheet_open;
+                let correlate = self.chrome.activity_sheet_open;
                 for req in pending.iter_mut() {
                     req.operation_id = if correlate {
                         self.acquisition.state.correlate_network_request(&req.url)

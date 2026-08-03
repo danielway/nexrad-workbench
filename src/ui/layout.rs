@@ -43,6 +43,7 @@
 //! already read-only for that subsystem. The surviving `&mut` fields are
 //! documented on [`LayoutCtx`] with the mutation that keeps them.
 
+use super::activity_sheet::ActivitySheetLayer;
 use super::alerts_modal::AlertsModalsLayer;
 use super::bottom_panel::BottomPanelLayer;
 use super::event_modal::EventModalLayer;
@@ -50,7 +51,6 @@ use super::left_panel::LeftPanelLayer;
 use super::mobile::{MobileChromeLayer, MobileSettingsModalLayer, MobileTopBarLayer};
 use super::mping_modal::MpingModalLayer;
 use super::network_panel::NetworkLogLayer;
-use super::queue_sheet::QueueSheetLayer;
 use super::range_download_modal::RangeDownloadModalLayer;
 use super::right_panel::RightPanelLayer;
 use super::scan_inspector::ScanInspectorLayer;
@@ -171,7 +171,7 @@ pub(crate) fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
             &ShortcutsHelpLayer,       // z=20
             &WipeModalLayer,           // z=30
             &RangeDownloadModalLayer,  // z=35
-            &QueueSheetLayer,          // z=37
+            &ActivitySheetLayer,       // z=37
             &ScanInspectorLayer,       // z=38
             &StatsModalLayer,          // z=40
             &VcpForecastModalLayer,    // z=50
@@ -193,7 +193,7 @@ pub(crate) fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
             &ShortcutsHelpLayer,       // z=20
             &WipeModalLayer,           // z=30
             &RangeDownloadModalLayer,  // z=35
-            &QueueSheetLayer,          // z=37
+            &ActivitySheetLayer,       // z=37
             &ScanInspectorLayer,       // z=38
             &StatsModalLayer,          // z=40
             &VcpForecastModalLayer,    // z=50

@@ -49,11 +49,13 @@ pub(crate) struct Chrome {
     pub vcp_forecast_open: bool,
     /// Whether the network log modal is open.
     pub network_log_open: bool,
-    /// Whether the user-facing queue sheet (spec §5/§10: active/queued/recent
-    /// downloads + acquisition policy toggles) is open. Opened from the status
-    /// chip near the transport (desktop) or the mobile top-bar acquiring
-    /// indicator. Distinct from the dev-only acquisition drawer.
-    pub queue_sheet_open: bool,
+    /// Whether the activity sheet (spec §5/§10: pipeline stages, active /
+    /// queued / recent downloads, throughput, and acquisition policy toggles)
+    /// is open. Opened by the ambient activity chip in either layout.
+    pub activity_sheet_open: bool,
+    /// Whether the activity sheet's Details disclosure is expanded. Real state
+    /// rather than egui memory so it survives a re-layout and is testable.
+    pub activity_details_open: bool,
     /// When set, the scan inspector (spec §5/§6.3: full per-scan volume
     /// breakdown — every tilt with cache state, size, chunk progress, and
     /// tap-to-fetch) is open for the scan whose container start time (Unix

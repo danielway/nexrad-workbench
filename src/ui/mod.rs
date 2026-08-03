@@ -17,6 +17,7 @@
 
 pub(crate) mod acquisition_drawer;
 mod activity_chip;
+mod activity_sheet;
 mod alerts_modal;
 mod bottom_panel;
 mod canvas;
@@ -35,7 +36,6 @@ mod mping_modal;
 mod network_panel;
 mod overflow_menu;
 mod playback_controls;
-mod queue_sheet;
 mod range_download_modal;
 mod right_panel;
 mod scan_inspector;

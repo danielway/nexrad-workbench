@@ -105,7 +105,16 @@ pub(crate) fn dispatch_state_only(
             s.acquisition.state.resume();
             outcome.pump_queue = true;
         }
-        Intent::SetActivitySheetOpen(open) => s.chrome.queue_sheet_open = open,
+        Intent::SetActivitySheetOpen(open) => s.chrome.activity_sheet_open = open,
+        Intent::SetActivityDetailsOpen(open) => s.chrome.activity_details_open = open,
+        Intent::RetryAllFailed => {
+            for id in s.acquisition.state.failed_operation_ids() {
+                s.retry_failed(id);
+            }
+            outcome.pump_queue = true;
+        }
+        Intent::SetAutofetchWhileScrubbing(on) => s.state.autofetch_while_scrubbing = on,
+        Intent::SetPauseStreamWhileReviewing(on) => s.state.pause_stream_while_reviewing = on,
         Intent::RetryFailed(op_id) => {
             s.retry_failed(op_id);
             outcome.pump_queue = true;
@@ -460,6 +469,10 @@ impl WorkbenchApp {
             | Intent::PauseQueue
             | Intent::ResumeQueue
             | Intent::SetActivitySheetOpen(_)
+            | Intent::SetActivityDetailsOpen(_)
+            | Intent::RetryAllFailed
+            | Intent::SetAutofetchWhileScrubbing(_)
+            | Intent::SetPauseStreamWhileReviewing(_)
             | Intent::RetryFailed(_)
             | Intent::FetchScan { .. }
             | Intent::SkipFailed(_)
