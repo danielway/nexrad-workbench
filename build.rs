@@ -1,6 +1,11 @@
 use std::process::Command;
 
+#[path = "tools/arch_check.rs"]
+mod arch_check;
+
 fn main() {
+    arch_check::run();
+
     // If NEXRAD_VERSION is already set (e.g. by CI for tagged releases), pass it
     // through and skip git detection.
     if let Ok(version) = std::env::var("NEXRAD_VERSION") {

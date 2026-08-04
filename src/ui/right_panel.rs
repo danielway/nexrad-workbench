@@ -1,15 +1,47 @@
 //! Right panel UI: product selection, layers, and rendering controls.
 
-use crate::state::{
-    format_bytes, AppState, ElevationSelection, InterpolationMode, RadarProduct, StorageSettings,
-};
+use super::layout::{Layer, LayerKind, LayoutCtx};
+use crate::core::{ElevationSelection, InterpolationMode, RadarProduct};
+use crate::state::{format_bytes, AppState, StorageSettings};
 use eframe::egui::{self, RichText, ScrollArea};
 
-pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
-    if state.is_mobile || !state.right_sidebar_visible {
-        return;
-    }
+pub(super) struct RightPanelLayer;
 
+impl Layer for RightPanelLayer {
+    fn kind(&self) -> LayerKind {
+        LayerKind::Chrome
+    }
+    fn z_order(&self) -> i32 {
+        40
+    }
+    fn visible(&self, ctx: &LayoutCtx) -> bool {
+        ctx.chrome.right_sidebar_visible
+    }
+    fn render(&self, ctx: &mut LayoutCtx) {
+        draw_right_panel(
+            ctx.ctx,
+            ctx.state,
+            ctx.timeline,
+            ctx.live,
+            ctx.playback,
+            ctx.diagnostics,
+            ctx.derived,
+            ctx.chrome,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_right_panel(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
+    live: &crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
+    diagnostics: &crate::subsystem::Diagnostics,
+    derived: &crate::subsystem::Derived,
+    chrome: &mut crate::subsystem::Chrome,
+) {
     egui::SidePanel::right("right_panel")
         .resizable(true)
         .default_width(220.0)
@@ -20,45 +52,53 @@ pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
                 ui.heading("Controls");
                 ui.separator();
 
-                render_product_section(ui, state);
+                render_product_section(ui, state, timeline, live, playback);
                 ui.add_space(5.0);
 
-                render_layers_section(ui, state);
-                ui.add_space(5.0);
+                render_layers_section(ui, state, diagnostics, playback, derived, chrome);
 
-                render_rendering_section(ui, state);
-                ui.add_space(5.0);
-
-                render_volume_section(ui, state);
-                ui.add_space(5.0);
-
-                render_tools_section(ui, state);
-                ui.add_space(5.0);
-
-                render_events_section(ui, state);
-                ui.add_space(5.0);
-
-                render_storage_section(ui, state);
-                ui.add_space(5.0);
-
-                render_developer_section(ui, state);
+                if state.show_advanced() {
+                    ui.add_space(5.0);
+                    render_rendering_section(ui, state, playback, chrome);
+                    ui.add_space(5.0);
+                    render_volume_section(ui, state);
+                    ui.add_space(5.0);
+                    render_tools_section(ui, state, chrome);
+                    ui.add_space(5.0);
+                    render_events_section(ui, state, playback, chrome);
+                    ui.add_space(5.0);
+                    render_storage_section(ui, state, chrome);
+                    ui.add_space(5.0);
+                    render_developer_section(ui, state, chrome);
+                }
             });
         });
 }
 
-fn render_developer_section(ui: &mut egui::Ui, state: &mut AppState) {
+fn render_developer_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    _chrome: &mut crate::subsystem::Chrome,
+) {
     egui::CollapsingHeader::new(RichText::new("Developer").strong())
         .default_open(false)
         .show(ui, |ui| {
             ui.checkbox(&mut state.dev_mode, "Developer mode")
                 .on_hover_text(
-                    "Show network metrics, pipeline timings, FPS, and the COI badge \
-                     in the status bar. Adds ?dev=true to the URL when enabled.",
+                    "Add deep diagnostics — per-phase timings, worker queue depth, \
+                     FPS, and cross-origin isolation — to the activity sheet's Details \
+                     section. Adds ?dev=true to the URL when enabled.",
                 );
         });
 }
 
-pub(super) fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_product_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
+    live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
+) {
     egui::CollapsingHeader::new(RichText::new("Product").strong())
         .default_open(true)
         .show(ui, |ui| {
@@ -107,8 +147,16 @@ pub(super) fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             ui.separator();
 
-            // Elevation list
-            let entries = state.viz_state.cached_vcp_elevations.clone();
+            // Elevation list — shared derivation with the left panel so
+            // both reflect the same scan/live-VCP source per frame.
+            let entries = state.current_elevation_list(
+                &playback.state,
+                &timeline.scans,
+                live.radar_model
+                    .volume
+                    .as_ref()
+                    .and_then(|v| v.vcp_pattern.as_ref()),
+            );
             let list_enabled = !is_auto;
             let selected_product = state.viz_state.product.to_worker_string();
 
@@ -141,12 +189,9 @@ pub(super) fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
                                         if *elevation_number == entry.elevation_number
                                 );
 
-                                // Empty available_products means "unknown" — allow.
-                                let product_available = entry.available_products.is_empty()
-                                    || entry
-                                        .available_products
-                                        .iter()
-                                        .any(|p| p == selected_product);
+                                // Empty cached_products means "unknown" — allow.
+                                let product_available = entry.cached_products.is_empty()
+                                    || entry.cached_products.iter().any(|p| p == selected_product);
 
                                 ui.horizontal(|ui| {
                                     // Build the label text
@@ -215,54 +260,137 @@ pub(super) fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-pub(super) fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
+/// One map-overlay checkbox.
+///
+/// The panel never writes `layer_state` itself: the widget gets a per-frame
+/// local binding seeded from the current value (egui needs an `&mut bool` to
+/// draw the tick), and any change is emitted as
+/// [`crate::core::Intent::SetGeoLayer`] for the shell to apply. Returns the
+/// [`egui::Response`] so callers can chain hover text.
+fn layer_checkbox(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    layer: crate::core::GeoLayer,
+    label: &str,
+) -> egui::Response {
+    let mut on = layer.get(&state.layer_state.geo);
+    let resp = ui.checkbox(&mut on, label);
+    if resp.changed() {
+        state.push_command(crate::core::Intent::SetGeoLayer(layer, on));
+    }
+    resp
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_layers_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    diagnostics: &crate::subsystem::Diagnostics,
+    _playback: &crate::subsystem::Playback,
+    derived: &crate::subsystem::Derived,
+    _chrome: &mut crate::subsystem::Chrome,
+) {
+    let advanced = state.show_advanced();
     egui::CollapsingHeader::new(RichText::new("Layers").strong())
         .default_open(true)
         .show(ui, |ui| {
-            ui.checkbox(&mut state.layer_state.geo.nexrad_sites, "NEXRAD Sites");
-            ui.checkbox(&mut state.layer_state.geo.states, "State Lines");
-            ui.checkbox(&mut state.layer_state.geo.counties, "County Lines");
-            ui.checkbox(&mut state.layer_state.geo.cities, "Cities");
-            ui.checkbox(&mut state.layer_state.geo.labels, "Labels");
-            ui.checkbox(
-                &mut state.layer_state.geo.national_mosaic,
-                "National Mosaic",
-            )
-            .on_hover_text(
-                "Overlay the CONUS base-reflectivity composite (Iowa State Mesonet, ~2 min refresh)",
-            );
-            ui.checkbox(&mut state.layer_state.geo.alerts, "Weather Alerts")
-                .on_hover_text(
-                    "Show active NWS alert polygons on the 2D map (click polygon for details)",
-                );
+            use crate::core::GeoLayer;
 
-            ui.horizontal(|ui| {
-                let has_key = state.mping.api_key.is_some();
-                ui.add_enabled_ui(has_key, |ui| {
-                    let resp =
-                        ui.checkbox(&mut state.layer_state.geo.mping, "Storm Reports (mPING)");
-                    if has_key {
-                        resp.on_hover_text(
-                            "Show crowd-sourced mPING storm reports near the active radar \
-                             (\u{00B1}30 min of the playback time, ~300 km radius)",
-                        );
-                    } else {
-                        resp.on_hover_text("Configure your mPING API key first \u{2192}");
+            // Advanced-only: dense map clutter that casual viewers don't need.
+            if advanced {
+                layer_checkbox(ui, state, GeoLayer::NexradSites, "NEXRAD Sites");
+            }
+            layer_checkbox(ui, state, GeoLayer::States, "State Lines");
+            layer_checkbox(ui, state, GeoLayer::Counties, "County Lines");
+            layer_checkbox(ui, state, GeoLayer::Cities, "Cities");
+            let live = derived.data_is_live;
+            let stale_tip = "Live overlays are disabled while viewing archive data \
+                             (more than 15 minutes behind real-time). Return to live to re-enable.";
+
+            if advanced {
+                layer_checkbox(ui, state, GeoLayer::Labels, "Labels");
+                ui.add_enabled_ui(live, |ui| {
+                    layer_checkbox(ui, state, GeoLayer::NationalMosaic, "National Mosaic")
+                    .on_hover_text(
+                        "Overlay the CONUS base-reflectivity composite (Iowa State Mesonet, ~2 min refresh)",
+                    )
+                    .on_disabled_hover_text(stale_tip);
+                });
+            }
+            ui.add_enabled_ui(live, |ui| {
+                layer_checkbox(ui, state, GeoLayer::AlertsWarnings, "Alert Warnings")
+                    .on_hover_text("NWS warnings (tornado, severe thunderstorm, flood, …). Click an area for details.")
+                    .on_disabled_hover_text(stale_tip);
+                layer_checkbox(ui, state, GeoLayer::AlertsOther, "Alert Watches & Advisories")
+                .on_hover_text("NWS watches, advisories, and statements. Click an area for details.")
+                .on_disabled_hover_text(stale_tip);
+            });
+
+            // "My Location" is the one layer whose toggle carries a second
+            // intent: the enable/disable side effects (clear coords, start the
+            // one-shot geolocation) are decided by the diagnostics reducer,
+            // while the layer flag itself rides `SetGeoLayer` like its siblings.
+            let mut gps_on = GeoLayer::GpsLocation.get(&state.layer_state.geo);
+            let gps_resp = ui.checkbox(&mut gps_on, "My Location").on_hover_text(
+                "Show your device's GPS location as a dot on the map \
+                 (one-shot lookup; requires browser permission)",
+            );
+            if gps_resp.changed() {
+                state.push_command(crate::core::Intent::SetGeoLayer(
+                    GeoLayer::GpsLocation,
+                    gps_on,
+                ));
+                state.push_command(crate::core::Intent::Diagnostics(if gps_on {
+                    crate::core::diagnostics::DiagnosticsIntent::EnableGps
+                } else {
+                    crate::core::diagnostics::DiagnosticsIntent::DisableGps
+                }));
+            }
+            if let Some(err) = diagnostics.gps.error.clone() {
+                ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
+            }
+
+            if advanced {
+                ui.horizontal(|ui| {
+                    let has_key = diagnostics.mping.api_key.is_some();
+                    let mping_available =
+                        crate::core::diagnostics::mping_layer_available(live, has_key);
+                    ui.add_enabled_ui(mping_available, |ui| {
+                        let resp =
+                            layer_checkbox(ui, state, GeoLayer::Mping, "Storm Reports (mPING)")
+                                .on_hover_text(
+                                    "Show crowd-sourced mPING storm reports near the active radar \
+                                     (\u{00B1}30 min of the playback time, ~300 km radius)",
+                                );
+                        if !live {
+                            resp.on_disabled_hover_text(stale_tip);
+                        } else if !has_key {
+                            resp.on_disabled_hover_text(
+                                "Configure your mPING API key first \u{2192}",
+                            );
+                        }
+                    });
+                    if ui
+                        .small_button("\u{2699}")
+                        .on_hover_text("mPING settings (API key)")
+                        .clicked()
+                    {
+                        state.push_command(crate::core::Intent::Diagnostics(
+                            crate::core::diagnostics::DiagnosticsIntent::OpenMpingSettings,
+                        ));
                     }
                 });
-                if ui
-                    .small_button("\u{2699}")
-                    .on_hover_text("mPING settings (API key)")
-                    .clicked()
-                {
-                    state.mping.settings_modal_open = true;
-                }
-            });
+            }
         });
 }
 
-pub(super) fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
-    let in_macro = state.playback_state.playback_mode() == crate::state::PlaybackMode::Macro;
+pub(super) fn render_rendering_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    playback: &crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
+) {
+    let in_macro = playback.state.playback_mode() == crate::core::PlaybackMode::Macro;
     egui::CollapsingHeader::new(RichText::new("Rendering").strong())
         .default_open(true)
         .show(ui, |ui| {
@@ -288,7 +416,8 @@ pub(super) fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) 
                     .on_hover_text(if in_macro {
                         "Sweep animation is disabled at this zoom level (macro playback mode)"
                     } else {
-                        "Progressively reveal new data behind the sweep line during playback"
+                        "Progressively reveal new data behind the sweep line while streaming \
+                         live; historical playback shows complete frames"
                     });
             });
 
@@ -305,6 +434,7 @@ pub(super) fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) 
             ui.add_space(4.0);
 
             // Opacity
+            // two-way binding: the egui widget owns this value while the user edits it.
             let mut opacity_pct = proc.opacity * 100.0;
             if ui
                 .add(
@@ -321,10 +451,10 @@ pub(super) fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) 
 }
 
 fn render_volume_section(ui: &mut egui::Ui, state: &mut AppState) {
-    use crate::state::ViewMode;
+    use crate::geo::ViewMode;
 
     // Only show volume controls in 3D mode
-    if !matches!(state.viz_state.view_mode, ViewMode::Globe3D) {
+    if !matches!(state.viz_state.view_mode(), ViewMode::Globe3D) {
         return;
     }
 
@@ -339,6 +469,7 @@ fn render_volume_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             if state.viz_state.volume_3d_enabled {
                 ui.add_space(4.0);
+                // two-way binding: the egui widget owns this value while the user edits it.
                 ui.add(
                     egui::Slider::new(&mut state.viz_state.volume_density_cutoff, 0.0..=30.0)
                         .text("Min Value")
@@ -349,11 +480,15 @@ fn render_volume_section(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-pub(super) fn render_tools_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_tools_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    _chrome: &mut crate::subsystem::Chrome,
+) {
     egui::CollapsingHeader::new(RichText::new("Tools").strong())
         .default_open(true)
         .show(ui, |ui| {
-            ui.checkbox(&mut state.viz_state.inspector_enabled, "Inspector")
+            ui.checkbox(&mut state.viz_state.data_probe_enabled, "Data probe")
                 .on_hover_text("Hover over radar to see position and data value");
 
             let was_active = state.viz_state.distance_tool_active;
@@ -372,6 +507,7 @@ pub(super) fn render_tools_section(ui: &mut egui::Ui, state: &mut AppState) {
                 .on_hover_text("Detect and display storm cells on the radar");
             if state.viz_state.storm_cells_visible {
                 ui.indent("storm_cell_indent", |ui| {
+                    // two-way binding: the egui widget owns this value while the user edits it.
                     let mut threshold = state.viz_state.storm_cell_threshold_dbz;
                     if ui
                         .add(
@@ -390,12 +526,17 @@ pub(super) fn render_tools_section(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-pub(super) fn render_events_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_events_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    playback: &mut crate::subsystem::Playback,
+    chrome: &mut crate::subsystem::Chrome,
+) {
     egui::CollapsingHeader::new(RichText::new("Events").strong())
         .default_open(true)
         .show(ui, |ui| {
             // Save current selection as event button
-            let has_selection = state.playback_state.selection_range().is_some();
+            let has_selection = playback.state.selection_range().is_some();
             let btn = ui
                 .add_enabled(
                     has_selection,
@@ -406,8 +547,8 @@ pub(super) fn render_events_section(ui: &mut egui::Ui, state: &mut AppState) {
                 )
                 .on_hover_text("Select a time range on the timeline first (Shift+drag)");
             if btn.clicked() {
-                state.event_modal_open = true;
-                state.event_modal_editing_id = None;
+                chrome.event_modal_open = true;
+                chrome.event_modal_editing_id = None;
             }
 
             // Events for current site
@@ -439,14 +580,14 @@ pub(super) fn render_events_section(ui: &mut egui::Ui, state: &mut AppState) {
                                 .small_button(egui_phosphor::regular::PENCIL_SIMPLE)
                                 .clicked()
                             {
-                                state.event_modal_open = true;
-                                state.event_modal_editing_id = Some(event.id);
+                                chrome.event_modal_open = true;
+                                chrome.event_modal_editing_id = Some(event.id);
                             }
                             if ui
                                 .small_button(egui_phosphor::regular::NAVIGATION_ARROW)
                                 .clicked()
                             {
-                                navigate_to_event(state, event);
+                                navigate_to_event(state, playback, event, chrome);
                             }
                         });
                     });
@@ -491,14 +632,14 @@ pub(super) fn render_events_section(ui: &mut egui::Ui, state: &mut AppState) {
                                         .small_button(egui_phosphor::regular::PENCIL_SIMPLE)
                                         .clicked()
                                     {
-                                        state.event_modal_open = true;
-                                        state.event_modal_editing_id = Some(event.id);
+                                        chrome.event_modal_open = true;
+                                        chrome.event_modal_editing_id = Some(event.id);
                                     }
                                     if ui
                                         .small_button(egui_phosphor::regular::NAVIGATION_ARROW)
                                         .clicked()
                                     {
-                                        navigate_to_event(state, event);
+                                        navigate_to_event(state, playback, event, chrome);
                                     }
                                 },
                             );
@@ -515,7 +656,12 @@ pub(super) fn render_events_section(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 /// Navigate to a saved event: switch site if needed, set selection, center timeline.
-fn navigate_to_event(state: &mut AppState, event: &crate::state::SavedEvent) {
+fn navigate_to_event(
+    state: &mut AppState,
+    playback: &mut crate::subsystem::Playback,
+    event: &crate::state::SavedEvent,
+    _chrome: &mut crate::subsystem::Chrome,
+) {
     use crate::data::get_site;
 
     // Switch site if needed
@@ -524,41 +670,31 @@ fn navigate_to_event(state: &mut AppState, event: &crate::state::SavedEvent) {
             state.viz_state.site_id = site.id.to_string();
             state.viz_state.center_lat = site.lat;
             state.viz_state.center_lon = site.lon;
-            state.viz_state.pan_offset = egui::Vec2::ZERO;
+            state.viz_state.set_pan_offset(egui::Vec2::ZERO);
             state.viz_state.camera.center_on(site.lat, site.lon);
-            state.push_command(crate::state::AppCommand::RefreshTimeline {
+            state.push_command(crate::core::Intent::RefreshTimeline {
                 auto_position: false,
             });
         }
     }
 
     // Set selection to event bounds
-    state.playback_state.selection_start = Some(event.start_time);
-    state.playback_state.selection_end = Some(event.end_time);
+    playback
+        .state
+        .set_selection(event.start_time, event.end_time);
 
     // Center timeline on the event
     let mid = (event.start_time + event.end_time) / 2.0;
-    state.playback_state.center_view_on(mid);
+    playback.state.center_view_on(mid);
 }
 
 /// Format a timestamp for display in the events list.
 fn format_event_time(ts: f64, use_local: bool) -> String {
-    if use_local {
-        let d = js_sys::Date::new_0();
-        d.set_time(ts * 1000.0);
-        format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}",
-            d.get_full_year(),
-            d.get_month() + 1,
-            d.get_date(),
-            d.get_hours(),
-            d.get_minutes(),
-        )
-    } else {
-        use chrono::{TimeZone, Utc};
-        let dt = Utc.timestamp_opt(ts as i64, 0).unwrap();
-        dt.format("%Y-%m-%d %H:%M").to_string()
-    }
+    let p = super::time_format::parts(ts, use_local);
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        p.year, p.month, p.day, p.hour, p.minute
+    )
 }
 
 /// Get a distinguishing color for an event based on its ID.
@@ -574,7 +710,11 @@ fn event_color(id: u64) -> egui::Color32 {
     PALETTE[(id % PALETTE.len() as u64) as usize]
 }
 
-pub(super) fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_storage_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
+) {
     egui::CollapsingHeader::new(RichText::new("Storage").strong())
         .default_open(true)
         .show(ui, |ui| {
@@ -623,6 +763,7 @@ pub(super) fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
             ui.label("Storage Quota:");
             let min_quota_mb = (StorageSettings::min_quota() / (1024 * 1024)) as f32;
             let max_quota_mb = (StorageSettings::max_quota() / (1024 * 1024)) as f32;
+            // two-way binding: the egui widget owns this value while the user edits it.
             let mut quota_mb = (state.storage_settings.quota_bytes / (1024 * 1024)) as f32;
 
             let slider = egui::Slider::new(&mut quota_mb, min_quota_mb..=max_quota_mb)
@@ -644,7 +785,7 @@ pub(super) fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
                 .on_hover_text("Delete all cached radar data")
                 .clicked()
             {
-                state.push_command(crate::state::AppCommand::ClearCache);
+                state.push_command(crate::core::Intent::ClearCache);
             }
 
             ui.add_space(4.0);
@@ -654,7 +795,7 @@ pub(super) fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
                 .on_hover_text("Wipe all data and settings, then reload")
                 .clicked()
             {
-                state.wipe_modal_open = true;
+                chrome.wipe_modal_open = true;
             }
         });
 }

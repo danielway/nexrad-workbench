@@ -10,7 +10,7 @@ use std::rc::Rc;
 use super::types::Alert;
 
 /// An event delivered by the fetch future into the UI loop.
-pub enum AlertsEvent {
+pub(crate) enum AlertsEvent {
     /// Fetch succeeded with the full parsed alert set and an ETag (if the
     /// server returned one).
     Updated {
@@ -25,22 +25,22 @@ pub enum AlertsEvent {
 
 /// Shared buffer for events produced by the async fetch.
 #[derive(Clone, Default)]
-pub struct AlertsChannel {
+pub(crate) struct AlertsChannel {
     events: Rc<RefCell<Vec<AlertsEvent>>>,
 }
 
 impl AlertsChannel {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Push an event from inside an async task.
-    pub fn push(&self, event: AlertsEvent) {
+    pub(crate) fn push(&self, event: AlertsEvent) {
         self.events.borrow_mut().push(event);
     }
 
     /// Drain all pending events; called once per frame.
-    pub fn drain(&self) -> Vec<AlertsEvent> {
+    pub(crate) fn drain(&self) -> Vec<AlertsEvent> {
         std::mem::take(&mut *self.events.borrow_mut())
     }
 }

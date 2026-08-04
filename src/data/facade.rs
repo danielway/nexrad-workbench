@@ -1,30 +1,57 @@
-//! Data facade providing a unified interface for IndexedDB storage.
+//! The main thread's handle on the IndexedDB cache.
 //!
-//! Wraps `IndexedDbRecordStore` with cache eviction logic.
+//! Storage has exactly **two sanctioned entry points**, because the two
+//! contexts that touch IndexedDB have different lifetimes:
+//!
+//! 1. **[`MainThreadStore`] (this module)** — the main thread's read + cache
+//!    -management surface: availability lookups, timeline listings, size
+//!    accounting, wipe, and quota-driven eviction (the policy itself is the
+//!    pure [`decide_eviction`]). It owns no write path by design.
+//! 2. **`WORKER_IDB`** (a thread-local `IndexedDbStore` in
+//!    `nexrad::decode::worker_api`) — the worker's own handle. Ingest writes
+//!    (`upsert_scan`) and sweep-blob reads happen there, against a connection
+//!    that stays open for the worker's lifetime; routing them through a
+//!    main-thread object would mean re-opening the database per message and
+//!    crossing the `postMessage` boundary for every blob.
+//!
+//! Both wrap the same [`IndexedDbStore`] primitives, so the transaction rules
+//! (see `crate::data::indexeddb`) hold identically on either side. This type
+//! was previously named `DataFacade`, which implied it fronted all database
+//! traffic; it never did.
 
-use crate::data::indexeddb::{DataError, IndexedDbRecordStore};
+use crate::data::indexeddb::{DataError, IndexedDbStore};
 use crate::data::keys::*;
+use crate::data::quota::{decide_eviction, QuotaPolicy};
 
 /// Result type for cache operations.
 pub type CacheResult<T> = Result<T, DataError>;
 
-/// Data facade for accessing radar data in IndexedDB.
+/// The main thread's read + eviction handle on the radar cache.
 #[derive(Clone)]
-pub struct DataFacade {
-    store: IndexedDbRecordStore,
+pub struct MainThreadStore {
+    store: IndexedDbStore,
 }
 
-impl Default for DataFacade {
+impl Default for MainThreadStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl DataFacade {
+impl MainThreadStore {
     pub fn new() -> Self {
         Self {
-            store: IndexedDbRecordStore::new(),
+            store: IndexedDbStore::new(),
         }
+    }
+
+    /// Build a handle over a specific store. Only used from `tests/idb.rs`
+    /// (which links the lib target) to run against a throwaway database —
+    /// hence dead in the bin.
+    #[doc(hidden)]
+    #[allow(dead_code)] // Doc above: tests/idb.rs-only constructor, dead in the bin target.
+    pub fn with_store(store: IndexedDbStore) -> Self {
+        Self { store }
     }
 
     /// Opens the cache database.
@@ -35,6 +62,18 @@ impl DataFacade {
     /// Gets scan availability information.
     pub async fn scan_availability(&self, scan: &ScanKey) -> CacheResult<Option<ScanIndexEntry>> {
         self.store.scan_availability(scan).await
+    }
+
+    /// Gets the scan-index entry nearest `scan` within ±`tolerance_ms`
+    /// (exact key first, then a site-scoped window read) — the probe to use
+    /// when the key may be a listing timestamp rather than the stored
+    /// volume-header key.
+    pub async fn scan_availability_near(
+        &self,
+        scan: &ScanKey,
+        tolerance_ms: i64,
+    ) -> CacheResult<Option<ScanIndexEntry>> {
+        self.store.scan_availability_near(scan, tolerance_ms).await
     }
 
     /// Queries available scans for a site within a time window.
@@ -60,71 +99,48 @@ impl DataFacade {
     /// Checks if eviction is needed and performs it.
     /// Returns `(evicted, scans_evicted, quota_warning)`.
     ///
-    /// Checks both the app-level quota and the browser-level storage quota.
-    /// If browser quota is critically low (less than 10% remaining), triggers
-    /// proactive eviction and returns a warning message.
+    /// The decision (app-level quota check + browser-level pressure check)
+    /// is the pure [`decide_eviction`]; this method just gathers the sizes
+    /// and executes the outcome.
     pub async fn check_and_evict(
         &self,
         quota_bytes: u64,
         target_bytes: u64,
     ) -> CacheResult<(bool, u32, Option<String>)> {
         let current_size = self.store.total_cache_size().await?;
-        let mut total_evicted = 0u32;
-        let mut did_evict = false;
+        let estimate = IndexedDbStore::estimate_storage_quota().await;
+        let decision = decide_eviction(
+            current_size,
+            quota_bytes,
+            target_bytes,
+            estimate,
+            &QuotaPolicy::DEFAULT,
+        );
 
-        // App-level quota check
-        if current_size > quota_bytes {
-            log::info!(
-                "Cache size {} exceeds quota {}, starting eviction to {}",
-                current_size,
-                quota_bytes,
-                target_bytes
+        if let Some(warning) = &decision.warning {
+            log::warn!(
+                "Browser storage quota critically low: {:.1} MB remaining out of {:.1} MB",
+                warning.remaining_bytes as f64 / (1024.0 * 1024.0),
+                warning.browser_quota_bytes as f64 / (1024.0 * 1024.0),
             );
-            let evicted = self.store.evict_to_size(target_bytes).await?;
-            total_evicted += evicted;
-            did_evict = true;
         }
 
-        // Browser-level quota check via navigator.storage.estimate()
-        let quota_warning = if let Some(estimate) =
-            IndexedDbRecordStore::estimate_storage_quota().await
-        {
-            let remaining = estimate.remaining();
-            let threshold = estimate.quota / 10; // 10% of browser quota
+        let mut total_evicted = 0u32;
+        if let Some(evict_to) = decision.evict_to {
+            log::info!(
+                "Cache size {} (app quota {}) / browser pressure {} → evicting to {}",
+                current_size,
+                quota_bytes,
+                decision.warning.is_some(),
+                evict_to
+            );
+            total_evicted = self.store.evict_to_size(evict_to).await?;
+        }
 
-            if remaining < threshold {
-                log::warn!(
-                    "Browser storage quota critically low: {:.1} MB remaining out of {:.1} MB ({:.0}% used)",
-                    remaining as f64 / (1024.0 * 1024.0),
-                    estimate.quota as f64 / (1024.0 * 1024.0),
-                    (estimate.usage as f64 / estimate.quota as f64) * 100.0,
-                );
-
-                // Proactive eviction to free browser storage
-                if !did_evict {
-                    let evicted = self.store.evict_to_size(target_bytes).await?;
-                    if evicted > 0 {
-                        total_evicted += evicted;
-                        did_evict = true;
-                        log::info!(
-                            "Proactive eviction: removed {} scans due to low browser quota",
-                            evicted
-                        );
-                    }
-                }
-
-                Some(format!(
-                    "Storage nearly full: {:.0} MB remaining of {:.0} MB browser quota",
-                    remaining as f64 / (1024.0 * 1024.0),
-                    estimate.quota as f64 / (1024.0 * 1024.0),
-                ))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        Ok((did_evict, total_evicted, quota_warning))
+        Ok((
+            total_evicted > 0,
+            total_evicted,
+            decision.warning.map(|w| w.message()),
+        ))
     }
 }

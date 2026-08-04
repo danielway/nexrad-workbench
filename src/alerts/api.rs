@@ -4,6 +4,7 @@
 //! and requires no authentication. We send `If-None-Match` with the last
 //! seen ETag to let the server return 304 when nothing has changed.
 
+use crate::net::err_text;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -21,7 +22,7 @@ const ACCEPT: &str = "application/geo+json";
 const USER_AGENT: &str = "NEXRAD-Workbench (https://github.com/danielway/nexrad-workbench)";
 
 /// Spawn a background fetch. Results are pushed into `channel` when done.
-pub fn spawn_fetch(
+pub(crate) fn spawn_fetch(
     ctx: eframe::egui::Context,
     channel: AlertsChannel,
     if_none_match: Option<String>,
@@ -137,14 +138,4 @@ async fn fetch_attempt(if_none_match: Option<String>) -> Verdict<FetchOutcome> {
     };
 
     Verdict::Ok(FetchOutcome::Updated { body, etag })
-}
-
-fn err_text(v: JsValue) -> String {
-    v.as_string()
-        .or_else(|| {
-            js_sys::Reflect::get(&v, &JsValue::from_str("message"))
-                .ok()
-                .and_then(|m| m.as_string())
-        })
-        .unwrap_or_else(|| format!("{:?}", v))
 }

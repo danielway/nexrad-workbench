@@ -1,50 +1,23 @@
 //! Layer visibility state.
 
+use crate::geo::GeoLayerVisibility;
+
 /// State for toggling various overlay layers.
 #[derive(Default)]
-pub struct LayerState {
+pub(crate) struct LayerState {
     /// Geographic layer visibility settings
     pub geo: GeoLayerVisibility,
 }
 
-/// Visibility settings for geographic map layers.
-#[derive(Clone)]
-pub struct GeoLayerVisibility {
-    /// Show state/province boundaries
-    pub states: bool,
-    /// Show county boundaries (auto-hidden at low zoom)
-    pub counties: bool,
-    /// Show labels for geographic features
-    pub labels: bool,
-    /// Show NEXRAD radar sites (other sites, not current)
-    pub nexrad_sites: bool,
-    /// Show major cities
-    pub cities: bool,
-    /// Show major highways
-    pub highways: bool,
-    /// Show lakes and water bodies
-    pub lakes: bool,
-    /// Show the national radar mosaic overlay (CONUS composite)
-    pub national_mosaic: bool,
-    /// Show NWS active alert polygons
-    pub alerts: bool,
-    /// Show mPING crowd-sourced storm reports
-    pub mping: bool,
-}
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
 
-impl Default for GeoLayerVisibility {
-    fn default() -> Self {
-        Self {
-            states: true,
-            counties: true,
-            labels: true,
-            nexrad_sites: false,
-            cities: true,
-            highways: false,
-            lakes: false,
-            national_mosaic: false,
-            alerts: false,
-            mping: false,
-        }
+    #[wasm_bindgen_test]
+    fn layer_state_default_wraps_geo_defaults() {
+        let s = LayerState::default();
+        assert!(s.geo.states);
+        assert!(!s.geo.mping);
     }
 }

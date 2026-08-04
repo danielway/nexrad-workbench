@@ -1,273 +1,19 @@
 //! Visualization state (canvas, zoom/pan, product selection).
 
-use crate::geo::GlobeCamera;
+use crate::core::canvas::CanvasCaption;
+use crate::core::{DisplayedSweep, ElevationSelection, RadarProduct, StormCellInfo};
+use crate::geo::{Camera, Flat2DState, ViewMode};
 use eframe::egui::Vec2;
 
-/// Available radar products for display.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-pub enum RadarProduct {
-    #[default]
-    Reflectivity,
-    Velocity,
-    SpectrumWidth,
-    DifferentialReflectivity,
-    CorrelationCoefficient,
-    DifferentialPhase,
-    ClutterFilterPower,
-}
-
-impl RadarProduct {
-    pub fn label(&self) -> &'static str {
-        match self {
-            RadarProduct::Reflectivity => "Reflectivity",
-            RadarProduct::Velocity => "Velocity",
-            RadarProduct::SpectrumWidth => "Spectrum Width",
-            RadarProduct::DifferentialReflectivity => "Differential Reflectivity",
-            RadarProduct::CorrelationCoefficient => "Correlation Coefficient",
-            RadarProduct::DifferentialPhase => "Differential Phase",
-            RadarProduct::ClutterFilterPower => "Clutter Filter Power",
-        }
-    }
-
-    /// Unit string for display (e.g., "dBZ", "m/s").
-    pub fn unit(&self) -> &'static str {
-        match self {
-            RadarProduct::Reflectivity => "dBZ",
-            RadarProduct::Velocity => "m/s",
-            RadarProduct::SpectrumWidth => "m/s",
-            RadarProduct::DifferentialReflectivity => "dB",
-            RadarProduct::CorrelationCoefficient => "",
-            RadarProduct::DifferentialPhase => "\u{00B0}/km",
-            RadarProduct::ClutterFilterPower => "dB",
-        }
-    }
-
-    /// Short code for URL parameters.
-    pub fn short_code(&self) -> &'static str {
-        match self {
-            RadarProduct::Reflectivity => "REF",
-            RadarProduct::Velocity => "VEL",
-            RadarProduct::SpectrumWidth => "SW",
-            RadarProduct::DifferentialReflectivity => "ZDR",
-            RadarProduct::CorrelationCoefficient => "CC",
-            RadarProduct::DifferentialPhase => "KDP",
-            RadarProduct::ClutterFilterPower => "CFP",
-        }
-    }
-
-    /// Parse from a short code string.
-    pub fn from_short_code(code: &str) -> Option<Self> {
-        match code {
-            "REF" => Some(RadarProduct::Reflectivity),
-            "VEL" => Some(RadarProduct::Velocity),
-            "SW" => Some(RadarProduct::SpectrumWidth),
-            "ZDR" => Some(RadarProduct::DifferentialReflectivity),
-            "CC" => Some(RadarProduct::CorrelationCoefficient),
-            "KDP" => Some(RadarProduct::DifferentialPhase),
-            "CFP" => Some(RadarProduct::ClutterFilterPower),
-            _ => None,
-        }
-    }
-
-    pub fn all() -> &'static [RadarProduct] {
-        &[
-            RadarProduct::Reflectivity,
-            RadarProduct::Velocity,
-            RadarProduct::SpectrumWidth,
-            RadarProduct::DifferentialReflectivity,
-            RadarProduct::CorrelationCoefficient,
-            RadarProduct::DifferentialPhase,
-            RadarProduct::ClutterFilterPower,
-        ]
-    }
-
-    /// String identifier used by the worker protocol.
-    pub fn to_worker_string(self) -> &'static str {
-        match self {
-            RadarProduct::Reflectivity => "reflectivity",
-            RadarProduct::Velocity => "velocity",
-            RadarProduct::SpectrumWidth => "spectrum_width",
-            RadarProduct::DifferentialReflectivity => "differential_reflectivity",
-            RadarProduct::CorrelationCoefficient => "correlation_coefficient",
-            RadarProduct::DifferentialPhase => "differential_phase",
-            RadarProduct::ClutterFilterPower => "reflectivity", // fallback
-        }
-    }
-}
-
-/// User's elevation selection — by specific VCP cut or auto (latest) mode.
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ElevationSelection {
-    /// A specific VCP elevation number. The f32 is the angle at time of
-    /// selection, used for resilience when VCP changes.
-    Fixed { elevation_number: u8, angle: f32 },
-    /// Auto: show the most recently completed sweep (any elevation).
-    Latest,
-}
-
-impl Default for ElevationSelection {
-    fn default() -> Self {
-        ElevationSelection::Fixed {
-            elevation_number: 1,
-            angle: 0.5,
-        }
-    }
-}
-
-impl ElevationSelection {
-    pub fn is_auto(&self) -> bool {
-        matches!(self, ElevationSelection::Latest)
-    }
-
-    pub fn elevation_number(&self) -> Option<u8> {
-        match self {
-            ElevationSelection::Fixed {
-                elevation_number, ..
-            } => Some(*elevation_number),
-            ElevationSelection::Latest => None,
-        }
-    }
-
-    pub fn angle(&self) -> f32 {
-        match self {
-            ElevationSelection::Fixed { angle, .. } => *angle,
-            ElevationSelection::Latest => 0.5,
-        }
-    }
-
-    /// On VCP change, find the closest angle match and update elevation_number.
-    pub fn resolve_for_vcp(&mut self, entries: &[ElevationListEntry]) {
-        if let ElevationSelection::Fixed {
-            angle,
-            elevation_number,
-        } = self
-        {
-            if let Some(best) = entries.iter().min_by(|a, b| {
-                (a.angle - *angle)
-                    .abs()
-                    .partial_cmp(&(b.angle - *angle).abs())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            }) {
-                *elevation_number = best.elevation_number;
-                *angle = best.angle;
-            }
-        }
-    }
-}
-
-/// One row in the elevation list UI.
-#[derive(Clone, Debug)]
-pub struct ElevationListEntry {
-    pub elevation_number: u8,
-    pub angle: f32,
-    pub waveform: String,
-    pub is_sails: bool,
-    pub is_mrle: bool,
-    /// Product names (matching `SweepDataKey` / worker strings) available at
-    /// this elevation. Empty means "unknown" — skip product-availability checks.
-    pub available_products: Vec<String>,
-}
-
-/// Interpolation mode for radar rendering.
-#[derive(Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum InterpolationMode {
-    /// Raw nearest-neighbor sampling (blocky, traditional).
-    #[default]
-    Nearest,
-    /// Bilinear interpolation between adjacent gates and azimuths.
-    Bilinear,
-}
-
-impl InterpolationMode {
-    pub fn label(&self) -> &'static str {
-        match self {
-            InterpolationMode::Nearest => "Nearest",
-            InterpolationMode::Bilinear => "Bilinear",
-        }
-    }
-
-    pub fn all() -> &'static [InterpolationMode] {
-        &[InterpolationMode::Nearest, InterpolationMode::Bilinear]
-    }
-}
-
-/// GPU rendering processing options (shader uniforms).
-#[derive(Clone)]
-pub struct RenderProcessing {
-    /// Interpolation mode (nearest vs bilinear).
-    pub interpolation: InterpolationMode,
-    /// Global opacity for radar data (0.0..1.0).
-    pub opacity: f32,
-    /// Whether sweep animation is enabled (progressive radial reveal during playback).
-    pub sweep_animation: bool,
-    /// Whether data age desaturation is shown (desaturates oldest data behind sweep line).
-    pub data_age_desaturation: bool,
-}
-
-impl Default for RenderProcessing {
-    fn default() -> Self {
-        Self {
-            interpolation: InterpolationMode::Nearest,
-            opacity: 1.0,
-            sweep_animation: false,
-            data_age_desaturation: true,
-        }
-    }
-}
-
-/// Map view mode.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-pub enum ViewMode {
-    /// Classic flat equirectangular map.
-    #[default]
-    Flat2D,
-    /// 3D globe.
-    Globe3D,
-}
-
-/// Lightweight storm cell info for rendering on the canvas.
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub struct StormCellInfo {
-    /// Reflectivity-weighted centroid latitude.
-    pub lat: f64,
-    /// Reflectivity-weighted centroid longitude.
-    pub lon: f64,
-    /// Maximum reflectivity (dBZ) anywhere in the cell.
-    pub max_dbz: f32,
-    /// Mean reflectivity (dBZ) across the cell's gates.
-    pub mean_dbz: f32,
-    /// Cell footprint area in km².
-    pub area_km2: f32,
-    /// Bounding box (min_lat, min_lon, max_lat, max_lon).
-    pub bounds: (f64, f64, f64, f64),
-    /// Compass bearing (0° = N, clockwise) from radar to centroid.
-    pub bearing_from_radar_deg: f32,
-    /// Great-circle-approximate distance from radar to centroid, km.
-    pub range_from_radar_km: f32,
-    /// Orientation of the cell's major axis in compass degrees, folded
-    /// into [0, 180) since an axis is undirected.
-    pub orientation_deg: f32,
-    /// √(λ_major / λ_minor) from the pixel-weighted covariance. 1.0 = round.
-    pub elongation: f32,
-    /// Number of gates comprising the cell. Useful for debugging / further
-    /// filtering.
-    pub gate_count: u32,
-}
-
 /// Visualization state including view controls.
-pub struct VizState {
-    /// Active view mode (flat 2D or 3D globe).
-    pub view_mode: ViewMode,
-
-    /// Current zoom level (1.0 = 100%) — used in Flat2D mode.
-    pub zoom: f32,
-
-    /// Current pan offset from center — used in Flat2D mode.
-    pub pan_offset: Vec2,
-
-    /// Orbital camera for Globe3D mode.
-    pub camera: GlobeCamera,
+pub(crate) struct VizState {
+    /// The camera state machine — the single source of truth for the view
+    /// mode and all 2D/3D camera state. [`ViewMode`] is derived from the
+    /// active variant via [`VizState::view_mode`] (no separate stored
+    /// toggle). 2D pan/zoom live on the [`Flat2D`](crate::geo::Camera::Flat2D)
+    /// variant; read/write via [`VizState::zoom`] / [`VizState::pan_offset`]
+    /// / [`VizState::set_zoom`] / [`VizState::set_pan_offset`].
+    pub camera: Camera,
 
     /// Selected radar product
     pub product: RadarProduct,
@@ -275,19 +21,16 @@ pub struct VizState {
     /// Elevation selection (specific VCP cut or auto/latest mode)
     pub elevation_selection: ElevationSelection,
 
-    /// Cached elevation list from the current VCP, for the UI list.
-    pub cached_vcp_elevations: Vec<ElevationListEntry>,
-
     /// Stored Fixed selection to restore when toggling off auto mode.
     pub last_fixed_selection: Option<(u8, f32)>,
 
     /// Overlay info: radar site ID
     pub site_id: String,
 
-    /// Overlay info: current timestamp
-    pub timestamp: String,
-
-    /// Overlay info: current elevation/sweep
+    /// Overlay info: current elevation/sweep, e.g. "0.5°". Timezone-independent,
+    /// so it stays a baked string; the displayed-frame *timestamp* is NOT baked
+    /// here — it is formatted at render time from `displayed` (spec §11.4) so a
+    /// local/UTC flip reformats it the same frame.
     pub elevation: String,
 
     /// Geographic center latitude (radar site location)
@@ -297,28 +40,12 @@ pub struct VizState {
     pub center_lon: f64,
 
     /// Staleness of the most recent radial (sweep end) in seconds.
+    /// Recomputed every frame from `displayed.end_time` against wall clock.
     pub data_staleness_secs: Option<f64>,
 
     /// Staleness of the oldest radial (sweep start) in seconds.
+    /// Recomputed every frame from `displayed.start_time` against wall clock.
     pub data_staleness_start_secs: Option<f64>,
-
-    /// Start timestamp (Unix seconds) of the currently rendered sweep.
-    /// Used to recompute `data_staleness_start_secs` every frame.
-    pub rendered_sweep_start_secs: Option<f64>,
-
-    /// End timestamp (Unix seconds) of the currently rendered sweep.
-    /// Used to recompute `data_staleness_secs` every frame so the age counter ticks.
-    pub rendered_sweep_end_secs: Option<f64>,
-
-    /// Previous sweep info for overlay display during sweep animation.
-    /// Contains (elevation_deg, start_time_secs, end_time_secs).
-    pub prev_sweep_overlay: Option<(f32, f64, f64)>,
-
-    /// Scan timestamp of the previous sweep (for timeline secondary highlight).
-    pub prev_sweep_scan_timestamp: Option<i64>,
-
-    /// Elevation number of the previous sweep (for timeline secondary highlight).
-    pub prev_sweep_elevation_number: Option<u8>,
 
     /// Cached last sweep line position (azimuth, start_azimuth) for between-sweep display.
     pub last_sweep_line_cache: Option<(f32, f32)>,
@@ -329,8 +56,10 @@ pub struct VizState {
     /// Density cutoff for volume rendering (physical value, e.g. 5.0 dBZ).
     pub volume_density_cutoff: f32,
 
-    /// Whether the inspector tool is active (hover shows lat/lon and data value).
-    pub inspector_enabled: bool,
+    /// Whether the data-probe tool is active (hover shows lat/lon and data
+    /// value). Named "Data probe" to keep "inspector" for the scan inspector
+    /// (the per-scan volume breakdown), which is an unrelated surface.
+    pub data_probe_enabled: bool,
 
     /// Whether the distance measurement tool is active.
     pub distance_tool_active: bool,
@@ -350,114 +79,283 @@ pub struct VizState {
     /// Cached storm cell detection results (centroid lat, lon, max dBZ, area km2).
     pub detected_storm_cells: Vec<StormCellInfo>,
 
-    /// Timestamp of the currently displayed scan (seconds since epoch).
-    pub displayed_scan_timestamp: Option<i64>,
-
-    /// Elevation number of the currently displayed sweep.
-    pub displayed_sweep_elevation_number: Option<u8>,
-
     /// Last observed visible map bounds in 2D mode, as
     /// `(min_lon, min_lat, max_lon, max_lat)`. Updated each frame by the
     /// canvas renderer and consumed by top-bar / modal logic that needs
     /// to know what area the user is looking at without access to the
     /// canvas rect. `None` while in 3D globe mode.
     pub last_visible_bounds: Option<(f64, f64, f64, f64)>,
+
+    /// What is actually on the GPU main-slot texture right now. Set only
+    /// after a successful `update_data()` in `handle_decoded_outcome` /
+    /// `handle_live_decoded_outcome`; cleared when the canvas blanks.
+    /// Single source of truth for the timeline active border, canvas
+    /// overlay text, and staleness counters.
+    pub displayed: Option<DisplayedSweep>,
+
+    /// What is on the GPU prev-sweep texture (the under-layer for sweep
+    /// animation). Written by `sync_prev_sweep_texture` in archive mode
+    /// and by the `should_promote` branch in
+    /// `handle_live_decoded_outcome` for live mode — both reflect what
+    /// the prev-sweep slot actually holds, NOT the prior main upload.
+    /// Drives the timeline secondary border and the prev-sweep overlay
+    /// panel.
+    pub previous_displayed: Option<DisplayedSweep>,
+
+    /// What honesty caption the canvas should show this frame (spec §11.2).
+    /// Recomputed each frame in `advance_playback`; replaces the old
+    /// `acquiring` bool. Either the centered "Acquiring data…" hint on a blank
+    /// canvas, or a "showing X · fetching/​no-data Y" discrepancy caption when a
+    /// stale frame is held while the playhead has drifted past it.
+    pub canvas_caption: CanvasCaption,
 }
 
 impl Default for VizState {
     fn default() -> Self {
         Self {
-            view_mode: ViewMode::default(),
-            zoom: 1.0,
-            pan_offset: Vec2::ZERO,
-            camera: GlobeCamera::centered_on(41.7312, -93.7229),
+            camera: Camera::centered_on(41.7312, -93.7229),
             product: RadarProduct::default(),
             elevation_selection: ElevationSelection::default(),
-            cached_vcp_elevations: Vec::new(),
             last_fixed_selection: None,
             site_id: "KDMX".to_string(),
-            timestamp: "--:--:-- UTC".to_string(),
             elevation: "-- deg".to_string(),
             center_lat: 41.7312,
             center_lon: -93.7229,
             data_staleness_secs: None,
             data_staleness_start_secs: None,
-            rendered_sweep_start_secs: None,
-            rendered_sweep_end_secs: None,
-            prev_sweep_overlay: None,
-            prev_sweep_scan_timestamp: None,
-            prev_sweep_elevation_number: None,
             last_sweep_line_cache: None,
             volume_3d_enabled: false,
             volume_density_cutoff: 5.0,
-            inspector_enabled: false,
+            data_probe_enabled: false,
             distance_tool_active: false,
             distance_start: None,
             distance_end: None,
             storm_cells_visible: false,
             storm_cell_threshold_dbz: 35.0,
             detected_storm_cells: Vec::new(),
-            displayed_scan_timestamp: None,
-            displayed_sweep_elevation_number: None,
             last_visible_bounds: None,
+            displayed: None,
+            previous_displayed: None,
+            canvas_caption: CanvasCaption::None,
         }
     }
 }
 
 impl VizState {
-    /// Update the canvas overlay text with sweep timing and elevation info.
-    pub fn update_overlay(
+    /// The active [`ViewMode`], derived from the camera variant.
+    pub(crate) fn view_mode(&self) -> ViewMode {
+        self.camera.view_mode()
+    }
+
+    /// Whether the flat 2D view is active.
+    pub(crate) fn is_2d(&self) -> bool {
+        self.camera.is_2d()
+    }
+
+    /// Current 2D zoom level (1.0 = 100%). Falls back to the default zoom in
+    /// 3D modes (the 2D pan/zoom is only meaningful in the Flat2D variant).
+    pub(crate) fn zoom(&self) -> f32 {
+        self.camera.flat_2d().map(|s| s.zoom).unwrap_or(1.0)
+    }
+
+    /// Current 2D pan offset. `ZERO` in 3D modes.
+    pub(crate) fn pan_offset(&self) -> Vec2 {
+        self.camera
+            .flat_2d()
+            .map(|s| s.pan_offset)
+            .unwrap_or(Vec2::ZERO)
+    }
+
+    /// Set the 2D zoom level. No-op in 3D modes.
+    pub(crate) fn set_zoom(&mut self, zoom: f32) {
+        if let Some(s) = self.camera.flat_2d_mut() {
+            s.zoom = zoom;
+        }
+    }
+
+    /// Set the 2D pan offset. No-op in 3D modes.
+    pub(crate) fn set_pan_offset(&mut self, pan_offset: Vec2) {
+        if let Some(s) = self.camera.flat_2d_mut() {
+            s.pan_offset = pan_offset;
+        }
+    }
+
+    /// Mutable access to the 2D pan offset, if the flat view is active.
+    /// Used by the WASD pan path that increments each axis.
+    pub(crate) fn flat_pan_mut(&mut self) -> Option<&mut Vec2> {
+        self.camera.flat_2d_mut().map(|s| &mut s.pan_offset)
+    }
+
+    /// Switch the camera to the 3D globe view, restoring the last 3D
+    /// camera pose (carried on the Flat2D variant across 2D excursions).
+    pub(crate) fn switch_to_3d_view(&mut self) {
+        self.camera.switch_to_globe();
+    }
+
+    /// Switch the camera to the flat 2D view (default pan/zoom).
+    pub(crate) fn switch_to_2d(&mut self) {
+        self.camera.switch_to_flat_2d(Flat2DState::default());
+    }
+
+    /// Toggle between the flat 2D view and the 3D globe. Mirrors the
+    /// historical `T` shortcut; the 3D side restores the saved orbit pose.
+    pub(crate) fn toggle_2d_3d(&mut self) {
+        if self.camera.is_2d() {
+            self.switch_to_3d_view();
+        } else {
+            self.switch_to_2d();
+        }
+    }
+
+    /// Update the canvas overlay's elevation text and seed staleness from a
+    /// freshly decoded sweep. The displayed-frame *timestamp* is no longer baked
+    /// here: it is formatted at render time from `displayed` so a local/UTC flip
+    /// reformats it the same frame (spec §11.4). Sweep start/end times live on
+    /// `displayed` (set by the decode handler); staleness is recomputed each
+    /// frame from there. `now_secs` is the frame clock (`AppState::frame_now`).
+    pub(crate) fn update_overlay(
         &mut self,
         start: f64,
         end: f64,
         elevation_deg: f32,
-        use_local_time: bool,
+        now_secs: f64,
     ) {
         self.elevation = format!("{:.1}\u{00B0}", elevation_deg);
 
-        // Format midpoint timestamp with full date and time
-        let mid_ms = ((start + end) / 2.0) * 1000.0;
-        let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(mid_ms));
-        if use_local_time {
-            self.timestamp = format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
-                date.get_full_year(),
-                date.get_month() + 1,
-                date.get_date(),
-                date.get_hours(),
-                date.get_minutes(),
-                date.get_seconds(),
-                date.get_milliseconds()
-            );
-        } else {
-            self.timestamp = format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03} UTC",
-                date.get_utc_full_year(),
-                date.get_utc_month() + 1,
-                date.get_utc_date(),
-                date.get_utc_hours(),
-                date.get_utc_minutes(),
-                date.get_utc_seconds(),
-                date.get_utc_milliseconds()
-            );
-        }
+        // Seed staleness for immediate display; the per-frame recompute
+        // in `update()` keeps it ticking from `displayed`.
+        let staleness_end = now_secs - end;
+        let staleness_start = now_secs - start;
+        self.data_staleness_secs = (staleness_end >= 0.0).then_some(staleness_end);
+        self.data_staleness_start_secs = (staleness_start >= 0.0).then_some(staleness_start);
+    }
 
-        // Store sweep start/end times so staleness can be recomputed each frame
-        self.rendered_sweep_start_secs = Some(start);
-        self.rendered_sweep_end_secs = Some(end);
-        // Staleness is recomputed per-frame in update(); seed it here for immediate display
-        let now = js_sys::Date::now() / 1000.0;
-        let staleness_end = now - end;
-        let staleness_start = now - start;
-        self.data_staleness_secs = if staleness_end >= 0.0 {
-            Some(staleness_end)
-        } else {
-            None
-        };
-        self.data_staleness_start_secs = if staleness_start >= 0.0 {
-            Some(staleness_start)
-        } else {
-            None
-        };
+    /// Representative (midpoint) collection time of the on-screen frame, in Unix
+    /// seconds, or `None` when the canvas holds no frame. This is the raw time
+    /// the primary readout and overlay format live each frame — never the
+    /// playhead (the canvas-honesty invariant).
+    pub(crate) fn displayed_midpoint_secs(&self) -> Option<f64> {
+        self.displayed
+            .as_ref()
+            .map(|d| (d.start_time + d.end_time) / 2.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn view_mode_and_zoom_pan_derive_from_camera() {
+        let mut viz = VizState::default();
+        assert_eq!(viz.view_mode(), ViewMode::Flat2D);
+        assert!(viz.is_2d());
+        // 2D pan/zoom round-trip through the accessors.
+        viz.set_zoom(3.0);
+        viz.set_pan_offset(Vec2::new(12.0, -4.0));
+        assert!((viz.zoom() - 3.0).abs() < 1e-6);
+        assert!((viz.pan_offset().x - 12.0).abs() < 1e-6);
+        // Switching to 3D makes view_mode derive to Globe3D; zoom/pan
+        // fall back to the 2D defaults (only meaningful in Flat2D).
+        viz.switch_to_3d_view();
+        assert_eq!(viz.view_mode(), ViewMode::Globe3D);
+        assert!(!viz.is_2d());
+        assert!((viz.zoom() - 1.0).abs() < 1e-6);
+        assert_eq!(viz.pan_offset(), Vec2::ZERO);
+    }
+
+    #[wasm_bindgen_test]
+    fn toggle_restores_saved_3d_pose() {
+        let mut viz = VizState::default();
+        // Enter 3D and put the camera in a distinctive pose.
+        viz.switch_to_3d_view();
+        viz.camera.move_pivot_to(30.0, -80.0);
+        viz.camera.adjust_tilt_heading(100.0, -60.0, 600.0);
+        let before = *viz.camera.orbit_state().unwrap();
+        viz.switch_to_2d();
+        assert!(viz.is_2d());
+        // Toggling back restores the exact orbit pose, not the defaults.
+        viz.toggle_2d_3d();
+        let after = viz.camera.orbit_state().unwrap();
+        assert!((after.pivot_lat - before.pivot_lat).abs() < 1e-6);
+        assert!((after.tilt - before.tilt).abs() < 1e-6);
+        assert!((after.heading - before.heading).abs() < 1e-6);
+        // Toggling again returns to 2D.
+        viz.toggle_2d_3d();
+        assert!(viz.is_2d());
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    use crate::core::SweepIdentity;
+    use crate::data::keys::UnixMillis;
+    use crate::data::ScanKey;
+
+    fn scan_key(site: &str, ms: i64) -> ScanKey {
+        ScanKey::new(site, UnixMillis(ms))
+    }
+
+    // ---- enum defaults -----------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn enum_defaults() {
+        assert_eq!(ViewMode::default(), ViewMode::Flat2D);
+    }
+
+    // ---- VizState::update_overlay & displayed_midpoint_secs ---------------
+
+    #[wasm_bindgen_test]
+    fn update_overlay_formats_and_seeds_staleness() {
+        let mut viz = VizState::default();
+        // now=300, end=200 -> 100s stale; start=100 -> 200s stale.
+        viz.update_overlay(100.0, 200.0, 0.5, 300.0);
+        assert_eq!(viz.elevation, "0.5\u{00B0}");
+        assert!((viz.data_staleness_secs.unwrap() - 100.0).abs() < 1e-6);
+        assert!((viz.data_staleness_start_secs.unwrap() - 200.0).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn update_overlay_clamps_future_frames_to_none() {
+        let mut viz = VizState::default();
+        // now precedes both start and end -> negative staleness clamped to None.
+        viz.update_overlay(500.0, 600.0, 12.34, 400.0);
+        assert_eq!(viz.elevation, "12.3\u{00B0}");
+        assert_eq!(viz.data_staleness_secs, None);
+        assert_eq!(viz.data_staleness_start_secs, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn displayed_midpoint_secs_none_then_some() {
+        let mut viz = VizState::default();
+        assert_eq!(viz.displayed_midpoint_secs(), None);
+
+        viz.displayed = Some(DisplayedSweep {
+            identity: SweepIdentity::new(scan_key("KDMX", 1000), 1, "reflectivity"),
+            start_time: 100.0,
+            end_time: 250.0,
+            elevation_deg: 0.5,
+        });
+        assert!((viz.displayed_midpoint_secs().unwrap() - 175.0).abs() < 1e-6);
+    }
+
+    // ---- VizState 2D/3D accessor no-ops ----------------------------------
+
+    #[wasm_bindgen_test]
+    fn set_zoom_pan_are_noops_in_3d() {
+        let mut viz = VizState::default();
+        viz.switch_to_3d_view();
+        assert!(!viz.is_2d());
+        // No flat-2D state to write -> setters are no-ops, getters fall back.
+        viz.set_zoom(5.0);
+        viz.set_pan_offset(Vec2::new(9.0, 9.0));
+        assert!((viz.zoom() - 1.0).abs() < 1e-6);
+        assert_eq!(viz.pan_offset(), Vec2::ZERO);
+        // flat_pan_mut yields None in 3D.
+        assert!(viz.flat_pan_mut().is_none());
     }
 }

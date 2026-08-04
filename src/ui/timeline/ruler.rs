@@ -1,26 +1,37 @@
 //! Ruler rendering: tick marks and playback cursor.
 
-use super::{current_timestamp_secs, format_timestamp, TickConfig};
+use super::{format_timestamp, select_tick_config, style, TimelineFrame};
 use crate::ui::colors::timeline as tl_colors;
-use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke};
+use eframe::egui::{self, Painter, Pos2, Stroke};
 
-/// Draw tick marks (major + minor) and labels in the tick lane.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn render_tick_marks(
-    painter: &Painter,
-    tick_rect: &Rect,
-    first_tick: i64,
-    last_tick: i64,
-    minor_interval: i64,
-    major_interval: i64,
-    tz_offset_secs: i64,
-    tick_config: &TickConfig,
-    dark: bool,
-    use_local: bool,
-    view_start: f64,
-    zoom: f64,
-) {
-    let ts_to_x = |ts: f64| -> f32 { tick_rect.left() + ((ts - view_start) * zoom) as f32 };
+/// Draw tick marks (major + minor) and labels in the tick lane. Tick
+/// spacing comes from the zoom level; when displaying local time, ticks
+/// align to local boundaries (e.g. day ticks land on local midnight, not
+/// UTC midnight) by shifting into local seconds for alignment and back to
+/// UTC for plotting.
+pub(super) fn render_tick_marks(painter: &Painter, frame: &TimelineFrame<'_>) {
+    let tick_rect = &frame.rects.tick;
+    let (dark, use_local) = (frame.dark, frame.use_local);
+    let ts_to_x = |ts: f64| frame.ts_to_x(ts);
+
+    let tick_config = select_tick_config(frame.zoom);
+    let major_interval = tick_config.major_interval;
+    let minor_interval = (major_interval / tick_config.minor_divisions as i64).max(1);
+
+    // getTimezoneOffset() returns minutes positive-west; convert to
+    // seconds-east so that local = utc + tz_offset_secs.
+    let tz_offset_secs: i64 = if use_local {
+        let d = js_sys::Date::new_0();
+        d.set_time(frame.view_start * 1000.0);
+        -(d.get_timezone_offset() as i64) * 60
+    } else {
+        0
+    };
+
+    let local_start = frame.view_start as i64 + tz_offset_secs;
+    let local_end = frame.view_end as i64 + tz_offset_secs;
+    let first_tick = (local_start / minor_interval) * minor_interval - tz_offset_secs;
+    let last_tick = ((local_end / minor_interval) + 1) * minor_interval - tz_offset_secs;
 
     let mut tick = first_tick;
     while tick <= last_tick {
@@ -42,7 +53,7 @@ pub(super) fn render_tick_marks(
                     Pos2::new(x, tick_rect.bottom() - tick_height),
                     Pos2::new(x, tick_rect.bottom()),
                 ],
-                Stroke::new(1.0, tick_color),
+                Stroke::new(1.0_f32, tick_color),
             );
 
             // Label for major ticks — above tick marks
@@ -52,7 +63,7 @@ pub(super) fn render_tick_marks(
                     Pos2::new(x, tick_rect.bottom() - tick_height),
                     egui::Align2::CENTER_BOTTOM,
                     label,
-                    egui::FontId::monospace(8.0),
+                    style::tick_font(),
                     tl_colors::tick_label(dark),
                 );
             }
@@ -62,93 +73,37 @@ pub(super) fn render_tick_marks(
     }
 }
 
-/// Draw the playback position cursor (selection marker) and "now" wall-clock marker.
+/// Draw the playback-position cursor ("the needle") — a neutral marker
+/// deliberately distinct from the red now/live family, so "where I'm looking"
+/// never reads as "now". The now-line itself is owned by [`super::now_edge`].
 pub(super) fn render_playback_cursor(
     painter: &Painter,
-    overlay_rect: &Rect,
+    frame: &TimelineFrame<'_>,
     selected_ts: f64,
-    view_start: f64,
-    zoom: f64,
 ) {
-    let ts_to_x = |ts: f64| -> f32 { overlay_rect.left() + ((ts - view_start) * zoom) as f32 };
-
-    // Selection marker (playback position indicator)
-    {
-        let sel_x = ts_to_x(selected_ts);
-
-        if sel_x >= overlay_rect.left() && sel_x <= overlay_rect.right() {
-            let marker_color = tl_colors::SELECTION;
-
-            painter.line_segment(
-                [
-                    Pos2::new(sel_x, overlay_rect.top()),
-                    Pos2::new(sel_x, overlay_rect.bottom()),
-                ],
-                Stroke::new(2.0, marker_color),
-            );
-
-            let triangle = vec![
-                Pos2::new(sel_x - 5.0, overlay_rect.top()),
-                Pos2::new(sel_x + 5.0, overlay_rect.top()),
-                Pos2::new(sel_x, overlay_rect.top() + 8.0),
-            ];
-            painter.add(egui::Shape::convex_polygon(
-                triangle,
-                marker_color,
-                Stroke::NONE,
-            ));
-        }
+    let overlay_rect = &frame.rects.overlay;
+    let sel_x = frame.ts_to_x(selected_ts);
+    if sel_x < overlay_rect.left() || sel_x > overlay_rect.right() {
+        return;
     }
 
-    // "Now" marker (current wall-clock time)
-    {
-        let now_ts = current_timestamp_secs();
-        let now_x = ts_to_x(now_ts);
+    let marker_color = tl_colors::selection(frame.dark);
+    painter.line_segment(
+        [
+            Pos2::new(sel_x, overlay_rect.top()),
+            Pos2::new(sel_x, overlay_rect.bottom()),
+        ],
+        Stroke::new(2.0_f32, marker_color),
+    );
 
-        if now_x >= overlay_rect.left() && now_x <= overlay_rect.right() {
-            let now_color = tl_colors::NOW_MARKER;
-
-            painter.line_segment(
-                [
-                    Pos2::new(now_x, overlay_rect.top()),
-                    Pos2::new(now_x, overlay_rect.top() + 4.0),
-                ],
-                Stroke::new(1.5, now_color),
-            );
-            painter.line_segment(
-                [
-                    Pos2::new(now_x, overlay_rect.bottom() - 4.0),
-                    Pos2::new(now_x, overlay_rect.bottom()),
-                ],
-                Stroke::new(1.5, now_color),
-            );
-            painter.line_segment(
-                [
-                    Pos2::new(now_x, overlay_rect.top() + 4.0),
-                    Pos2::new(now_x, overlay_rect.bottom() - 4.0),
-                ],
-                Stroke::new(
-                    0.5,
-                    Color32::from_rgba_unmultiplied(
-                        now_color.r(),
-                        now_color.g(),
-                        now_color.b(),
-                        100,
-                    ),
-                ),
-            );
-            let d = 3.0;
-            let diamond = vec![
-                Pos2::new(now_x, overlay_rect.bottom() - d),
-                Pos2::new(now_x + d, overlay_rect.bottom()),
-                Pos2::new(now_x, overlay_rect.bottom() + d),
-                Pos2::new(now_x - d, overlay_rect.bottom()),
-            ];
-            painter.add(egui::Shape::convex_polygon(
-                diamond,
-                now_color,
-                Stroke::NONE,
-            ));
-        }
-    }
+    let triangle = vec![
+        Pos2::new(sel_x - 5.0, overlay_rect.top()),
+        Pos2::new(sel_x + 5.0, overlay_rect.top()),
+        Pos2::new(sel_x, overlay_rect.top() + 8.0),
+    ];
+    painter.add(egui::Shape::convex_polygon(
+        triangle,
+        marker_color,
+        Stroke::NONE,
+    ));
 }

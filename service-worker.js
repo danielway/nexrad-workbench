@@ -12,7 +12,7 @@
 // that requires old entries to be evicted. Byte-level changes to this file
 // already cause the browser to install a fresh SW, so the activate handler's
 // cleanup of stale caches is what actually runs the eviction.
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const CACHE_NAME = `nexrad-workbench-${CACHE_VERSION}`;
 
 // App shell — static, non-hashed files we can name ahead of time.
@@ -128,7 +128,25 @@ async function handleFetch(request) {
     }
   }
 
-  // Same-origin assets (WASM, JS, worker.js, icons, manifest): cache-first,
+  // worker.js is non-hashed mutable code — cache-first would pin a stale
+  // build of the decode worker indefinitely. Use the same network-first
+  // policy as navigations so a redeploy actually takes effect.
+  if (isSameOrigin(request) && request.method === 'GET' && new URL(request.url).pathname.endsWith('/worker.js')) {
+    try {
+      const response = await fetchAndReport(request);
+      if (response.ok) {
+        const cache = await caches.open(CACHE_NAME);
+        cache.put(request, response.clone()).catch(() => {});
+      }
+      return withIsolationHeaders(response);
+    } catch (err) {
+      const cached = await caches.match(request);
+      if (cached) return withIsolationHeaders(cached);
+      throw err;
+    }
+  }
+
+  // Other same-origin assets (WASM, hashed JS, icons, manifest): cache-first,
   // runtime-cache on miss. Hashed filenames from Trunk make this safe — a
   // new build produces new filenames, so the cache never serves stale code.
   if (isSameOrigin(request) && request.method === 'GET') {

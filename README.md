@@ -17,7 +17,7 @@ A browser-based workbench for visualizing and analyzing NEXRAD (WSR-88D) weather
 - **Geographic overlays** — State boundaries, county boundaries, and city labels
 - **3D visualization** — Globe view with volumetric ray-marching renderer
 - **Storm cell detection** — Automated detection with configurable thresholds
-- **Measurement tools** — Inspector (lat/lon + data values) and distance measurement
+- **Measurement tools** — Data probe (lat/lon + data values) and distance measurement
 - **Persistent caching** — IndexedDB-backed cache with configurable storage limits
 - **Keyboard shortcuts** — Full shortcut set for power users (press `?` to view)
 - **Dark and light themes** — Follows OS preference with manual override

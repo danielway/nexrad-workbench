@@ -11,11 +11,9 @@ use crate::geo::MapProjection;
 use crate::nexrad::RADAR_COVERAGE_RANGE_KM;
 use crate::state::AppState;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, Vec2};
-use eframe::epaint::Galley;
 use geo_types::Coord;
 use std::cell::RefCell;
 use std::f32::consts::PI;
-use std::sync::Arc;
 
 /// Cached range-ring lon-degree extent for the active site. The km→deg
 /// conversion is invariant under pan/zoom — only `(site_lat, site_lon,
@@ -50,51 +48,16 @@ fn cached_lon_range_deg(lat: f64, lon: f64, range_km: f64) -> f64 {
     })
 }
 
-/// Cached cardinal direction galleys (N, E, S, W). The font + color are
-/// fixed; the only thing that changes is theme. Build once per (font_size,
-/// dark) and reuse.
-#[derive(Default)]
-struct CardinalGalleyCache {
-    key: Option<(u32, bool)>, // (font_size_bits, dark)
-    galleys: Option<[Arc<Galley>; 4]>,
-}
-
-thread_local! {
-    static CARDINAL_GALLEY_CACHE: RefCell<CardinalGalleyCache> =
-        RefCell::new(CardinalGalleyCache::default());
-}
-
-fn cached_cardinal_galleys(
-    painter: &Painter,
-    font_size: f32,
-    color: Color32,
-    dark: bool,
-) -> [Arc<Galley>; 4] {
-    let key = (font_size.to_bits(), dark);
-    CARDINAL_GALLEY_CACHE.with(|c| {
-        let mut cache = c.borrow_mut();
-        if cache.key == Some(key) {
-            if let Some(ref g) = cache.galleys {
-                return g.clone();
-            }
-        }
-        let font = egui::FontId::proportional(font_size);
-        let g = [
-            painter.layout_no_wrap("N".to_string(), font.clone(), color),
-            painter.layout_no_wrap("E".to_string(), font.clone(), color),
-            painter.layout_no_wrap("S".to_string(), font.clone(), color),
-            painter.layout_no_wrap("W".to_string(), font, color),
-        ];
-        cache.key = Some(key);
-        cache.galleys = Some(g.clone());
-        g
-    })
-}
-
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_radar_sweep(
     painter: &Painter,
     projection: &MapProjection,
     state: &AppState,
+    timeline: &crate::subsystem::Timeline,
+    live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
+    chrome: &crate::subsystem::Chrome,
+    derived: &crate::subsystem::Derived,
     sweep_info: Option<(f32, f32)>,
     stale: bool,
 ) {
@@ -132,7 +95,7 @@ pub(crate) fn render_radar_sweep(
         } else {
             ring_color
         };
-        let width = if is_major { 1.5 } else { 1.0 };
+        let width = if is_major { 1.5_f32 } else { 1.0_f32 };
         painter.circle_stroke(center, ring_radius, Stroke::new(width, color));
     }
 
@@ -144,26 +107,35 @@ pub(crate) fn render_radar_sweep(
         let end_y = center.y + radius * angle.sin();
         painter.line_segment(
             [center, Pos2::new(end_x, end_y)],
-            Stroke::new(0.5, radial_color),
+            Stroke::new(0.5_f32, radial_color),
         );
     }
 
-    // Draw cardinal direction labels using cached galleys to skip the
-    // text layout each frame.
+    // Draw cardinal direction labels. Lay out fresh each frame (egui's
+    // internal galley cache memoizes the identical layout job across frames).
     let label_offset = radius + 15.0;
     let cardinal_color = canvas_colors::cardinal_label(dark);
-    let cardinals = cached_cardinal_galleys(painter, 12.0, cardinal_color, dark);
-    let cardinal_specs: [(Vec2, egui::Align2); 4] = [
-        (Vec2::new(0.0, -label_offset), egui::Align2::CENTER_BOTTOM),
-        (Vec2::new(label_offset, 0.0), egui::Align2::LEFT_CENTER),
-        (Vec2::new(0.0, label_offset), egui::Align2::CENTER_TOP),
-        (Vec2::new(-label_offset, 0.0), egui::Align2::RIGHT_CENTER),
+    let font = egui::FontId::proportional(12.0);
+    let cardinal_specs: [(&str, Vec2, egui::Align2); 4] = [
+        (
+            "N",
+            Vec2::new(0.0, -label_offset),
+            egui::Align2::CENTER_BOTTOM,
+        ),
+        ("E", Vec2::new(label_offset, 0.0), egui::Align2::LEFT_CENTER),
+        ("S", Vec2::new(0.0, label_offset), egui::Align2::CENTER_TOP),
+        (
+            "W",
+            Vec2::new(-label_offset, 0.0),
+            egui::Align2::RIGHT_CENTER,
+        ),
     ];
-    for (galley, (offset, align)) in cardinals.iter().zip(cardinal_specs.iter()) {
+    for (label, offset, align) in cardinal_specs.iter() {
+        let galley = painter.layout_no_wrap(label.to_string(), font.clone(), cardinal_color);
         let anchor = center + *offset;
         let size = galley.size();
         let pos = align_pos(anchor, size, *align);
-        painter.galley(pos, galley.clone(), cardinal_color);
+        painter.galley(pos, galley, cardinal_color);
     }
 
     // Draw center marker (radar site)
@@ -171,49 +143,57 @@ pub(crate) fn render_radar_sweep(
     painter.circle_stroke(
         center,
         4.0,
-        Stroke::new(1.0, canvas_colors::center_marker_stroke(dark)),
+        Stroke::new(1.0_f32, canvas_colors::center_marker_stroke(dark)),
     );
 
-    // Draw the sweep line and donut chart if sweep animation is active.
-    // In live mode, sweep_info = data boundaries (matching GPU compositing),
-    // and the "now" line is drawn separately at the estimated antenna position.
+    // Sweep overlay drawing. The donut (data-age coverage indicator)
+    // shows in live mode regardless of the toggle so the user always
+    // has spatial context for what's stale; the rotating lines (start,
+    // data edge, NOW, per-chunk boundaries) only draw when the user
+    // has sweep_animation enabled.
     if let Some((az, start_az)) = sweep_info {
-        let is_live = state.live_radar_model.active;
+        let is_live = live.radar_model.active;
+        let show_lines = derived.effective_sweep_animation;
 
         let (start_line_color, data_edge_color, data_edge_width) = if stale {
             (
                 radar::sweep_start_line_stale(),
                 radar::sweep_line_stale(),
-                2.0,
+                2.0_f32,
             )
         } else {
-            (radar::sweep_start_line(), radar::SWEEP_LINE, 3.0)
+            (radar::sweep_start_line(), radar::SWEEP_LINE, 3.0_f32)
         };
 
-        // Line at data start boundary
-        let start_angle_rad = (start_az - 90.0) * PI / 180.0;
-        let start_end = Pos2::new(
-            center.x + radius * start_angle_rad.cos(),
-            center.y + radius * start_angle_rad.sin(),
-        );
-        painter.line_segment([center, start_end], Stroke::new(1.5, start_line_color));
+        if show_lines {
+            // Line at data start boundary
+            let start_angle_rad = (start_az - 90.0) * PI / 180.0;
+            let start_end = Pos2::new(
+                center.x + radius * start_angle_rad.cos(),
+                center.y + radius * start_angle_rad.sin(),
+            );
+            painter.line_segment([center, start_end], Stroke::new(1.5_f32, start_line_color));
 
-        // Line at data trailing edge
-        let data_angle_rad = (az - 90.0) * PI / 180.0;
-        painter.line_segment(
-            [
-                center,
-                Pos2::new(
-                    center.x + radius * data_angle_rad.cos(),
-                    center.y + radius * data_angle_rad.sin(),
+            // Line at data trailing edge
+            let data_angle_rad = (az - 90.0) * PI / 180.0;
+            painter.line_segment(
+                [
+                    center,
+                    Pos2::new(
+                        center.x + radius * data_angle_rad.cos(),
+                        center.y + radius * data_angle_rad.sin(),
+                    ),
+                ],
+                Stroke::new(
+                    if is_live { 2.0_f32 } else { data_edge_width },
+                    data_edge_color,
                 ),
-            ],
-            Stroke::new(if is_live { 2.0 } else { data_edge_width }, data_edge_color),
-        );
+            );
+        }
 
         // In live mode, draw a separate "NOW" line at the estimated antenna position
-        if is_live {
-            if let Some(now_az) = state.live_radar_model.estimated_azimuth {
+        if is_live && show_lines {
+            if let Some(now_az) = live.radar_model.estimated_azimuth {
                 let now_rad = (now_az - 90.0) * PI / 180.0;
                 let now_color = Color32::from_rgb(255, 80, 80);
                 painter.line_segment(
@@ -224,7 +204,7 @@ pub(crate) fn render_radar_sweep(
                             center.y + radius * now_rad.sin(),
                         ),
                     ],
-                    Stroke::new(2.0, now_color),
+                    Stroke::new(2.0_f32, now_color),
                 );
 
                 // "NOW" label — same metadata style as slice labels.
@@ -233,16 +213,16 @@ pub(crate) fn render_radar_sweep(
                 // elevation the antenna is on even when the worker is still
                 // downloading a previous elevation's data.
                 let now_label_radius = radius + 4.0 + 6.0 + 14.0; // donut_outer + offset
-                let now_secs = js_sys::Date::now() / 1000.0;
-                let collecting_label = state
-                    .live_radar_model
+                let now_secs = state.frame_now.secs();
+                let collecting_label = live
+                    .radar_model
                     .position
                     .as_ref()
                     .and_then(|p| {
                         p.elevation_index_at(now_secs).and_then(|idx| {
                             p.sweeps.get(idx).map(|s| {
-                                let angle = state
-                                    .live_radar_model
+                                let angle = live
+                                    .radar_model
                                     .volume
                                     .as_ref()
                                     .and_then(|v| v.vcp_pattern.as_ref())
@@ -257,11 +237,11 @@ pub(crate) fn render_radar_sweep(
                         })
                     })
                     .or_else(|| {
-                        // Fallback: use the worker's in-progress elevation
-                        state
-                            .live_mode_state
-                            .current_in_progress_elevation
-                            .map(|e| format!("NOW \u{00B7} Elev {}", e))
+                        // Fallback: the engine's in-progress elevation.
+                        live.radar_model
+                            .active_sweep
+                            .as_ref()
+                            .map(|s| format!("NOW \u{00B7} Elev {}", s.elevation_number))
                     })
                     .unwrap_or_else(|| "NOW".to_string());
 
@@ -279,26 +259,37 @@ pub(crate) fn render_radar_sweep(
             }
         }
 
-        // Draw chunk boundary lines across the radar render during live streaming
-        if let Some(sweep) = state.live_radar_model.active_sweep.as_ref() {
-            let boundary_line_color = Color32::from_rgba_unmultiplied(200, 200, 220, 100);
-            for c in sweep
-                .chunks
-                .iter()
-                .take(sweep.chunks.len().saturating_sub(1))
-            {
-                let a = (c.last_az - 90.0) * PI / 180.0;
-                let p_end = Pos2::new(center.x + radius * a.cos(), center.y + radius * a.sin());
-                painter.line_segment([center, p_end], Stroke::new(1.0, boundary_line_color));
+        // Per-chunk boundary lines across the radar render during live
+        // streaming. Treated as part of "the sweeping line" — gated on
+        // the toggle so they vanish when sweep animation is off.
+        if show_lines {
+            if let Some(sweep) = live.radar_model.active_sweep.as_ref() {
+                let boundary_line_color = Color32::from_rgba_unmultiplied(200, 200, 220, 100);
+                for c in sweep
+                    .chunks
+                    .iter()
+                    .take(sweep.chunks.len().saturating_sub(1))
+                {
+                    let a = (c.last_az - 90.0) * PI / 180.0;
+                    let p_end = Pos2::new(center.x + radius * a.cos(), center.y + radius * a.sin());
+                    painter
+                        .line_segment([center, p_end], Stroke::new(1.0_f32, boundary_line_color));
+                }
             }
         }
 
-        // Donut chart showing current vs previous sweep regions
-        if is_live || state.effective_sweep_animation() {
+        // Donut chart showing current vs previous sweep coverage,
+        // shaded by data age. In live mode we keep this visible even
+        // when sweep_animation is off so the user has spatial context
+        // for which sectors are recent. Archive mode respects the
+        // toggle (where it's purely an animation artifact).
+        if is_live || derived.effective_sweep_animation {
             if stale {
                 draw_sweep_donut_stale(painter, center, radius);
             } else {
-                draw_sweep_donut(painter, center, radius, az, start_az, state);
+                draw_sweep_donut(
+                    painter, center, radius, az, start_az, state, timeline, live, playback, chrome,
+                );
             }
         }
     }
@@ -396,6 +387,7 @@ fn draw_sweep_donut_stale(painter: &Painter, center: Pos2, radius: f32) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_sweep_donut(
     painter: &Painter,
     center: Pos2,
@@ -403,6 +395,10 @@ fn draw_sweep_donut(
     sweep_az: f32,
     sweep_start: f32,
     state: &AppState,
+    timeline: &crate::subsystem::Timeline,
+    live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
+    _chrome: &crate::subsystem::Chrome,
 ) {
     let donut_inner = radius + 4.0;
     let donut_outer = radius + 10.0;
@@ -448,13 +444,14 @@ fn draw_sweep_donut(
     let label_radius = donut_outer + 14.0;
     let label_font = egui::FontId::monospace(10.0);
     let use_local = state.use_local_time;
-    let is_live = state.live_radar_model.active;
+    let is_live = live.radar_model.active;
 
     // ── Gather sweep metadata for both slices ─────────────────────────
     // Helper to format a timestamp with age
+    let frame_now = state.frame_now.secs();
     let fmt_time = |ts: f64| -> String {
         let mut s = format_time_short(ts, use_local);
-        if let Some(age) = format_age_compact(ts) {
+        if let Some(age) = format_age_compact(frame_now, ts) {
             s.push(' ');
             s.push_str(&age);
         }
@@ -462,7 +459,7 @@ fn draw_sweep_donut(
     };
 
     // Helper to look up elevation angle from VCP pattern
-    let elev_angle_str = |elev_num: u8, vcp: Option<&crate::data::keys::ExtractedVcp>| -> String {
+    let elev_angle_str = |elev_num: u8, vcp: Option<&crate::data::ExtractedVcp>| -> String {
         vcp.and_then(|v| {
             v.elevations
                 .get(elev_num.saturating_sub(1) as usize)
@@ -481,7 +478,7 @@ fn draw_sweep_donut(
     let (prev_edge_time, prev_meta): (Option<String>, Option<String>);
 
     if is_live {
-        let model = &state.live_radar_model;
+        let model = &live.radar_model;
         let sweep = model.active_sweep.as_ref();
         let vcp = model.volume.as_ref().and_then(|v| v.vcp_pattern.as_ref());
 
@@ -501,31 +498,38 @@ fn draw_sweep_donut(
             format!("Elev {} {}", s.elevation_number, angle)
         });
 
-        // Previous sweep: last completed elevation, with timing from SweepMeta
+        // Previous sweep: last completed elevation, with timing from CachedSweep
         let prev_elev = model
             .volume
             .as_ref()
-            .and_then(|v| v.elevations_complete.last().copied());
-        let prev_sweep_meta = prev_elev.and_then(|pe| {
-            state
-                .live_mode_state
-                .completed_sweep_metas
+            .and_then(|v| v.roster.received.last().copied());
+        let prev_sweep = prev_elev.and_then(|pe| {
+            model
+                .position
+                .as_ref()?
+                .sweeps
                 .iter()
-                .find(|m| m.elevation_number == pe)
+                .find(|s| s.elevation_number == pe && s.is_observed())
         });
-        prev_edge_time = prev_sweep_meta.map(|m| fmt_time(m.end));
+        prev_edge_time = prev_sweep.map(|s| fmt_time(s.collection_end_secs));
         prev_meta = prev_elev.map(|pe| {
             let angle = elev_angle_str(pe, vcp);
             format!("Elev {} {}", pe, angle)
         });
     } else {
         // Cached playback
-        let playback_ts = state.playback_state.playback_position();
-        let displayed_elev = state.viz_state.displayed_sweep_elevation_number;
+        let playback_ts = playback.state.playback_position();
+        let displayed_elev = state
+            .viz_state
+            .displayed
+            .as_ref()
+            .map(|d| d.identity.elevation_number);
 
-        // Look up current sweep from timeline
-        let current_sweep_info = state
-            .radar_timeline
+        // Look up current sweep from timeline. Display the VCP target
+        // angle (the cut's identity) rather than the encoder's
+        // measured average — see `Scan::display_angle`.
+        let current_sweep_info = timeline
+            .scans
             .find_recent_scan(playback_ts, 15.0 * 60.0)
             .and_then(|scan| {
                 scan.sweeps
@@ -537,7 +541,14 @@ fn draw_sweep_donut(
                             .iter()
                             .find(|s| Some(s.elevation_number) == displayed_elev)
                     })
-                    .map(|s| (s.elevation_number, s.elevation, s.start_time, s.end_time))
+                    .map(|s| {
+                        (
+                            s.elevation_number,
+                            scan.display_angle(s),
+                            s.start_time,
+                            s.end_time,
+                        )
+                    })
             });
 
         cur_edge_time = Some(fmt_time(playback_ts));
@@ -545,14 +556,15 @@ fn draw_sweep_donut(
         cur_meta =
             current_sweep_info.map(|(en, angle, _, _)| format!("Elev {} {:.1}\u{00B0}", en, angle));
 
-        // Previous sweep times
-        let prev_overlay = state.viz_state.prev_sweep_overlay;
-        prev_edge_time = prev_overlay.map(|(_, _, prev_end)| fmt_time(prev_end));
-        prev_meta = state.viz_state.prev_sweep_elevation_number.map(|pe| {
-            let angle = prev_overlay
-                .map(|(elev_deg, _, _)| format!("{:.1}\u{00B0}", elev_deg))
-                .unwrap_or_default();
-            format!("Elev {} {}", pe, angle)
+        // Previous sweep times — read from the on-GPU prior `displayed`
+        // snapshot so labels track real pixel state.
+        let prev = state.viz_state.previous_displayed.as_ref();
+        prev_edge_time = prev.map(|p| fmt_time(p.end_time));
+        prev_meta = prev.map(|p| {
+            format!(
+                "Elev {} {:.1}\u{00B0}",
+                p.identity.elevation_number, p.elevation_deg
+            )
         });
 
         // Also compute prev time at data edge for the data-edge boundary label
@@ -562,28 +574,32 @@ fn draw_sweep_donut(
     // Prev sweep time interpolated at the data-edge azimuth
     let prev_at_edge_time = if is_live {
         // Live: interpolate within the previous sweep's time range
-        if let Some(meta) = state
-            .live_radar_model
+        if let Some(sw) = live
+            .radar_model
             .volume
             .as_ref()
-            .and_then(|v| v.elevations_complete.last().copied())
+            .and_then(|v| v.roster.received.last().copied())
             .and_then(|pe| {
-                state
-                    .live_mode_state
-                    .completed_sweep_metas
+                live.radar_model
+                    .position
+                    .as_ref()?
+                    .sweeps
                     .iter()
-                    .find(|m| m.elevation_number == pe)
+                    .find(|s| s.elevation_number == pe && s.is_observed())
             })
         {
             let frac = (swept_arc_deg / 360.0).clamp(0.0, 1.0) as f64;
-            Some(fmt_time(meta.start + frac * (meta.end - meta.start)))
+            Some(fmt_time(
+                sw.collection_start_secs
+                    + frac * (sw.collection_end_secs - sw.collection_start_secs),
+            ))
         } else {
             None
         }
     } else {
-        state.viz_state.prev_sweep_overlay.map(|(_, ps, pe)| {
+        state.viz_state.previous_displayed.as_ref().map(|p| {
             let frac = (swept_arc_deg / 360.0).clamp(0.0, 1.0) as f64;
-            fmt_time(ps + frac * (pe - ps))
+            fmt_time(p.start_time + frac * (p.end_time - p.start_time))
         })
     };
 
@@ -743,4 +759,149 @@ fn align_pos(pos: Pos2, size: Vec2, align: egui::Align2) -> Pos2 {
         egui::Align::Max => pos.y - size.y,
     };
     Pos2::new(x, y)
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use eframe::egui::{Align2, Pos2, Vec2};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ---- cached_lon_range_deg ----
+    // v = range_km * (1/111) / cos(lat_rad)
+
+    #[wasm_bindgen_test]
+    fn lon_range_at_equator_no_lat_correction() {
+        // cos(0) = 1, so v = range_km / 111.
+        let v = cached_lon_range_deg(0.0, -97.0, 300.0);
+        assert!((v - 300.0 / 111.0).abs() < 1e-9, "got {}", v);
+    }
+
+    #[wasm_bindgen_test]
+    fn lon_range_grows_with_latitude() {
+        // cos(60deg) = 0.5, so the lon-degree extent roughly doubles vs equator.
+        let eq = cached_lon_range_deg(0.0, 10.0, 300.0);
+        let high = cached_lon_range_deg(60.0, 10.0, 300.0);
+        assert!(high > eq, "high={} eq={}", high, eq);
+        assert!((high - eq * 2.0).abs() < 1e-6, "got {}", high);
+    }
+
+    #[wasm_bindgen_test]
+    fn lon_range_scales_linearly_with_range_km() {
+        let single = cached_lon_range_deg(30.0, -80.0, 100.0);
+        let triple = cached_lon_range_deg(30.0, -80.0, 300.0);
+        assert!((triple - single * 3.0).abs() < 1e-9, "got {}", triple);
+    }
+
+    #[wasm_bindgen_test]
+    fn lon_range_repeat_call_is_stable() {
+        // Identical inputs hit the thread-local cache and must return identically.
+        let a = cached_lon_range_deg(42.5, -71.0, 300.0);
+        let b = cached_lon_range_deg(42.5, -71.0, 300.0);
+        assert!((a - b).abs() < 1e-12, "a={} b={}", a, b);
+    }
+
+    // ---- sweep_label_align ----
+    // Top sector (az not in [45,315)) -> CENTER_BOTTOM
+    // right (45..135) -> LEFT_CENTER; bottom (135..225) -> CENTER_TOP;
+    // left (225..315) -> RIGHT_CENTER.
+
+    #[wasm_bindgen_test]
+    fn sweep_align_north_is_center_bottom() {
+        assert!(sweep_label_align(0.0) == Align2::CENTER_BOTTOM);
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_align_east_is_left_center() {
+        assert!(sweep_label_align(90.0) == Align2::LEFT_CENTER);
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_align_south_is_center_top() {
+        assert!(sweep_label_align(180.0) == Align2::CENTER_TOP);
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_align_west_is_right_center() {
+        assert!(sweep_label_align(270.0) == Align2::RIGHT_CENTER);
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_align_boundaries() {
+        // 45.0 is included in the right sector; 44.9 falls in the top sector.
+        assert!(sweep_label_align(45.0) == Align2::LEFT_CENTER);
+        assert!(sweep_label_align(44.9) == Align2::CENTER_BOTTOM);
+        // 315.0 is excluded from the left sector -> top.
+        assert!(sweep_label_align(315.0) == Align2::CENTER_BOTTOM);
+        assert!(sweep_label_align(314.9) == Align2::RIGHT_CENTER);
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_align_wraps_negative_via_rem_euclid() {
+        // -10 -> 350 -> top sector.
+        assert!(sweep_label_align(-10.0) == Align2::CENTER_BOTTOM);
+        // -90 -> 270 -> left sector.
+        assert!(sweep_label_align(-90.0) == Align2::RIGHT_CENTER);
+    }
+
+    // ---- align_pos ----
+
+    #[wasm_bindgen_test]
+    fn align_pos_min_min_is_identity() {
+        let p = align_pos(
+            Pos2::new(10.0, 20.0),
+            Vec2::new(40.0, 8.0),
+            Align2::LEFT_TOP,
+        );
+        assert!((p.x - 10.0).abs() < 1e-6, "x={}", p.x);
+        assert!((p.y - 20.0).abs() < 1e-6, "y={}", p.y);
+    }
+
+    #[wasm_bindgen_test]
+    fn align_pos_center_bottom() {
+        // x centered (minus half width), y anchored to bottom (minus full height).
+        let p = align_pos(
+            Pos2::new(100.0, 50.0),
+            Vec2::new(40.0, 8.0),
+            Align2::CENTER_BOTTOM,
+        );
+        assert!((p.x - 80.0).abs() < 1e-6, "x={}", p.x);
+        assert!((p.y - 42.0).abs() < 1e-6, "y={}", p.y);
+    }
+
+    #[wasm_bindgen_test]
+    fn align_pos_right_center() {
+        // x anchored to max (minus full width), y centered (minus half height).
+        let p = align_pos(
+            Pos2::new(100.0, 50.0),
+            Vec2::new(40.0, 8.0),
+            Align2::RIGHT_CENTER,
+        );
+        assert!((p.x - 60.0).abs() < 1e-6, "x={}", p.x);
+        assert!((p.y - 46.0).abs() < 1e-6, "y={}", p.y);
+    }
+
+    #[wasm_bindgen_test]
+    fn align_pos_left_center() {
+        // x identity, y centered.
+        let p = align_pos(
+            Pos2::new(5.0, 30.0),
+            Vec2::new(20.0, 10.0),
+            Align2::LEFT_CENTER,
+        );
+        assert!((p.x - 5.0).abs() < 1e-6, "x={}", p.x);
+        assert!((p.y - 25.0).abs() < 1e-6, "y={}", p.y);
+    }
+
+    #[wasm_bindgen_test]
+    fn align_pos_center_top() {
+        // x centered, y identity (Min).
+        let p = align_pos(
+            Pos2::new(100.0, 50.0),
+            Vec2::new(40.0, 8.0),
+            Align2::CENTER_TOP,
+        );
+        assert!((p.x - 80.0).abs() < 1e-6, "x={}", p.x);
+        assert!((p.y - 50.0).abs() < 1e-6, "y={}", p.y);
+    }
 }

@@ -8,7 +8,7 @@
 //!
 //! The selected report (clicked marker) is highlighted with a brighter
 //! ring and its details are drawn as a tooltip-style popover anchored
-//! near the marker, similar to the canvas inspector.
+//! near the marker, similar to the canvas data probe.
 
 use crate::geo::MapProjection;
 use crate::mping::StormReport;
@@ -23,12 +23,17 @@ pub(crate) fn render_mping_reports(
     reports: &[StormReport],
     window_min_ms: f64,
     window_max_ms: f64,
+    playback_secs: f64,
     selected_report_id: Option<i64>,
 ) {
     let (min_lon, min_lat, max_lon, max_lat) = projection.visible_bounds();
     let padding = 0.5;
 
     for report in reports {
+        // Never show a report observed after the time being rendered.
+        if !report.visible_at(playback_secs) {
+            continue;
+        }
         if window_max_ms > window_min_ms
             && (report.obtime_ms < window_min_ms || report.obtime_ms > window_max_ms)
         {
@@ -52,11 +57,11 @@ pub(crate) fn render_mping_reports(
         let is_selected = selected_report_id == Some(report.id);
         let radius = if is_selected { 6.5 } else { 4.5 };
         painter.circle_filled(pos, radius, fill);
-        painter.circle_stroke(pos, radius, Stroke::new(1.0, mping_colors::STROKE));
+        painter.circle_stroke(pos, radius, Stroke::new(1.0_f32, mping_colors::STROKE));
         if is_selected {
             // Bright halo so the selected marker is visually distinct from
             // the dozens of unselected ones around it.
-            painter.circle_stroke(pos, radius + 2.5, Stroke::new(1.5, Color32::WHITE));
+            painter.circle_stroke(pos, radius + 2.5, Stroke::new(1.5_f32, Color32::WHITE));
         }
     }
 }
@@ -79,7 +84,13 @@ pub(crate) fn render_mping_detail(
     let Some(id) = selected_report_id else {
         return;
     };
-    let Some(report) = reports.iter().find(|r| r.id == id) else {
+    // Close the popover if its report sits in the future of the current
+    // playhead (e.g. after the user scrubbed back past its observation
+    // time) — consistent with the marker no longer being drawn.
+    let Some(report) = reports
+        .iter()
+        .find(|r| r.id == id && r.visible_at(playback_secs))
+    else {
         return;
     };
 
@@ -177,7 +188,7 @@ pub(crate) fn render_mping_detail(
     painter.rect_stroke(
         bg_rect,
         4.0,
-        Stroke::new(1.0, Color32::from_rgb(80, 80, 100)),
+        Stroke::new(1.0_f32, Color32::from_rgb(80, 80, 100)),
         StrokeKind::Outside,
     );
     let edge = Rect::from_min_size(bg_rect.min, Vec2::new(3.0, bg_rect.height()));
@@ -204,7 +215,7 @@ pub(crate) fn render_mping_detail(
     };
     painter.line_segment(
         [marker_pos, line_target],
-        Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 100)),
+        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 100)),
     );
 }
 
@@ -253,4 +264,124 @@ fn compass_dir(bearing_deg: f32) -> &'static str {
     ];
     let idx = (((bearing_deg % 360.0) / 22.5).round() as usize) % 16;
     dirs[idx]
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ---- compass_dir ----
+
+    #[wasm_bindgen_test]
+    fn compass_cardinals() {
+        assert_eq!(compass_dir(0.0), "N");
+        assert_eq!(compass_dir(90.0), "E");
+        assert_eq!(compass_dir(180.0), "S");
+        assert_eq!(compass_dir(270.0), "W");
+    }
+
+    #[wasm_bindgen_test]
+    fn compass_intercardinals() {
+        assert_eq!(compass_dir(45.0), "NE");
+        assert_eq!(compass_dir(135.0), "SE");
+        assert_eq!(compass_dir(225.0), "SW");
+        assert_eq!(compass_dir(315.0), "NW");
+    }
+
+    #[wasm_bindgen_test]
+    fn compass_secondary_intercardinal() {
+        // 22.5 deg rounds to index 1 -> NNE.
+        assert_eq!(compass_dir(22.5), "NNE");
+    }
+
+    #[wasm_bindgen_test]
+    fn compass_wraps_at_360() {
+        // 360 % 360 == 0 -> N.
+        assert_eq!(compass_dir(360.0), "N");
+    }
+
+    #[wasm_bindgen_test]
+    fn compass_rounds_to_nearest_sector() {
+        // 11.25 is the boundary between N (idx 0) and NNE (idx 1);
+        // round() of 0.5 in Rust rounds half away from zero -> idx 1.
+        assert_eq!(compass_dir(11.25), "NNE");
+        // Just below the boundary stays N.
+        assert_eq!(compass_dir(10.0), "N");
+    }
+
+    // ---- format_relative ----
+
+    #[wasm_bindgen_test]
+    fn relative_at_playback_time() {
+        assert_eq!(format_relative(0.0), "at playback time");
+        // Within +/-0.5 s of the cursor counts as "at playback time".
+        assert_eq!(format_relative(0.4), "at playback time");
+        assert_eq!(format_relative(-0.4), "at playback time");
+    }
+
+    #[wasm_bindgen_test]
+    fn relative_seconds_after() {
+        assert_eq!(format_relative(30.0), "30s after playback");
+    }
+
+    #[wasm_bindgen_test]
+    fn relative_seconds_before() {
+        assert_eq!(format_relative(-45.0), "45s before playback");
+    }
+
+    #[wasm_bindgen_test]
+    fn relative_minutes_after() {
+        // 120 s -> 2m.
+        assert_eq!(format_relative(120.0), "2m after playback");
+    }
+
+    #[wasm_bindgen_test]
+    fn relative_minutes_before() {
+        assert_eq!(format_relative(-120.0), "2m before playback");
+    }
+
+    #[wasm_bindgen_test]
+    fn relative_hours_after() {
+        // 7200 s -> 2.0h (one decimal).
+        assert_eq!(format_relative(7200.0), "2.0h after playback");
+    }
+
+    #[wasm_bindgen_test]
+    fn relative_hours_before() {
+        assert_eq!(format_relative(-7200.0), "2.0h before playback");
+    }
+
+    #[wasm_bindgen_test]
+    fn relative_boundary_just_under_an_hour() {
+        // 3599 s is still in the minutes branch (abs < 3600).
+        assert_eq!(format_relative(3599.0), "60m after playback");
+    }
+
+    // ---- format_obtime (UTC branch only; local branch depends on the
+    //      browser timezone and js_sys::Date, which is non-deterministic) ----
+
+    #[wasm_bindgen_test]
+    fn obtime_utc_epoch() {
+        assert_eq!(format_obtime(0.0, false), "1970-01-01 00:00 UTC");
+    }
+
+    #[wasm_bindgen_test]
+    fn obtime_utc_known_timestamp() {
+        // 1_700_000_000_000 ms == 2023-11-14 22:13:20 UTC.
+        assert_eq!(
+            format_obtime(1_700_000_000_000.0, false),
+            "2023-11-14 22:13 UTC"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn obtime_utc_truncates_seconds() {
+        // Base is 22:13:20; adding 30_000 ms → 22:13:50, still within the same
+        // minute, so the seconds are dropped without bumping the minute field.
+        assert_eq!(
+            format_obtime(1_700_000_030_000.0, false),
+            "2023-11-14 22:13 UTC"
+        );
+    }
 }

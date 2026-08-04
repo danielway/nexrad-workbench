@@ -4,10 +4,12 @@
 //! "Current" and "Previous" sections showing elevation, time, and age.
 //!
 //! INVARIANT: every time/age value shown here is ACTUAL — derived from
-//! real radial collection timestamps (via `viz_state.timestamp` and
-//! `data_staleness_*`) and the wall clock. No projected collection or
-//! availability times reach the canvas; principle 1 of the timing model
-//! requires the canvas and current-time indicator to show only actuals.
+//! real radial collection timestamps (the displayed frame's raw start/end on
+//! `viz_state.displayed`, formatted live each frame) and the wall clock. No
+//! projected collection or availability times reach the canvas; principle 1 of
+//! the timing model requires the canvas and current-time indicator to show only
+//! actuals. The displayed-frame timestamp is now PRIMARY in the top bar; this
+//! overlay is the secondary/Advanced detail (full date, age range, prev sweep).
 
 use crate::state::AppState;
 use eframe::egui::{self, Color32, Rect, RichText, Vec2};
@@ -17,9 +19,27 @@ use super::super::canvas::{
     ARCHIVE_AGE_THRESHOLD_SECS,
 };
 
-pub(crate) fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
-    let has_prev = state.viz_state.prev_sweep_overlay.is_some();
-    let is_live = state.live_radar_model.active;
+/// Trait wrapper for the registry. Always visible.
+pub(super) struct OverlayInfo;
+
+impl super::Overlay for OverlayInfo {
+    fn z_order(&self) -> i32 {
+        10
+    }
+
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
+        draw_overlay_info(ui, &ctx.rect, ctx.state, ctx.live);
+    }
+}
+
+fn draw_overlay_info(
+    ui: &mut egui::Ui,
+    rect: &Rect,
+    state: &AppState,
+    live: &crate::subsystem::Live,
+) {
+    let has_prev = state.viz_state.previous_displayed.is_some();
+    let is_live = live.radar_model.active;
     let overlay_pos = rect.left_top() + Vec2::new(10.0, 10.0);
     let overlay_height = if has_prev { 170.0 } else { 105.0 };
     let overlay_rect = Rect::from_min_size(overlay_pos, Vec2::new(310.0, overlay_height));
@@ -56,16 +76,26 @@ pub(crate) fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState
             );
 
             // ── Current sweep section ────────────────────────────────
+            // Format the displayed frame's timestamp live from its raw
+            // collection time so a local/UTC flip reformats it this same frame.
+            let current_time = match state.viz_state.displayed_midpoint_secs() {
+                Some(mid) => format_unix_timestamp_with_date(mid, state.use_local_time),
+                None => "--:--:-- --".to_string(),
+            };
             draw_sweep_section(
                 ui,
                 "Current",
-                state.viz_state.displayed_sweep_elevation_number,
+                state
+                    .viz_state
+                    .displayed
+                    .as_ref()
+                    .map(|d| d.identity.elevation_number),
                 &state.viz_state.elevation,
-                &state.viz_state.timestamp,
+                &current_time,
                 state.viz_state.data_staleness_secs,
                 state.viz_state.data_staleness_start_secs,
                 if is_live {
-                    let active = state.live_radar_model.active_sweep.as_ref();
+                    let active = live.radar_model.active_sweep.as_ref();
                     let chunks = active.map(|s| s.chunks.len() as u32).unwrap_or(0);
                     let expected = active.and_then(|s| s.chunks_expected);
                     let is_partial = active.map(|s| s.radials_received < 360).unwrap_or(false);
@@ -86,23 +116,22 @@ pub(crate) fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState
             );
 
             // ── Previous sweep section ───────────────────────────────
-            if let Some((prev_elev_deg, prev_start, prev_end)) = state.viz_state.prev_sweep_overlay
-            {
+            if let Some(prev) = state.viz_state.previous_displayed.as_ref() {
                 ui.add_space(2.0);
-                let now = js_sys::Date::now() / 1000.0;
-                let prev_age_end = now - prev_end;
-                let prev_age_start = now - prev_start;
+                let now = state.frame_now.secs();
+                let prev_age_end = now - prev.end_time;
+                let prev_age_start = now - prev.start_time;
 
-                let prev_elev_str = format!("{:.1}\u{00B0}", prev_elev_deg);
+                let prev_elev_str = format!("{:.1}\u{00B0}", prev.elevation_deg);
                 let prev_time = format_unix_timestamp_with_date(
-                    (prev_start + prev_end) / 2.0,
+                    (prev.start_time + prev.end_time) / 2.0,
                     state.use_local_time,
                 );
 
                 draw_sweep_section(
                     ui,
                     "Previous",
-                    state.viz_state.prev_sweep_elevation_number,
+                    Some(prev.identity.elevation_number),
                     &prev_elev_str,
                     &prev_time,
                     if prev_age_end >= 0.0 {

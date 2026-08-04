@@ -40,7 +40,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run Clippy
-        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+        # --all-targets so #[cfg(test)] code is linted too; matches the
+        # pre-commit hook in .cargo-husky/hooks/pre-commit.
+        run: cargo clippy --target wasm32-unknown-unknown --all-targets -- -D warnings
 
   build:
     name: Build check
@@ -59,3 +61,55 @@ jobs:
 
       - name: Build
         run: cargo build --target wasm32-unknown-unknown --release
+
+  tests:
+    name: Pure-Rust logic tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --locked --version 0.2.114
+
+      # Inline `#[wasm_bindgen_test]` blocks across the bin's `src/` tree.
+      # Run in node (default) — no browser needed. ~50ms.
+      - name: Run logic tests
+        run: cargo test --bin nexrad-workbench
+
+  idb-integration:
+    name: IndexedDB integration tests (Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --locked --version 0.2.114
+
+      # ubuntu-latest ships chromium + chromedriver in apt. Headless
+      # Chromium drives the wasm-bindgen-test-runner; tests/idb.rs is
+      # configured `run_in_browser`.
+      - name: Install Chromium + chromedriver
+        run: sudo apt-get update && sudo apt-get install -y chromium-browser chromium-chromedriver
+
+      - name: Run IDB integration tests
+        env:
+          CHROMEDRIVER: /usr/bin/chromedriver
+        run: cargo test --test idb

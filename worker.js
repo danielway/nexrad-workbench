@@ -32,8 +32,76 @@
 //
 //   Errors:
 //     Worker → Main:  { type: 'error', id, message }
+//
+// CONTRACT: every `type` string above MUST match the corresponding variant
+// in `RequestType` / `ResponseType` (src/nexrad/decode_worker/types.rs).
+// Those enums are the Rust-side single source of truth; the round-trip is
+// pinned by `request_type_strings_are_snake_case` and
+// `response_type_strings_roundtrip` unit tests. Adding a new message type
+// requires changes in BOTH places.
 
 let wasm = null;
+
+// Produce a useful string for any thrown value. Naive `String(err)` on a
+// plain object yields "[object Object]" — that's what produced the
+// unhelpful "worker[object Object]" chip in the UI. Walk through the
+// common cases (string, Error, anything with a usable .message, plain
+// object) before giving up.
+function describeError(err) {
+    if (err == null) return 'Unknown error';
+    if (typeof err === 'string') return err;
+    if (typeof err.message === 'string' && err.message) return err.message;
+    try {
+        const json = JSON.stringify(err);
+        if (json && json !== '{}' && json !== 'null') return json;
+    } catch (_) {
+        // Cyclic or non-serializable — fall through.
+    }
+    const s = String(err);
+    if (s && s !== '[object Object]') return s;
+    const ctor = err.constructor && err.constructor.name;
+    return ctor ? `Non-Error object thrown (${ctor})` : 'Non-Error object thrown';
+}
+
+// Classify a caught exception into a structured { kind, message } pair so
+// the Rust receive path can dispatch on the kind instead of regex-matching
+// the message. Rust code that throws can opt into a specific kind by
+// throwing an object with `kind` and `message` fields; otherwise we map
+// known DOMException names to kinds. New kinds must be added to
+// `WorkerErrorKind` in src/nexrad/decode_worker/types.rs and pinned by the
+// `worker_error_kind_deserializes_known_strings` test.
+function classifyError(err) {
+    if (err && typeof err === 'object' && typeof err.kind === 'string') {
+        return { kind: err.kind, message: describeError(err.message || err.kind) };
+    }
+    if (err == null) {
+        return { kind: 'unknown', message: 'Unknown error' };
+    }
+    const name = (err && err.name) || '';
+    const message = describeError(err);
+    if (name === 'QuotaExceededError') {
+        return { kind: 'quota_exceeded', message };
+    }
+    if (name === 'NotFoundError') {
+        return { kind: 'not_found', message };
+    }
+    if (
+        name === 'DataError' ||
+        name === 'InvalidStateError' ||
+        name === 'TransactionInactiveError' ||
+        name === 'ConstraintError' ||
+        name === 'AbortError'
+    ) {
+        return { kind: 'idb_failure', message };
+    }
+    return { kind: 'unknown', message };
+}
+
+function postError(id, err, prefix) {
+    const cls = classifyError(err);
+    const message = prefix ? prefix + cls.message : cls.message;
+    self.postMessage({ type: 'error', id, kind: cls.kind, message });
+}
 
 self.onmessage = async function (e) {
     const msg = e.data;
@@ -47,31 +115,42 @@ self.onmessage = async function (e) {
             wasm = mod;
             self.postMessage({ type: 'ready' });
         } catch (err) {
-            self.postMessage({ type: 'error', id: 0, message: 'Worker init failed: ' + String(err) });
+            self.postMessage({
+                type: 'error',
+                id: 0,
+                kind: 'init_failed',
+                message: 'Worker init failed: ' + describeError(err),
+            });
         }
         return;
     }
 
     if (!wasm) {
-        self.postMessage({ type: 'error', id: msg.id, message: 'Worker not initialized' });
+        self.postMessage({
+            type: 'error',
+            id: msg.id,
+            kind: 'init_failed',
+            message: 'Worker not initialized',
+        });
         return;
     }
 
     if (msg.type === 'ingest') {
         try {
             // worker_ingest: JsValue -> Promise<JsValue>
-            // Input: { data: ArrayBuffer, siteId, timestampSecs, fileName }
+            // Input: { data: ArrayBuffer, siteId, timestampSecs, fileName, wantedElevations }
             // Output: { recordsStored, scanKey, elevationMap, totalMs }
             const result = await wasm.worker_ingest({
                 data: msg.data,
                 siteId: msg.siteId,
                 timestampSecs: msg.timestampSecs,
                 fileName: msg.fileName,
+                wantedElevations: msg.wantedElevations,
             });
 
             self.postMessage({ type: 'ingested', id: msg.id, result: result });
         } catch (err) {
-            self.postMessage({ type: 'error', id: msg.id, message: String(err) });
+            postError(msg.id, err);
         }
         return;
     }
@@ -86,12 +165,11 @@ self.onmessage = async function (e) {
                 isStart: msg.isStart,
                 isEnd: msg.isEnd,
                 fileName: msg.fileName,
-                skipOverlapDelete: msg.skipOverlapDelete || false,
                 isLastInSweep: msg.isLastInSweep || false,
             });
             self.postMessage({ type: 'chunk_ingested', id: msg.id, result: result });
         } catch (err) {
-            self.postMessage({ type: 'error', id: msg.id, message: String(err) });
+            postError(msg.id, err);
         }
         return;
     }
@@ -112,7 +190,7 @@ self.onmessage = async function (e) {
             });
             self.postMessage(payload, transferList);
         } catch (err) {
-            self.postMessage({ type: 'error', id: msg.id, message: String(err) });
+            postError(msg.id, err);
         }
         return;
     }
@@ -137,7 +215,7 @@ self.onmessage = async function (e) {
             });
             self.postMessage(payload, transferList);
         } catch (err) {
-            self.postMessage({ type: 'error', id: msg.id, message: String(err) });
+            postError(msg.id, err);
         }
         return;
     }
@@ -158,7 +236,7 @@ self.onmessage = async function (e) {
             });
             self.postMessage(payload, transferList);
         } catch (err) {
-            self.postMessage({ type: 'error', id: msg.id, message: String(err) });
+            postError(msg.id, err);
         }
         return;
     }

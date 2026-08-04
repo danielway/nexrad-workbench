@@ -9,7 +9,7 @@ use std::rc::Rc;
 use super::types::StormReport;
 
 /// An event delivered by the fetch future into the UI loop.
-pub enum MpingEvent {
+pub(crate) enum MpingEvent {
     /// Fetch succeeded with a parsed report set.
     Updated {
         reports: Vec<StormReport>,
@@ -21,22 +21,22 @@ pub enum MpingEvent {
 
 /// Shared buffer for events produced by the async fetch.
 #[derive(Clone, Default)]
-pub struct MpingChannel {
+pub(crate) struct MpingChannel {
     events: Rc<RefCell<Vec<MpingEvent>>>,
 }
 
 impl MpingChannel {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Push an event from inside an async task.
-    pub fn push(&self, event: MpingEvent) {
+    pub(crate) fn push(&self, event: MpingEvent) {
         self.events.borrow_mut().push(event);
     }
 
     /// Drain all pending events; called once per frame.
-    pub fn drain(&self) -> Vec<MpingEvent> {
+    pub(crate) fn drain(&self) -> Vec<MpingEvent> {
         std::mem::take(&mut *self.events.borrow_mut())
     }
 }

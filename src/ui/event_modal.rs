@@ -8,7 +8,7 @@ use eframe::egui::{self, Color32, RichText, Vec2};
 
 /// Transient form state for the event modal. Stored on WorkbenchApp.
 #[derive(Default)]
-pub struct EventModalState {
+pub(crate) struct EventModalState {
     /// Whether the form has been initialized for the current open.
     initialized: bool,
     pub name: String,
@@ -31,7 +31,13 @@ pub struct EventModalState {
 
 impl EventModalState {
     /// Initialize form fields from a selection range and current site.
-    pub fn init_from_selection(&mut self, site_id: &str, start: f64, end: f64, use_local: bool) {
+    pub(crate) fn init_from_selection(
+        &mut self,
+        site_id: &str,
+        start: f64,
+        end: f64,
+        use_local: bool,
+    ) {
         self.name.clear();
         self.site_id = site_id.to_string();
         (
@@ -53,7 +59,7 @@ impl EventModalState {
     }
 
     /// Initialize form fields from an existing event for editing.
-    pub fn init_from_event(
+    pub(crate) fn init_from_event(
         &mut self,
         name: &str,
         site_id: &str,
@@ -176,13 +182,39 @@ impl EventModalState {
     }
 }
 
-/// Render the event create/edit modal if open.
-pub fn render_event_modal(
+pub(super) struct EventModalLayer;
+
+impl super::layout::Layer for EventModalLayer {
+    fn kind(&self) -> super::layout::LayerKind {
+        super::layout::LayerKind::Modal
+    }
+    fn z_order(&self) -> i32 {
+        70
+    }
+    fn visible(&self, ctx: &super::layout::LayoutCtx) -> bool {
+        // Also visible while modal_state needs the close-time reset that
+        // the body's early-return performs.
+        ctx.chrome.event_modal_open || ctx.modals.event.initialized
+    }
+    fn render(&self, ctx: &mut super::layout::LayoutCtx) {
+        draw_event_modal(
+            ctx.ctx,
+            ctx.state,
+            ctx.playback,
+            &mut ctx.modals.event,
+            ctx.chrome,
+        );
+    }
+}
+
+fn draw_event_modal(
     ctx: &egui::Context,
     state: &mut AppState,
+    playback: &crate::subsystem::Playback,
     modal_state: &mut EventModalState,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
-    if !state.event_modal_open {
+    if !chrome.event_modal_open {
         modal_state.initialized = false;
         return;
     }
@@ -190,7 +222,7 @@ pub fn render_event_modal(
     // Initialize form fields on first frame after opening
     if !modal_state.initialized {
         modal_state.initialized = true;
-        if let Some(editing_id) = state.event_modal_editing_id {
+        if let Some(editing_id) = chrome.event_modal_editing_id {
             // Editing existing event
             if let Some(event) = state
                 .saved_events
@@ -208,8 +240,8 @@ pub fn render_event_modal(
             }
         } else {
             // Creating new event — pre-fill from selection range
-            let (start, end) = state.playback_state.selection_range().unwrap_or_else(|| {
-                let pos = state.playback_state.playback_position();
+            let (start, end) = playback.state.selection_range().unwrap_or_else(|| {
+                let pos = playback.state.playback_position();
                 (pos - 1800.0, pos + 1800.0)
             });
             modal_state.init_from_selection(
@@ -222,11 +254,11 @@ pub fn render_event_modal(
     }
 
     if super::modal_helper::modal_backdrop(ctx, "event_modal_backdrop", 160) {
-        state.event_modal_open = false;
+        chrome.event_modal_open = false;
         return;
     }
 
-    let is_editing = state.event_modal_editing_id.is_some();
+    let is_editing = chrome.event_modal_editing_id.is_some();
     let title = if is_editing {
         "Edit Event"
     } else {
@@ -247,6 +279,9 @@ pub fn render_event_modal(
             ui.horizontal(|ui| {
                 ui.label("Name:");
                 let response = ui.add(
+                    // two-way binding: the egui widget owns this value while
+                    // the user edits it (as does every field in the two date
+                    // rows below).
                     egui::TextEdit::singleline(&mut modal_state.name)
                         .hint_text("Event name...")
                         .desired_width(260.0),
@@ -366,11 +401,11 @@ pub fn render_event_modal(
                             .fill(Color32::from_rgb(200, 60, 60)),
                     );
                     if delete_btn.clicked() {
-                        if let Some(id) = state.event_modal_editing_id {
+                        if let Some(id) = chrome.event_modal_editing_id {
                             state.saved_events.remove(id);
                         }
-                        state.event_modal_open = false;
-                        state.event_modal_editing_id = None;
+                        chrome.event_modal_open = false;
+                        chrome.event_modal_editing_id = None;
                     }
                 }
 
@@ -381,7 +416,7 @@ pub fn render_event_modal(
                         let end = end_ts.unwrap();
                         let name = modal_state.name.trim().to_string();
 
-                        if let Some(id) = state.event_modal_editing_id {
+                        if let Some(id) = chrome.event_modal_editing_id {
                             state.saved_events.update(id, name, start, end);
                         } else {
                             state
@@ -389,17 +424,146 @@ pub fn render_event_modal(
                                 .add(name, modal_state.site_id.clone(), start, end);
                         }
 
-                        state.event_modal_open = false;
-                        state.event_modal_editing_id = None;
+                        chrome.event_modal_open = false;
+                        chrome.event_modal_editing_id = None;
                     }
 
                     if ui.button("Cancel").clicked() {
-                        state.event_modal_open = false;
-                        state.event_modal_editing_id = None;
+                        chrome.event_modal_open = false;
+                        chrome.event_modal_editing_id = None;
                     }
                 });
             });
 
             ui.add_space(4.0);
         });
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // 1705321845 == 2024-01-15 12:30:45 UTC
+    // 1705327200 == 2024-01-15 14:00:00 UTC
+    // 1700000000 == 2023-11-14 22:13:20 UTC
+
+    #[wasm_bindgen_test]
+    fn init_from_selection_formats_utc_fields() {
+        let mut s = EventModalState::default();
+        s.name = "stale".to_string();
+        s.init_from_selection("KTLX", 1705321845.0, 1705327200.0, false);
+
+        // name is cleared, site set
+        assert!(s.name.is_empty());
+        assert!(s.site_id == "KTLX");
+
+        // start = 2024-01-15 12:30:45
+        assert!(s.start_year == "2024");
+        assert!(s.start_month == "01");
+        assert!(s.start_day == "15");
+        assert!(s.start_hour == "12");
+        assert!(s.start_minute == "30");
+        assert!(s.start_second == "45");
+
+        // end = 2024-01-15 14:00:00
+        assert!(s.end_year == "2024");
+        assert!(s.end_month == "01");
+        assert!(s.end_day == "15");
+        assert!(s.end_hour == "14");
+        assert!(s.end_minute == "00");
+        assert!(s.end_second == "00");
+    }
+
+    #[wasm_bindgen_test]
+    fn init_from_event_sets_name_site_and_fields() {
+        let mut s = EventModalState::default();
+        s.init_from_event("Tornado", "KOUN", 1700000000.0, 1705321845.0, false);
+
+        assert!(s.name == "Tornado");
+        assert!(s.site_id == "KOUN");
+
+        // start = 2023-11-14 22:13:20
+        assert!(s.start_year == "2023");
+        assert!(s.start_month == "11");
+        assert!(s.start_day == "14");
+        assert!(s.start_hour == "22");
+        assert!(s.start_minute == "13");
+        assert!(s.start_second == "20");
+
+        // end = 2024-01-15 12:30:45
+        assert!(s.end_year == "2024");
+        assert!(s.end_month == "01");
+        assert!(s.end_day == "15");
+        assert!(s.end_hour == "12");
+        assert!(s.end_minute == "30");
+        assert!(s.end_second == "45");
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_start_and_end_roundtrip_utc() {
+        let mut s = EventModalState::default();
+        s.init_from_event("e", "KXXX", 1705321845.0, 1705327200.0, false);
+
+        let start = s.parse_start(false);
+        let end = s.parse_end(false);
+        assert!(start.is_some());
+        assert!(end.is_some());
+        assert!((start.unwrap() - 1705321845.0).abs() < 1.0);
+        assert!((end.unwrap() - 1705327200.0).abs() < 1.0);
+        // ordering holds for a valid selection
+        assert!(start.unwrap() < end.unwrap());
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_start_handles_raw_fields_utc() {
+        let mut s = EventModalState::default();
+        s.start_year = "2023".to_string();
+        s.start_month = "11".to_string();
+        s.start_day = "14".to_string();
+        s.start_hour = "22".to_string();
+        s.start_minute = "13".to_string();
+        s.start_second = "20".to_string();
+
+        let ts = s.parse_start(false);
+        assert!(ts.is_some());
+        assert!((ts.unwrap() - 1700000000.0).abs() < 1.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_start_none_on_empty_field() {
+        let mut s = EventModalState::default();
+        // year left empty -> parse::<i32>() fails -> None
+        s.start_month = "01".to_string();
+        s.start_day = "15".to_string();
+        s.start_hour = "12".to_string();
+        s.start_minute = "00".to_string();
+        s.start_second = "00".to_string();
+        assert!(s.parse_start(false).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_start_none_on_nonnumeric_field() {
+        let mut s = EventModalState::default();
+        s.start_year = "2024".to_string();
+        s.start_month = "abc".to_string();
+        s.start_day = "15".to_string();
+        s.start_hour = "12".to_string();
+        s.start_minute = "00".to_string();
+        s.start_second = "00".to_string();
+        assert!(s.parse_start(false).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_start_none_on_invalid_calendar_date() {
+        let mut s = EventModalState::default();
+        // month 13 is out of range -> chrono LocalResult is not Single -> None
+        s.start_year = "2024".to_string();
+        s.start_month = "13".to_string();
+        s.start_day = "15".to_string();
+        s.start_hour = "12".to_string();
+        s.start_minute = "00".to_string();
+        s.start_second = "00".to_string();
+        assert!(s.parse_start(false).is_none());
+    }
 }

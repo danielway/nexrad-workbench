@@ -1,24 +1,35 @@
 //! Central canvas UI: radar visualization area.
 
-use super::canvas_inspector::{render_distance_measurement, render_inspector, render_storm_cells};
+use super::canvas_data_probe::{
+    render_data_probe, render_distance_measurement, render_storm_cells,
+};
 use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interaction};
 use super::canvas_overlays::{
-    draw_color_scale, draw_compass, draw_globe, draw_national_mosaic, draw_overlay_info,
-    draw_scale_bar, render_alerts, render_mping_detail, render_mping_reports, render_nexrad_sites,
-    render_radar_sweep, RadarCutout,
+    draw_globe, draw_national_mosaic, render_alerts, render_chrome_overlays, render_gps_location,
+    render_mping_detail, render_mping_reports, render_nexrad_sites, render_radar_sweep,
+    AlertRenderPhase, OverlayContext, RadarCutout,
 };
 use super::colors::canvas as canvas_colors;
+use crate::core::RenderProcessing;
+use crate::geo::ViewMode;
 use crate::geo::{GeoLayerSet, MapProjection};
 use crate::nexrad::RadarGpuRenderer;
-use crate::state::{AppState, RenderProcessing, ViewMode};
+use crate::state::AppState;
 use eframe::egui::{self, Color32, Rect, Sense, Stroke};
 use geo_types::Coord;
 use std::sync::{Arc, Mutex};
 
 /// Render canvas with optional geographic layers and NEXRAD data.
-pub fn render_canvas_with_geo(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_canvas_with_geo(
     ctx: &egui::Context,
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
+    live: &crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
+    chrome: &mut crate::subsystem::Chrome,
+    diagnostics: &mut crate::subsystem::Diagnostics,
+    derived: &crate::subsystem::Derived,
     geo_layers: Option<&GeoLayerSet>,
     gpu: &crate::GpuResources,
 ) {
@@ -39,7 +50,7 @@ pub fn render_canvas_with_geo(
         // Draw background
         painter.rect_filled(rect, 0.0, canvas_colors::background(dark));
 
-        match state.viz_state.view_mode {
+        match state.viz_state.view_mode() {
             ViewMode::Globe3D => {
                 // Globe view doesn't have meaningful 2D lat/lon bounds;
                 // downstream consumers should treat `None` as "unknown".
@@ -47,6 +58,13 @@ pub fn render_canvas_with_geo(
 
                 // Update camera aspect ratio
                 state.viz_state.camera.set_aspect(rect);
+
+                // Advance any camera fly-to transition (pure core math;
+                // the shell only supplies dt and keeps frames coming).
+                let dt = ctx.input(|i| i.stable_dt.min(0.1));
+                if state.viz_state.camera.tick_animation(dt) {
+                    ctx.request_repaint();
+                }
 
                 // Draw the 3D globe via PaintCallback
                 draw_globe(
@@ -60,10 +78,18 @@ pub fn render_canvas_with_geo(
                     volume_ray_renderer,
                 );
 
-                // 2D overlays drawn on top after the GL callback
-                draw_color_scale(ui, &rect, &state.viz_state.product);
-                draw_overlay_info(ui, &rect, state);
-                draw_compass(ui, &rect, &state.viz_state.camera);
+                // Corner-chrome overlays (color scale + info + compass)
+                // dispatched through the typed registry. The trait's
+                // `visible` predicate keeps the scale bar (2D-only) out.
+                render_chrome_overlays(
+                    ui,
+                    &OverlayContext {
+                        rect,
+                        state,
+                        live,
+                        derived,
+                    },
+                );
 
                 // Handle orbit/zoom interactions
                 handle_globe_interaction(&response, &rect, state);
@@ -72,7 +98,7 @@ pub fn render_canvas_with_geo(
                 // --- Existing flat 2D path ---
                 let mut projection =
                     MapProjection::new(state.viz_state.center_lat, state.viz_state.center_lon);
-                projection.update(state.viz_state.zoom, state.viz_state.pan_offset, rect);
+                projection.update(state.viz_state.zoom(), state.viz_state.pan_offset(), rect);
 
                 // Cache current visible bounds so non-canvas UI (top bar chip,
                 // modals) can filter geographic data without reconstructing
@@ -84,7 +110,7 @@ pub fn render_canvas_with_geo(
                 // or rect changes; we record the time of last change and
                 // expose `camera_settled` so the label cache only rebuilds
                 // after motion has stopped for `SETTLE_WINDOW_SECS`.
-                let now_secs = js_sys::Date::now() / 1000.0;
+                let now_secs = derived.frame_now_secs;
                 state
                     .render_cache
                     .camera_motion
@@ -112,9 +138,10 @@ pub fn render_canvas_with_geo(
                     if !has_data {
                         return None;
                     }
-                    let km_to_deg = 1.0 / 111.0;
-                    let lat_correction = state.viz_state.center_lat.to_radians().cos();
-                    let lon_range = NEXRAD_MAX_RANGE_KM * km_to_deg / lat_correction;
+                    let lon_range = crate::core::canvas::cutout_lon_range_deg(
+                        state.viz_state.center_lat,
+                        NEXRAD_MAX_RANGE_KM,
+                    );
                     let center = projection.geo_to_screen(Coord {
                         x: state.viz_state.center_lon,
                         y: state.viz_state.center_lat,
@@ -127,12 +154,12 @@ pub fn render_canvas_with_geo(
                     Some(RadarCutout { center, radius })
                 });
 
-                if state.layer_state.geo.national_mosaic {
+                if state.layer_state.geo.national_mosaic && derived.data_is_live {
                     draw_national_mosaic(
                         &painter,
                         &projection,
                         &state.national_mosaic,
-                        state.viz_state.zoom,
+                        state.viz_state.zoom(),
                         radar_cutout,
                     );
                 }
@@ -143,7 +170,7 @@ pub fn render_canvas_with_geo(
                         layers,
                         &state.layer_state.geo,
                         &projection,
-                        state.viz_state.zoom,
+                        state.viz_state.zoom(),
                         state.layer_state.geo.labels,
                         crate::geo::GeoPass::Lines,
                         dark,
@@ -159,10 +186,28 @@ pub fn render_canvas_with_geo(
                     crate::geo::GeoPass::Lines,
                 );
 
-                let sweep_info = compute_sweep_line_azimuth(state);
-                let (gpu_sweep, between_sweeps) = compute_gpu_sweep_state(state, sweep_info);
+                // Warning fills paint *under* the radar so storm data stays
+                // readable over them; their outlines and the watch layer paint
+                // over the radar below.
+                let show_warnings = state.layer_state.geo.alerts_warnings;
+                let show_other = state.layer_state.geo.alerts_other;
+                let alerts_active = derived.data_is_live && !diagnostics.alerts.alerts.is_empty();
+                if show_warnings && alerts_active {
+                    render_alerts(
+                        &painter,
+                        &projection,
+                        &diagnostics.alerts.alerts,
+                        show_warnings,
+                        show_other,
+                        AlertRenderPhase::UnderRadar,
+                    );
+                }
 
-                let chunk_boundary = state.live_radar_model.estimated_azimuth;
+                let sweep_info = compute_sweep_line_azimuth(state, timeline, playback);
+                let (gpu_sweep, between_sweeps) =
+                    compute_gpu_sweep_state(state, timeline, live, playback, derived, sweep_info);
+
+                let chunk_boundary = live.radar_model.estimated_azimuth;
 
                 if let Some(renderer) = gpu_renderer {
                     draw_radar_gpu(
@@ -183,7 +228,7 @@ pub fn render_canvas_with_geo(
                         painter.circle_stroke(
                             c.center,
                             c.radius,
-                            Stroke::new(1.5, canvas_colors::ring_major(dark)),
+                            Stroke::new(1.5_f32, canvas_colors::ring_major(dark)),
                         );
                     }
                     // Request only as fast as the visible animation requires. A
@@ -195,13 +240,13 @@ pub fn render_canvas_with_geo(
                     // need enough updates to advance the estimated-azimuth line
                     // (~10 fps is visually indistinguishable). Fully idle falls
                     // through to the 1 Hz global tick in `apply_frame_setup`.
-                    let live_has_active_sweep = state
-                        .live_radar_model
+                    let live_has_active_sweep = live
+                        .radar_model
                         .active_sweep
                         .as_ref()
                         .is_some_and(|s| s.data_azimuth_range.is_some());
-                    let live_has_moving_line = state.live_radar_model.active
-                        && state.live_radar_model.estimated_azimuth.is_some();
+                    let live_has_moving_line =
+                        live.radar_model.active && live.radar_model.estimated_azimuth.is_some();
 
                     if gpu_sweep.is_some() || between_sweeps || live_has_active_sweep {
                         ui.ctx()
@@ -212,18 +257,26 @@ pub fn render_canvas_with_geo(
                     }
                 }
 
-                if state.layer_state.geo.alerts && !state.alerts.alerts.is_empty() {
-                    render_alerts(&painter, &projection, &state.alerts.alerts);
+                if (show_warnings || show_other) && alerts_active {
+                    render_alerts(
+                        &painter,
+                        &projection,
+                        &diagnostics.alerts.alerts,
+                        show_warnings,
+                        show_other,
+                        AlertRenderPhase::OverRadar,
+                    );
                 }
 
-                if state.layer_state.geo.mping && !state.mping.reports.is_empty() {
+                if state.layer_state.geo.mping && !diagnostics.mping.reports.is_empty() {
                     render_mping_reports(
                         &painter,
                         &projection,
-                        &state.mping.reports,
-                        state.mping.window_min_ms,
-                        state.mping.window_max_ms,
-                        state.mping.selected_report_id,
+                        &diagnostics.mping.reports,
+                        diagnostics.mping.window_min_ms,
+                        diagnostics.mping.window_max_ms,
+                        playback.state.playback_position(),
+                        diagnostics.mping.selected_report_id,
                     );
                 }
 
@@ -236,7 +289,7 @@ pub fn render_canvas_with_geo(
                         layers,
                         &state.layer_state.geo,
                         &projection,
-                        state.viz_state.zoom,
+                        state.viz_state.zoom(),
                         state.layer_state.geo.labels,
                         crate::geo::GeoPass::Labels,
                         dark,
@@ -263,11 +316,17 @@ pub fn render_canvas_with_geo(
                     );
                 }
 
+                if state.layer_state.geo.gps_location {
+                    if let Some(coords) = diagnostics.gps.coords {
+                        render_gps_location(&painter, &projection, coords);
+                    }
+                }
+
                 // Show sweep line when actively revealing, between sweeps, or during live streaming.
                 // In live mode, the data boundaries and the "now" line are separate:
                 //   data_sweep = (data_edge, data_start) — from actual received chunks
                 //   now_line = estimated antenna position — what's currently being collected
-                let (sweep_line_info, sweep_stale) = if state.live_radar_model.active {
+                let (sweep_line_info, sweep_stale) = if live.radar_model.active {
                     // Use data boundaries for the donut arc (same as GPU compositing)
                     (gpu_sweep, false)
                 } else {
@@ -279,7 +338,18 @@ pub fn render_canvas_with_geo(
                         _ => (None, false),
                     }
                 };
-                render_radar_sweep(&painter, &projection, state, sweep_line_info, sweep_stale);
+                render_radar_sweep(
+                    &painter,
+                    &projection,
+                    state,
+                    timeline,
+                    live,
+                    playback,
+                    chrome,
+                    derived,
+                    sweep_line_info,
+                    sweep_stale,
+                );
 
                 if state.viz_state.distance_tool_active || state.viz_state.distance_start.is_some()
                 {
@@ -291,9 +361,9 @@ pub fn render_canvas_with_geo(
                     );
                 }
 
-                if state.viz_state.inspector_enabled {
+                if state.viz_state.data_probe_enabled {
                     if let Some(hover_pos) = response.hover_pos() {
-                        render_inspector(
+                        render_data_probe(
                             &painter,
                             &projection,
                             hover_pos,
@@ -307,25 +377,63 @@ pub fn render_canvas_with_geo(
                     }
                 }
 
-                if state.layer_state.geo.mping && state.mping.selected_report_id.is_some() {
+                if state.layer_state.geo.mping && diagnostics.mping.selected_report_id.is_some() {
                     render_mping_detail(
                         &painter,
                         rect,
                         &projection,
-                        &state.mping.reports,
-                        state.mping.selected_report_id,
+                        &diagnostics.mping.reports,
+                        diagnostics.mping.selected_report_id,
                         state.viz_state.center_lat,
                         state.viz_state.center_lon,
-                        state.playback_state.playback_position(),
+                        playback.state.playback_position(),
                         state.use_local_time,
                     );
                 }
 
-                draw_color_scale(ui, &rect, &state.viz_state.product);
-                draw_overlay_info(ui, &rect, state);
-                draw_scale_bar(ui, &rect, &projection);
+                // Corner-chrome overlays (color scale + info + scale
+                // bar) dispatched through the typed registry. The
+                // trait's `visible` predicate keeps the compass
+                // (3D-only) out.
+                render_chrome_overlays(
+                    ui,
+                    &OverlayContext {
+                        rect,
+                        state,
+                        live,
+                        derived,
+                    },
+                );
 
-                handle_canvas_interaction(&response, &rect, state, &projection);
+                // Canvas honesty caption (spec §11.2). A blank canvas with a
+                // fetch in flight reads as "loading", not "broken"; a held frame
+                // whose time has drifted from the playhead surfaces the
+                // discrepancy ("showing X · fetching/​no-data Y"). The target (Y)
+                // is a PLAYHEAD time, kept visually distinct from the actual
+                // collection readouts (info overlay) by the wording.
+                render_canvas_caption(
+                    &painter,
+                    &rect,
+                    ui.visuals().weak_text_color(),
+                    state.viz_state.canvas_caption,
+                    state.use_local_time,
+                );
+
+                // Mobile chrome reveal tap (spec §13): when the chrome was
+                // hidden, the resolver latched this frame's press as a reveal.
+                // Swallow it here so the same tap doesn't also pan/zoom the
+                // map — the chrome is already coming back this frame.
+                if !chrome.mobile_auto_hide.revealed_this_frame {
+                    handle_canvas_interaction(
+                        &response,
+                        &rect,
+                        state,
+                        playback,
+                        diagnostics,
+                        derived,
+                        &projection,
+                    );
+                }
             }
         }
     });
@@ -453,25 +561,40 @@ pub(super) const ARCHIVE_AGE_THRESHOLD_SECS: f64 = 3600.0;
 
 pub(super) const AGE_RANGE_COLLAPSE_SECS: f64 = 300.0;
 
+#[allow(clippy::too_many_arguments)]
 fn compute_gpu_sweep_state(
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
+    live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
+    derived: &crate::subsystem::Derived,
     sweep_info: Option<(f32, f32)>,
 ) -> (Option<(f32, f32)>, bool) {
-    // Live mode with partial data takes priority over timeline sweep animation.
-    let gpu_sweep = if let Some((first_az, last_az)) = state
-        .live_radar_model
+    // In live mode the GPU needs the partial-data azimuth range to
+    // composite incoming chunks (and the overlay needs it to colour the
+    // donut wedges), so the live branch always emits sweep boundaries
+    // regardless of the user's sweep_animation preference. The overlay
+    // suppresses the rotating lines separately when the toggle is off.
+    // The archive branch still respects effective_sweep_animation().
+    // The live partial's azimuth range is the GPU's sweep boundary; otherwise,
+    // when animating, resolve the archive sweep the playhead sits in. The
+    // before/within/after classification + sentinel handling is pure core.
+    let live_range = live
+        .radar_model
         .active_sweep
         .as_ref()
-        .and_then(|s| s.data_azimuth_range)
-    {
-        Some((last_az, first_az))
-    } else if state.effective_sweep_animation() {
-        let playback_ts = state.playback_state.playback_position();
-        let sweep_bounds = state
-            .radar_timeline
+        .and_then(|s| s.data_azimuth_range);
+    let playback_ts = playback.state.playback_position();
+    let sweep_bounds = if live_range.is_none() && derived.effective_sweep_animation {
+        timeline
+            .scans
             .find_recent_scan(playback_ts, 15.0 * 60.0)
             .and_then(|scan| {
-                let displayed_elev = state.viz_state.displayed_sweep_elevation_number;
+                let displayed_elev = state
+                    .viz_state
+                    .displayed
+                    .as_ref()
+                    .map(|d| d.identity.elevation_number);
                 scan.sweeps
                     .iter()
                     .filter(|s| Some(s.elevation_number) == displayed_elev)
@@ -482,183 +605,82 @@ fn compute_gpu_sweep_state(
                             .find(|s| Some(s.elevation_number) == displayed_elev)
                     })
                     .map(|s| (s.start_time, s.end_time))
-            });
-        match sweep_bounds {
-            Some((s, _)) if playback_ts < s => Some((0.0, 0.0)),
-            Some((_, e)) if playback_ts <= e => sweep_info,
-            _ => None,
-        }
+            })
     } else {
         None
     };
 
-    // Cache sweep position for between-sweep display
-    if let Some((az, start)) = gpu_sweep {
-        if az != 0.0 || start != 0.0 {
-            state.viz_state.last_sweep_line_cache = Some((az, start));
-        }
-    }
-    if !state.effective_sweep_animation() {
-        state.viz_state.last_sweep_line_cache = None;
-    }
-    let between_sweeps = state.effective_sweep_animation()
-        && gpu_sweep.is_none()
-        && state.viz_state.last_sweep_line_cache.is_some();
+    let gpu_sweep = crate::core::canvas::select_gpu_sweep(
+        live_range,
+        derived.effective_sweep_animation,
+        sweep_bounds,
+        playback_ts,
+        sweep_info,
+    );
+
+    // Cache the sweep position for between-sweep display (pure rule).
+    let new_cache = crate::core::canvas::next_sweep_cache(
+        state.viz_state.last_sweep_line_cache,
+        gpu_sweep,
+        derived.effective_sweep_animation,
+    );
+    state.viz_state.last_sweep_line_cache = new_cache;
+    let between_sweeps = crate::core::canvas::between_sweeps(
+        derived.effective_sweep_animation,
+        gpu_sweep,
+        new_cache,
+    );
 
     (gpu_sweep, between_sweeps)
 }
 
-fn compute_sweep_line_azimuth(state: &AppState) -> Option<(f32, f32)> {
-    if state
-        .playback_state
-        .speed
-        .timeline_seconds_per_real_second()
-        > 30.0
-    {
+fn compute_sweep_line_azimuth(
+    _state: &AppState,
+    timeline: &crate::subsystem::Timeline,
+    playback: &crate::subsystem::Playback,
+) -> Option<(f32, f32)> {
+    if playback.state.speed.timeline_seconds_per_real_second() > 30.0 {
         return None;
     }
 
-    let ts = state.playback_state.playback_position();
+    let ts = playback.state.playback_position();
 
-    // Try to find azimuth from persisted scan/sweep data first
-    if let Some(scan) = state.radar_timeline.find_scan_at_timestamp(ts) {
-        if let Some((_, sweep)) = scan.find_sweep_at_timestamp(ts) {
-            let duration = sweep.end_time - sweep.start_time;
-            if duration > 0.0 {
-                // If per-radial azimuth data is available, interpolate from actual azimuths
-                if !sweep.radials.is_empty() {
-                    let start_az = sweep.radials[0].azimuth;
-                    let mut last_az = start_az;
-                    let mut last_time = sweep.start_time;
-                    let mut next_az = start_az + 360.0;
-                    let mut next_time = sweep.end_time;
-
-                    for radial in &sweep.radials {
-                        if radial.start_time <= ts {
-                            last_az = radial.azimuth;
-                            last_time = radial.start_time;
-                        } else {
-                            next_az = radial.azimuth;
-                            next_time = radial.start_time;
-                            break;
-                        }
-                    }
-
-                    let mut delta_az = next_az - last_az;
-                    if delta_az < -180.0 {
-                        delta_az += 360.0;
-                    } else if delta_az > 180.0 {
-                        delta_az -= 360.0;
-                    }
-
-                    let dt = next_time - last_time;
-                    if dt > 0.0 {
-                        let frac = (ts - last_time) / dt;
-                        let az = ((last_az + delta_az * frac as f32) % 360.0 + 360.0) % 360.0;
-                        return Some((az, start_az));
-                    }
-                    return Some((last_az, start_az));
-                }
-
-                // Fallback: linear interpolation assuming uniform rotation from start azimuth
-                let start_az = sweep.start_azimuth;
-                let progress = (ts - sweep.start_time) / duration;
-                let az = ((start_az + progress as f32 * 360.0) % 360.0 + 360.0) % 360.0;
-                return Some((az, start_az));
-            }
-        }
-    }
-
-    None
+    // Find the sweep the playhead is in, then interpolate its azimuth (pure).
+    timeline
+        .scans
+        .find_scan_at_timestamp(ts)
+        .and_then(|scan| scan.find_sweep_at_timestamp(ts))
+        .and_then(|(_, sweep)| crate::core::canvas::sweep_line_azimuth(sweep, ts))
 }
 
 pub(super) fn format_time_short(ts: f64, use_local: bool) -> String {
-    if use_local {
-        let d = js_sys::Date::new_0();
-        d.set_time(ts * 1000.0);
-        format!(
-            "{:02}:{:02}:{:02}.{:03}",
-            d.get_hours(),
-            d.get_minutes(),
-            d.get_seconds(),
-            d.get_milliseconds()
-        )
-    } else {
-        use chrono::{TimeZone, Timelike, Utc};
-        let secs = ts.floor() as i64;
-        let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
-        match Utc.timestamp_opt(secs, millis * 1_000_000) {
-            chrono::LocalResult::Single(dt) => {
-                format!(
-                    "{:02}:{:02}:{:02}.{:03}",
-                    dt.hour(),
-                    dt.minute(),
-                    dt.second(),
-                    millis
-                )
-            }
-            _ => format!("{:.0}", ts),
-        }
-    }
+    let p = super::time_format::parts(ts, use_local);
+    format!(
+        "{:02}:{:02}:{:02}.{:03}",
+        p.hour, p.minute, p.second, p.millis
+    )
 }
 
 pub(super) fn format_unix_timestamp(ts: f64, use_local: bool) -> String {
-    if use_local {
-        let d = js_sys::Date::new_0();
-        d.set_time(ts * 1000.0);
-        let h = d.get_hours();
-        let m = d.get_minutes();
-        let s = d.get_seconds();
-        let ms = d.get_milliseconds();
-        format!("{h:02}:{m:02}:{s:02}.{ms:03} Local")
-    } else {
-        use chrono::{TimeZone, Utc};
-        let secs = ts.floor() as i64;
-        let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
-        match Utc.timestamp_opt(secs, millis * 1_000_000) {
-            chrono::LocalResult::Single(dt) => dt.format("%H:%M:%S%.3f UTC").to_string(),
-            _ => format!("{:.3}s", ts),
-        }
-    }
+    let p = super::time_format::parts(ts, use_local);
+    let zone = if use_local { "Local" } else { "UTC" };
+    format!(
+        "{:02}:{:02}:{:02}.{:03} {zone}",
+        p.hour, p.minute, p.second, p.millis
+    )
 }
 
 pub(super) fn format_unix_timestamp_with_date(ts: f64, use_local: bool) -> String {
-    if use_local {
-        let d = js_sys::Date::new_0();
-        d.set_time(ts * 1000.0);
-        format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
-            d.get_full_year(),
-            d.get_month() + 1,
-            d.get_date(),
-            d.get_hours(),
-            d.get_minutes(),
-            d.get_seconds(),
-            d.get_milliseconds()
-        )
-    } else {
-        use chrono::{Datelike, TimeZone, Timelike, Utc};
-        let secs = ts.floor() as i64;
-        let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
-        match Utc.timestamp_opt(secs, millis * 1_000_000) {
-            chrono::LocalResult::Single(dt) => format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03} UTC",
-                dt.year(),
-                dt.month(),
-                dt.day(),
-                dt.hour(),
-                dt.minute(),
-                dt.second(),
-                millis
-            ),
-            _ => format!("{:.3}s", ts),
-        }
-    }
+    let p = super::time_format::parts(ts, use_local);
+    let suffix = if use_local { "" } else { " UTC" };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}{suffix}",
+        p.year, p.month, p.day, p.hour, p.minute, p.second, p.millis
+    )
 }
 
-pub(super) fn format_age_compact(ts_secs: f64) -> Option<String> {
-    let now = js_sys::Date::now() / 1000.0;
-    let age = now - ts_secs;
+pub(super) fn format_age_compact(now_secs: f64, ts_secs: f64) -> Option<String> {
+    let age = now_secs - ts_secs;
     if (0.0..1.5).contains(&age) {
         Some("(now)".to_string())
     } else if (0.0..300.0).contains(&age) {
@@ -666,4 +688,59 @@ pub(super) fn format_age_compact(ts_secs: f64) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Compact 12-hour `h:MM` clock for the honesty caption (e.g. "2:41"), honoring
+/// the local/UTC preference. Matches the spec's "showing 2:41 · fetching 2:51…"
+/// wording (12-hour, no meridiem — two adjacent times share the AM/PM context)
+/// and stays consistent with the 12-hour top-bar/overlay readouts.
+fn format_hhmm(ts: f64, use_local: bool) -> String {
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ts * 1000.0));
+    let (h24, m) = if use_local {
+        (d.get_hours(), d.get_minutes())
+    } else {
+        (d.get_utc_hours(), d.get_utc_minutes())
+    };
+    let h12 = match h24 % 12 {
+        0 => 12,
+        h => h,
+    };
+    format!("{h12}:{m:02}")
+}
+
+/// Render the canvas honesty caption (spec §11.2). Centered, low-key text:
+/// "Acquiring data…" on a blank canvas, or "showing X · fetching Y…" /
+/// "showing X · no data at Y" when a held frame's time has drifted from the
+/// playhead. No-op for [`crate::core::canvas::CanvasCaption::None`].
+fn render_canvas_caption(
+    painter: &egui::Painter,
+    rect: &Rect,
+    color: Color32,
+    caption: crate::core::canvas::CanvasCaption,
+    use_local: bool,
+) {
+    let text = match caption {
+        crate::core::canvas::CanvasCaption::None => return,
+        crate::core::canvas::CanvasCaption::Acquiring => "Acquiring data…".to_string(),
+        crate::core::canvas::CanvasCaption::Discrepancy {
+            showing,
+            target,
+            fetching,
+        } => {
+            let showing_s = format_hhmm(showing, use_local);
+            let target_s = format_hhmm(target, use_local);
+            if fetching {
+                format!("showing {showing_s} · fetching {target_s}…")
+            } else {
+                format!("showing {showing_s} · no data at {target_s}")
+            }
+        }
+    };
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(15.0),
+        color,
+    );
 }

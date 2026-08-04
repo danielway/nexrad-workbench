@@ -1,12 +1,11 @@
-//! Batched helpers for dashed borders and diagonal hatches.
+//! Batched helper for dashed rectangle borders.
 //!
-//! The timeline overlays draw a lot of dotted/dashed/hatched rectangles
-//! — one per visible sweep, per frame. Each `painter.line_segment` call
-//! locks the egui graphics buffer, so emitting ~50 individual segments
-//! per border per sweep was showing up in idle-frame profiles. These
-//! helpers pre-size a `Vec<Shape>` and push everything in one
-//! `painter.extend` call, amortizing the lock and reducing paint-list
-//! churn.
+//! The timeline overlays draw a lot of dotted/dashed rectangles — one per
+//! visible sweep, per frame. Each `painter.line_segment` call locks the
+//! egui graphics buffer, so emitting ~50 individual segments per border
+//! per sweep was showing up in idle-frame profiles. This helper pre-sizes
+//! a `Vec<Shape>` and pushes everything in one `painter.extend` call,
+//! amortizing the lock and reducing paint-list churn.
 
 use eframe::egui::{Painter, Pos2, Rect, Shape, Stroke};
 
@@ -25,12 +24,6 @@ impl DashedEdges {
         bottom: true,
         left: true,
         right: true,
-    };
-    pub(super) const HORIZONTAL: Self = Self {
-        top: true,
-        bottom: true,
-        left: false,
-        right: false,
     };
 }
 
@@ -60,28 +53,6 @@ impl DashedBorder {
             v_period: period,
             edges: DashedEdges::ALL,
         }
-    }
-
-    pub(super) fn rect(
-        stroke: Stroke,
-        h_dash: f32,
-        h_period: f32,
-        v_dash: f32,
-        v_period: f32,
-    ) -> Self {
-        Self {
-            stroke,
-            h_dash,
-            h_period,
-            v_dash,
-            v_period,
-            edges: DashedEdges::ALL,
-        }
-    }
-
-    pub(super) fn with_edges(mut self, edges: DashedEdges) -> Self {
-        self.edges = edges;
-        self
     }
 }
 
@@ -155,52 +126,105 @@ pub(super) fn stroke_dashed_rect(painter: &Painter, rect: Rect, border: DashedBo
     }
 }
 
-/// Fill a rectangle with 45° diagonal stripes in a single batched add.
-///
-/// Used for the scan-track hatch pattern and download-ghost stripes.
-/// `phase` lets multiple adjacent rects align their stripes by passing
-/// a shared x-origin (e.g. `rect.left() % spacing`), matching the
-/// existing appearance.
-pub(super) fn fill_diagonal_hatch(
-    painter: &Painter,
-    rect: Rect,
-    spacing: f32,
-    phase: f32,
-    stroke: Stroke,
-) {
-    if rect.width() <= 0.0 || rect.height() <= 0.0 || spacing <= 0.0 {
+/// Fill a rectangle with batched diagonal hatch lines (the Queued frame-cell
+/// texture, spec §6.2). Diagonals read distinctly from the dashed Available
+/// outline even in grayscale, and replace the old dotted outline that was
+/// confusable with it. `spacing` is the perpendicular gap between lines.
+/// Batched into one `painter.extend` for the same perf reason as the dashed
+/// helper — there can be one queued cell per visible scan, per frame.
+pub(super) fn fill_hatched_rect(painter: &Painter, rect: Rect, stroke: Stroke, spacing: f32) {
+    if spacing <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
+    // 45° hatching: lines of slope 1 (x + y = c). c ranges over
+    // [min.x+min.y , max.x+max.y]; step c by `spacing * sqrt(2)` so the
+    // perpendicular gap between lines is `spacing`.
+    let c_min = rect.min.x + rect.min.y;
+    let c_max = rect.max.x + rect.max.y;
+    let step = spacing * std::f32::consts::SQRT_2;
+    let count = (((c_max - c_min) / step).ceil() as usize).saturating_add(1);
+    let mut shapes = Vec::with_capacity(count);
 
-    let h = rect.height();
-    let w = rect.width();
-    let step_count = ((w + h) / spacing).ceil() as usize + 1;
-    let mut shapes = Vec::with_capacity(step_count);
-
-    let mut offset = -phase;
-    while offset < w + h {
-        let x0 = rect.left() + offset;
-        let x1 = x0 - h;
-        let (cx0, cy0) = if x0 > rect.right() {
-            (rect.right(), rect.top() + (x0 - rect.right()))
-        } else {
-            (x0, rect.top())
-        };
-        let (cx1, cy1) = if x1 < rect.left() {
-            (rect.left(), rect.bottom() - (rect.left() - x1))
-        } else {
-            (x1, rect.bottom())
-        };
-        if cy0 < cy1 {
-            shapes.push(Shape::line_segment(
-                [Pos2::new(cx0, cy0), Pos2::new(cx1, cy1)],
-                stroke,
-            ));
+    let mut c = c_min;
+    while c <= c_max {
+        // Line x + y = c, clipped to the rect. Solve the two edge crossings.
+        // Parametrize by x in [min.x, max.x]; y = c - x must land in
+        // [min.y, max.y]. Intersect the x-interval with the y-constraint.
+        let x_lo = rect.min.x.max(c - rect.max.y);
+        let x_hi = rect.max.x.min(c - rect.min.y);
+        if x_lo < x_hi {
+            let p0 = Pos2::new(x_lo, c - x_lo);
+            let p1 = Pos2::new(x_hi, c - x_hi);
+            shapes.push(Shape::line_segment([p0, p1], stroke));
         }
-        offset += spacing;
+        c += step;
     }
 
     if !shapes.is_empty() {
         painter.extend(shapes);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use eframe::egui::Color32;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // `DashedBorder::uniform` must copy the single `dash`/`period` arguments
+    // into BOTH the horizontal and vertical fields, and default to all edges.
+    #[wasm_bindgen_test]
+    fn uniform_mirrors_dash_into_h_and_v() {
+        let stroke = Stroke::new(2.0_f32, Color32::from_rgb(10, 20, 30));
+        let b = DashedBorder::uniform(stroke, 4.0, 8.0);
+
+        assert!((b.h_dash - 4.0).abs() < 1e-6);
+        assert!((b.v_dash - 4.0).abs() < 1e-6);
+        assert!((b.h_period - 8.0).abs() < 1e-6);
+        assert!((b.v_period - 8.0).abs() < 1e-6);
+        // h and v parameters are identical for a uniform border.
+        assert!((b.h_dash - b.v_dash).abs() < 1e-6);
+        assert!((b.h_period - b.v_period).abs() < 1e-6);
+    }
+
+    // The stroke passed in must be preserved verbatim.
+    #[wasm_bindgen_test]
+    fn uniform_preserves_stroke() {
+        let stroke = Stroke::new(1.5_f32, Color32::from_rgb(200, 100, 50));
+        let b = DashedBorder::uniform(stroke, 3.0, 6.0);
+
+        assert!((b.stroke.width - 1.5).abs() < 1e-6);
+        // Color32 channels compared individually (opaque, no premultiply issue).
+        assert!(b.stroke.color.r() == 200);
+        assert!(b.stroke.color.g() == 100);
+        assert!(b.stroke.color.b() == 50);
+        assert!(b.stroke.color.a() == 255);
+    }
+
+    // A uniform border always dashes every edge.
+    #[wasm_bindgen_test]
+    fn uniform_sets_all_edges() {
+        let stroke = Stroke::new(1.0_f32, Color32::WHITE);
+        let b = DashedBorder::uniform(stroke, 1.0, 2.0);
+
+        assert!(b.edges.top);
+        assert!(b.edges.bottom);
+        assert!(b.edges.left);
+        assert!(b.edges.right);
+    }
+
+    // `DashedEdges::ALL` is the constant with every edge enabled.
+    #[wasm_bindgen_test]
+    fn dashed_edges_all_is_every_edge_true() {
+        let e = DashedEdges::ALL;
+        assert!(e.top);
+        assert!(e.bottom);
+        assert!(e.left);
+        assert!(e.right);
+        // The boolean-as-usize count used by the drawing code is 2 sides each.
+        let horiz_sides = e.top as usize + e.bottom as usize;
+        let vert_sides = e.left as usize + e.right as usize;
+        assert!(horiz_sides == 2);
+        assert!(vert_sides == 2);
     }
 }

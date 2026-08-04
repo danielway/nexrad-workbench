@@ -12,8 +12,9 @@ mod channel;
 mod geometry;
 mod manager;
 mod parse;
-mod types;
+pub(crate) mod types;
+mod zones;
 
-pub use geometry::{bbox_intersects, contains_point};
-pub use manager::AlertsManager;
-pub use types::{Alert, AlertSeverity};
+pub(crate) use geometry::{bbox_intersects, contains_point};
+pub(crate) use manager::AlertsManager;
+pub(crate) use types::{event_color, Alert, AlertSeverity};

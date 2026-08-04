@@ -137,3 +137,118 @@ fn wrap_az(az: usize, delta: i32, az_count: usize) -> usize {
     let v = az as i32 + delta;
     (((v % n) + n) % n) as usize
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const FG: f32 = 50.0;
+    const BG: f32 = f32::NAN;
+
+    fn even_az(n: usize) -> Vec<f32> {
+        (0..n).map(|i| i as f32 * (360.0 / n as f32)).collect()
+    }
+
+    // -- wrap_az --------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn wrap_az_wraps_both_directions() {
+        assert_eq!(wrap_az(0, -1, 8), 7);
+        assert_eq!(wrap_az(7, 1, 8), 0);
+        assert_eq!(wrap_az(3, 0, 8), 3);
+        assert_eq!(wrap_az(3, 1, 8), 4);
+        assert_eq!(wrap_az(0, -2, 8), 6);
+    }
+
+    // -- precompute_az_adjacency ---------------------------------------
+
+    #[wasm_bindgen_test]
+    fn adjacency_single_radial_is_never_adjacent() {
+        assert_eq!(precompute_az_adjacency(&[5.0], 1), vec![false]);
+        assert_eq!(precompute_az_adjacency(&[], 0), Vec::<bool>::new());
+    }
+
+    #[wasm_bindgen_test]
+    fn adjacency_even_spacing_is_all_adjacent_including_seam() {
+        let az = even_az(8);
+        let adj = precompute_az_adjacency(&az, 8);
+        assert_eq!(adj, vec![true; 8], "evenly-spaced radials all connect");
+    }
+
+    #[wasm_bindgen_test]
+    fn adjacency_partial_sweep_breaks_the_large_seam_gap() {
+        // 0,20,40,60: three 20° gaps, then a 300° wrap gap. Median spacing 20,
+        // max allowed 40 → only the wrap edge (index 3) is non-adjacent.
+        let az = vec![0.0_f32, 20.0, 40.0, 60.0];
+        let adj = precompute_az_adjacency(&az, 4);
+        assert_eq!(adj, vec![true, true, true, false]);
+    }
+
+    #[wasm_bindgen_test]
+    fn adjacency_negative_padded_radials_are_not_adjacent() {
+        // Padded (negative) azimuths produce NaN gaps → never adjacent.
+        let az = vec![0.0_f32, -1.0, 90.0];
+        let adj = precompute_az_adjacency(&az, 3);
+        assert!(!adj[0]);
+        assert!(!adj[1]);
+    }
+
+    #[wasm_bindgen_test]
+    fn adjacency_all_padded_is_all_false() {
+        let az = vec![-1.0_f32, -1.0, -1.0];
+        assert_eq!(precompute_az_adjacency(&az, 3), vec![false; 3]);
+    }
+
+    // -- label ----------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn label_empty_grid_dims_yields_nothing() {
+        assert!(label(&[], &[], 0, 0).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn label_all_background_yields_no_components() {
+        let grid = vec![BG; 6];
+        let az = even_az(2);
+        assert!(label(&grid, &az, 2, 3).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn label_single_radial_splits_on_gate_gaps() {
+        // One radial (no azimuth connectivity), foreground at gate 0 and at
+        // gates 3-4 with a gap between → two components.
+        let grid = vec![FG, BG, BG, FG, FG];
+        let az = vec![0.0_f32];
+        let mut comps = label(&grid, &az, 1, 5);
+        comps.sort_by_key(|c| c.len());
+        assert_eq!(comps.len(), 2);
+        assert_eq!(comps[0].len(), 1); // the isolated gate
+        assert_eq!(comps[1].len(), 2); // the adjacent pair
+    }
+
+    #[wasm_bindgen_test]
+    fn label_connects_eight_neighborhood_into_one() {
+        // (az0,g0),(az0,g1),(az1,g0) form one diagonal-connected blob.
+        // grid[az*gate_count + g], 2 az × 2 gate.
+        let grid = vec![FG, FG, FG, BG];
+        let az = even_az(2);
+        let comps = label(&grid, &az, 2, 2);
+        assert_eq!(comps.len(), 1);
+        assert_eq!(comps[0].len(), 3);
+    }
+
+    #[wasm_bindgen_test]
+    fn label_merges_across_azimuth_seam() {
+        // Foreground on the first and last evenly-spaced radials at the same
+        // gate → one component across the 0/360 seam.
+        let az = even_az(4);
+        // 4 az × 2 gate; mark (az0,g0) and (az3,g0).
+        let mut grid = vec![BG; 8];
+        grid[0] = FG; // az0,g0
+        grid[3 * 2] = FG; // az3,g0
+        let comps = label(&grid, &az, 4, 2);
+        assert_eq!(comps.len(), 1);
+        assert_eq!(comps[0].len(), 2);
+    }
+}

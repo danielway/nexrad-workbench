@@ -1,26 +1,56 @@
 //! Playback controls: play/pause, speed, datetime picker, live indicator, and session stats.
 
 use super::colors::{live, timeline as tl_colors, ui as ui_colors};
-use super::timeline::format_timestamp_full;
-use crate::state::{
-    AppState, LiveExitReason, LivePhase, LoopMode, PlaybackMode, PlaybackSpeed, TimeModel,
-};
-use eframe::egui::{self, Color32, RichText, Vec2};
+use super::modal_states::PickerField;
+use super::overflow_menu::overflow_menu;
+use super::timeline::format_timestamp_compact;
+use crate::core::{LoopMode, PlaybackMode, PlaybackSpeed};
+use crate::state::{AppMode, AppState, WidthTier};
+use eframe::egui::{self, Color32, RichText};
 
 /// Render the datetime picker popup for jumping to a specific time.
-pub(super) fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
-    if !state.datetime_picker.open {
+pub(super) fn render_datetime_picker_popup(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    picker: &mut super::DateTimePickerState,
+    live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
+) {
+    if !picker.open {
         return;
     }
 
     if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
-        state.datetime_picker.close();
+        picker.close();
         return;
     }
 
     let use_local = state.use_local_time;
     let tz_label = if use_local { "Local" } else { "UTC" };
     let popup_id = ui.make_persistent_id("datetime_picker_popup");
+
+    // Intercept a whole-timestamp paste before the individual field editors
+    // consume it, so pasting "2026-07-31T14:30:00Z" fills the whole form
+    // instead of dumping the string into whichever box happens to have focus.
+    // Single-field pastes ("07" into the month) fall through untouched.
+    let pasted = ui.input_mut(|i| {
+        let mut found: Option<String> = None;
+        i.events.retain(|e| match e {
+            egui::Event::Paste(s)
+                if found.is_none() && super::modal_states::looks_like_timestamp(s) =>
+            {
+                found = Some(s.clone());
+                false
+            }
+            _ => true,
+        });
+        found
+    });
+    if let Some(s) = pasted {
+        if !picker.apply_paste(&s, use_local) {
+            state.status_message = format!("Couldn't read \"{s}\" as a date/time");
+        }
+    }
 
     egui::Area::new(popup_id)
         .order(egui::Order::Foreground)
@@ -33,26 +63,16 @@ pub(super) fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppSta
                     ui.heading(format!("Jump to Date/Time ({tz_label})"));
                     ui.add_space(8.0);
 
-                    // Date row
+                    // Date row. Every field in this form is a
+                    // two-way binding: the egui widget owns this value while
+                    // the user edits it.
                     ui.horizontal(|ui| {
                         ui.label("Date:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut state.datetime_picker.year)
-                                .desired_width(45.0)
-                                .hint_text("YYYY"),
-                        );
+                        nudgeable_field(ui, &mut picker.year, PickerField::Year, 45.0, "YYYY");
                         ui.label("-");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut state.datetime_picker.month)
-                                .desired_width(25.0)
-                                .hint_text("MM"),
-                        );
+                        nudgeable_field(ui, &mut picker.month, PickerField::Month, 25.0, "MM");
                         ui.label("-");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut state.datetime_picker.day)
-                                .desired_width(25.0)
-                                .hint_text("DD"),
-                        );
+                        nudgeable_field(ui, &mut picker.day, PickerField::Day, 25.0, "DD");
                     });
 
                     ui.add_space(4.0);
@@ -60,30 +80,45 @@ pub(super) fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppSta
                     // Time row
                     ui.horizontal(|ui| {
                         ui.label("Time:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut state.datetime_picker.hour)
-                                .desired_width(25.0)
-                                .hint_text("HH"),
-                        );
+                        nudgeable_field(ui, &mut picker.hour, PickerField::Hour, 25.0, "HH");
                         ui.label(":");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut state.datetime_picker.minute)
-                                .desired_width(25.0)
-                                .hint_text("MM"),
-                        );
+                        nudgeable_field(ui, &mut picker.minute, PickerField::Minute, 25.0, "MM");
                         ui.label(":");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut state.datetime_picker.second)
-                                .desired_width(25.0)
-                                .hint_text("SS"),
-                        );
+                        nudgeable_field(ui, &mut picker.second, PickerField::Second, 25.0, "SS");
                         ui.label(tz_label);
                     });
 
-                    ui.add_space(12.0);
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("↑/↓ adjusts a field · paste a full timestamp anywhere")
+                            .size(9.0)
+                            .weak(),
+                    );
+
+                    ui.add_space(8.0);
+
+                    // Quick jumps relative to now — the common "what was
+                    // happening recently" cases without typing a timestamp.
+                    // Phase 2's anchor fast-path fetches the landing scan
+                    // automatically, so these are true one-click jumps.
+                    let mut jump_target: Option<f64> = None;
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Quick:").size(10.0));
+                        for (label, secs_ago) in [
+                            ("1h ago", 3_600.0),
+                            ("6h ago", 21_600.0),
+                            ("24h ago", 86_400.0),
+                        ] {
+                            if ui.small_button(label).clicked() {
+                                jump_target = Some(state.frame_now.secs() - secs_ago);
+                            }
+                        }
+                    });
+
+                    ui.add_space(8.0);
 
                     // Validation feedback
-                    let valid_ts = state.datetime_picker.to_timestamp(use_local);
+                    let valid_ts = picker.to_timestamp(use_local);
                     if valid_ts.is_none() {
                         ui.colored_label(Color32::from_rgb(255, 100, 100), "Invalid date/time");
                     }
@@ -97,33 +132,37 @@ pub(super) fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppSta
                     // Buttons
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
-                            state.datetime_picker.close();
+                            picker.close();
                         }
 
                         ui.add_enabled_ui(valid_ts.is_some(), |ui| {
                             if ui.button("Jump").clicked() || enter_pressed {
-                                if let Some(ts) = valid_ts {
-                                    // Update playback position
-                                    state.playback_state.set_playback_position(ts);
-
-                                    // Left-align timeline view on new position
-                                    // Place the jumped-to position at ~5% from the left edge
-                                    let view_width_secs = state.playback_state.view_width_secs();
-                                    state.playback_state.timeline_view_start =
-                                        ts - view_width_secs * 0.05;
-
-                                    // Exit live mode if active
-                                    if state.live_mode_state.is_active() {
-                                        state.live_mode_state.stop(LiveExitReason::UserSeeked);
-                                        state.playback_state.time_model.disable_realtime_lock();
-                                    }
-
-                                    state.datetime_picker.close();
-                                    log::debug!("Jumped to timestamp: {}", ts);
-                                }
+                                jump_target = valid_ts;
                             }
                         });
                     });
+
+                    if let Some(ts) = jump_target {
+                        // Detach the playhead first — a seek while pinned
+                        // would be rejected. The stream (if any) keeps
+                        // running in the background unless the data-saver
+                        // policy stops it.
+                        live.detach_playhead(
+                            &mut playback.state,
+                            state.frame_now.secs(),
+                            state.pause_stream_while_reviewing,
+                        );
+
+                        playback.state.set_playback_position(ts);
+
+                        // Left-align the view: place the jumped-to position
+                        // at ~5% from the left edge.
+                        let view_width_secs = playback.state.view_width_secs();
+                        playback.state.timeline_view_start = ts - view_width_secs * 0.05;
+
+                        picker.close();
+                        log::debug!("Jumped to timestamp: {}", ts);
+                    }
                 });
             });
         });
@@ -135,614 +174,570 @@ pub(super) fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppSta
     }
 }
 
-pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
+/// One zero-padded numeric field of the datetime picker, with arrow-key nudge.
+///
+/// Borrows the buffer directly (rather than taking `&mut DateTimePickerState`)
+/// so the six calls can sit inside one `ui.horizontal` without re-borrowing the
+/// picker; the clamping itself lives in `DateTimePickerState::nudge`.
+fn nudgeable_field(
+    ui: &mut egui::Ui,
+    buf: &mut String,
+    field: PickerField,
+    width: f32,
+    hint: &str,
+) {
+    let response = ui.add(
+        egui::TextEdit::singleline(buf)
+            .desired_width(width)
+            .hint_text(hint),
+    );
+    if !response.has_focus() {
+        return;
+    }
+    let delta = ui.input(|i| {
+        i.key_pressed(egui::Key::ArrowUp) as i64 - i.key_pressed(egui::Key::ArrowDown) as i64
+    });
+    if delta != 0 {
+        super::modal_states::nudge_buf(buf, field, delta);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_playback_controls(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    picker: &mut super::DateTimePickerState,
+    timeline: &crate::subsystem::Timeline,
+    live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
+    activity_vm: &crate::core::activity::ActivityVm,
+) {
     let use_local = state.use_local_time;
+    let advanced = state.show_advanced();
+    // Idle = nothing under the playback cursor. Disable transport controls
+    // so they don't visibly do nothing; layout stays stable for when data
+    // arrives.
+    let interactive = live.app_mode != AppMode::Idle;
 
-    // Current position timestamp display (clickable to open datetime picker)
+    // Current position timestamp display. In Advanced it's a button that
+    // opens the datetime picker; in Basic it's a plain label so a casual
+    // viewer can't accidentally jump weeks into the past.
     {
-        let selected_ts = state.playback_state.playback_position();
+        let selected_ts = playback.state.playback_position();
         let tz_suffix = if use_local { "" } else { " Z" };
-        let timestamp_btn = ui.add(
-            egui::Button::new(
-                RichText::new(format!(
-                    "{}{}",
-                    format_timestamp_full(selected_ts, use_local),
-                    tz_suffix
-                ))
-                .monospace()
-                .size(13.0)
-                .color(tl_colors::SELECTION),
-            )
-            .frame(false),
-        );
-
-        if timestamp_btn.clicked() {
-            state
-                .datetime_picker
-                .init_from_timestamp(selected_ts, use_local);
+        let mut text = RichText::new(format!(
+            "{}{}",
+            format_timestamp_compact(selected_ts, use_local, state.width_tier),
+            tz_suffix
+        ))
+        .size(13.0)
+        .color(tl_colors::selection(state.is_dark));
+        // Monospace reads as a precise instrument in Advanced; Basic (Level 0,
+        // spec §14 "no jargon") gets a plain, friendly clock readout instead.
+        if advanced {
+            text = text.monospace();
         }
 
-        if timestamp_btn.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        if advanced {
+            let timestamp_btn = ui.add(egui::Button::new(text).frame(false));
+            if timestamp_btn.clicked() {
+                picker.init_from_timestamp(selected_ts, use_local);
+            }
+            if timestamp_btn.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            timestamp_btn.on_hover_text("Click to jump to a specific date/time");
+        } else {
+            ui.label(text);
         }
-
-        timestamp_btn.on_hover_text("Click to jump to a specific date/time");
 
         ui.separator();
     }
 
     // Datetime picker popup
-    render_datetime_picker_popup(ui, state);
+    render_datetime_picker_popup(ui, state, picker, live, playback);
 
-    // Live mode indicator badge (when active)
-    if state.live_mode_state.is_active() {
-        render_live_indicator(ui, state);
-        ui.separator();
-    }
+    // Persistent, stateful LIVE button (spec §7). Always present in the
+    // transport row: solid "● LIVE" while tethered (click stops the stream),
+    // hollow "● LIVE · m:ss behind" while a background stream runs detached
+    // (click re-tethers), and hollow "● GO LIVE" with no stream (click starts
+    // one). `L` re-tethers / starts a stream; `Shift+L` stops it; the timeline
+    // now-line cap mirrors all three states.
+    render_live_button(ui, state, live);
+    // The tether's companion: whether data is actually still arriving. Silent
+    // when there is no stream.
+    render_stream_activity(ui, state, live);
+    ui.separator();
 
-    // Live button (only shown when not in live mode)
-    #[allow(clippy::collapsible_if)]
-    if !state.live_mode_state.is_active() {
-        if ui
-            .button(
-                RichText::new(egui_phosphor::regular::BROADCAST)
-                    .size(14.0)
-                    .color(Color32::from_rgb(150, 150, 150)),
-            )
-            .on_hover_text("Start live streaming")
-            .clicked()
-        {
-            // Signal main loop to start live mode
-            state.push_command(crate::state::AppCommand::StartLive);
-            state.playback_state.speed = PlaybackSpeed::Realtime;
-        }
-    }
-
-    // Play/Stop button
-    let play_text = if state.playback_state.playing {
-        egui_phosphor::regular::STOP
+    // Play/Pause button — disabled in Idle (no data to play). While tethered
+    // (LIVE-NOW) the live feed is conceptually playing, so the button reads
+    // PAUSE and pressing it FREEZES (drops to archive at the live edge,
+    // detached). In archive it's ordinary play/pause; resuming after a freeze
+    // plays from the pause point. All branching lives in
+    // `core::transport::reduce_toggle_play_pause`, reached via
+    // `Intent::TogglePlayPause`.
+    let tethered = playback.state.time_model.is_pinned();
+    // Show PAUSE when the live feed is running (tethered) or archive playback
+    // is active; PLAY otherwise.
+    let play_text = if tethered || playback.state.playing {
+        egui_phosphor::regular::PAUSE
     } else {
         egui_phosphor::regular::PLAY
     };
+    let play_hover = if tethered {
+        "Freeze (pause the live feed)"
+    } else if playback.state.time_model.is_lookback() {
+        "Return to live"
+    } else if playback.state.playing {
+        "Pause"
+    } else {
+        "Play"
+    };
 
-    if ui.button(RichText::new(play_text).size(14.0)).clicked() {
-        if state.playback_state.playing {
-            // Stop - also exits live mode if active
-            if state.live_mode_state.is_active() {
-                state.live_mode_state.stop(LiveExitReason::UserStopped);
-                state.playback_state.time_model.disable_realtime_lock();
-                state.status_message = state
-                    .live_mode_state
-                    .last_exit_reason
-                    .map(|r| r.message().to_string())
-                    .unwrap_or_default();
-            }
-            state.playback_state.playing = false;
-        } else {
-            // Play
-            state.playback_state.playing = true;
-        }
-    }
-
-    // Jog: jump to end of next/previous matching sweep for current elevation
-    let current_pos = state.playback_state.playback_position();
-
-    // Step backward
     if ui
-        .button(RichText::new(egui_phosphor::regular::SKIP_BACK).size(14.0))
+        .add_enabled(
+            interactive,
+            egui::Button::new(RichText::new(play_text).size(14.0)),
+        )
+        .on_hover_text(play_hover)
         .clicked()
     {
-        // Exit live mode when jogging
-        if state.live_mode_state.is_active() {
-            state.live_mode_state.stop(LiveExitReason::UserJogged);
-            state.playback_state.time_model.disable_realtime_lock();
-            state.status_message = state
-                .live_mode_state
-                .last_exit_reason
-                .map(|r| r.message().to_string())
-                .unwrap_or_default();
-        }
-        match state.playback_state.playback_mode() {
-            PlaybackMode::Macro => {
-                state.playback_state.step_macro_frame(-1);
-            }
-            PlaybackMode::Micro => {
-                let fallback = current_pos
-                    - state
-                        .playback_state
-                        .speed
-                        .timeline_seconds_per_real_second();
-                let new_pos = match &state.viz_state.elevation_selection {
-                    crate::state::ElevationSelection::Fixed {
-                        elevation_number, ..
-                    } => state
-                        .radar_timeline
-                        .prev_matching_sweep_end_by_number(current_pos, *elevation_number)
-                        .unwrap_or(fallback),
-                    crate::state::ElevationSelection::Latest => state
-                        .radar_timeline
-                        .prev_any_sweep_end(current_pos)
-                        .unwrap_or(fallback),
-                };
-                state.playback_state.set_playback_position(new_pos);
-            }
-        }
+        state.push_command(crate::core::Intent::TogglePlayPause);
+    }
+
+    // Jog buttons step between sweeps. Stepping is a seek gesture, so while
+    // tethered/replaying it detaches first (handled by `step_jog`), then steps
+    // — the buttons stay visible in Live (spec §7/§12).
+    // Step backward
+    if ui
+        .add_enabled(
+            interactive,
+            egui::Button::new(RichText::new(egui_phosphor::regular::SKIP_BACK).size(14.0)),
+        )
+        .clicked()
+    {
+        step_jog(state, timeline, live, playback, -1);
     }
 
     // Step forward
     if ui
-        .button(RichText::new(egui_phosphor::regular::SKIP_FORWARD).size(14.0))
+        .add_enabled(
+            interactive,
+            egui::Button::new(RichText::new(egui_phosphor::regular::SKIP_FORWARD).size(14.0)),
+        )
         .clicked()
     {
-        // Exit live mode when jogging
-        if state.live_mode_state.is_active() {
-            state.live_mode_state.stop(LiveExitReason::UserJogged);
-            state.playback_state.time_model.disable_realtime_lock();
-            state.status_message = state
-                .live_mode_state
-                .last_exit_reason
-                .map(|r| r.message().to_string())
-                .unwrap_or_default();
-        }
-        match state.playback_state.playback_mode() {
-            PlaybackMode::Macro => {
-                state.playback_state.step_macro_frame(1);
-            }
-            PlaybackMode::Micro => {
-                let fallback = current_pos
-                    + state
-                        .playback_state
-                        .speed
-                        .timeline_seconds_per_real_second();
-                let new_pos = match &state.viz_state.elevation_selection {
-                    crate::state::ElevationSelection::Fixed {
-                        elevation_number, ..
-                    } => state
-                        .radar_timeline
-                        .next_matching_sweep_end_by_number(current_pos, *elevation_number)
-                        .unwrap_or(fallback),
-                    crate::state::ElevationSelection::Latest => state
-                        .radar_timeline
-                        .next_any_sweep_end(current_pos)
-                        .unwrap_or(fallback),
-                };
-                state.playback_state.set_playback_position(new_pos);
-            }
-        }
-    }
-
-    // "Now" button — jump to current wall-clock time
-    if ui
-        .button(RichText::new(egui_phosphor::regular::CROSSHAIR).size(14.0))
-        .on_hover_text("Jump to current time")
-        .clicked()
-    {
-        let now = TimeModel::wall_clock_time();
-
-        // Exit live mode if active
-        if state.live_mode_state.is_active() {
-            state.live_mode_state.stop(LiveExitReason::UserSeeked);
-            state.playback_state.time_model.disable_realtime_lock();
-        }
-
-        // Stop playback
-        state.playback_state.playing = false;
-
-        // Clear bounds so seek_to doesn't clamp
-        state.playback_state.time_model.clear_bounds();
-        state.playback_state.clear_selection();
-
-        // Jump playback position and center the view
-        state.playback_state.time_model.playback_position = now;
-        state.playback_state.center_view_on(now);
+        step_jog(state, timeline, live, playback, 1);
     }
 
     ui.separator();
 
-    // Speed selector (mode-aware: macro shows fps labels, micro shows timeline speed)
-    let mode = state.playback_state.playback_mode();
+    // Speed selector (mode-aware: macro shows fps labels, micro shows timeline speed).
+    // Disabled in Idle alongside the rest of the transport controls. Uses the
+    // effective mode so a lookback replay shows fps options for its frame rate.
+    let mode = playback.state.effective_playback_mode();
     let selected_label = match mode {
-        PlaybackMode::Macro => state.playback_state.speed.macro_label(),
-        PlaybackMode::Micro => state.playback_state.speed.label(),
+        PlaybackMode::Macro => playback.state.speed.macro_label(),
+        PlaybackMode::Micro => playback.state.speed.label(),
     };
-    egui::ComboBox::from_id_salt("speed_selector")
-        .selected_text(selected_label)
-        .width(55.0)
-        .show_ui(ui, |ui| {
-            let speeds: &[PlaybackSpeed] = match mode {
-                PlaybackMode::Macro => PlaybackSpeed::macro_speeds(),
-                PlaybackMode::Micro => PlaybackSpeed::all(),
-            };
-            for speed in speeds {
-                let label = match mode {
-                    PlaybackMode::Macro => speed.macro_label(),
-                    PlaybackMode::Micro => speed.label(),
-                };
-                ui.selectable_value(&mut state.playback_state.speed, *speed, label);
-            }
-        });
-
-    // Loop mode selector (only show when playback bounds are set)
-    if state.playback_state.time_model.playback_bounds.is_some() {
-        ui.separator();
-        egui::ComboBox::from_id_salt("loop_mode_selector")
-            .selected_text(state.playback_state.time_model.loop_mode.label())
+    ui.add_enabled_ui(interactive, |ui| {
+        egui::ComboBox::from_id_salt("speed_selector")
+            .selected_text(selected_label)
             .width(55.0)
             .show_ui(ui, |ui| {
-                for mode in LoopMode::all() {
-                    ui.selectable_value(
-                        &mut state.playback_state.time_model.loop_mode,
-                        *mode,
-                        mode.label(),
-                    );
+                let speeds: &[PlaybackSpeed] = match mode {
+                    PlaybackMode::Macro => PlaybackSpeed::macro_speeds(),
+                    PlaybackMode::Micro => PlaybackSpeed::all(),
+                };
+                for speed in speeds {
+                    let label = match mode {
+                        PlaybackMode::Macro => speed.macro_label(),
+                        PlaybackMode::Micro => speed.label(),
+                    };
+                    ui.selectable_value(&mut playback.state.speed, *speed, label);
                 }
             });
+    });
 
-        // Clear selection button
+    // Loop preset menu (spec §5 "loop preset" control; §8 "presets first").
+    // The creation surface for loops — available in Basic too (Level-1
+    // disclosure, but core enough to show). One compact menu button, so it
+    // stays inline at every width.
+    ui.separator();
+    render_loop_preset_menu(ui, state, playback, interactive);
+
+    // Below the full width tier, the Advanced-only loop combo and UTC toggle
+    // are demoted into a ⋯ overflow menu so they don't crowd the transport row.
+    let compact = state.width_tier < WidthTier::Full;
+    let has_bounds = playback.state.time_model.playback_bounds.is_some();
+
+    // Loop mode + clear-selection. The loop combo is Advanced-only and only
+    // inline at full width; the clear-selection X always stays inline when
+    // bounds are set so a Basic user landing on a `?selection=…` URL can clear
+    // it.
+    if has_bounds {
+        ui.separator();
+        if advanced && !compact {
+            egui::ComboBox::from_id_salt("loop_mode_selector")
+                .selected_text(playback.state.time_model.loop_mode.label())
+                .width(55.0)
+                .show_ui(ui, |ui| {
+                    for mode in LoopMode::all() {
+                        ui.selectable_value(
+                            &mut playback.state.time_model.loop_mode,
+                            *mode,
+                            mode.label(),
+                        );
+                    }
+                });
+        }
+
         if ui
             .small_button(egui_phosphor::regular::X)
             .on_hover_text("Clear selection and playback bounds")
             .clicked()
         {
-            state.playback_state.clear_selection();
+            playback.state.clear_selection();
         }
     }
 
-    ui.separator();
-
-    // Download button
-    let has_selection = state.playback_state.selection_range().is_some();
-    let download_in_progress = state.download_selection_in_progress;
-
-    if download_in_progress {
-        let label = if state.download_progress.is_batch() {
-            format!(
-                "{} {}/{}",
-                egui_phosphor::regular::DOWNLOAD_SIMPLE,
-                (state.download_progress.batch_completed + 1)
-                    .min(state.download_progress.batch_total),
-                state.download_progress.batch_total
-            )
-        } else {
-            format!("{} ...", egui_phosphor::regular::DOWNLOAD_SIMPLE)
-        };
-        ui.add_enabled(false, egui::Button::new(RichText::new(label).size(11.0)));
-    } else if has_selection {
-        if ui
-            .button(RichText::new(egui_phosphor::regular::DOWNLOAD_SIMPLE).size(14.0))
-            .on_hover_text("Download all scans in the selected time range")
-            .clicked()
-        {
-            state.push_command(crate::state::AppCommand::DownloadSelection);
-        }
-    } else if ui
-        .button(RichText::new(egui_phosphor::regular::DOWNLOAD_SIMPLE).size(14.0))
-        .on_hover_text("Download the scan at the current playback position")
-        .clicked()
-    {
-        state.push_command(crate::state::AppCommand::DownloadAtPosition);
+    // UTC/Local toggle — Advanced-only, inline only at full width.
+    if advanced && !compact {
+        ui.separator();
+        render_utc_toggle(ui, state);
     }
 
-    ui.separator();
-
-    // UTC/Local toggle
-    {
-        let label = if state.use_local_time { "Local" } else { "UTC" };
-        if ui
-            .button(RichText::new(label).size(10.0).monospace())
-            .on_hover_text("Toggle between UTC and local time")
-            .clicked()
-        {
-            state.use_local_time = !state.use_local_time;
-        }
+    // Overflow menu for the demoted Advanced controls (UTC toggle, and the
+    // loop mode when a selection is active). Nothing is demoted in Basic, so
+    // the menu only appears in Advanced at narrow widths.
+    if advanced && compact {
+        ui.separator();
+        overflow_menu(ui, |ui| {
+            ui.label(RichText::new("Time zone").size(11.0).weak());
+            render_utc_toggle(ui, state);
+            if has_bounds {
+                ui.separator();
+                ui.label(RichText::new("Loop").size(11.0).weak());
+                // Listed as rows rather than a nested combo: a ComboBox inside
+                // a close-on-click menu would dismiss the menu on its first
+                // click before its own popup could open.
+                for mode in LoopMode::all() {
+                    if ui
+                        .selectable_label(
+                            playback.state.time_model.loop_mode == *mode,
+                            mode.label(),
+                        )
+                        .clicked()
+                    {
+                        playback.state.time_model.loop_mode = *mode;
+                    }
+                }
+            }
+        });
     }
 
     // Push session stats to the right
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        render_session_stats(ui, state);
+        render_session_stats(ui, state, activity_vm);
     });
 }
 
-/// Render live mode indicator badge with pulsing dot.
-fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
-    let phase = state.live_mode_state.phase;
-    let pulse_alpha = state.live_mode_state.pulse_alpha();
-
-    // Get current time for status text
-    let now = state.playback_state.playback_position();
-
-    match phase {
-        LivePhase::AcquiringLock => {
-            // Show "CONNECTING" with orange pulsing
-            let pulsed_color = Color32::from_rgba_unmultiplied(
-                live::ACQUIRING.r(),
-                live::ACQUIRING.g(),
-                live::ACQUIRING.b(),
-                (128.0 + 127.0 * pulse_alpha) as u8,
-            );
-            ui.label(
-                RichText::new(egui_phosphor::regular::BROADCAST)
-                    .size(16.0)
-                    .color(pulsed_color),
-            );
-
-            let elapsed = state.live_mode_state.phase_elapsed_secs(now) as i32;
-            ui.label(
-                RichText::new(format!("CONNECTING {}s", elapsed))
-                    .size(11.0)
-                    .strong()
-                    .color(live::ACQUIRING),
-            );
-        }
-        LivePhase::Streaming | LivePhase::WaitingForChunk => {
-            // Show red "LIVE" indicator (always visible once streaming)
-            let pulsed_color = Color32::from_rgba_unmultiplied(
-                live::STREAMING.r(),
-                live::STREAMING.g(),
-                live::STREAMING.b(),
-                (128.0 + 127.0 * pulse_alpha) as u8,
-            );
-            ui.label(
-                RichText::new(egui_phosphor::regular::BROADCAST)
-                    .size(16.0)
-                    .color(pulsed_color),
-            );
-            ui.label(
-                RichText::new("LIVE")
-                    .size(11.0)
-                    .strong()
-                    .color(live::STREAMING),
-            );
-
-            // Show chunk count
-            if state.live_mode_state.chunks_received > 0 {
-                ui.label(
-                    RichText::new(format!("({})", state.live_mode_state.chunks_received))
-                        .size(10.0)
-                        .color(ui_colors::value(state.is_dark)),
-                );
+/// Loop-preset menu button (spec §8 "presets first"). A small ⟳ menu offering
+/// "Pin to live", the frame-count windows, the duration windows, and a "Clear
+/// loop" entry when a loop exists. Each selection pushes an `ApplyLoopPreset` /
+/// `ClearLoop` command — the app routes it through the named playhead
+/// transitions (never direct field writes). Shown in Basic too.
+fn render_loop_preset_menu(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    playback: &crate::subsystem::Playback,
+    interactive: bool,
+) {
+    use crate::core::LoopPreset;
+    let has_loop =
+        playback.state.loop_window.is_some() || playback.state.time_model.playback_bounds.is_some();
+    // Highlight the icon while a loop is active so the control reads as "on".
+    let icon = egui_phosphor::regular::REPEAT;
+    let tint = if has_loop {
+        live::STREAMING
+    } else {
+        ui_colors::value(state.is_dark)
+    };
+    ui.add_enabled_ui(interactive, |ui| {
+        ui.menu_button(RichText::new(icon).size(14.0).color(tint), |ui| {
+            // Header: the active loop window (basis + pinned), or "Loop".
+            let header = match playback.state.loop_window {
+                Some(w) => {
+                    let pin = if w.pinned { " · pinned" } else { "" };
+                    format!("Loop · {}{}", w.basis.label(), pin)
+                }
+                None => "Loop".to_string(),
+            };
+            ui.label(RichText::new(header).size(11.0).weak());
+            for preset in LoopPreset::menu() {
+                if ui.button(preset.label()).clicked() {
+                    state.push_command(crate::core::Intent::ApplyLoopPreset(*preset));
+                    ui.close();
+                }
             }
-
-            // Show status: downloading or waiting
-            if phase == LivePhase::Streaming {
-                ui.label(
-                    RichText::new("receiving...")
-                        .size(10.0)
-                        .italics()
-                        .color(ui_colors::SUCCESS),
-                );
-            } else if let Some(remaining) = state.live_mode_state.countdown_remaining_secs(now) {
-                ui.label(
-                    RichText::new(format!("next in {}s", remaining.ceil() as i32))
-                        .size(10.0)
-                        .color(live::WAITING),
-                );
+            if has_loop {
+                ui.separator();
+                if ui.button("Clear loop").clicked() {
+                    state.push_command(crate::core::Intent::ClearLoop);
+                    ui.close();
+                }
             }
+        })
+        .response
+        .on_hover_text("Loop presets");
+    });
+}
+
+/// Step the playhead one frame in `direction` (-1 back, +1 forward). Stepping is
+/// a seek, so it detaches the playhead first (the stream, if any, keeps ingesting
+/// unless the data-saver policy stops it) and then steps — exactly like the
+/// mobile jog (`mobile::tabs::step_frame`). Macro frame-steps the index; Micro
+/// seeks to the prev/next matching sweep end, falling back to a speed-sized time
+/// nudge when no neighbor exists.
+fn step_jog(
+    state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
+    live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
+    direction: isize,
+) {
+    let current_pos = playback.state.playback_position();
+    // Detach before any `set_playback_position` (which debug-asserts Free mode).
+    live.detach_playhead(
+        &mut playback.state,
+        state.frame_now.secs(),
+        state.pause_stream_while_reviewing,
+    );
+    match playback.state.playback_mode() {
+        PlaybackMode::Macro => {
+            playback.state.step_macro_frame(direction);
         }
-        _ => {}
+        PlaybackMode::Micro => {
+            let step = playback.state.speed.timeline_seconds_per_real_second();
+            let fallback = current_pos + step * direction as f64;
+            let new_pos = match &state.viz_state.elevation_selection {
+                crate::core::ElevationSelection::Fixed {
+                    elevation_number, ..
+                } => {
+                    if direction < 0 {
+                        timeline
+                            .scans
+                            .prev_matching_sweep_end_by_number(current_pos, *elevation_number)
+                            .unwrap_or(fallback)
+                    } else {
+                        timeline
+                            .scans
+                            .next_matching_sweep_end_by_number(current_pos, *elevation_number)
+                            .unwrap_or(fallback)
+                    }
+                }
+                crate::core::ElevationSelection::Latest => {
+                    if direction < 0 {
+                        timeline
+                            .scans
+                            .prev_any_sweep_end(current_pos)
+                            .unwrap_or(fallback)
+                    } else {
+                        timeline
+                            .scans
+                            .next_any_sweep_end(current_pos)
+                            .unwrap_or(fallback)
+                    }
+                }
+            };
+            playback.state.set_playback_position(new_pos);
+        }
     }
 }
 
-/// Render session statistics (right-aligned in the bottom bar).
-///
-/// Layout (right-to-left): FPS | pipeline (clickable) | download | cache
-fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
-    let dark = state.is_dark;
+/// UTC/Local time-zone toggle. Rendered inline in the transport row at full
+/// width and inside the overflow menu when space is tight.
+fn render_utc_toggle(ui: &mut egui::Ui, state: &mut AppState) {
+    let label = if state.use_local_time { "Local" } else { "UTC" };
+    if ui
+        .button(RichText::new(label).size(10.0).monospace())
+        .on_hover_text("Toggle between UTC and local time")
+        .clicked()
+    {
+        state.use_local_time = !state.use_local_time;
+    }
+}
 
-    // FPS (rightmost) — read value before mutable borrow
-    let fps = state.session_stats.avg_fps;
-    let active_count = state.session_stats.active_request_count;
-    let request_count = state.session_stats.session_request_count;
-    let transferred = state.session_stats.format_transferred();
+/// Persistent, stateful LIVE button (spec §7). Three states, always present so
+/// the live edge — and the stream's off switch — is one glance/one click away
+/// no matter where the user is:
+///
+/// - **Tethered** (playhead attached, `AppMode::Live`): solid red "● LIVE".
+///   Click stops the stream (`StopLive(LiveEdge)`), mirroring the timeline
+///   now-cap: the most prominent live control is also the off switch.
+/// - **Detached** (stream running, playhead browsing): hollow "● LIVE · m:ss
+///   behind" where the lag is wall-now − playhead. Click re-tethers
+///   (`ReturnToLive`).
+/// - **No stream** (idle): hollow "● GO LIVE". Click starts a stream.
+///
+/// If the stream dies underneath a detached state, `mode_state.is_active()`
+/// flips false and the button falls through to GO LIVE (risk 4).
+///
+/// **This button reports the *tether* only.** Whether data is actually still
+/// arriving is a separate, orthogonal fact, and it is carried by the activity
+/// chip [`render_stream_activity`] renders beside it — a single control's fill
+/// cannot honestly encode two independent booleans, which is why "am I
+/// downloading?" used to be indistinguishable from "am I locked to now?".
+fn render_live_button(ui: &mut egui::Ui, state: &mut AppState, live: &crate::subsystem::Live) {
+    let dot = egui_phosphor::regular::BROADCAST;
+    let tethered = live.app_mode == AppMode::Live;
+    let streaming = live.mode_state.is_active();
+
+    if tethered {
+        // Solid red badge — tethered to the live edge. Pulse the fill subtly so
+        // it reads as "live" without being an alarm.
+        let pulse = live.mode_state.pulse_alpha();
+        let alpha = (200.0 + 55.0 * pulse) as u8;
+        let fill = Color32::from_rgba_unmultiplied(
+            live::STREAMING.r(),
+            live::STREAMING.g(),
+            live::STREAMING.b(),
+            alpha,
+        );
+        let label = RichText::new(format!("{dot} LIVE"))
+            .size(11.0)
+            .strong()
+            .color(Color32::WHITE);
+        if ui
+            .add(egui::Button::new(label).fill(fill))
+            .on_hover_text("Streaming live — click to stop")
+            .clicked()
+        {
+            state.push_command(crate::core::Intent::StopLive(
+                crate::core::transport::LiveStopPlacement::LiveEdge,
+            ));
+        }
+        return;
+    }
+
+    if streaming {
+        // Detached background stream: hollow outline + lag readout. One click
+        // snaps back to the live edge.
+        let lag = live.frame_status.lag_secs.unwrap_or(0.0);
+        let label = RichText::new(format!(
+            "{dot} LIVE · {} behind",
+            crate::core::format_lag(lag)
+        ))
+        .size(11.0)
+        .strong()
+        .color(live::STREAMING);
+        if ui
+            .add(egui::Button::new(label).fill(Color32::TRANSPARENT))
+            .on_hover_text("Stream running in background — click to rejoin live")
+            .clicked()
+        {
+            state.push_command(crate::core::Intent::ReturnToLive);
+        }
+        return;
+    }
+
+    // No stream: hollow GO LIVE invitation.
+    let label = RichText::new(format!("{dot} GO LIVE"))
+        .size(11.0)
+        .strong()
+        .color(tl_colors::NOW_IDLE);
+    if ui
+        .add(egui::Button::new(label).fill(Color32::TRANSPARENT))
+        .on_hover_text("Stream live from now")
+        .clicked()
+    {
+        state.push_command(crate::core::Intent::GoLive);
+    }
+}
+
+/// Stream-activity chip: **is data arriving right now?** — the other half of
+/// the fact the LIVE button used to carry alone.
+///
+/// Renders nothing when there is no stream, so it costs no chrome in the common
+/// archive case. When there is one it projects [`crate::core::LiveStatus`]'s
+/// `detail_text` — the activity word plus whatever visibly moves (the chunk
+/// count ticking up, the "next in ~Ns" countdown, the stall duration growing):
+/// a changing number is unambiguous evidence of ingestion in a way a static
+/// fill never was. The glyph pulses only while data is genuinely moving, so
+/// motion means exactly one thing. Neutral/amber tones only — the accent
+/// budget's red stays with the live edge and the tether.
+fn render_stream_activity(ui: &mut egui::Ui, state: &AppState, live: &crate::subsystem::Live) {
+    use crate::core::StreamActivity;
+
+    let status = &live.frame_status;
+    let Some(detail) = status.detail_text() else {
+        return; // No stream — the chip costs no chrome in the archive case.
+    };
+
+    let dark = state.is_dark;
+    let color = match status.activity {
+        // Amber, not blue: a stall is degraded, and blue is the routine
+        // "waiting" tone elsewhere in the live palette.
+        StreamActivity::Stalled => live::ACQUIRING,
+        StreamActivity::Receiving => ui_colors::value(dark),
+        _ => ui_colors::label(dark),
+    };
+    // The pulse is applied to alpha so the chip breathes without changing hue.
+    let color = if status.activity.is_animated() {
+        let pulse = live.mode_state.pulse_alpha();
+        let alpha = (150.0 + 105.0 * pulse) as u8;
+        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+    } else {
+        color
+    };
+
+    let text = format!("{} {detail}", egui_phosphor::regular::WAVE_SINE);
+    let resp = ui.label(RichText::new(text).size(11.0).monospace().color(color));
+    if let Some(hover) = status.hover_text() {
+        resp.on_hover_text(hover);
+    }
+
+    // The countdown must keep ticking even at the detached 1 s repaint
+    // cadence (same pattern as the timeline's in-flight cells).
+    if status.countdown_secs.is_some() {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(500));
+    }
+}
+
+/// Render the right-hand cluster of the transport row.
+///
+/// Everything that used to live here — FPS, the DL/PROC/GPU pipeline lamps,
+/// the request/bytes readout, the COI badge — moved into the activity sheet's
+/// Details disclosure, where it is available to every user rather than only
+/// behind `?dev=true`. What remains is the ambient activity chip plus the
+/// Advanced-only cache control.
+fn render_session_stats(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    activity_vm: &crate::core::activity::ActivityVm,
+) {
+    let dark = state.is_dark;
     let cache_size = state.session_stats.format_cache_size();
 
-    // FPS, pipeline indicator, network metrics, and COI badge are all
-    // dev-mode-only diagnostics — hidden by default.
-    if state.dev_mode {
-        if let Some(fps) = fps {
-            ui.label(
-                RichText::new(format!("{:.0} fps", fps))
-                    .size(11.0)
-                    .color(ui_colors::value(dark)),
-            );
-            ui.separator();
-        }
-
-        // Pipeline status — clickable phase boxes open detail modal
-        render_pipeline_indicator(ui, state);
-
-        // Download group: requests + transferred
-        // Use service worker aggregate if available, otherwise fall back to channel stats
-        let sw_total = state.network_aggregate.total_requests;
-        let (display_count, display_transferred) = if sw_total > 0 {
-            (
-                sw_total,
-                crate::state::format_bytes(state.network_aggregate.total_bytes),
-            )
-        } else {
-            (request_count, transferred)
-        };
-
-        if active_count > 0 {
-            ui.label(
-                RichText::new(format!("({} active)", active_count))
-                    .size(10.0)
-                    .italics()
-                    .color(ui_colors::ACTIVE),
-            );
-        }
-        if display_count > 0 {
-            // Clickable to toggle acquisition drawer (subsumes network log modal)
-            let queued = state.acquisition.queued_count();
-            let req_text = if queued > 0 {
-                format!("{}r / {} | {}q", display_count, display_transferred, queued)
-            } else {
-                format!("{}r / {}", display_count, display_transferred)
-            };
-
-            let drawer_icon = if state.acquisition.drawer_expanded {
-                egui_phosphor::regular::CARET_DOWN
-            } else {
-                egui_phosphor::regular::CARET_UP
-            };
-
-            if ui
-                .add(
-                    egui::Label::new(
-                        RichText::new(format!("{} {}", drawer_icon, req_text))
-                            .size(10.0)
-                            .color(ui_colors::value(dark)),
-                    )
-                    .sense(egui::Sense::click()),
-                )
-                .on_hover_text("Click to toggle acquisition drawer")
-                .clicked()
-            {
-                state.acquisition.drawer_expanded = !state.acquisition.drawer_expanded;
-            }
-            ui.separator();
-        }
-
-        // Cross-origin isolation indicator
-        if state.cross_origin_isolated {
-            ui.label(RichText::new("COI").size(9.0).color(ui_colors::SUCCESS))
-                .on_hover_text("Cross-Origin Isolated: SharedArrayBuffer available");
-            ui.separator();
-        }
-    }
-
-    // Cache group: size with clear button
-    if ui.small_button("x").on_hover_text("Clear cache").clicked() {
-        state.push_command(crate::state::AppCommand::ClearCache);
-    }
-    ui.label(
-        RichText::new(cache_size)
-            .size(10.0)
-            .color(ui_colors::value(dark)),
-    );
-}
-
-/// Render pipeline phase indicator boxes (3 high-level groups).
-///
-/// Shows a row of small clickable phase labels (DL, PROC, GPU). Active or
-/// recently-completed phases are highlighted; idle ones are dimmed.
-/// Clicking any phase opens the detailed stats modal.
-/// The indicator stays visible for 1.5 s after the last phase completes
-/// so the user can see which stages ran.
-fn render_pipeline_indicator(ui: &mut egui::Ui, state: &mut AppState) {
-    let pipeline = &state.session_stats.pipeline;
-    let progress = &state.download_progress;
-    let dark = state.is_dark;
-
-    // Each entry: (label, is_lit)
-    // "lit" means actively running OR recently completed (within linger window)
-    let dl_lit = pipeline.phase_visible(pipeline.downloading > 0, pipeline.last_download_done_ms);
-    let proc_lit = pipeline.phase_visible(pipeline.processing, pipeline.last_processing_done_ms);
-    let gpu_lit = pipeline.phase_visible(pipeline.rendering, pipeline.last_render_done_ms);
-
-    // Show batch count on DL when doing a multi-file download
-    let dl_label: String = if progress.is_batch() {
-        format!(
-            "DL {}/{}",
-            (progress.batch_completed + 1).min(progress.batch_total),
-            progress.batch_total
-        )
-    } else if pipeline.downloading > 1 {
-        "DL+".to_string()
-    } else {
-        "DL".to_string()
-    };
-
-    let phases: &[(&str, bool)] = &[(&dl_label, dl_lit), ("PROC", proc_lit), ("GPU", gpu_lit)];
-
-    // Also show compact latency summary after the indicator
-    let has_any_timing = state.session_stats.median_chunk_latency_ms.is_some()
-        || state.session_stats.median_processing_time_ms.is_some()
-        || state.session_stats.avg_render_time_ms.is_some();
-
-    let summary_text = if has_any_timing {
-        Some(state.session_stats.format_latency_stats())
-    } else {
-        None
-    };
-
-    // Wider when showing batch count
-    let base_width = if progress.is_batch() { 140.0 } else { 110.0 };
-    let summary_width = summary_text
-        .as_ref()
-        .map(|s| s.len() as f32 * 6.0 + 16.0)
-        .unwrap_or(0.0);
-    let indicator_width = base_width + summary_width;
-
-    // Use a fixed-width left-to-right sub-layout so phases read correctly
-    // and don't consume all remaining horizontal space in the parent R-to-L layout.
-    let mut clicked = false;
-    ui.allocate_ui_with_layout(
-        Vec2::new(indicator_width, ui.available_height()),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            let anim_time = ui.ctx().input(|i| i.time);
-            let pulse = (0.5 + 0.5 * (anim_time * 3.0).sin()) as f32;
-
-            for (i, (label, lit)) in phases.iter().enumerate() {
-                if i > 0 {
-                    ui.label(
-                        RichText::new("\u{203A}")
-                            .size(9.0)
-                            .color(Color32::from_rgb(70, 70, 80)),
-                    );
-                }
-                let color = if *lit {
-                    // Pulse the active phase for visual emphasis
-                    let base = ui_colors::ACTIVE;
-                    let alpha = (180.0 + 75.0 * pulse) as u8;
-                    Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
-                } else if dark {
-                    Color32::from_rgb(55, 55, 65)
-                } else {
-                    Color32::from_rgb(180, 180, 190)
-                };
-                let btn = ui.add(
-                    egui::Button::new(RichText::new(*label).size(9.0).monospace().color(color))
-                        .frame(false),
-                );
-                if btn.clicked() {
-                    clicked = true;
-                }
-                btn.on_hover_text("Click for detailed timing breakdown");
-            }
-
-            // Compact latency summary inline after the indicator
-            if let Some(ref summary) = summary_text {
-                ui.add_space(4.0);
-                let btn = ui.add(
-                    egui::Button::new(
-                        RichText::new(summary)
-                            .size(10.0)
-                            .color(ui_colors::value(dark)),
-                    )
-                    .frame(false),
-                );
-                if btn.clicked() {
-                    clicked = true;
-                }
-                btn.on_hover_text("Click for detailed timing breakdown");
-            }
-        },
-    );
-
-    if clicked {
-        state.stats_detail_open = !state.stats_detail_open;
-    }
-
+    // Ambient activity chip (spec §5) — for ALL users, always visible
+    // including idle. Opens the activity sheet. The dev-only metrics above
+    // are separate.
+    super::activity_chip::render_activity_chip(ui, activity_vm, state, 11.0);
     ui.separator();
 
-    // Request repaint while lingering so phases fade out smoothly
-    if pipeline.should_show() && !pipeline.is_active() {
-        ui.ctx().request_repaint();
-    }
-    // Also repaint during batch downloads for pulse animation
-    if progress.is_active() {
-        ui.ctx().request_repaint();
+    // Cache group (size + clear button) — Advanced only. A Level-0 viewer
+    // (spec §14) sees a clean transport, not a cache readout or a destructive
+    // clear control; the right-panel storage section is the home for cache
+    // management when Advanced is on.
+    if state.show_advanced() {
+        if ui.small_button("x").on_hover_text("Clear cache").clicked() {
+            state.push_command(crate::core::Intent::ClearCache);
+        }
+        ui.label(
+            RichText::new(cache_size)
+                .size(10.0)
+                .color(ui_colors::value(dark)),
+        );
     }
 }

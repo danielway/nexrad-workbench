@@ -4,290 +4,216 @@
 //! State is organized into logical groupings that correspond to different
 //! areas of functionality.
 
-#[allow(dead_code)]
+use crate::core::{
+    ElevationListEntry, ErrorContext, FrameNow, Intent, PlaybackState, RadarTimeline,
+    RenderProcessing, UserPreferences,
+};
+
 pub(crate) mod acquisition;
-mod alerts;
 mod app_mode;
+pub(crate) mod calendar;
+mod frame_clock;
 mod layer;
-mod live_mode;
-mod live_radar_model;
-mod mping;
 mod playback;
-pub(crate) mod playback_manager;
 mod preferences;
-pub(crate) mod radar_data;
+pub(crate) mod recency;
 pub(crate) mod render_cache;
 mod saved_events;
 mod settings;
 mod stats;
 pub(crate) mod theme;
 pub(crate) mod url_state;
-pub(crate) mod vcp;
-pub(crate) mod vcp_forecast;
-mod vcp_position;
 mod viz;
 
-pub use crate::geo::camera::CameraMode;
-pub use acquisition::{
-    AcquisitionState, DrawerTab, NetworkGroupKey, OperationId, OperationKind, OperationStatus,
-    QueueState,
-};
-pub use alerts::AlertsState;
-pub use app_mode::AppMode;
-pub use layer::{GeoLayerVisibility, LayerState};
-pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
-pub use live_radar_model::LiveRadarModel;
-pub use mping::MpingState;
-pub use playback::{LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState, TimeModel};
-pub use preferences::UserPreferences;
-pub use radar_data::RadarTimeline;
-pub use render_cache::{PrevSweepCacheKey, RenderCache};
-pub use saved_events::{SavedEvent, SavedEvents};
-pub use settings::{format_bytes, StorageSettings};
-pub use stats::{
-    DownloadPhase, DownloadProgress, IngestTimingDetail, RenderTimingDetail, SessionStats,
-};
-// Re-export the command type for ergonomic access.
-// AppCommand is defined directly in this module above.
-pub use theme::ThemeMode;
-pub use vcp::get_vcp_definition;
-pub use vcp_forecast::{
-    BucketKey, ChunkArrivalStat, RateSource, SweepForecast, VolumeForecastSnapshot,
-};
-pub use vcp_position::{SweepPosition, SweepStatus, SweepTiming, VcpPositionModel};
-pub use viz::{
-    ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct, RenderProcessing,
-    StormCellInfo, ViewMode, VizState,
-};
+pub(crate) use acquisition::AcquisitionState;
+// The operation vocabulary lives in `core::domain::ops` (the pure activity
+// view-model reads it, and `core` may not import `state`). Re-exported here so
+// existing `crate::state::OperationKind`-style paths keep resolving.
+pub(crate) use crate::core::{DownloadPhase, OperationKind};
+pub(crate) use app_mode::{derive_app_mode, AppMode};
+pub(crate) use calendar::{aggregate_buckets, bucket_tap_target, TimeBucket};
+pub(crate) use layer::LayerState;
+pub(crate) use render_cache::{PrevSweepCacheKey, RenderCache};
+pub(crate) use saved_events::{SavedEvent, SavedEvents};
+pub(crate) use settings::{format_bytes, StorageSettings};
+pub(crate) use stats::{DownloadProgress, IngestTimingDetail, RenderTimingDetail, SessionStats};
+pub(crate) use theme::ThemeMode;
+pub(crate) use viz::VizState;
 
 /// Cap on the recent-network-requests ring used by the UI log.
-pub const MAX_RECENT_NETWORK_REQUESTS: usize = 100;
-
-/// Commands dispatched by UI code and consumed by the main update loop.
-///
-/// Replaces scattered boolean `*_requested` flags with an explicit command queue,
-/// making state transitions easier to follow and impossible to forget to clear.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AppCommand {
-    /// Refresh the timeline from the cache. Optionally auto-position the cursor.
-    RefreshTimeline { auto_position: bool },
-    /// Clear the record cache.
-    ClearCache,
-    /// Download all scans in the current selection range.
-    DownloadSelection,
-    /// Download the scan at the current playback position.
-    DownloadAtPosition,
-    /// Start live/real-time streaming.
-    StartLive,
-    /// Check and run eviction after a storage operation.
-    CheckEviction,
-    /// Wipe all data (IndexedDB + localStorage) and reload.
-    WipeAll,
-    /// Pause the acquisition queue.
-    PauseQueue,
-    /// Resume the acquisition queue.
-    ResumeQueue,
-    /// Retry a failed operation.
-    RetryFailed(OperationId),
-    /// Skip a failed operation and continue.
-    SkipFailed(OperationId),
-    /// Cancel a specific operation.
-    CancelOperation(OperationId),
-    /// Reorder an operation (delta: -1 = up, +1 = down).
-    ReorderOperation(OperationId, isize),
-    /// Retry initializing the decode worker after a failure.
-    RetryWorker,
-    /// Request an immediate refresh of the NWS alerts feed.
-    RefreshAlerts,
-    /// Open the alert detail modal for a specific alert id.
-    OpenAlert(String),
-    /// Close any open alert modal (detail or list).
-    #[allow(dead_code)] // Provided for symmetry; modals close via their own buttons.
-    CloseAlert,
-}
+pub(crate) const MAX_RECENT_NETWORK_REQUESTS: usize = 100;
 
 /// Root application state containing all sub-states.
 #[derive(Default)]
-pub struct AppState {
-    /// Playback controls state
-    pub playback_state: PlaybackState,
-
-    /// Radar timeline data (scans, sweeps, radials)
-    pub radar_timeline: RadarTimeline,
-
-    /// Visualization state (canvas, zoom/pan, product selection)
-    pub viz_state: VizState,
-
-    /// Layer visibility toggles
-    pub layer_state: LayerState,
-
-    /// Application status message displayed in top bar
-    pub status_message: String,
-
-    /// Timestamp (ms since epoch) when the status message was last set.
-    /// Used for auto-dismissal.
-    pub status_message_set_ms: f64,
-
-    /// Session and performance statistics
-    pub session_stats: SessionStats,
-
-    /// Live streaming mode state
-    pub live_mode_state: LiveModeState,
-
-    /// Derived top-level application mode (Idle / Archive / Live).
-    /// Recomputed by [`AppState::refresh_live_model`] once per frame.
-    pub app_mode: AppMode,
-
-    /// Computed live radar model — derived once per frame from `live_mode_state`.
-    /// Provides a consistent snapshot for all UI consumers within a single frame.
-    pub live_radar_model: LiveRadarModel,
-
-    /// Download progress tracking for timeline ghost markers and pipeline display.
-    pub download_progress: DownloadProgress,
-
-    /// Command queue for cross-component signaling.
-    /// UI code pushes commands; the main update loop drains and dispatches them.
-    pub commands: std::collections::VecDeque<AppCommand>,
-
-    /// Whether the next timeline load should auto-position the playback cursor.
-    /// Set to true on initial startup and site changes; false for download-triggered refreshes.
-    pub auto_position_on_timeline_load: bool,
-
-    /// Whether a selection download is currently in progress.
-    pub download_selection_in_progress: bool,
-
-    /// State for the datetime picker popup.
-    pub datetime_picker: DateTimePickerState,
-
-    /// Storage settings (quota, eviction targets).
-    pub storage_settings: StorageSettings,
-
-    /// Whether the site selection modal is open.
-    pub site_modal_open: bool,
-
-    /// Preferred NEXRAD site chosen during first visit. `Some` means the user
-    /// has already completed the first-visit flow and this site should be used
-    /// as the default on future visits.
-    pub preferred_site: Option<String>,
-
-    /// Whether the left sidebar is visible.
-    pub left_sidebar_visible: bool,
-
-    /// Whether the right sidebar is visible.
-    pub right_sidebar_visible: bool,
-
-    /// Whether the keyboard shortcut help overlay is visible.
-    pub shortcuts_help_visible: bool,
-
-    /// Whether the "wipe all data" confirmation modal is open.
-    pub wipe_modal_open: bool,
-
-    /// Theme mode selection (System, Dark, Light).
-    pub theme_mode: ThemeMode,
-
+pub(crate) struct AppState {
+    // ------------------------------------------------------------------------
+    // Per-frame scratch — recomputed at the top of every frame in `app::frame_setup`.
+    // Never persisted, and never valid across frames: read it, don't cache it.
+    /// Wall-clock "now" for this frame, captured once in
+    /// `apply_frame_setup` before any consumer runs.
+    pub frame_now: FrameNow,
     /// Resolved dark mode flag for the current frame.
     pub is_dark: bool,
-
-    /// GPU rendering processing options (interpolation, smoothing, etc.).
-    pub render_processing: RenderProcessing,
-
-    /// Whether to display times in local timezone (false = UTC).
-    pub use_local_time: bool,
-
-    /// Developer mode: shows perf timings, FPS, network metrics, and the COI
-    /// badge in the status bar, and enables the code paths that feed them.
-    /// Mirrored to/from the `?dev=true` URL parameter.
-    pub dev_mode: bool,
-
-    /// Whether the stats detail popup is open.
-    pub stats_detail_open: bool,
-
-    /// Whether the VCP forecast diagnostics modal is open.
-    pub vcp_forecast_open: bool,
-
-    /// User-saved weather event bookmarks.
-    pub saved_events: SavedEvents,
-
-    /// Whether the event create/edit modal is open.
-    pub event_modal_open: bool,
-
-    /// Event ID being edited (None = creating new event).
-    pub event_modal_editing_id: Option<u64>,
-
-    /// Shadowed scan boundaries from the archive index.
-    ///
-    /// When a listing is fetched for a site/date, scan time boundaries are
-    /// derived from adjacent file timestamps and stored here. The timeline
-    /// renders these as subtle markers to show where scans exist before they
-    /// are actually downloaded.
-    pub shadow_scan_boundaries: Vec<crate::nexrad::ScanBoundary>,
-
-    /// Aggregate network statistics from the service worker (all intercepted traffic).
-    pub network_aggregate: crate::nexrad::NetworkAggregate,
-
-    /// Recent network requests from the service worker (ring buffer for UI log).
-    /// Bounded by [`MAX_RECENT_NETWORK_REQUESTS`].
-    pub recent_network_requests: std::collections::VecDeque<crate::nexrad::NetworkRequest>,
-
-    /// Whether the browsing context is cross-origin isolated (SharedArrayBuffer available).
-    pub cross_origin_isolated: bool,
-
-    /// Whether the network request log modal is open.
-    pub network_log_open: bool,
-
-    /// Unified acquisition queue state.
-    pub acquisition: AcquisitionState,
-
-    /// Persistent worker initialization error message.
-    /// When set, a non-dismissable error banner is shown in the top bar.
-    pub worker_init_error: Option<String>,
-
-    /// National radar mosaic overlay — fetches the CONUS composite while
-    /// the corresponding layer toggle is enabled.
-    pub national_mosaic: crate::nexrad::NationalMosaic,
-
-    /// NWS active alerts + related modal state.
-    pub alerts: AlertsState,
-
-    /// mPING storm reports + related modal state.
-    pub mping: MpingState,
-
     /// Resolved mobile mode for the current frame. Computed by
     /// [`AppState::refresh_mobile_mode`] from viewport width and touch history.
     /// When true, panels collapse to the mobile chrome.
     pub is_mobile: bool,
+    /// Resolved desktop width tier for the current frame. Computed alongside
+    /// [`AppState::is_mobile`] in [`AppState::refresh_mobile_mode`]. Drives
+    /// progressive collapse of low-priority chrome into overflow menus so the
+    /// top/bottom bars don't overlap when the window is narrow.
+    pub width_tier: WidthTier,
 
+    // ------------------------------------------------------------------------
+    // One-shot handoffs — written in one place and consumed-and-cleared in another
+    // (`mem::take` or an explicit reset). A handoff left set is a bug.
+    /// Command queue for cross-component signaling.
+    /// UI code pushes commands; the main update loop drains and dispatches them.
+    pub commands: std::collections::VecDeque<Intent>,
+    /// A timeline range selection finalized this frame (shift+click/drag),
+    /// snapshotted as `(start, end)` seconds. The main update loop consumes it,
+    /// applies the duration gate, and either arms the bulk-fetch pump or opens
+    /// the confirm modal. `None` when no selection was just finalized.
+    pub selection_just_finalized: Option<(f64, f64)>,
+    /// Whether the next timeline load should auto-position the playback cursor.
+    /// Set to true on initial startup and site changes; false for download-triggered refreshes.
+    pub auto_position_on_timeline_load: bool,
+    /// One-shot boot intent: when set, the app should open tethered to live as
+    /// soon as a site is established. Set at boot (no deep-link time) when the
+    /// first-visit site modal is open; consumed by the site modal's
+    /// `apply_site_selection` to queue `StartLive` once the user picks a site
+    /// (spec §7 / alignment §5 — open tethered on first visit too).
+    pub start_live_on_site_select: bool,
+
+    // ------------------------------------------------------------------------
+    // Cross-frame interaction levels — written by the UI during render, read by
+    // the pumps at the TOP of the following frame. Unlike the one-shot handoffs
+    // above these are levels, not edges: they stay set for a gesture's whole
+    // lifetime and are cleared by the same writer when it ends.
+    /// Whether a primary-drag scrub is currently underway on the timeline
+    /// strip. Suppresses the reactive prefetch's debounce-free anchor fast
+    /// path, so dragging the playhead across the archive no longer fires a
+    /// download for every scan crossed — the fetch happens once the drag
+    /// settles. Written by `ui::timeline::interaction`, read by
+    /// `pump_implicit_prefetch` (which runs before the UI renders, so it sees
+    /// the previous frame's value — correct here, since the flag is held for
+    /// the drag's duration and cleared the frame after it ends).
+    pub pointer_scrub_active: bool,
+
+    // ------------------------------------------------------------------------
+    // View and rendering state.
+    /// Visualization state (canvas, zoom/pan, product selection)
+    pub viz_state: VizState,
+    /// Layer visibility toggles
+    pub layer_state: LayerState,
+    /// GPU rendering processing options (interpolation, smoothing, etc.).
+    pub render_processing: RenderProcessing,
+    /// Per-frame render caches: camera-motion tracking for label-tier
+    /// debouncing, prev-sweep lookup memoization, and theme-gating state.
+    pub render_cache: RenderCache,
+
+    // ------------------------------------------------------------------------
+    // Session data — accumulated while the tab is open, not persisted.
+    /// Application status message displayed in top bar
+    pub status_message: String,
+    /// Timestamp (ms since epoch) when the status message was last set.
+    /// Used for auto-dismissal.
+    pub status_message_set_ms: f64,
+    /// Session and performance statistics
+    pub session_stats: SessionStats,
+    /// Download progress tracking for timeline ghost markers and pipeline display.
+    pub download_progress: DownloadProgress,
+    /// Recent-errors ring buffer. Reporters across the codebase push
+    /// into this; UI surfaces from it instead of inventing its own
+    /// per-feature error indicators.
+    pub errors: ErrorContext,
+    /// Persistent worker initialization error message.
+    /// When set, a non-dismissable error banner is shown in the top bar.
+    pub worker_init_error: Option<String>,
+    /// Aggregate network statistics from the service worker (all intercepted traffic).
+    pub network_aggregate: crate::core::NetworkAggregate,
+    /// Recent network requests from the service worker (ring buffer for UI log).
+    /// Bounded by [`MAX_RECENT_NETWORK_REQUESTS`].
+    pub recent_network_requests: std::collections::VecDeque<crate::core::NetworkRequest>,
+    /// National radar mosaic overlay — fetches the CONUS composite while
+    /// the corresponding layer toggle is enabled.
+    pub national_mosaic: crate::nexrad::NationalMosaic,
+    /// User-saved weather event bookmarks.
+    pub saved_events: SavedEvents,
+
+    // ------------------------------------------------------------------------
+    // User preferences and settings — mirrored to `UserPreferences` (localStorage)
+    // and/or the URL. `UserPreferences::from_app_state` reads exactly these.
+    /// Theme mode selection (System, Dark, Light).
+    pub theme_mode: ThemeMode,
+    /// Whether to display times in local timezone (false = UTC).
+    pub use_local_time: bool,
+    /// Developer mode: shows perf timings, FPS, network metrics, and the COI
+    /// badge in the status bar, and enables the code paths that feed them.
+    /// Mirrored to/from the `?dev=true` URL parameter.
+    pub dev_mode: bool,
+    /// Advanced UI mode: when `false` (Basic, default for new users), the
+    /// left panel and several right-panel sections are hidden. When `true`
+    /// (Advanced), all controls are visible regardless of operational mode.
+    /// Persisted in `UserPreferences`; existing users are migrated to `true`.
+    /// Override via `?ui=basic` or `?ui=advanced`.
+    pub advanced_mode: bool,
+    /// Data-saver policy: when `true`, detaching the playhead stops the live
+    /// stream immediately rather than letting it ingest in the background
+    /// (spec §7). Default off; persisted in `UserPreferences`. Read by
+    /// `Live::detach_playhead` (the single policy site).
+    pub pause_stream_while_reviewing: bool,
+    /// Acquisition policy: when `true` (default), playhead-driven reactive
+    /// prefetch + the anchor fast-path run as the user scrubs/seeks. When
+    /// `false` (data-saver), that automatic fetch is suppressed — explicit
+    /// range selections and the inspector's tap-to-fetch still work (spec §10).
+    /// Persisted in `UserPreferences`; read by `pump_implicit_prefetch`.
+    pub autofetch_while_scrubbing: bool,
+    /// Preferred NEXRAD site chosen during first visit. `Some` means the user
+    /// has already completed the first-visit flow and this site should be used
+    /// as the default on future visits.
+    pub preferred_site: Option<String>,
+    /// Storage settings (quota, eviction targets).
+    pub storage_settings: StorageSettings,
+    /// User override for mobile mode. `None` = auto (default), `Some(true)` =
+    /// force mobile, `Some(false)` = force desktop. Persisted via preferences.
+    pub mobile_override: Option<bool>,
+
+    // ------------------------------------------------------------------------
+    // Environment and sticky session facts.
+    /// Whether the browsing context is cross-origin isolated (SharedArrayBuffer available).
+    pub cross_origin_isolated: bool,
     /// Sticky flag — set the first time any touch event is seen. Used by
     /// the auto-detection in [`AppState::refresh_mobile_mode`] so that a
     /// touch laptop (or phone rotated from portrait to landscape) doesn't
     /// flip back to desktop layout mid-session.
     pub touch_seen_ever: bool,
+}
 
-    /// User override for mobile mode. `None` = auto (default), `Some(true)` =
-    /// force mobile, `Some(false)` = force desktop. Persisted via preferences.
-    pub mobile_override: Option<bool>,
-
-    /// Whether the mobile settings modal (opened via the ellipsis button in
-    /// the mobile bottom bar) is currently visible.
-    pub mobile_settings_open: bool,
-
-    /// Active tab inside the mobile settings modal.
-    pub mobile_settings_tab: MobileSettingsTab,
-
-    /// Latched when the mobile bottom bar's location button is tapped. The
-    /// main update loop consumes this flag and kicks off geolocation against
-    /// the `SiteModalState` that lives outside `AppState`, avoiding a direct
-    /// state dependency from the bottom-bar renderer.
-    pub mobile_geolocate_requested: bool,
-
-    /// Per-frame render caches: camera-motion tracking for label-tier
-    /// debouncing, prev-sweep lookup memoization, and theme-gating state.
-    pub render_cache: RenderCache,
+/// Desktop horizontal-space tier, ordered narrowest → widest. Drives how much
+/// chrome the top/bottom bars keep inline vs. fold into an overflow `⋯` menu.
+/// Mobile has its own dedicated chrome and ignores this; these tiers apply only
+/// to the desktop layout. Breakpoints are sized against the tightest case (the
+/// Advanced top bar) so the surviving inline content provably fits each tier's
+/// smallest viewport, which is what structurally prevents overlap.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub(crate) enum WidthTier {
+    /// `< 720px` (down to the ~500px floor before mobile takes over):
+    /// aggressive overflow — title dropped, status hidden, the Basic/Advanced
+    /// pill and all view pills demoted, timestamp compacted to time-only.
+    Cramped,
+    /// `720..1080px`: moderate overflow — help/version/UTC/loop demoted, and
+    /// the wide four-pill Advanced view selector folded into the menu.
+    Compact,
+    /// `>= 1080px`: full desktop layout, nothing collapsed. The ceiling leaves
+    /// headroom for a wide NWS alerts chip (many active warnings/watches).
+    #[default]
+    Full,
 }
 
 /// Tabs in the mobile settings modal. Order matches the tab strip layout.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum MobileSettingsTab {
+pub(crate) enum MobileSettingsTab {
     #[default]
     Playback,
     Product,
@@ -296,7 +222,7 @@ pub enum MobileSettingsTab {
 }
 
 impl MobileSettingsTab {
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Playback => "Playback",
             Self::Product => "Product",
@@ -305,100 +231,126 @@ impl MobileSettingsTab {
         }
     }
 
-    pub fn all() -> [Self; 4] {
+    pub(crate) fn all() -> [Self; 4] {
         [Self::Playback, Self::Product, Self::Layers, Self::More]
     }
 }
 
-/// State for the datetime jump picker popup.
-#[derive(Default)]
-pub struct DateTimePickerState {
-    /// Whether the picker popup is currently open.
-    pub open: bool,
-    /// Input values for the picker (as strings for text editing).
-    pub year: String,
-    pub month: String,
-    pub day: String,
-    pub hour: String,
-    pub minute: String,
-    pub second: String,
+/// Idle threshold (seconds) of no interaction before mobile chrome hides while
+/// playing (spec §13 phone: "chrome auto-hides during playback").
+pub(crate) const MOBILE_CHROME_IDLE_HIDE_SECS: f64 = 3.0;
+
+/// Per-frame bookkeeping for the mobile chrome auto-hide (spec §13 phone:
+/// "Canvas full-bleed; chrome auto-hides during playback, tap to reveal").
+///
+/// Lives on the [`Chrome`](crate::subsystem::Chrome) subsystem (its visibility
+/// domain) but is defined here, beside [`MobileSettingsTab`], so the `subsystem`
+/// layer doesn't have to reach into `ui`. The hide *policy* is the pure
+/// [`crate::ui::mobile::auto_hide::should_hide_chrome`]; this struct only holds
+/// the timer + a one-frame reveal latch it feeds.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MobileChromeAutoHide {
+    /// egui `input.time` of the last interaction (chrome tap/drag or reveal
+    /// tap). Far-past sentinel by default so the first idle period while
+    /// playing still hides on schedule rather than instantly on launch.
+    pub last_interaction_secs: f64,
+    /// Whether the chrome is hidden as resolved for the current frame. Computed
+    /// once per frame (before layout) and read by the mobile layers' `visible()`
+    /// and the canvas, so all three agree. The canvas also uses last frame's
+    /// value to recognise a reveal tap (a press while hidden, when only the
+    /// canvas is on screen).
+    pub hidden: bool,
+    /// Set on the frame the user reveals hidden chrome by tapping the canvas —
+    /// consumed by the canvas so the same tap doesn't also pan/zoom.
+    pub revealed_this_frame: bool,
 }
 
-impl DateTimePickerState {
-    /// Initialize the picker with a timestamp, respecting the timezone setting.
-    pub fn init_from_timestamp(&mut self, ts: f64, use_local: bool) {
-        if use_local {
-            let d = js_sys::Date::new_0();
-            d.set_time(ts * 1000.0);
-            self.year = format!("{:04}", d.get_full_year());
-            self.month = format!("{:02}", d.get_month() + 1); // JS months are 0-based
-            self.day = format!("{:02}", d.get_date());
-            self.hour = format!("{:02}", d.get_hours());
-            self.minute = format!("{:02}", d.get_minutes());
-            self.second = format!("{:02}", d.get_seconds());
-        } else {
-            use chrono::{TimeZone, Utc};
-            let dt = Utc.timestamp_opt(ts as i64, 0).unwrap();
-            self.year = dt.format("%Y").to_string();
-            self.month = dt.format("%m").to_string();
-            self.day = dt.format("%d").to_string();
-            self.hour = dt.format("%H").to_string();
-            self.minute = dt.format("%M").to_string();
-            self.second = dt.format("%S").to_string();
-        }
-        self.open = true;
-    }
-
-    /// Try to parse the current input values into a UTC timestamp (seconds).
-    pub fn to_timestamp(&self, use_local: bool) -> Option<f64> {
-        let year: i32 = self.year.parse().ok()?;
-        let month: u32 = self.month.parse().ok()?;
-        let day: u32 = self.day.parse().ok()?;
-        let hour: u32 = self.hour.parse().ok()?;
-        let minute: u32 = self.minute.parse().ok()?;
-        let second: u32 = self.second.parse().ok()?;
-
-        if use_local {
-            // Construct a JS Date from local components and read back UTC millis
-            let d = js_sys::Date::new_0();
-            d.set_full_year(year as u32);
-            d.set_month(month.checked_sub(1)?); // JS months are 0-based
-            d.set_date(day);
-            d.set_hours(hour);
-            d.set_minutes(minute);
-            d.set_seconds(second);
-            d.set_milliseconds(0);
-            let ts = d.get_time(); // UTC milliseconds
-            if ts.is_nan() {
-                return None;
-            }
-            Some(ts / 1000.0)
-        } else {
-            use chrono::{TimeZone, Utc};
-            let dt = Utc.with_ymd_and_hms(year, month, day, hour, minute, second);
-            match dt {
-                chrono::LocalResult::Single(dt) => Some(dt.timestamp() as f64),
-                _ => None,
-            }
+impl Default for MobileChromeAutoHide {
+    fn default() -> Self {
+        Self {
+            last_interaction_secs: f64::NEG_INFINITY,
+            hidden: false,
+            revealed_this_frame: false,
         }
     }
+}
 
-    /// Close the picker and reset state.
-    pub fn close(&mut self) {
-        self.open = false;
+impl MobileChromeAutoHide {
+    /// Record an interaction at `now`, resetting the idle timer so chrome stays
+    /// visible for another [`MOBILE_CHROME_IDLE_HIDE_SECS`] window.
+    pub(crate) fn touch(&mut self, now_secs: f64) {
+        self.last_interaction_secs = now_secs;
+    }
+
+    /// Seconds remaining until chrome would auto-hide given `now` and whether
+    /// playback is advancing, or `None` if it won't hide (paused, or already
+    /// past the threshold). Used to schedule one repaint at the hide moment
+    /// rather than spinning every frame.
+    pub(crate) fn secs_until_hide(&self, now_secs: f64, is_playing: bool) -> Option<f64> {
+        if !is_playing {
+            return None;
+        }
+        let remaining = MOBILE_CHROME_IDLE_HIDE_SECS - (now_secs - self.last_interaction_secs);
+        (remaining > 0.0).then_some(remaining)
+    }
+}
+
+#[cfg(test)]
+mod mobile_auto_hide_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn secs_until_hide_none_when_paused() {
+        let h = MobileChromeAutoHide {
+            last_interaction_secs: 10.0,
+            ..Default::default()
+        };
+        assert!(h.secs_until_hide(11.0, false).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn secs_until_hide_counts_down_while_playing() {
+        let h = MobileChromeAutoHide {
+            last_interaction_secs: 10.0,
+            ..Default::default()
+        };
+        let remaining = h.secs_until_hide(11.0, true).expect("should be pending");
+        assert!((remaining - (MOBILE_CHROME_IDLE_HIDE_SECS - 1.0)).abs() < 1e-9);
+        // Past the threshold → no longer pending.
+        assert!(h
+            .secs_until_hide(10.0 + MOBILE_CHROME_IDLE_HIDE_SECS, true)
+            .is_none());
+    }
+}
+
+/// Bootstrap output from [`AppState::new`].
+///
+/// Carries values that are loaded from persistence at construction time
+/// but no longer live on `AppState` itself: the persisted speed
+/// (which belongs on the Playback subsystem) and the saved mPING API
+/// key (which belongs on the Diagnostics subsystem).
+pub(crate) struct AppStateBootstrap {
+    pub state: AppState,
+    pub playback: PlaybackState,
+    pub mping_api_key: Option<String>,
+}
+
+impl Default for AppStateBootstrap {
+    fn default() -> Self {
+        AppState::bootstrap()
     }
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    /// Construct a fresh `AppState`, loading persisted preferences from
+    /// localStorage along the way. Returns an [`AppStateBootstrap`] so
+    /// pieces of the persisted state that belong on subsystems
+    /// (currently the playback speed and mPING API key) can be applied
+    /// at the right place by the caller.
+    pub(crate) fn bootstrap() -> AppStateBootstrap {
         // Use current time for initialization
         let now = js_sys::Date::now() / 1000.0;
-
-        // Start with empty timeline - will be populated from cache
-        let radar_timeline = RadarTimeline::default();
-
-        // Set up playback state centered on "now"
-        let playback_state = PlaybackState::new_at_time(now);
 
         // Load storage settings from localStorage
         let storage_settings = StorageSettings::load();
@@ -412,61 +364,54 @@ impl AppState {
 
         let mut commands = std::collections::VecDeque::new();
         // Request timeline refresh on startup to load from cache
-        commands.push_back(AppCommand::RefreshTimeline {
+        commands.push_back(Intent::RefreshTimeline {
             auto_position: false,
         });
 
         let mut state = Self {
-            playback_state,
-            radar_timeline,
+            frame_now: FrameNow(now),
             status_message: "Ready".to_string(),
             session_stats: SessionStats::new(),
             storage_settings,
             saved_events,
-            left_sidebar_visible: true,
-            right_sidebar_visible: true,
             theme_mode,
             is_dark,
             commands,
             auto_position_on_timeline_load: false,
             ..Default::default()
         };
+        let mut playback = PlaybackState::new_at_time(now);
 
-        // Apply persisted user preferences (speed, palette, layers, etc.)
+        // Apply persisted user preferences (speed, palette, layers, etc.).
+        // Returns the mPING api key (if any) which lives on the diagnostics
+        // subsystem rather than on AppState; the constructor caller is
+        // responsible for applying it.
         let prefs = UserPreferences::load();
-        prefs.apply_to(&mut state);
+        let mping_api_key = prefs.apply_to(&mut state, &mut playback);
 
-        state
+        AppStateBootstrap {
+            state,
+            playback,
+            mping_api_key,
+        }
+    }
+
+    /// Whether advanced controls should be shown. Helper for UI gating
+    /// throughout the codebase — call this rather than reading
+    /// `advanced_mode` directly so future logic (e.g. forced-advanced
+    /// during a session) can live in one place.
+    pub(crate) fn show_advanced(&self) -> bool {
+        self.advanced_mode
     }
 
     /// Push a command onto the queue for the main update loop to process.
-    pub fn push_command(&mut self, cmd: AppCommand) {
+    pub(crate) fn push_command(&mut self, cmd: Intent) {
         self.commands.push_back(cmd);
     }
 
     /// Drain all pending commands from the queue.
-    pub fn drain_commands(&mut self) -> Vec<AppCommand> {
+    pub(crate) fn drain_commands(&mut self) -> Vec<Intent> {
         self.commands.drain(..).collect()
-    }
-
-    /// Recompute the `live_radar_model` snapshot for this frame.
-    ///
-    /// Call once at the start of each UI frame so all consumers see consistent
-    /// state derived from the same `now` timestamp.
-    pub fn refresh_live_model(&mut self) {
-        let now = js_sys::Date::now() / 1000.0;
-        self.live_radar_model = self.live_mode_state.compute_model(now);
-        self.app_mode = if self.live_mode_state.is_active() {
-            AppMode::Live
-        } else if self
-            .radar_timeline
-            .find_scan_at_timestamp(self.playback_state.playback_position())
-            .is_some()
-        {
-            AppMode::Archive
-        } else {
-            AppMode::Idle
-        };
     }
 
     /// Refresh the mobile-mode flag for this frame.
@@ -475,7 +420,7 @@ impl AppState {
     /// flag or `width < 500px` (so a very narrow desktop window also switches
     /// without needing a touch event). A user override in `mobile_override`
     /// takes precedence.
-    pub fn refresh_mobile_mode(&mut self, ctx: &eframe::egui::Context) {
+    pub(crate) fn refresh_mobile_mode(&mut self, ctx: &eframe::egui::Context) {
         let width = ctx.content_rect().width();
         let touch_now = ctx.input(|i| i.any_touches() || i.multi_touch().is_some());
         if touch_now {
@@ -484,27 +429,209 @@ impl AppState {
         let auto = width < 600.0 && (self.touch_seen_ever || width < 500.0);
         self.is_mobile = self.mobile_override.unwrap_or(auto);
 
+        // Desktop width tier — used by the top/bottom bars to fold low-priority
+        // controls into overflow menus before they collide. Only meaningful when
+        // not mobile (mobile uses its own chrome), but computing it
+        // unconditionally is harmless and keeps the field always current.
+        self.width_tier = if width >= 1080.0 {
+            WidthTier::Full
+        } else if width >= 720.0 {
+            WidthTier::Compact
+        } else {
+            WidthTier::Cramped
+        };
+
         // Mobile v1 is 2D-only. If the user was in globe mode on desktop and
         // the layout flipped to mobile (browser resize, forced override),
         // snap back to 2D rather than leaving them in a view they have no
         // controls for.
-        if self.is_mobile && self.viz_state.view_mode != ViewMode::Flat2D {
-            self.viz_state.view_mode = ViewMode::Flat2D;
+        if self.is_mobile && !self.viz_state.is_2d() {
+            self.viz_state
+                .camera
+                .switch_to_flat_2d(crate::geo::Flat2DState::default());
         }
     }
 
-    /// Whether sweep animation is effectively enabled: requires both the user
-    /// preference AND micro playback mode (zoomed in). In macro mode, sweep
-    /// animation is suppressed regardless of the user preference.
-    pub fn effective_sweep_animation(&self) -> bool {
-        self.render_processing.sweep_animation
-            && self.playback_state.playback_mode() == PlaybackMode::Micro
+    /// Whether sweep animation is effectively enabled. Requires the user
+    /// preference, micro playback mode (zoomed in), Advanced UI mode, and a
+    /// live context: an active stream with the playhead attached to the live
+    /// edge. Macro mode, Basic UI, and historical viewing all suppress the
+    /// animation regardless of the stored preference, which is preserved
+    /// across mode toggles.
+    pub(crate) fn effective_sweep_animation(
+        &self,
+        playback: &PlaybackState,
+        streaming: bool,
+    ) -> bool {
+        crate::core::canvas::sweep_animation_effective(
+            self.render_processing.sweep_animation,
+            playback.playback_mode(),
+            self.advanced_mode,
+            streaming,
+            playback.time_model.is_pinned() || playback.time_model.is_lookback(),
+        )
     }
 
-    /// Set the status message and record the timestamp for auto-dismissal.
-    #[allow(dead_code)]
-    pub fn set_status(&mut self, msg: impl Into<String>) {
-        self.status_message = msg.into();
-        self.status_message_set_ms = js_sys::Date::now();
+    /// Elevation list for the current playback context, derived per
+    /// call from the same sources the left panel uses: scan at the
+    /// playback timestamp first, then the live VCP if streaming, else
+    /// empty. Both panels share this so they can't disagree about
+    /// what's available.
+    ///
+    /// `playback` / `timeline` / `live_vcp_pattern` are passed in from
+    /// their respective subsystems so this method doesn't reach into
+    /// them itself.
+    pub(crate) fn current_elevation_list(
+        &self,
+        playback: &PlaybackState,
+        timeline: &RadarTimeline,
+        live_vcp_pattern: Option<&crate::data::ExtractedVcp>,
+    ) -> Vec<ElevationListEntry> {
+        let ts = playback.playback_position();
+        if let Some(scan) = timeline.find_scan_at_timestamp(ts) {
+            return crate::core::playback_manager::build_elevation_list(scan);
+        }
+        if let Some(vcp) = live_vcp_pattern {
+            if !vcp.elevations.is_empty() {
+                return crate::core::build_elevation_list_from_vcp(vcp);
+            }
+        }
+        Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ---- MobileSettingsTab ----
+
+    #[wasm_bindgen_test]
+    fn mobile_settings_tab_labels() {
+        assert_eq!(MobileSettingsTab::Playback.label(), "Playback");
+        assert_eq!(MobileSettingsTab::Product.label(), "Product");
+        assert_eq!(MobileSettingsTab::Layers.label(), "Layers");
+        assert_eq!(MobileSettingsTab::More.label(), "More");
+    }
+
+    #[wasm_bindgen_test]
+    fn mobile_settings_tab_all_order() {
+        let all = MobileSettingsTab::all();
+        assert_eq!(all.len(), 4);
+        assert_eq!(all[0], MobileSettingsTab::Playback);
+        assert_eq!(all[1], MobileSettingsTab::Product);
+        assert_eq!(all[2], MobileSettingsTab::Layers);
+        assert_eq!(all[3], MobileSettingsTab::More);
+    }
+
+    #[wasm_bindgen_test]
+    fn mobile_settings_tab_default_is_playback() {
+        assert_eq!(MobileSettingsTab::default(), MobileSettingsTab::Playback);
+    }
+
+    // ---- WidthTier ----
+
+    #[wasm_bindgen_test]
+    fn width_tier_default_is_full() {
+        assert_eq!(WidthTier::default(), WidthTier::Full);
+    }
+
+    #[wasm_bindgen_test]
+    fn width_tier_ordering_narrowest_to_widest() {
+        assert!(WidthTier::Cramped < WidthTier::Compact);
+        assert!(WidthTier::Compact < WidthTier::Full);
+        assert!(WidthTier::Cramped < WidthTier::Full);
+    }
+
+    // ---- MobileChromeAutoHide ----
+
+    #[wasm_bindgen_test]
+    fn mobile_chrome_default_sentinel() {
+        let h = MobileChromeAutoHide::default();
+        assert_eq!(h.last_interaction_secs, f64::NEG_INFINITY);
+        assert!(!h.hidden);
+        assert!(!h.revealed_this_frame);
+    }
+
+    #[wasm_bindgen_test]
+    fn mobile_chrome_touch_resets_timer() {
+        let mut h = MobileChromeAutoHide::default();
+        h.touch(42.5);
+        assert!((h.last_interaction_secs - 42.5).abs() < 1e-9);
+        h.touch(100.0);
+        assert!((h.last_interaction_secs - 100.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn mobile_chrome_secs_until_hide_none_when_paused() {
+        let h = MobileChromeAutoHide {
+            last_interaction_secs: 10.0,
+            ..Default::default()
+        };
+        assert!(h.secs_until_hide(11.0, false).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn mobile_chrome_secs_until_hide_counts_down() {
+        let h = MobileChromeAutoHide {
+            last_interaction_secs: 10.0,
+            ..Default::default()
+        };
+        // 1 second of idle elapsed → remaining = threshold - 1.
+        let remaining = h.secs_until_hide(11.0, true).expect("pending");
+        assert!((remaining - (MOBILE_CHROME_IDLE_HIDE_SECS - 1.0)).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn mobile_chrome_secs_until_hide_none_past_threshold() {
+        let h = MobileChromeAutoHide {
+            last_interaction_secs: 10.0,
+            ..Default::default()
+        };
+        // Exactly at the threshold remaining == 0.0, which is not > 0.0.
+        assert!(h
+            .secs_until_hide(10.0 + MOBILE_CHROME_IDLE_HIDE_SECS, true)
+            .is_none());
+        // Well past the threshold.
+        assert!(h
+            .secs_until_hide(10.0 + MOBILE_CHROME_IDLE_HIDE_SECS + 5.0, true)
+            .is_none());
+    }
+
+    // ---- AppState command queue / gating ----
+
+    #[wasm_bindgen_test]
+    fn app_state_default_show_advanced_false() {
+        let state = AppState::default();
+        assert!(!state.show_advanced());
+        assert!(state.commands.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn app_state_show_advanced_tracks_flag() {
+        let mut state = AppState::default();
+        state.advanced_mode = true;
+        assert!(state.show_advanced());
+        state.advanced_mode = false;
+        assert!(!state.show_advanced());
+    }
+
+    #[wasm_bindgen_test]
+    fn app_state_push_and_drain_commands_fifo() {
+        let mut state = AppState::default();
+        state.push_command(Intent::ClearCache);
+        state.push_command(Intent::StartLive);
+        state.push_command(Intent::ClearLoop);
+        assert_eq!(state.commands.len(), 3);
+
+        let drained = state.drain_commands();
+        assert_eq!(drained.len(), 3);
+        assert_eq!(drained[0], Intent::ClearCache);
+        assert_eq!(drained[1], Intent::StartLive);
+        assert_eq!(drained[2], Intent::ClearLoop);
+        // Draining empties the queue.
+        assert!(state.commands.is_empty());
+        assert!(state.drain_commands().is_empty());
     }
 }

@@ -13,5 +13,5 @@ mod manager;
 mod parse;
 mod types;
 
-pub use manager::MpingManager;
-pub use types::{ReportCategory, StormReport};
+pub(crate) use manager::{MpingManager, MpingTickInputs};
+pub(crate) use types::{ReportCategory, StormReport};

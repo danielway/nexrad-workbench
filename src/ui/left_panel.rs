@@ -1,34 +1,37 @@
 //! Left panel UI: radar operations visualization.
 
-use crate::state::{get_vcp_definition, radar_data::Scan, AppState};
+use super::layout::{Layer, LayerKind, LayoutCtx};
+use crate::core::panels::{query_radar_state_at_timestamp, RadarStateAtTimestamp};
+use crate::core::Scan;
+use crate::data::vcp::get_vcp_definition;
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
 use std::f32::consts::PI;
 
-/// State queried from the radar timeline at the current timestamp
-struct RadarStateAtTimestamp<'a> {
-    /// Current azimuth angle in degrees (0-360), from actual radial data
-    azimuth: Option<f32>,
-    /// Current elevation angle in degrees, from actual radial data
-    elevation: Option<f32>,
-    /// Current VCP number
-    vcp: Option<u16>,
-    /// Index of the current sweep within the scan
-    sweep_index: Option<usize>,
-    /// Scan progress as a percentage (0.0-1.0)
-    scan_progress: Option<f32>,
-    /// Reference to the current scan (for elevation list)
-    scan: Option<&'a Scan>,
-    /// Extracted VCP pattern from live streaming (used when scan is None)
-    live_vcp_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
-    /// Unified position model with sweep timing (live or archived)
-    position: Option<crate::state::VcpPositionModel>,
+pub(super) struct LeftPanelLayer;
+
+impl Layer for LeftPanelLayer {
+    fn kind(&self) -> LayerKind {
+        LayerKind::Chrome
+    }
+    fn z_order(&self) -> i32 {
+        30
+    }
+    fn visible(&self, ctx: &LayoutCtx) -> bool {
+        // Power-user diagnostics: hidden unless the user has the side
+        // panel open AND has Advanced mode enabled.
+        ctx.chrome.left_sidebar_visible && ctx.state.show_advanced()
+    }
+    fn render(&self, ctx: &mut LayoutCtx) {
+        draw_left_panel(ctx.ctx, ctx.timeline, ctx.live, ctx.playback);
+    }
 }
 
-pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState) {
-    if state.is_mobile || !state.left_sidebar_visible {
-        return;
-    }
-
+fn draw_left_panel(
+    ctx: &egui::Context,
+    timeline: &crate::subsystem::Timeline,
+    live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
+) {
     egui::SidePanel::left("left_panel")
         .resizable(true)
         .default_width(235.0)
@@ -36,21 +39,34 @@ pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState) {
         .max_width(400.0)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                render_radar_operations_section(ui, state);
+                render_radar_operations_section(ui, timeline, live, playback);
             });
         });
 }
 
-fn render_radar_operations_section(ui: &mut egui::Ui, state: &mut AppState) {
+fn render_radar_operations_section(
+    ui: &mut egui::Ui,
+    timeline: &crate::subsystem::Timeline,
+    live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
+) {
     // Header
     ui.label(RichText::new("Radar Operations").strong().size(14.0));
 
     ui.add_space(4.0);
 
-    let radar_state = query_radar_state_at_timestamp(state);
+    let radar_state = query_radar_state_at_timestamp(
+        &timeline.scans,
+        &timeline.shadow_scan_boundaries,
+        &live.mode_state,
+        &live.radar_model,
+        &playback.state,
+    );
 
-    // Top-down and side views side-by-side
-    let is_live = state.live_mode_state.is_active();
+    // Top-down and side views side-by-side. The "future data" sector only
+    // makes sense while the playhead tracks the live edge — a detached
+    // background stream renders the archive state under the cursor.
+    let is_live = live.app_mode == crate::state::AppMode::Live;
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.label(RichText::new("Azimuth").small());
@@ -67,107 +83,6 @@ fn render_radar_operations_section(ui: &mut egui::Ui, state: &mut AppState) {
 
     // VCP breakdown
     render_vcp_breakdown(ui, &radar_state);
-}
-
-fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimestamp<'a> {
-    let ts = state.playback_state.playback_position();
-
-    // Find the scan at the current timestamp
-    let scan = state.radar_timeline.find_scan_at_timestamp(ts);
-
-    match scan {
-        Some(scan) => {
-            let sweep_data = scan.find_sweep_at_timestamp(ts);
-
-            // At high playback speeds (>30 s/s), freeze all animated radar state
-            // (azimuth, elevation, sweep indicator, progress) to prevent violent flashing.
-            // Static VCP info (number, name, elevation list) still renders.
-            let is_fast = state
-                .playback_state
-                .speed
-                .timeline_seconds_per_real_second()
-                > 30.0;
-
-            let azimuth = if is_fast {
-                None
-            } else {
-                sweep_data.and_then(|(_, sweep)| {
-                    let dur = sweep.end_time - sweep.start_time;
-                    if dur <= 0.0 {
-                        return None;
-                    }
-                    let progress = (ts - sweep.start_time) / dur;
-                    Some(((progress * 360.0) as f32) % 360.0)
-                })
-            };
-            let elevation = if is_fast {
-                None
-            } else {
-                sweep_data.map(|(_, s)| s.elevation)
-            };
-            let sweep_index = if is_fast {
-                None
-            } else {
-                sweep_data.map(|(idx, _)| idx)
-            };
-            let scan_progress = if is_fast {
-                None
-            } else {
-                scan.progress_at_timestamp(ts)
-            };
-
-            RadarStateAtTimestamp {
-                azimuth,
-                elevation,
-                vcp: Some(scan.vcp),
-                sweep_index,
-                scan_progress,
-                scan: Some(scan),
-                live_vcp_pattern: None,
-                position: Some(crate::state::VcpPositionModel::from_scan(scan)),
-            }
-        }
-        None => {
-            // In live mode, use the unified VcpPositionModel for azimuth,
-            // elevation, and progress instead of reaching into LiveModeState.
-            if let Some(ref position) = state.live_radar_model.position {
-                let now = js_sys::Date::now() / 1000.0;
-                let vcp = Some(position.vcp_number).filter(|&v| v > 0);
-                let azimuth = position.estimated_azimuth_at(now);
-                let sweep_index = position.elevation_index_at(now).or_else(|| {
-                    state
-                        .live_mode_state
-                        .current_in_progress_elevation
-                        .map(|e| e.saturating_sub(1) as usize)
-                });
-                let scan_progress = Some(position.progress_at(now));
-                let elevation =
-                    sweep_index.and_then(|idx| position.sweeps.get(idx).map(|s| s.elevation_angle));
-
-                RadarStateAtTimestamp {
-                    azimuth,
-                    elevation,
-                    vcp,
-                    sweep_index,
-                    scan_progress,
-                    scan: None,
-                    live_vcp_pattern: state.live_mode_state.current_vcp_pattern.as_ref(),
-                    position: Some(position.clone()),
-                }
-            } else {
-                RadarStateAtTimestamp {
-                    azimuth: None,
-                    elevation: None,
-                    vcp: None,
-                    sweep_index: None,
-                    scan_progress: None,
-                    scan: None,
-                    live_vcp_pattern: None,
-                    position: None,
-                }
-            }
-        }
-    }
 }
 
 fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) {
@@ -237,7 +152,7 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
         Color32::from_rgb(170, 170, 190)
     };
     for factor in [0.33, 0.66, 1.0] {
-        painter.circle_stroke(center, radius * factor, Stroke::new(1.0, ring_color));
+        painter.circle_stroke(center, radius * factor, Stroke::new(1.0_f32, ring_color));
     }
 
     // Cardinal direction labels (inside the radar circle for cleaner look)
@@ -291,7 +206,7 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
 
         painter.line_segment(
             [center, Pos2::new(end_x, end_y)],
-            Stroke::new(2.0, Color32::from_rgb(100, 255, 100)),
+            Stroke::new(2.0_f32, Color32::from_rgb(100, 255, 100)),
         );
 
         ui.label(RichText::new(format!("{:.1}\u{00B0}", az)).small());
@@ -326,7 +241,7 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
             Pos2::new(rect.left() + 5.0, ground_y),
             Pos2::new(rect.right() - 5.0, ground_y),
         ],
-        Stroke::new(2.0, ground_color),
+        Stroke::new(2.0_f32, ground_color),
     );
 
     // Tower/dish on left side
@@ -345,7 +260,7 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
             Pos2::new(tower_x, tower_bottom),
             Pos2::new(tower_x, tower_top),
         ],
-        Stroke::new(3.0, tower_color),
+        Stroke::new(3.0_f32, tower_color),
     );
 
     // Dish (small circle at top of tower)
@@ -378,7 +293,7 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
 
         painter.line_segment(
             [beam_origin, Pos2::new(end_x, end_y)],
-            Stroke::new(1.0, ref_line_color),
+            Stroke::new(1.0_f32, ref_line_color),
         );
 
         // Angle label at end of line
@@ -401,7 +316,7 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
 
         painter.line_segment(
             [beam_origin, Pos2::new(end_x, end_y)],
-            Stroke::new(2.5, Color32::from_rgb(100, 255, 100)),
+            Stroke::new(2.5_f32, Color32::from_rgb(100, 255, 100)),
         );
 
         ui.label(RichText::new(format!("{:.1}\u{00B0}", elev)).small());
@@ -444,7 +359,7 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                 extracted_pattern,
                 vcp_def,
                 radar_state.position.as_ref(),
-                radar_state.sweep_index,
+                radar_state.current_elevation_number,
             );
 
             if rows.is_empty() {
@@ -484,18 +399,18 @@ struct ElevRow<'a> {
 
 fn build_elevation_rows<'a>(
     scan: Option<&'a Scan>,
-    extracted_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
-    vcp_def: Option<&'a crate::state::vcp::VcpDefinition>,
-    position: Option<&crate::state::VcpPositionModel>,
-    sweep_index: Option<usize>,
+    extracted_pattern: Option<&'a crate::data::ExtractedVcp>,
+    vcp_def: Option<&'a crate::data::vcp::VcpDefinition>,
+    position: Option<&crate::core::projection::ScanProjection>,
+    current_elevation_number: Option<u8>,
 ) -> Vec<ElevRow<'a>> {
     // Helper to get sweep start offset (from volume start) for a given index.
     let timing_for = |idx: usize| -> (Option<f64>, bool) {
         position
             .and_then(|p| {
                 let sp = p.sweeps.get(idx)?;
-                let offset = sp.start - p.volume_start;
-                let estimated = sp.timing != crate::state::SweepTiming::Observed;
+                let offset = sp.collection_start_secs - p.volume_start;
+                let estimated = !sp.is_observed();
                 Some((Some(offset), estimated))
             })
             .unwrap_or((None, true))
@@ -508,10 +423,11 @@ fn build_elevation_rows<'a>(
             .enumerate()
             .map(|(idx, elev)| {
                 let (start_offset_secs, timing_estimated) = timing_for(idx);
+                let elevation_number = (idx + 1) as u8;
                 ElevRow {
-                    elevation_number: (idx + 1) as u8,
+                    elevation_number,
                     elevation_angle: elev.angle,
-                    is_current: sweep_index == Some(idx),
+                    is_current: current_elevation_number == Some(elevation_number),
                     waveform: match elev.waveform.as_str() {
                         "CS" => "CS",
                         "CDW" | "CDWO" => "CD",
@@ -532,15 +448,16 @@ fn build_elevation_rows<'a>(
             .enumerate()
             .map(|(idx, sweep)| {
                 let (start_offset_secs, timing_estimated) = timing_for(idx);
+                let target_angle = scan.display_angle(sweep);
                 let meta = vcp_def.and_then(|def| {
                     def.elevations
                         .iter()
-                        .find(|e| (e.angle - sweep.elevation).abs() < 0.1)
+                        .find(|e| (e.angle - target_angle).abs() < 0.1)
                 });
                 ElevRow {
-                    elevation_number: (idx + 1) as u8,
-                    elevation_angle: sweep.elevation,
-                    is_current: sweep_index == Some(idx),
+                    elevation_number: sweep.elevation_number,
+                    elevation_angle: target_angle,
+                    is_current: current_elevation_number == Some(sweep.elevation_number),
                     waveform: meta.map(|m| m.waveform).unwrap_or("--"),
                     waveform_raw: meta
                         .map(|m| match m.waveform {
@@ -570,10 +487,11 @@ fn build_elevation_rows<'a>(
             .enumerate()
             .map(|(idx, elev)| {
                 let (start_offset_secs, timing_estimated) = timing_for(idx);
+                let elevation_number = (idx + 1) as u8;
                 ElevRow {
-                    elevation_number: (idx + 1) as u8,
+                    elevation_number,
                     elevation_angle: elev.angle,
-                    is_current: sweep_index == Some(idx),
+                    is_current: current_elevation_number == Some(elevation_number),
                     waveform: elev.waveform,
                     waveform_raw: match elev.waveform {
                         "CS" => "CS",

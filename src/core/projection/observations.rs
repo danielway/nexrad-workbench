@@ -1,0 +1,443 @@
+//! The engine-owned accumulator for one in-progress volume's observations.
+//!
+//! Before this module the live volume's observed state (received elevations,
+//! VCP pattern, in-progress cut, per-chunk spans, completed-sweep metadata)
+//! lived on `LiveModeState`; the worker pipeline wrote it there and then read it
+//! back each ingest to repack a derived snapshot for the [`super::ProjectionEngine`].
+//! That made the engine a copy-holder rather than the owner.
+//!
+//! `VolumeObservations` is that accumulator, owned by the engine. The worker
+//! feeds it directly (`record_*`), the engine's projection build reads it, and
+//! diagnostics read it — one home for the data, reset at each volume boundary.
+//! The derivations the worker used to compute (the `received` bitmap, the
+//! elevation roster, the expected volume duration, the VCP-weighted fallback
+//! durations) move here as methods so the single owner produces them.
+
+use crate::core::VolumeElevationRoster;
+use crate::data::CachedSweep;
+use crate::data::ExtractedVcp;
+
+/// Default expected volume duration (seconds) when neither a completed volume
+/// nor a VCP estimate is available — mirrors the worker's old `unwrap_or(300.0)`.
+/// Sourced from the global tuning default (`TimingTuning`), the single home
+/// for timing constants.
+const DEFAULT_VOLUME_DURATION_SECS: f64 =
+    crate::core::timing::TimingTuning::DEFAULT.default_volume_duration_secs;
+
+/// Accumulated observations for the in-progress volume. Reset to `default()` at
+/// each volume boundary via [`super::ProjectionEngine::reset_volume_observations`].
+#[derive(Debug, Default, Clone)]
+pub(crate) struct VolumeObservations {
+    /// Elevation numbers received so far (sorted), from chunk radial headers.
+    pub elevations_received: Vec<u8>,
+    /// Total elevations claimed by the current VCP (message type 5).
+    pub expected_elevation_count: Option<u8>,
+    /// VCP number of the in-progress volume.
+    pub current_vcp_number: Option<u16>,
+    /// Full extracted VCP pattern (for elevation-angle lookups + display).
+    pub current_vcp_pattern: Option<ExtractedVcp>,
+    /// Elevation currently being accumulated (partial sweep).
+    pub current_in_progress_elevation: Option<u8>,
+    /// Radials received so far for the in-progress elevation.
+    pub current_in_progress_radials: Option<u32>,
+    /// Per-chunk azimuth ranges for the in-progress elevation
+    /// `(first_az, last_az, radial_count)`. Cleared on elevation change.
+    pub current_elev_chunks: Vec<(f32, f32, u32)>,
+    /// Per-elevation chunk time spans for the whole volume
+    /// `(elevation, start_secs, end_secs, radial_count)`.
+    pub chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
+    /// Actual sweep metadata for completed elevations (real timestamps).
+    pub completed_sweep_metas: Vec<CachedSweep>,
+    /// Duration of the most recently completed volume (seconds), fed by the
+    /// worker from `LiveModeState.last_completed_volume`. Drives `expected_dur_secs`.
+    pub last_volume_duration_secs: Option<f64>,
+}
+
+impl VolumeObservations {
+    /// Reset to the empty state for a new volume.
+    pub(crate) fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    // ── Feed (moved verbatim from `LiveModeState`) ──
+
+    /// Record newly-received elevation cuts (deduped, kept sorted).
+    pub(crate) fn record_elevations(&mut self, elevations: &[u8]) {
+        for &e in elevations {
+            if !self.elevations_received.contains(&e) {
+                self.elevations_received.push(e);
+            }
+        }
+        self.elevations_received.sort_unstable();
+    }
+
+    /// Record VCP info from an ingest result.
+    pub(crate) fn record_vcp(&mut self, vcp: &ExtractedVcp) {
+        self.current_vcp_number = Some(vcp.number);
+        self.expected_elevation_count = Some(vcp.elevations.len() as u8);
+        if !vcp.elevations.is_empty() {
+            self.current_vcp_pattern = Some(vcp.clone());
+        }
+    }
+
+    /// Record which elevation is being accumulated. Clears the per-chunk
+    /// azimuth list on an elevation change and returns whether it changed so the
+    /// caller can reset the decoder-side `sweep_start_azimuth` on `LiveModeState`.
+    pub(crate) fn record_in_progress_elevation(
+        &mut self,
+        elevation: Option<u8>,
+        radials: Option<u32>,
+    ) -> bool {
+        let changed = elevation != self.current_in_progress_elevation;
+        if changed {
+            self.current_elev_chunks.clear();
+        }
+        self.current_in_progress_elevation = elevation;
+        self.current_in_progress_radials = radials;
+        changed
+    }
+
+    /// Append a chunk's per-elevation time spans.
+    pub(crate) fn record_chunk_elev_spans(&mut self, spans: &[(u8, f64, f64, u32)]) {
+        self.chunk_elev_spans.extend_from_slice(spans);
+    }
+
+    /// Append a per-chunk azimuth range for the in-progress elevation.
+    pub(crate) fn push_elev_chunk(&mut self, chunk: (f32, f32, u32)) {
+        self.current_elev_chunks.push(chunk);
+    }
+
+    /// Replace the completed-sweep metadata (the worker returns the full list).
+    pub(crate) fn update_sweep_metas(&mut self, metas: Vec<CachedSweep>) {
+        self.completed_sweep_metas = metas;
+    }
+
+    /// Set the most-recently-completed volume's duration (worker-fed).
+    pub(crate) fn set_last_volume_duration_secs(&mut self, secs: Option<f64>) {
+        self.last_volume_duration_secs = secs;
+    }
+
+    // ── Derivations (moved from the worker's repack) ──
+
+    /// Combined expected-vs-received elevation roster.
+    pub(crate) fn elevation_roster(&self) -> VolumeElevationRoster {
+        VolumeElevationRoster::new(
+            self.expected_elevation_count.map(|c| c as usize),
+            self.elevations_received.clone(),
+        )
+    }
+
+    /// `received[i]` — elevation `i + 1` is received — over the full roster.
+    pub(crate) fn received_vec(&self) -> Vec<bool> {
+        let roster = self.elevation_roster();
+        let n = roster.expected_count().unwrap_or(0);
+        (0..n).map(|i| roster.is_received((i + 1) as u8)).collect()
+    }
+
+    /// Full elevation roster size.
+    pub(crate) fn expected_count(&self) -> usize {
+        self.expected_elevation_count
+            .map(|c| c as usize)
+            .unwrap_or(0)
+    }
+
+    /// Expected in-progress volume duration: the last completed volume's span,
+    /// else the VCP's own estimate, else a fixed default.
+    pub(crate) fn expected_dur_secs(&self) -> f64 {
+        self.last_volume_duration_secs
+            .filter(|&d| d > 0.0 && d < 1200.0)
+            .or_else(|| {
+                self.current_vcp_pattern
+                    .as_ref()
+                    .and_then(|v| v.estimated_volume_duration())
+            })
+            .unwrap_or(DEFAULT_VOLUME_DURATION_SECS)
+    }
+
+    /// Per-elevation sweep durations from the VCP, returned only when no library
+    /// projection is available (`plan_available == false`) — the library physics
+    /// model is preferred when a plan exists. Empty when no VCP / a plan exists.
+    pub(crate) fn fallback_sweep_durations(&self, plan_available: bool) -> Vec<f64> {
+        if plan_available {
+            return Vec::new();
+        }
+        let Some(vcp) = self.current_vcp_pattern.as_ref() else {
+            return Vec::new();
+        };
+        if vcp.elevations.is_empty() {
+            return Vec::new();
+        }
+        vcp.sweep_durations(self.expected_dur_secs())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn roster_and_received_vec_track_recorded_elevations() {
+        let mut obs = VolumeObservations::default();
+        obs.expected_elevation_count = Some(3);
+        obs.record_elevations(&[3, 1]);
+        let roster = obs.elevation_roster();
+        assert_eq!(roster.expected_count(), Some(3));
+        assert_eq!(roster.received, vec![1, 3]);
+        // received_vec is over the full 1..=expected roster.
+        assert_eq!(obs.received_vec(), vec![true, false, true]);
+        assert_eq!(obs.expected_count(), 3);
+    }
+
+    #[wasm_bindgen_test]
+    fn record_in_progress_elevation_reports_and_clears_on_change() {
+        let mut obs = VolumeObservations::default();
+        obs.push_elev_chunk((0.0, 90.0, 50));
+        // First set (None -> 1) is a change; clears the chunk list.
+        assert!(obs.record_in_progress_elevation(Some(1), Some(50)));
+        assert!(obs.current_elev_chunks.is_empty());
+        obs.push_elev_chunk((0.0, 90.0, 50));
+        // Same elevation -> not a change; chunk list preserved.
+        assert!(!obs.record_in_progress_elevation(Some(1), Some(120)));
+        assert_eq!(obs.current_elev_chunks.len(), 1);
+        assert_eq!(obs.current_in_progress_radials, Some(120));
+        // New elevation -> change; clears.
+        assert!(obs.record_in_progress_elevation(Some(2), Some(0)));
+        assert!(obs.current_elev_chunks.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn expected_dur_prefers_completed_volume_then_default() {
+        let mut obs = VolumeObservations::default();
+        // No data -> default.
+        assert_eq!(obs.expected_dur_secs(), DEFAULT_VOLUME_DURATION_SECS);
+        // A plausible completed-volume duration wins.
+        obs.set_last_volume_duration_secs(Some(280.0));
+        assert_eq!(obs.expected_dur_secs(), 280.0);
+        // Out-of-range durations are ignored (fall through to default here).
+        obs.set_last_volume_duration_secs(Some(5000.0));
+        assert_eq!(obs.expected_dur_secs(), DEFAULT_VOLUME_DURATION_SECS);
+    }
+
+    #[wasm_bindgen_test]
+    fn fallback_durations_empty_when_plan_available_or_no_vcp() {
+        let obs = VolumeObservations::default();
+        // No VCP -> empty regardless.
+        assert!(obs.fallback_sweep_durations(false).is_empty());
+        assert!(obs.fallback_sweep_durations(true).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn reset_clears_everything() {
+        let mut obs = VolumeObservations::default();
+        obs.record_elevations(&[1, 2]);
+        obs.record_in_progress_elevation(Some(2), Some(10));
+        obs.reset();
+        assert!(obs.elevations_received.is_empty());
+        assert!(obs.current_in_progress_elevation.is_none());
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // Local builders re-declared (sibling `mod tests` helpers are private).
+    fn elev(angle: f32, waveform: &str, prf: u8) -> crate::data::ExtractedVcpElevation {
+        crate::data::ExtractedVcpElevation {
+            angle,
+            waveform: waveform.to_string(),
+            prf_number: prf,
+            is_sails: false,
+            is_mrle: false,
+            is_base_tilt: false,
+            azimuth_rate: None,
+        }
+    }
+
+    fn vcp(number: u16, elevations: Vec<crate::data::ExtractedVcpElevation>) -> ExtractedVcp {
+        ExtractedVcp { number, elevations }
+    }
+
+    // ── record_elevations dedup + sort ──
+
+    #[wasm_bindgen_test]
+    fn record_elevations_dedups_across_calls_and_keeps_sorted() {
+        let mut obs = VolumeObservations::default();
+        obs.record_elevations(&[5, 2]);
+        // Overlapping second call: 2 already present, 5 already present, 3 new.
+        obs.record_elevations(&[3, 2, 5]);
+        assert_eq!(obs.elevations_received, vec![2, 3, 5]);
+        // A within-call duplicate is also deduped.
+        obs.record_elevations(&[1, 1, 4, 4]);
+        assert_eq!(obs.elevations_received, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[wasm_bindgen_test]
+    fn record_elevations_empty_slice_is_noop() {
+        let mut obs = VolumeObservations::default();
+        obs.record_elevations(&[]);
+        assert!(obs.elevations_received.is_empty());
+    }
+
+    // ── record_vcp ──
+
+    #[wasm_bindgen_test]
+    fn record_vcp_sets_number_and_expected_count_and_stores_pattern() {
+        let mut obs = VolumeObservations::default();
+        let pattern = vcp(
+            212,
+            vec![elev(0.5, "CS", 1), elev(0.9, "CS", 1), elev(1.3, "B", 4)],
+        );
+        obs.record_vcp(&pattern);
+        assert_eq!(obs.current_vcp_number, Some(212));
+        // expected_elevation_count derives from elevations.len() as u8.
+        assert_eq!(obs.expected_elevation_count, Some(3));
+        assert!(obs.current_vcp_pattern.is_some());
+        assert_eq!(obs.expected_count(), 3);
+    }
+
+    #[wasm_bindgen_test]
+    fn record_vcp_with_empty_elevations_sets_count_zero_and_no_pattern() {
+        let mut obs = VolumeObservations::default();
+        obs.record_vcp(&vcp(999, vec![]));
+        assert_eq!(obs.current_vcp_number, Some(999));
+        assert_eq!(obs.expected_elevation_count, Some(0));
+        // Empty-elevation VCP is NOT stored as a usable pattern.
+        assert!(obs.current_vcp_pattern.is_none());
+    }
+
+    // ── chunk spans / sweep metas accumulation ──
+
+    #[wasm_bindgen_test]
+    fn record_chunk_elev_spans_extends_in_order() {
+        let mut obs = VolumeObservations::default();
+        obs.record_chunk_elev_spans(&[(1, 0.0, 10.0, 360)]);
+        obs.record_chunk_elev_spans(&[(2, 10.0, 20.0, 360), (3, 20.0, 30.0, 360)]);
+        assert_eq!(obs.chunk_elev_spans.len(), 3);
+        // Order preserved: appended, not sorted/replaced.
+        assert_eq!(obs.chunk_elev_spans[0].0, 1u8);
+        assert_eq!(obs.chunk_elev_spans[2].0, 3u8);
+        assert!((obs.chunk_elev_spans[1].1 - 10.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn update_sweep_metas_replaces_not_appends() {
+        let mut obs = VolumeObservations::default();
+        let make = |num: u8| CachedSweep {
+            start: 0.0,
+            end: 1.0,
+            elevation: 0.5,
+            elevation_number: num,
+            start_azimuth: 0.0,
+            cached_products: Vec::new(),
+        };
+        obs.update_sweep_metas(vec![make(1), make(2)]);
+        assert_eq!(obs.completed_sweep_metas.len(), 2);
+        // Second call fully replaces the prior list.
+        obs.update_sweep_metas(vec![make(7)]);
+        assert_eq!(obs.completed_sweep_metas.len(), 1);
+        assert_eq!(obs.completed_sweep_metas[0].elevation_number, 7u8);
+    }
+
+    // ── received_vec / expected_count None paths ──
+
+    #[wasm_bindgen_test]
+    fn received_vec_empty_when_no_expected_count() {
+        let mut obs = VolumeObservations::default();
+        // Received some elevations, but no VCP-claimed expected count.
+        obs.record_elevations(&[1, 2, 3]);
+        assert_eq!(obs.expected_elevation_count, None);
+        // received_vec iterates 0..expected (which defaults to 0) -> empty.
+        assert!(obs.received_vec().is_empty());
+        assert_eq!(obs.expected_count(), 0);
+    }
+
+    // ── expected_dur_secs: VCP fallback + boundary filter ──
+
+    #[wasm_bindgen_test]
+    fn expected_dur_uses_vcp_estimate_when_no_completed_volume() {
+        let mut obs = VolumeObservations::default();
+        // Precip VCP (212 is not clear-air), no azimuth_rate -> Method B rate.
+        // ("CS", prf 1) precip -> 21.1 deg/s; per-elev = 360/21.1; two elevs.
+        obs.record_vcp(&vcp(212, vec![elev(0.5, "CS", 1), elev(0.9, "CS", 1)]));
+        let expected = 2.0 * (360.0 / 21.1);
+        let got = obs.expected_dur_secs();
+        assert!(
+            (got - expected).abs() < 1e-6,
+            "expected {expected}, got {got}"
+        );
+        // Sanity: the estimate is in the accepted (0, 1200) window.
+        assert!(got > 0.0 && got < 1200.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn expected_dur_filter_rejects_nonpositive_and_too_large_durations() {
+        let mut obs = VolumeObservations::default();
+        // Exactly 0.0 fails `> 0.0` -> falls through to default.
+        obs.set_last_volume_duration_secs(Some(0.0));
+        assert!((obs.expected_dur_secs() - DEFAULT_VOLUME_DURATION_SECS).abs() < 1e-9);
+        // Negative also rejected.
+        obs.set_last_volume_duration_secs(Some(-5.0));
+        assert!((obs.expected_dur_secs() - DEFAULT_VOLUME_DURATION_SECS).abs() < 1e-9);
+        // Just inside the upper bound is accepted.
+        obs.set_last_volume_duration_secs(Some(1199.9));
+        assert!((obs.expected_dur_secs() - 1199.9).abs() < 1e-9);
+        // Exactly 1200.0 fails `< 1200.0` -> default.
+        obs.set_last_volume_duration_secs(Some(1200.0));
+        assert!((obs.expected_dur_secs() - DEFAULT_VOLUME_DURATION_SECS).abs() < 1e-9);
+        // The default constant itself is 300.0 (TimingTuning::DEFAULT).
+        assert!((DEFAULT_VOLUME_DURATION_SECS - 300.0).abs() < 1e-9);
+    }
+
+    // ── fallback_sweep_durations: populated path + empty-elev VCP ──
+
+    #[wasm_bindgen_test]
+    fn fallback_sweep_durations_distribute_expected_dur_when_no_plan() {
+        let mut obs = VolumeObservations::default();
+        // Two identical precip elevations -> equal weights -> equal split.
+        obs.record_vcp(&vcp(212, vec![elev(0.5, "CS", 1), elev(0.9, "CS", 1)]));
+        let durs = obs.fallback_sweep_durations(false);
+        assert_eq!(durs.len(), 2);
+        let total = obs.expected_dur_secs();
+        // Equal weights -> each half of the total volume duration.
+        assert!((durs[0] - total / 2.0).abs() < 1e-6);
+        assert!((durs[1] - total / 2.0).abs() < 1e-6);
+        // The per-sweep durations sum to the total volume duration.
+        assert!((durs.iter().sum::<f64>() - total).abs() < 1e-6);
+        // A plan being available suppresses the fallback entirely.
+        assert!(obs.fallback_sweep_durations(true).is_empty());
+    }
+
+    // ── reset clears the derivation-feeding fields too ──
+
+    #[wasm_bindgen_test]
+    fn reset_clears_vcp_spans_metas_and_durations() {
+        let mut obs = VolumeObservations::default();
+        obs.record_vcp(&vcp(212, vec![elev(0.5, "CS", 1)]));
+        obs.record_chunk_elev_spans(&[(1, 0.0, 10.0, 360)]);
+        obs.update_sweep_metas(vec![CachedSweep {
+            start: 0.0,
+            end: 1.0,
+            elevation: 0.5,
+            elevation_number: 1,
+            start_azimuth: 0.0,
+            cached_products: Vec::new(),
+        }]);
+        obs.set_last_volume_duration_secs(Some(250.0));
+        obs.push_elev_chunk((0.0, 90.0, 50));
+
+        obs.reset();
+
+        assert!(obs.current_vcp_number.is_none());
+        assert!(obs.current_vcp_pattern.is_none());
+        assert!(obs.expected_elevation_count.is_none());
+        assert!(obs.chunk_elev_spans.is_empty());
+        assert!(obs.completed_sweep_metas.is_empty());
+        assert!(obs.last_volume_duration_secs.is_none());
+        assert!(obs.current_elev_chunks.is_empty());
+        // After reset, with no data, expected_dur falls back to the default.
+        assert!((obs.expected_dur_secs() - DEFAULT_VOLUME_DURATION_SECS).abs() < 1e-9);
+    }
+}

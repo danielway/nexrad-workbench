@@ -4,10 +4,28 @@
 //! the globe camera's heading, so cardinal directions stay accurate as
 //! the user orbits.
 
-use crate::geo::GlobeCamera;
+use crate::geo::Camera;
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 
-pub(crate) fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &GlobeCamera) {
+/// Trait wrapper for the registry. Compass is 3D-only — `visible`
+/// gates on view mode.
+pub(super) struct CompassOverlay;
+
+impl super::Overlay for CompassOverlay {
+    fn z_order(&self) -> i32 {
+        30
+    }
+
+    fn visible(&self, ctx: &super::OverlayContext) -> bool {
+        ctx.state.viz_state.view_mode() == crate::geo::ViewMode::Globe3D
+    }
+
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
+        draw_compass(ui, &ctx.rect, &ctx.state.viz_state.camera);
+    }
+}
+
+fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &Camera) {
     let painter = ui.painter();
     let radius = 28.0f32;
     let margin = 16.0f32;
@@ -25,19 +43,18 @@ pub(crate) fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &GlobeCamera)
     painter.circle_stroke(
         center,
         radius + 4.0,
-        Stroke::new(1.0, Color32::from_rgba_unmultiplied(80, 80, 100, 160)),
+        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(80, 80, 100, 160)),
     );
 
     // Compute compass rotation to match the camera's on-screen orientation.
-    // In SiteOrbit, orbit_bearing is where the camera IS, not where it looks.
-    // The camera looks FROM the bearing TOWARD the site, so the viewing direction
-    // is bearing + 180°. We add π to account for this.
-    let rotation_rad = match camera.mode {
-        crate::geo::camera::CameraMode::SiteOrbit => {
-            std::f32::consts::PI - camera.orbit_bearing.to_radians()
-        }
-        _ => 0.0,
-    } - camera.rotation.to_radians();
+    // Heading 0 = north up; positive heading rotates the view clockwise on
+    // screen, so the compass needle counter-rotates.
+    let rotation_rad = match camera {
+        Camera::Orbit(s) => -s.heading.to_radians(),
+        // The 2D view has no heading; the compass overlay is only visible
+        // in 3D anyway.
+        Camera::Flat2D(_) => 0.0,
+    };
 
     // Cardinal directions
     let cardinals = [("N", 0.0), ("E", 90.0), ("S", 180.0), ("W", 270.0)];
@@ -73,7 +90,7 @@ pub(crate) fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &GlobeCamera)
         let outer = center + dir * (radius - 2.0);
         painter.line_segment(
             [inner, outer],
-            Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 120, 140, 140)),
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(120, 120, 140, 140)),
         );
     }
 

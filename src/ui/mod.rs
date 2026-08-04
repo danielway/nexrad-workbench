@@ -6,45 +6,51 @@
 //! - Central canvas: Radar visualization
 //! - Bottom panel: Timeline, playback controls, and session stats
 //! - Right panel: Product selection, layers, and rendering controls
+//!
+//! Chrome panels + modals dispatch through a typed [`Layer`](layout::Layer)
+//! registry (see [`layout`]). Each panel and modal is a zero-sized marker
+//! type that lives in its own module; [`render_layout`] walks the
+//! mobile-or-desktop layout slice in z-order and calls each layer's
+//! `visible`/`render` impls. The corner-chrome canvas overlays use a
+//! parallel [`Overlay`](canvas_overlays::Overlay) registry inside the
+//! canvas's central panel.
 
-pub(crate) mod acquisition_drawer;
+mod activity_chip;
+mod activity_sheet;
 mod alerts_modal;
 mod bottom_panel;
 mod canvas;
-mod canvas_inspector;
+mod canvas_data_probe;
 mod canvas_interaction;
 mod canvas_overlays;
 pub(crate) mod colors;
 mod event_modal;
+mod layout;
 mod left_panel;
+pub(crate) mod long_press;
 mod mobile;
 mod modal_helper;
+mod modal_states;
 mod mping_modal;
-mod network_panel;
+mod overflow_menu;
 mod playback_controls;
+mod range_download_modal;
 mod right_panel;
+mod scan_inspector;
 mod shortcuts;
 mod site_modal;
-mod stats_modal;
+pub(crate) mod time_format;
 mod timeline;
 mod top_bar;
 mod vcp_forecast_modal;
+mod vcp_forecast_serialize;
 mod wipe_modal;
 
-pub use alerts_modal::render_alerts_modals;
-pub use bottom_panel::render_bottom_panel;
-pub use canvas::render_canvas_with_geo;
-pub use event_modal::{render_event_modal, EventModalState};
-pub use left_panel::render_left_panel;
-pub(crate) use mobile::{
-    render_mobile_chrome, render_mobile_settings_modal, render_mobile_top_bar,
-};
-pub use mping_modal::{render_mping_modal, MpingModalState};
-pub use network_panel::render_network_log;
-pub use right_panel::render_right_panel;
-pub use shortcuts::{handle_shortcuts, render_shortcuts_help};
-pub use site_modal::{render_site_modal, trigger_geolocation, SiteModalState};
-pub use stats_modal::render_stats_modal;
-pub use top_bar::render_top_bar;
-pub use vcp_forecast_modal::render_vcp_forecast_modal;
-pub use wipe_modal::render_wipe_modal;
+pub(crate) use canvas::render_canvas_with_geo;
+pub(crate) use event_modal::EventModalState;
+pub(crate) use layout::{render_layout, LayoutCtx};
+pub(crate) use mobile::resolve_mobile_auto_hide;
+pub(crate) use modal_states::{DateTimePickerState, ModalStates};
+pub(crate) use mping_modal::MpingModalState;
+pub(crate) use shortcuts::handle_shortcuts;
+pub(crate) use site_modal::SiteModalState;

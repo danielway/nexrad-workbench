@@ -1,0 +1,600 @@
+//! Live-mode lifecycle, render-request helpers, and realtime result handling.
+//!
+//! Groups the methods that drive a live streaming session (`start_live_mode`,
+//! `stop_live_mode`, `handle_realtime_result`) alongside the render-request
+//! helpers (`request_worker_render`, `request_worker_render_volume`,
+//! `update_overlay_from_sweep`, `build_elevation_list`) that both the live
+//! and archive paths use.
+
+use crate::{nexrad, state, WorkbenchApp, MAX_SCAN_AGE_SECS};
+use eframe::egui;
+
+impl WorkbenchApp {
+    pub(crate) fn start_live_mode(&mut self, ctx: &egui::Context) {
+        let site_id = self.state.viz_state.site_id.clone();
+        log::info!("Starting live mode for site: {}", site_id);
+
+        let now = self.state.frame_now.secs();
+
+        // Initialize live mode state. Going live pins the playhead to "now"
+        // but does NOT start playback — play/pause is decoupled and, while
+        // live, drives the lookback replay instead. The playhead is kept on
+        // "now" by `tick_live`, independent of `playing`.
+        self.live.mode_state.start(now);
+        self.playback.state.enter_pinned_live(now);
+
+        // Ensure the timeline is zoomed in far enough to show individual sweeps
+        // and chunks. Live mode enforces micro-mode as the widest allowed zoom.
+        // Route through the tier machine so the stored tier lands in Micro
+        // (LIVE_DEFAULT_ZOOM is comfortably above the Micro-enter threshold).
+        if self.playback.state.timeline_zoom < crate::LIVE_DEFAULT_ZOOM {
+            let width = self.playback.state.timeline_width_px;
+            let spacing = self.playback.state.median_frame_spacing();
+            self.playback
+                .state
+                .set_timeline_zoom(crate::LIVE_DEFAULT_ZOOM, width, spacing);
+            self.playback.state.center_view_on(now);
+        }
+
+        self.state.status_message = "Connecting to live stream...".to_string();
+
+        // Push the current elevation filter into the channel before starting
+        // so the streaming loop's init-time backfill targets the user's
+        // selected elevation rather than a default.
+        self.live
+            .channel
+            .sync_filter(&self.state.viz_state.elevation_selection);
+        self.live.channel.start(
+            ctx.clone(),
+            site_id,
+            self.acquisition.coordinator.facade().clone(),
+            self.live.engine.clone(),
+        );
+    }
+
+    /// Re-pin the playhead to the live edge (the `ReturnToLive` command).
+    ///
+    /// Instant when the stream is already running — detached browsing snaps
+    /// straight back to LIVE-NOW with no re-acquisition. Starts a fresh
+    /// stream otherwise. Unlike `start_live_mode` this preserves the user's
+    /// zoom (only raising it to the micro floor if they zoomed out past it
+    /// while detached).
+    pub(crate) fn return_to_live(&mut self, ctx: &egui::Context) {
+        if !self.live.mode_state.is_active() {
+            self.start_live_mode(ctx);
+            return;
+        }
+        let now = self.state.frame_now.secs();
+        self.live.mode_state.detached_since = None;
+        self.playback.state.clear_selection();
+        self.playback.state.enter_pinned_live(now);
+        self.playback.state.speed = crate::core::PlaybackSpeed::Realtime;
+        // Return-to-live re-tethers, so the zoom floor must land the tier back
+        // in Micro. The Micro-enter threshold carries hysteresis (≥ 1.15),
+        // so floor to LIVE_DEFAULT_ZOOM (2.0) rather than the nominal 1.0.
+        if self.playback.state.timeline_tier != crate::core::TimelineTier::Micro {
+            let width = self.playback.state.timeline_width_px;
+            let spacing = self.playback.state.median_frame_spacing();
+            self.playback
+                .state
+                .set_timeline_zoom(crate::LIVE_DEFAULT_ZOOM, width, spacing);
+            self.playback.state.center_view_on(now);
+        }
+    }
+
+    /// Apply a loop preset (spec §8 "presets first"; the creation surface for
+    /// loops, additive to the implicit alt/right/shift-drag paths). Routes every
+    /// mode change through the named playhead transitions — never direct field
+    /// writes — so the `PlayheadMode` invariants hold.
+    ///
+    /// - **Pin to live** always enters the pinned sliding loop: re-tether first
+    ///   if detached/Free with a running stream (or start one), then
+    ///   `enter_lookback` from `PinnedToNow`.
+    /// - **Last N frames / duration** enter the pinned sliding loop when
+    ///   streaming-and-near-now (so the loop follows the live edge), else create
+    ///   a *fixed* loop of that extent ending at the current playhead.
+    pub(crate) fn apply_loop_preset(
+        &mut self,
+        preset: crate::core::LoopPreset,
+        ctx: &egui::Context,
+    ) {
+        use crate::core::LoopPreset;
+        let basis = preset.basis();
+        let now = self.state.frame_now.secs();
+
+        // "Pin to live", or a windowed preset while streaming with the playhead
+        // close to now, becomes the pinned sliding loop.
+        let near_now = self.live.mode_state.is_active()
+            && (now - self.playback.state.playback_position()).abs()
+                < crate::FALLBACK_SCAN_DURATION_SECS as f64;
+        let want_pinned = matches!(preset, LoopPreset::PinToLive) || near_now;
+
+        if want_pinned {
+            // Get to PinnedToNow without tripping enter_lookback's assert.
+            if !self.playback.state.time_model.is_pinned() {
+                // Re-tether: instant if a stream is already running, otherwise
+                // start one. `return_to_live` lands the playhead in PinnedToNow
+                // synchronously (it calls `enter_pinned_live` in both the
+                // active-stream and cold-start paths), even when the cold path
+                // also queued a StartLive command for the channel.
+                self.return_to_live(ctx);
+            }
+            // PinnedToNow is guaranteed here, so enter_lookback's `is_pinned`
+            // assert holds.
+            let seed = self.resolve_pinned_window(basis, now).0;
+            self.playback.state.enter_lookback(Some(seed), basis);
+            return;
+        }
+
+        // Fixed loop ending at the current playhead. Detach a tether first so the
+        // selection lands as an ordinary Free-mode range (enter_lookback is only
+        // for the pinned case). The stream, if any, keeps running.
+        if self.live.mode_state.is_active() {
+            self.live.detach_playhead(
+                &mut self.playback.state,
+                now,
+                self.state.pause_stream_while_reviewing,
+            );
+        }
+        let end = self.playback.state.playback_position();
+        let span = match basis {
+            crate::core::LoopBasis::Duration(secs) => secs,
+            crate::core::LoopBasis::FrameCount(_) => self.frame_count_span_ending_at(basis, end),
+        };
+        let start = end - span;
+        self.playback.state.set_selection(start, end);
+        self.playback.state.apply_selection_as_bounds();
+        // A fixed preset loop is created ready to play.
+        if self.playback.state.is_playback_allowed() {
+            self.playback.state.playing = true;
+        }
+        // Arm the bulk fetch for the new range (selection = the fetch).
+        if let Some(range) = self.playback.state.selection_range() {
+            self.state.selection_just_finalized = Some(range);
+        }
+    }
+
+    /// Span (seconds) of the last `n` matching frames ending at/<= `end`, for a
+    /// frame-count basis fixed loop. Falls back to the basis's nominal span when
+    /// too few frames are cached around `end`.
+    fn frame_count_span_ending_at(&self, basis: crate::core::LoopBasis, end: f64) -> f64 {
+        if let crate::core::LoopBasis::FrameCount(n) = basis {
+            if let Some((s, e)) = self.timeline.scans.lookback_window(
+                &self.state.viz_state.elevation_selection,
+                self.state.viz_state.product.to_worker_string(),
+                end,
+                n as usize,
+            ) {
+                if e - s > 1.0 {
+                    return e - s;
+                }
+            }
+        }
+        basis.fallback_span_secs()
+    }
+
+    /// Per-frame live tick — drives the playhead while streaming, independent
+    /// of the `playing` flag (which now belongs to playback/lookback).
+    ///
+    /// - `PinnedToNow` (LIVE-NOW): pin the playhead to this frame's now.
+    /// - `LookbackLoop` (LIVE-LOOKBACK): slide the loop window so its end
+    ///   follows the latest frame as new volumes complete. `advance` (driven
+    ///   by `playing` in the bottom panel) does the actual looping.
+    /// - Detached (`Free` while streaming): the user is browsing; leave the
+    ///   playhead and view alone, but stop the stream once the detour
+    ///   exceeds [`crate::LIVE_DETACHED_STOP_SECS`].
+    ///
+    /// In the two live states, keep the live edge on-screen. No-op when not
+    /// streaming.
+    pub(crate) fn tick_live(&mut self) {
+        if !self.live.mode_state.is_active() {
+            return;
+        }
+        let now = self.state.frame_now.secs();
+
+        if self.playback.state.time_model.is_pinned() {
+            // LIVE-NOW: pin to this frame's now.
+            self.playback.state.pin_tick(now);
+        } else if self.playback.state.time_model.is_lookback() {
+            // LIVE-LOOKBACK: own the frame window, sized from the loop window's
+            // basis (frame-count or duration — see `LoopWindow`). For a
+            // frame-count basis, prefer the exact last-N-frame span; before any
+            // matching frame is cached, fall back to a time window of ~N volumes
+            // so `render_loop` builds `sweep_frames` from recent data — not all
+            // history. A duration basis is simply the last `secs` ending at now.
+            // `render_loop` turns these bounds into the macro frame list; the
+            // backfill pump fills the window in, and this widens to the precise
+            // span as frames land.
+            //
+            // While *playing*, defer incorporating newly arrived frames until the
+            // playhead crosses the loop's wrap point (spec §8) — the committed
+            // window stays fixed between wraps so the band doesn't stretch
+            // mid-cycle. While paused/idle there's no cycle to disrupt, so the
+            // window tracks now continuously.
+            let basis = self
+                .playback
+                .state
+                .loop_window
+                .map(|w| w.basis)
+                .unwrap_or_default();
+            let (start, end) = self.resolve_pinned_window(basis, now);
+            let committed = self.playback.state.commit_pinned_window(start, end);
+            self.playback
+                .state
+                .time_model
+                .set_bounds_preserving(committed.0, committed.1);
+            let (start, end) = committed;
+            // Surface the replay window as a live-anchored selection so it
+            // renders like any other selection (one concept, one overlay).
+            self.playback.state.selection = Some(crate::core::TimeSelection {
+                a: start,
+                b: end,
+                in_progress: false,
+                anchored_to_live: true,
+            });
+        } else {
+            // Detached: free browsing while the stream ingests in the
+            // background. No pin, no auto-scroll — but a live-anchored
+            // selection (a loop "up to now") keeps following the live edge,
+            // and the background S3 polling is bounded by an idle stop.
+            // `handle_streaming_results` reconciles the channel off on the
+            // next frame; `playing` is deliberately untouched so an archive
+            // replay keeps running.
+            self.playback.state.slide_anchored_selection(now);
+            if crate::core::should_stop_for_detached_idle(
+                self.live.mode_state.detached_since,
+                now,
+                crate::LIVE_DETACHED_STOP_SECS,
+            ) {
+                self.live.stop(crate::core::LiveExitReason::DetachedTimeout);
+                self.state.status_message = crate::core::LiveExitReason::DetachedTimeout
+                    .message()
+                    .to_string();
+            }
+            return;
+        }
+
+        self.keep_now_on_screen(now);
+    }
+
+    /// Resolve the *target* pinned-loop window for `now` from its basis — the
+    /// window the loop would have if it tracked now continuously. The
+    /// wrap-point deferral ([`PlaybackState::commit_pinned_window`]) decides
+    /// whether this target is actually applied this frame.
+    ///
+    /// Frame-count: the span of the last `n` matching frames (with a time
+    /// fallback before any frame is cached). Duration: the last `secs` ending
+    /// at now.
+    pub(crate) fn resolve_pinned_window(
+        &self,
+        basis: crate::core::LoopBasis,
+        now: f64,
+    ) -> (f64, f64) {
+        match basis {
+            crate::core::LoopBasis::FrameCount(n) => self
+                .timeline
+                .scans
+                .lookback_window(
+                    &self.state.viz_state.elevation_selection,
+                    self.state.viz_state.product.to_worker_string(),
+                    now,
+                    n as usize,
+                )
+                .unwrap_or((now - basis.fallback_span_secs(), now)),
+            crate::core::LoopBasis::Duration(secs) => (now - secs, now),
+        }
+    }
+
+    /// Nudge the timeline view minimally so "now" stays visible. Pan/zoom is
+    /// otherwise free; this only fires when "now" would fall outside the
+    /// visible range. (Relocated from the old `playing`-gated block in the
+    /// bottom panel so it runs in both LIVE-NOW and LIVE-LOOKBACK.)
+    fn keep_now_on_screen(&mut self, now: f64) {
+        // A deliberate user pan turns view-following off; without this the
+        // nudge below re-snaps every frame and panning away from the live edge
+        // while streaming is impossible.
+        if !self.playback.state.view_follows_now {
+            return;
+        }
+        let view_width = self.playback.state.view_width_secs();
+        if view_width <= 0.0 {
+            return;
+        }
+        let view_start = self.playback.state.timeline_view_start;
+        let view_end = view_start + view_width;
+        if now > view_end {
+            self.playback.state.timeline_view_start = now - view_width;
+        } else if now < view_start {
+            self.playback.state.timeline_view_start = now;
+        }
+    }
+
+    /// Update the canvas overlay text with sweep timing and elevation info.
+    pub(crate) fn update_overlay_from_sweep(&mut self, start: f64, end: f64, elevation_deg: f32) {
+        self.state
+            .viz_state
+            .update_overlay(start, end, elevation_deg, self.state.frame_now.secs());
+    }
+
+    /// Send a render request to the worker for the current scan/elevation/product.
+    ///
+    /// Mode-agnostic: the unified resolver merges the live in-progress
+    /// accumulator with the cached timeline and returns one of three intents.
+    /// Live and archive are *sources* feeding this decision, not exclusive
+    /// owners of the canvas — so a cached completed cut paints even while
+    /// streaming (the live partial only wins for the cut it's collecting).
+    ///
+    /// Honours the user's intent exactly: no fuzzy elevation fallback — if the
+    /// user picks 5° and the resolved scan only has 1°/3°/7°, the canvas blanks
+    /// rather than snapping to a neighbor.
+    pub(crate) fn request_worker_render(&mut self) {
+        use crate::core::playback_manager::DesiredDisplay;
+
+        let desired = crate::core::playback_manager::resolve_desired_display(
+            &self.state.viz_state.site_id,
+            self.playback.state.playback_position(),
+            &self.state.viz_state.elevation_selection,
+            self.state.viz_state.product,
+            &self.timeline.scans,
+            MAX_SCAN_AGE_SECS,
+            self.live_render_sources(),
+        );
+
+        match desired {
+            DesiredDisplay::LivePartial { .. } => {
+                // The chunk-ingest → `render_live` path already owns the GPU
+                // for the actively-collecting cut. Don't request a cached blob
+                // for it and don't blank — leave the live partial in place.
+            }
+            DesiredDisplay::Cached(identity) => {
+                if self.render.coordinator.request_render_for(identity) {
+                    // Was guarded by `&& !pipeline.processing`, which only ever
+                    // skipped a redundant `true = true`.
+                    self.state.session_stats.pipeline.processing = true;
+                }
+            }
+            DesiredDisplay::Blank => {
+                // Don't clear a valid live partial: in a between-chunks frame
+                // the in-progress elevation can momentarily read `None` and
+                // resolve to `Blank` even though the GPU holds a good `live|*`
+                // sweep. Only blank when archive owns the canvas — which it
+                // does whenever the playhead is detached from the live edge.
+                let protecting_live_partial = self.live.mode_state.is_active()
+                    && !self.live.is_detached(&self.playback.state)
+                    && self.gpu_holds_live_sweep();
+                // Don't blank merely because the playhead drifted into a gap
+                // (spec §11.2): a Blank with NO scan covering the playhead is the
+                // "drifted away in time" case — keep the held frame and let the
+                // canvas caption surface the discrepancy. Blank only when a scan
+                // IS present but the selected elevation/product isn't in it (the
+                // honest "nothing here for your filter" case).
+                let scan_covers_playhead = self
+                    .timeline
+                    .scans
+                    .find_recent_scan(self.playback.state.playback_position(), MAX_SCAN_AGE_SECS)
+                    .is_some();
+                if !protecting_live_partial && scan_covers_playhead {
+                    self.clear_display_no_sweep();
+                }
+            }
+        }
+    }
+
+    /// The live cut feeding [`crate::core::playback_manager::resolve_desired_display`]:
+    /// `Some((collecting_elevation, anchor_key_ms))` while streaming with a
+    /// fully-known volume AND the playhead attached to the live edge, else
+    /// `None` (which collapses the resolver to the cache path — a detached
+    /// playhead resolves whatever's cached under the cursor, untouched by
+    /// the background stream). Shared by `request_worker_render` and the
+    /// `Decoded` upload gate in `handle_decoded_outcome`.
+    pub(crate) fn live_render_sources(&self) -> Option<(u8, i64)> {
+        if !self.live.mode_state.is_active() || self.live.is_detached(&self.playback.state) {
+            return None;
+        }
+        let anchor_ms = self
+            .live
+            .mode_state
+            .current_volume
+            .as_ref()
+            .map(|a| a.scan_key.scan_start.0);
+        self.live
+            .engine
+            .borrow()
+            .observations()
+            .current_in_progress_elevation
+            .zip(anchor_ms)
+    }
+
+    /// Whether the main GPU texture currently holds a live partial sweep
+    /// (`current_sweep_id` like `live|{elev}`, set by
+    /// `handle_live_decoded_outcome`). Lets `request_worker_render` avoid
+    /// blanking a valid partial during a between-chunks frame, and lets
+    /// `sync_prev_sweep_texture` tell a live partial (whose prev slot the
+    /// LiveDecoded promote owns) from a cached cut shown during live.
+    pub(crate) fn gpu_holds_live_sweep(&self) -> bool {
+        self.gpu
+            .gpu
+            .as_ref()
+            .and_then(|renderer| {
+                renderer
+                    .lock()
+                    .ok()
+                    .and_then(|r| r.current_sweep_id().map(|id| id.starts_with("live|")))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Request volume render (all elevations for ray marching).
+    pub(crate) fn request_worker_render_volume(&mut self) {
+        let product = self.state.viz_state.product.to_worker_string().to_string();
+        self.render.coordinator.request_volume_render(&product);
+    }
+
+    /// Stop live mode streaming.
+    pub(crate) fn stop_live_mode(&mut self, reason: crate::core::LiveExitReason) {
+        log::info!("Stopping live mode: {:?}", reason);
+
+        self.live.stop(reason);
+        self.playback.state.exit_live(crate::core::FreezeAt::Keep);
+        self.live.channel.stop();
+
+        // Halt playback: every remaining stop path (explicit stop, error,
+        // site change) lands the cursor where it was, and leaving
+        // playing=true at Realtime speed would keep it pacing "now" as if
+        // still pinned. (Seek/jog no longer stop the stream — they detach.)
+        self.playback.state.playing = false;
+
+        self.state.status_message = self
+            .live
+            .mode_state
+            .last_exit_reason
+            .map(|r| r.message().to_string())
+            .unwrap_or_default();
+    }
+
+    /// Handle a realtime streaming result.
+    pub(crate) fn handle_realtime_result(
+        &mut self,
+        result: nexrad::RealtimeResult,
+        _ctx: &egui::Context,
+    ) {
+        let now = self.state.frame_now.secs();
+
+        match result {
+            nexrad::RealtimeResult::Started { site_id } => {
+                log::debug!("Realtime streaming started for site: {}", site_id);
+                self.live.mode_state.handle_streaming_started(now);
+                self.state.status_message = format!("Live: connected to {}", site_id);
+            }
+            nexrad::RealtimeResult::ChunkReceived {
+                chunks_in_volume,
+                is_volume_end,
+                fetch_latency_ms,
+                plan,
+                arrival_stat,
+            } => {
+                if self.state.dev_mode {
+                    self.state
+                        .session_stats
+                        .record_fetch_latency(fetch_latency_ms);
+                }
+                log::debug!(
+                    "Realtime status: chunks_in_volume={} is_end={} latency={:.0}ms next_in={:?}",
+                    chunks_in_volume,
+                    is_volume_end,
+                    fetch_latency_ms,
+                    plan.as_ref().and_then(|p| p.next_available_in_secs(now)),
+                );
+                self.live
+                    .mode_state
+                    .handle_realtime_chunk(chunks_in_volume, now, plan.as_ref());
+
+                if let Some(stat) = arrival_stat {
+                    self.live.mode_state.record_chunk_arrival(stat);
+                }
+
+                // Record chunk latency for the acquisition drawer. No radial
+                // timestamp is known at download time, so e2e stays None here.
+                self.acquisition.state.record_chunk_latency(
+                    chunks_in_volume,
+                    fetch_latency_ms,
+                    None,
+                );
+            }
+            nexrad::RealtimeResult::ChunkData {
+                data,
+                chunk_index,
+                is_start,
+                is_end,
+                timestamp,
+                is_last_in_sweep,
+            } => {
+                log::debug!(
+                    "Realtime chunk received: index={} is_start={} is_end={} size={} bytes ts={}",
+                    chunk_index,
+                    is_start,
+                    is_end,
+                    data.len(),
+                    timestamp,
+                );
+
+                // Track realtime chunk as an acquisition operation
+                let rt_site_id = self.state.viz_state.site_id.clone();
+                let op_id =
+                    self.acquisition
+                        .state
+                        .create_operation(state::OperationKind::RealtimeChunk {
+                            site_id: rt_site_id,
+                            chunk_index,
+                            is_start,
+                            is_end,
+                            // The Network-tab grouping key is per-volume,
+                            // not per-instant; truncating sub-second
+                            // precision here is fine because two distinct
+                            // volumes never share a wall-clock second.
+                            scan_timestamp: timestamp.round() as i64,
+                        });
+                self.acquisition.state.mark_active(op_id);
+                self.acquisition
+                    .state
+                    .mark_completed(op_id, data.len() as u64);
+
+                if is_start {
+                    self.state.status_message = "Live: receiving new volume...".to_string();
+                    log::debug!("Realtime: new volume started, forwarding start chunk to worker");
+                }
+
+                // Forward chunk to worker for incremental ingest
+                let site_id = self.state.viz_state.site_id.clone();
+                let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
+                if is_start {
+                    self.state.session_stats.pipeline.processing = true;
+                }
+
+                // The streaming loop derives `is_last_in_sweep` from the VCP
+                // mapper at emission time (so it's correct even under filter
+                // mode where chunk_index no longer maps 1:1 to sequence).
+                let is_last_in_sweep = is_last_in_sweep.unwrap_or(false);
+
+                log::debug!(
+                    "Realtime: forwarding chunk {} to worker for ingest (site={}, ts={}, last_in_sweep={})",
+                    chunk_index,
+                    site_id,
+                    timestamp,
+                    is_last_in_sweep,
+                );
+                self.render.coordinator.ingest_chunk(
+                    data,
+                    site_id,
+                    timestamp,
+                    chunk_index,
+                    is_start,
+                    is_end,
+                    file_name,
+                    is_last_in_sweep,
+                );
+            }
+            nexrad::RealtimeResult::Error(msg) => {
+                log::error!("Realtime streaming error: {}", msg);
+                self.stop_live_mode(crate::core::LiveExitReason::ConnectionError);
+                // Preserve error message (stop_live_mode clears it)
+                self.live.mode_state.error_message = Some(msg.clone());
+                self.state.status_message = format!("Live error: {}", msg);
+
+                // Track error as a failed acquisition operation
+                let err_site_id = self.state.viz_state.site_id.clone();
+                let op_id =
+                    self.acquisition
+                        .state
+                        .create_operation(state::OperationKind::RealtimeChunk {
+                            site_id: err_site_id,
+                            chunk_index: 0,
+                            is_start: false,
+                            is_end: false,
+                            scan_timestamp: 0,
+                        });
+                self.acquisition.state.mark_failed(op_id, msg);
+            }
+        }
+    }
+}

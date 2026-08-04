@@ -5,19 +5,15 @@
 //! visit (no preferred site saved), shows welcome verbiage; on subsequent
 //! visits, shows a shorter "change site" heading instead.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
+use crate::core::LocationResult;
 use crate::data::{all_sites_sorted, get_site, nearest_site};
-use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
 use crate::state::AppState;
 use eframe::egui::{self, Color32, RichText, Vec2};
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
+use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 
 /// Which view the modal is currently showing.
 #[derive(Default, Clone, PartialEq)]
-pub enum SiteModalMode {
+pub(crate) enum SiteModalMode {
     /// First-visit welcome screen with three selection paths.
     #[default]
     Welcome,
@@ -29,16 +25,8 @@ pub enum SiteModalMode {
     Pending,
 }
 
-/// A location result delivered by an async operation (geolocation or zip).
-pub enum LocationResult {
-    /// Successfully resolved to a lat/lon.
-    Success(f64, f64),
-    /// The operation failed with an error message.
-    Error(String),
-}
-
 /// Persistent state for the site modal.
-pub struct SiteModalState {
+pub(crate) struct SiteModalState {
     /// Search filter for the site list view.
     pub filter: String,
     /// Current modal view.
@@ -47,21 +35,53 @@ pub struct SiteModalState {
     pub zip_input: String,
     /// Error message to display (from geolocation or zip lookup).
     pub error_message: Option<String>,
-    /// Shared queue for receiving async location results.
-    pub location_results: Rc<RefCell<Vec<LocationResult>>>,
+    /// Sender given to async callbacks. Clone freely.
+    location_tx: UnboundedSender<LocationResult>,
+    /// Receiver drained inside `SiteModalLayer::render` each frame.
+    location_rx: UnboundedReceiver<LocationResult>,
     /// Whether this is the first visit (no preferred site yet).
     pub is_first_visit: bool,
 }
 
+impl SiteModalState {
+    /// A clone-able sink for async callbacks (geolocation, zip lookup).
+    pub(crate) fn location_sender(&self) -> UnboundedSender<LocationResult> {
+        self.location_tx.clone()
+    }
+
+    /// Drain all location results that have arrived since the last call.
+    /// Enter the "waiting for an async location result" state, clearing any
+    /// previous error. Called by the shell when it starts a lookup.
+    pub(crate) fn begin_pending(&mut self) {
+        self.mode = SiteModalMode::Pending;
+        self.error_message = None;
+    }
+
+    /// Surface a message on the welcome screen (validation or lookup failure).
+    pub(crate) fn show_error(&mut self, message: String) {
+        self.mode = SiteModalMode::Welcome;
+        self.error_message = Some(message);
+    }
+
+    pub(crate) fn drain_location_results(&mut self) -> Vec<LocationResult> {
+        let mut out = Vec::new();
+        while let Ok(r) = self.location_rx.try_recv() {
+            out.push(r);
+        }
+        out
+    }
+}
+
 impl Default for SiteModalState {
     fn default() -> Self {
-        let location_results = Rc::new(RefCell::new(Vec::new()));
+        let (location_tx, location_rx) = futures_channel::mpsc::unbounded();
         Self {
             filter: String::new(),
             mode: SiteModalMode::Welcome,
             zip_input: String::new(),
             error_message: None,
-            location_results,
+            location_tx,
+            location_rx,
             is_first_visit: true,
         }
     }
@@ -75,229 +95,46 @@ fn responsive_width(ctx: &egui::Context, desktop: f32) -> f32 {
     (viewport_w - 16.0).min(desktop).max(240.0)
 }
 
-/// Open the site modal in `Pending` mode and start browser geolocation.
-///
-/// Used by the mobile bottom bar's location button to bypass the welcome
-/// screen and go straight to "finding nearest site". The polling loop in
-/// `render_site_modal` handles the result — success closes the modal after
-/// applying the selection, failure drops back to the welcome screen with
-/// the error visible.
-pub fn trigger_geolocation(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    modal_state: &mut SiteModalState,
-) {
-    state.site_modal_open = true;
-    modal_state.mode = SiteModalMode::Pending;
-    modal_state.error_message = None;
-    start_geolocation(modal_state.location_results.clone(), ctx.clone());
-}
+pub(super) struct SiteModalLayer;
 
-/// Apply a site selection to app state: update viz, center camera, refresh timeline.
-pub(super) fn apply_site_selection(state: &mut AppState, site_id: &str, lat: f64, lon: f64) {
-    state.viz_state.site_id = site_id.to_string();
-    state.viz_state.center_lat = lat;
-    state.viz_state.center_lon = lon;
-    state.viz_state.pan_offset = Vec2::ZERO;
-    state.viz_state.camera.center_on(lat, lon);
-    state.push_command(crate::state::AppCommand::RefreshTimeline {
-        auto_position: true,
-    });
-    state.push_command(crate::state::AppCommand::RefreshAlerts);
-    state.preferred_site = Some(site_id.to_string());
-    state.site_modal_open = false;
-}
-
-/// Start browser geolocation lookup.
-fn start_geolocation(results: Rc<RefCell<Vec<LocationResult>>>, ctx: egui::Context) {
-    let window = match web_sys::window() {
-        Some(w) => w,
-        None => {
-            results
-                .borrow_mut()
-                .push(LocationResult::Error("No browser window".into()));
-            return;
-        }
-    };
-
-    let navigator = window.navigator();
-    let geolocation = match navigator.geolocation() {
-        Ok(g) => g,
-        Err(_) => {
-            results
-                .borrow_mut()
-                .push(LocationResult::Error("Geolocation not available".into()));
-            return;
-        }
-    };
-
-    let results_ok = results.clone();
-    let ctx_ok = ctx.clone();
-    let success_cb = Closure::once(move |position: JsValue| {
-        let coords = js_sys::Reflect::get(&position, &"coords".into()).unwrap();
-        let lat = js_sys::Reflect::get(&coords, &"latitude".into())
-            .unwrap()
-            .as_f64()
-            .unwrap_or(0.0);
-        let lon = js_sys::Reflect::get(&coords, &"longitude".into())
-            .unwrap()
-            .as_f64()
-            .unwrap_or(0.0);
-        results_ok
-            .borrow_mut()
-            .push(LocationResult::Success(lat, lon));
-        ctx_ok.request_repaint();
-    });
-
-    let results_err = results.clone();
-    let ctx_err = ctx;
-    let error_cb = Closure::once(move |error: JsValue| {
-        let msg = js_sys::Reflect::get(&error, &"message".into())
-            .ok()
-            .and_then(|v| v.as_string())
-            .unwrap_or_else(|| "Location access denied".into());
-        results_err.borrow_mut().push(LocationResult::Error(msg));
-        ctx_err.request_repaint();
-    });
-
-    let _ = geolocation.get_current_position_with_error_callback(
-        success_cb.as_ref().unchecked_ref(),
-        Some(error_cb.as_ref().unchecked_ref()),
-    );
-
-    // Prevent closures from being dropped (they need to live until the callback fires).
-    success_cb.forget();
-    error_cb.forget();
-}
-
-/// Start zip code geocoding via the Zippopotam.us API.
-fn start_zip_lookup(zip: &str, results: Rc<RefCell<Vec<LocationResult>>>, ctx: egui::Context) {
-    let url = format!("https://api.zippopotam.us/us/{}", zip);
-    let results = results.clone();
-
-    wasm_bindgen_futures::spawn_local(async move {
-        let result: Result<(f64, f64), String> =
-            with_retry(&DEFAULT_POLICY, "zip_lookup", |_attempt| {
-                let url = url.clone();
-                async move { zip_lookup_attempt(&url).await }
-            })
-            .await
-            .map_err(|msg| {
-                // Zippopotam returns 404 for invalid zips; surface a friendlier
-                // message than the raw HTTP status.
-                if msg.contains("HTTP 404") {
-                    "Zip code not found".to_string()
-                } else {
-                    msg
-                }
-            });
-
-        match result {
-            Ok((lat, lon)) => {
-                results.borrow_mut().push(LocationResult::Success(lat, lon));
-            }
-            Err(e) => {
-                results.borrow_mut().push(LocationResult::Error(e));
-            }
-        }
-        ctx.request_repaint();
-    });
-}
-
-/// One attempt against the Zippopotam.us API. Network errors and 5xx are
-/// retryable; 404 (invalid zip) and parse failures are terminal.
-async fn zip_lookup_attempt(url: &str) -> Verdict<(f64, f64)> {
-    let window = match web_sys::window() {
-        Some(w) => w,
-        None => return Verdict::Terminal("No browser window".into()),
-    };
-
-    let resp_value = match wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(url)).await {
-        Ok(v) => v,
-        Err(_) => return Verdict::Retry { after: None },
-    };
-    let resp: web_sys::Response = match resp_value.dyn_into() {
-        Ok(r) => r,
-        Err(_) => return Verdict::Terminal("Invalid response".into()),
-    };
-
-    let status = resp.status();
-    if status == 408 || status == 429 || (500..=599).contains(&status) {
-        return Verdict::Retry { after: None };
+impl super::layout::Layer for SiteModalLayer {
+    fn kind(&self) -> super::layout::LayerKind {
+        super::layout::LayerKind::Modal
     }
-    if !resp.ok() {
-        return Verdict::Terminal(format!("HTTP {}", status));
+    fn z_order(&self) -> i32 {
+        10
     }
-
-    let json_promise = match resp.json() {
-        Ok(p) => p,
-        Err(_) => return Verdict::Terminal("Failed to parse response".into()),
-    };
-    let json = match wasm_bindgen_futures::JsFuture::from(json_promise).await {
-        Ok(v) => v,
-        Err(_) => return Verdict::Retry { after: None },
-    };
-
-    // Zippopotam response: { "places": [{ "latitude": "...", "longitude": "..." }] }
-    let places = match js_sys::Reflect::get(&json, &"places".into()) {
-        Ok(p) => p,
-        Err(_) => return Verdict::Terminal("Invalid response format".into()),
-    };
-    let first = match js_sys::Reflect::get_u32(&places, 0) {
-        Ok(f) => f,
-        Err(_) => return Verdict::Terminal("No location data for zip code".into()),
-    };
-
-    let lat_str = match js_sys::Reflect::get(&first, &"latitude".into()) {
-        Ok(v) => match v.as_string() {
-            Some(s) => s,
-            None => return Verdict::Terminal("Invalid latitude".into()),
-        },
-        Err(_) => return Verdict::Terminal("Missing latitude".into()),
-    };
-    let lon_str = match js_sys::Reflect::get(&first, &"longitude".into()) {
-        Ok(v) => match v.as_string() {
-            Some(s) => s,
-            None => return Verdict::Terminal("Invalid longitude".into()),
-        },
-        Err(_) => return Verdict::Terminal("Missing longitude".into()),
-    };
-
-    let lat: f64 = match lat_str.parse() {
-        Ok(v) => v,
-        Err(_) => return Verdict::Terminal("Invalid latitude value".into()),
-    };
-    let lon: f64 = match lon_str.parse() {
-        Ok(v) => v,
-        Err(_) => return Verdict::Terminal("Invalid longitude value".into()),
-    };
-
-    Verdict::Ok((lat, lon))
+    fn visible(&self, ctx: &super::layout::LayoutCtx) -> bool {
+        ctx.chrome.site_modal_open
+    }
+    fn render(&self, ctx: &mut super::layout::LayoutCtx) {
+        draw_site_modal(ctx.ctx, ctx.state, ctx.chrome, &mut ctx.modals.site);
+    }
 }
 
-/// Render the site selection modal if open.
-///
 /// Returns `true` if a site was selected (so the caller can trigger acquisition).
-pub fn render_site_modal(
+///
+/// Currently the caller ignores the return value — selection is emitted as
+/// [`crate::core::Intent::SelectSite`] and applied by the shell, which sets
+/// `viz_state.site_id`, centers the camera, closes this modal, and pushes
+/// `RefreshTimeline` + `RefreshAlerts` (plus `StartLive` when a boot-tether was
+/// deferred). Kept for the standalone-call-site path used by tests.
+fn draw_site_modal(
     ctx: &egui::Context,
     state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
     modal_state: &mut SiteModalState,
 ) -> bool {
-    if !state.site_modal_open {
-        return false;
-    }
-
     // Poll for async location results
-    let results: Vec<_> = modal_state
-        .location_results
-        .borrow_mut()
-        .drain(..)
-        .collect();
-    for result in results {
+    for result in modal_state.drain_location_results() {
         match result {
             LocationResult::Success(lat, lon) => {
                 if let Some(site) = nearest_site(lat, lon) {
-                    apply_site_selection(state, site.id, site.lat, site.lon);
+                    state.push_command(crate::core::Intent::SelectSite {
+                        site_id: site.id.to_string(),
+                        lat: site.lat,
+                        lon: site.lon,
+                    });
                     modal_state.mode = SiteModalMode::Welcome;
                     modal_state.filter.clear();
                     modal_state.zip_input.clear();
@@ -321,7 +158,7 @@ pub fn render_site_modal(
             SiteModalMode::Welcome => {
                 // Only allow closing if we already have a site
                 if get_site(&state.viz_state.site_id).is_some() && !modal_state.is_first_visit {
-                    state.site_modal_open = false;
+                    chrome.site_modal_open = false;
                     return false;
                 }
             }
@@ -335,7 +172,7 @@ pub fn render_site_modal(
                 modal_state.error_message = None;
             }
             _ => {
-                state.site_modal_open = false;
+                chrome.site_modal_open = false;
                 return false;
             }
         }
@@ -360,19 +197,19 @@ pub fn render_site_modal(
                 && !modal_state.is_first_visit
                 && get_site(&state.viz_state.site_id).is_some()
             {
-                state.site_modal_open = false;
+                chrome.site_modal_open = false;
             }
         });
 
     match modal_state.mode {
         SiteModalMode::Welcome => {
-            selected = render_welcome_screen(ctx, state, modal_state);
+            selected = render_welcome_screen(ctx, state, chrome, modal_state);
         }
         SiteModalMode::SiteList => {
-            selected = render_site_list(ctx, state, modal_state);
+            selected = render_site_list(ctx, state, chrome, modal_state);
         }
         SiteModalMode::ZipEntry => {
-            selected = render_zip_entry(ctx, state, modal_state);
+            selected = render_zip_entry(ctx, state, chrome, modal_state);
         }
         SiteModalMode::Pending => {
             render_pending_screen(ctx);
@@ -386,6 +223,7 @@ pub fn render_site_modal(
 fn render_welcome_screen(
     ctx: &egui::Context,
     state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
     modal_state: &mut SiteModalState,
 ) -> bool {
     let selected = false;
@@ -432,9 +270,7 @@ fn render_welcome_screen(
                 .min_size(Vec2::new(btn_w, 44.0));
 
                 if ui.add(btn).clicked() {
-                    modal_state.error_message = None;
-                    modal_state.mode = SiteModalMode::Pending;
-                    start_geolocation(modal_state.location_results.clone(), ctx.clone());
+                    state.push_command(crate::core::Intent::LocateMeForSite);
                 }
             });
 
@@ -487,7 +323,7 @@ fn render_welcome_screen(
                         .small_button(RichText::new("Cancel").color(Color32::GRAY))
                         .clicked()
                     {
-                        state.site_modal_open = false;
+                        chrome.site_modal_open = false;
                     }
                 });
                 ui.add_space(4.0);
@@ -501,6 +337,7 @@ fn render_welcome_screen(
 fn render_site_list(
     ctx: &egui::Context,
     state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
     modal_state: &mut SiteModalState,
 ) -> bool {
     let mut selected = false;
@@ -539,12 +376,13 @@ fn render_site_list(
             ui.horizontal(|ui| {
                 ui.label("Search:");
                 let response = ui.add(
+                    // two-way binding: the egui widget owns this value while the user edits it.
                     egui::TextEdit::singleline(&mut modal_state.filter)
                         .hint_text("Site ID, name, or state...")
                         .desired_width(search_w),
                 );
                 // Auto-focus the search field
-                if state.site_modal_open {
+                if chrome.site_modal_open {
                     response.request_focus();
                 }
             });
@@ -576,7 +414,11 @@ fn render_site_list(
             if enter_pressed && filtered.len() == 1 {
                 let site = &filtered[0];
                 if site.id != state.viz_state.site_id {
-                    apply_site_selection(state, site.id, site.lat, site.lon);
+                    state.push_command(crate::core::Intent::SelectSite {
+                        site_id: site.id.to_string(),
+                        lat: site.lat,
+                        lon: site.lon,
+                    });
                     modal_state.filter.clear();
                     modal_state.mode = SiteModalMode::Welcome;
                     modal_state.is_first_visit = false;
@@ -610,7 +452,11 @@ fn render_site_list(
                         };
 
                         if ui.selectable_label(is_current, text).clicked() && !is_current {
-                            apply_site_selection(state, site.id, site.lat, site.lon);
+                            state.push_command(crate::core::Intent::SelectSite {
+                                site_id: site.id.to_string(),
+                                lat: site.lat,
+                                lon: site.lon,
+                            });
                             modal_state.filter.clear();
                             modal_state.mode = SiteModalMode::Welcome;
                             modal_state.is_first_visit = false;
@@ -627,6 +473,7 @@ fn render_site_list(
 fn render_zip_entry(
     ctx: &egui::Context,
     state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
     modal_state: &mut SiteModalState,
 ) -> bool {
     let window_w = responsive_width(ctx, 340.0);
@@ -673,6 +520,7 @@ fn render_zip_entry(
 
             ui.horizontal(|ui| {
                 let response = ui.add(
+                    // two-way binding: the egui widget owns this value while the user edits it.
                     egui::TextEdit::singleline(&mut modal_state.zip_input)
                         .hint_text("e.g. 50309")
                         .desired_width(120.0),
@@ -685,15 +533,9 @@ fn render_zip_entry(
             });
 
             if submit {
-                let zip = modal_state.zip_input.trim();
-                if zip.len() == 5 && zip.chars().all(|c| c.is_ascii_digit()) {
-                    modal_state.error_message = None;
-                    modal_state.mode = SiteModalMode::Pending;
-                    start_zip_lookup(zip, modal_state.location_results.clone(), ctx.clone());
-                } else {
-                    modal_state.error_message =
-                        Some("Please enter a valid 5-digit zip code".into());
-                }
+                state.push_command(crate::core::Intent::SubmitZip(
+                    modal_state.zip_input.clone(),
+                ));
             }
 
             ui.add_space(8.0);
@@ -707,7 +549,7 @@ fn render_zip_entry(
                         .small_button(RichText::new("Cancel").color(Color32::GRAY))
                         .clicked()
                     {
-                        state.site_modal_open = false;
+                        chrome.site_modal_open = false;
                     }
                 });
                 ui.add_space(4.0);

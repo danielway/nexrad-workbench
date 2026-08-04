@@ -4,8 +4,8 @@
 //! (with a slight radius offset to avoid z-fighting with the globe)
 //! and draws them as `GL_LINES`.
 
-use crate::geo::camera::GlobeCamera;
 use crate::geo::layer::{GeoFeature, GeoLayer, GeoLayerType};
+use crate::geo::Camera;
 use eframe::egui::Color32;
 use glow::HasContext;
 use std::sync::Arc;
@@ -130,7 +130,7 @@ void main() {
     }
 
     /// Draw geo lines. Expects depth test already enabled by globe renderer.
-    pub fn paint(&self, gl: &glow::Context, camera: &GlobeCamera, visible_layers: &VisibleLayers) {
+    pub fn paint(&self, gl: &glow::Context, camera: &Camera, visible_layers: &VisibleLayers) {
         if self.batches.is_empty() {
             return;
         }

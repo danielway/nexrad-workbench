@@ -5,28 +5,38 @@
 
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
-pub(crate) fn draw_color_scale(
-    ui: &mut egui::Ui,
-    rect: &Rect,
-    product: &crate::state::RadarProduct,
-) {
+/// Trait wrapper for the registry. Z-order 20 sits above the radar
+/// image (rendered at 0) and below interactive chrome.
+pub(super) struct ColorScaleOverlay;
+
+impl super::Overlay for ColorScaleOverlay {
+    fn z_order(&self) -> i32 {
+        20
+    }
+
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
+        draw_color_scale(ui, &ctx.rect, &ctx.state.viz_state.product);
+    }
+}
+
+fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::core::RadarProduct) {
     use crate::nexrad::color_table::{build_reflectivity_lut, product_value_range};
     use nexrad_render::Product;
 
     let product_nr = match product {
-        crate::state::RadarProduct::Reflectivity => Product::Reflectivity,
-        crate::state::RadarProduct::Velocity => Product::Velocity,
-        crate::state::RadarProduct::SpectrumWidth => Product::SpectrumWidth,
-        crate::state::RadarProduct::DifferentialReflectivity => Product::DifferentialReflectivity,
-        crate::state::RadarProduct::CorrelationCoefficient => Product::CorrelationCoefficient,
-        crate::state::RadarProduct::DifferentialPhase => Product::DifferentialPhase,
-        crate::state::RadarProduct::ClutterFilterPower => Product::ClutterFilterPower,
+        crate::core::RadarProduct::Reflectivity => Product::Reflectivity,
+        crate::core::RadarProduct::Velocity => Product::Velocity,
+        crate::core::RadarProduct::SpectrumWidth => Product::SpectrumWidth,
+        crate::core::RadarProduct::DifferentialReflectivity => Product::DifferentialReflectivity,
+        crate::core::RadarProduct::CorrelationCoefficient => Product::CorrelationCoefficient,
+        crate::core::RadarProduct::DifferentialPhase => Product::DifferentialPhase,
+        crate::core::RadarProduct::ClutterFilterPower => Product::ClutterFilterPower,
     };
 
     let (min_val, max_val) = product_value_range(product_nr);
 
     // Build the LUT (1024 entries) — for reflectivity uses OKLab, others use crate scale
-    let lut = if matches!(product, crate::state::RadarProduct::Reflectivity) {
+    let lut = if matches!(product, crate::core::RadarProduct::Reflectivity) {
         build_reflectivity_lut(min_val, max_val)
     } else {
         let color_scale = crate::nexrad::color_table::continuous_color_scale(product_nr);
@@ -78,7 +88,7 @@ pub(crate) fn draw_color_scale(
     painter.rect_stroke(
         bar_rect,
         0.0,
-        Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 120, 130, 180)),
+        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(120, 120, 130, 180)),
         StrokeKind::Outside,
     );
 
@@ -105,7 +115,7 @@ pub(crate) fn draw_color_scale(
         // Tick line
         painter.line_segment(
             [Pos2::new(bar_left - 3.0, y), Pos2::new(bar_left, y)],
-            Stroke::new(1.0, Color32::from_rgba_unmultiplied(180, 180, 190, 200)),
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(180, 180, 190, 200)),
         );
 
         // Label

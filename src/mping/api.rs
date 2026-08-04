@@ -6,6 +6,7 @@
 //! preflight failure is possible and is surfaced verbatim to the user
 //! through `MpingEvent::Error`.
 
+use crate::net::err_text;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -17,14 +18,18 @@ use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
 /// Base URL for the mPING v2 reports endpoint.
 const REPORTS_URL: &str = "https://mping.ou.edu/mping/api/v2/reports";
 
-/// Maximum results to request per page. The API uses Django REST
-/// Framework pagination; for a 30-min × 300 km window this is comfortably
-/// above any realistic count.
-const PAGE_SIZE: u32 = 200;
+/// Maximum results to request per page. The API uses Django REST Framework
+/// pagination, but this client makes a single request and never follows the
+/// `next` link — so this value is also the point at which results are silently
+/// truncated. Raised alongside the widening of the fetch window from 1 h to
+/// 2 h, which roughly doubles the expected report count. `total_count` is
+/// carried separately from `reports.len()`, so a truncated page is at least
+/// detectable in the mPING panel.
+const PAGE_SIZE: u32 = 500;
 
 /// Parameters for a single fetch request.
 #[derive(Clone, Debug, PartialEq)]
-pub struct FetchParams {
+pub(crate) struct FetchParams {
     /// Center longitude (degrees) for the radius filter.
     pub center_lon: f64,
     /// Center latitude (degrees) for the radius filter.
@@ -38,7 +43,7 @@ pub struct FetchParams {
 }
 
 /// Spawn a background fetch. Results are pushed into `channel` when done.
-pub fn spawn_fetch(
+pub(crate) fn spawn_fetch(
     ctx: eframe::egui::Context,
     channel: MpingChannel,
     api_key: String,
@@ -184,12 +189,95 @@ async fn fetch_attempt(url: &str, auth_header: &str) -> Verdict<String> {
     }
 }
 
-fn err_text(v: JsValue) -> String {
-    v.as_string()
-        .or_else(|| {
-            js_sys::Reflect::get(&v, &JsValue::from_str("message"))
-                .ok()
-                .and_then(|m| m.as_string())
-        })
-        .unwrap_or_else(|| format!("{:?}", v))
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn urlencode_escapes_reserved_and_preserves_unreserved() {
+        // RFC3986 unreserved set passes through untouched.
+        assert_eq!(urlencode("AZaz09-_.~"), "AZaz09-_.~");
+        // Colon, space, plus, comma are percent-encoded (upper-hex).
+        assert_eq!(urlencode(":"), "%3A");
+        assert_eq!(urlencode(" "), "%20");
+        assert_eq!(urlencode("+"), "%2B");
+        assert_eq!(urlencode(","), "%2C");
+        // A full ISO timestamp.
+        assert_eq!(
+            urlencode("2024-05-01 12:30:45"),
+            "2024-05-01%2012%3A30%3A45"
+        );
+        // Empty string stays empty.
+        assert_eq!(urlencode(""), "");
+    }
+
+    #[wasm_bindgen_test]
+    fn format_obtime_renders_utc_calendar_form() {
+        // Epoch.
+        assert_eq!(format_obtime(0), "1970-01-01 00:00:00");
+        // 30 minutes past epoch.
+        assert_eq!(format_obtime(1_800_000), "1970-01-01 00:30:00");
+        // A concrete known instant: 2024-05-01 12:00:00 UTC.
+        let ms = 1_714_564_800_000;
+        assert_eq!(format_obtime(ms), "2024-05-01 12:00:00");
+    }
+
+    #[wasm_bindgen_test]
+    fn format_obtime_out_of_range_yields_empty_string() {
+        // from_timestamp_millis returns None past the representable range →
+        // unwrap_or_default() → "".
+        assert_eq!(format_obtime(i64::MAX), "");
+    }
+
+    #[wasm_bindgen_test]
+    fn build_url_composes_full_query_with_lon_lat_order() {
+        let params = FetchParams {
+            center_lon: -97.5,
+            center_lat: 35.2,
+            radius_m: 300_000,
+            min_obtime_ms: 0,
+            max_obtime_ms: 1_800_000,
+        };
+        let url = build_url(&params);
+        assert_eq!(
+            url,
+            format!(
+                "https://mping.ou.edu/mping/api/v2/reports\
+?obtime_gte=1970-01-01%2000%3A00%3A00\
+&obtime_lte=1970-01-01%2000%3A30%3A00\
+&dist=300000&point=-97.5,35.2&page_size={PAGE_SIZE}"
+            )
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn build_url_point_is_lon_then_lat_not_lat_lon() {
+        // Guards against silently swapping the coordinate order, which the
+        // mPING API would accept but interpret as a different location.
+        let params = FetchParams {
+            center_lon: 10.0,
+            center_lat: 20.0,
+            radius_m: 1,
+            min_obtime_ms: 0,
+            max_obtime_ms: 0,
+        };
+        let url = build_url(&params);
+        assert!(url.contains("point=10,20"), "url was {url}");
+    }
+
+    #[wasm_bindgen_test]
+    fn fetch_params_equality_is_field_wise() {
+        let a = FetchParams {
+            center_lon: 1.0,
+            center_lat: 2.0,
+            radius_m: 3,
+            min_obtime_ms: 4,
+            max_obtime_ms: 5,
+        };
+        let mut b = a.clone();
+        assert_eq!(a, b);
+        b.radius_m = 99;
+        assert_ne!(a, b);
+    }
 }
