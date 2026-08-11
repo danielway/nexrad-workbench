@@ -802,7 +802,7 @@ fn handle_reset_camera(
     _: &egui::Context,
 ) {
     if state.viz_state.is_2d() {
-        state.viz_state.set_zoom(1.0);
+        state.viz_state.set_zoom(crate::geo::DEFAULT_FLAT_ZOOM);
         state.viz_state.set_pan_offset(egui::Vec2::ZERO);
     } else {
         state.viz_state.camera.reset();

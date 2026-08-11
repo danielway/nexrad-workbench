@@ -89,10 +89,16 @@ pub struct Flat2DState {
     pub pan_offset: Vec2,
 }
 
+/// Default 2D map zoom (1.0 = historical 100% / ~500 km radius).
+///
+/// 2.0 halves the visible radius to ~250 km so a typical NEXRAD site's
+/// ~230–460 km coverage fills more of the canvas on first load (issue #140).
+pub(crate) const DEFAULT_FLAT_ZOOM: f32 = 2.0;
+
 impl Default for Flat2DState {
     fn default() -> Self {
         Self {
-            zoom: 1.0,
+            zoom: DEFAULT_FLAT_ZOOM,
             pan_offset: Vec2::ZERO,
         }
     }
@@ -1003,6 +1009,15 @@ mod tests {
         assert!((f.saved.common.site_lon - -98.0).abs() < 1e-4);
         assert!((f.saved.pivot_lat - 39.0).abs() < 1e-4);
         assert!((f.saved.distance - 0.10).abs() < 1e-6);
+        assert!((f.view.zoom - DEFAULT_FLAT_ZOOM).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn default_flat_zoom_is_tighter_than_historical_1x() {
+        // Historical default was 1.0 (~500 km radius). 2.0 halves that so the
+        // site's coverage fills more of the canvas on first load (#140).
+        assert!((DEFAULT_FLAT_ZOOM - 2.0).abs() < 1e-6);
+        assert!((Flat2DState::default().zoom - DEFAULT_FLAT_ZOOM).abs() < 1e-6);
     }
 
     #[wasm_bindgen_test]
