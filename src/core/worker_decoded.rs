@@ -310,11 +310,15 @@ pub(crate) fn reduce_live_decoded(
         result.total_ms,
     );
 
-    // While detached, or when the unified resolver selected a cached cut,
-    // the canvas belongs to that selection. Keep ingesting and tracking live
-    // azimuths, but do not let an asynchronous live result overwrite it.
-    let live_owns_canvas =
-        env.playhead_attached && !matches!(env.desired_display, DesiredDisplay::Cached(_));
+    // Only an exact live-partial selection grants this result ownership of
+    // the canvas. `Blank` can occur transiently while live metadata catches
+    // up and must not overwrite a held cached frame.
+    let live_owns_canvas = env.playhead_attached
+        && matches!(
+            env.desired_display,
+            DesiredDisplay::LivePartial { elevation_number }
+                if elevation_number == result.context.elevation_number
+        );
 
     // VCP target angle for the cut (mirrors archived path).
     let display_angle = env
@@ -829,8 +833,12 @@ mod tests {
     fn live_attached_first_upload_no_promote() {
         let vol = live_volume(&[0.5, 1.5]);
         let r = decode_result(1000.0, 2, "reflectivity");
+        let mut e = live_env(true, Some(&vol), None);
+        e.desired_display = DesiredDisplay::LivePartial {
+            elevation_number: 2,
+        };
 
-        let a = reduce_live_decoded(live_env(true, Some(&vol), None), &r);
+        let a = reduce_live_decoded(e, &r);
 
         assert!(a.upload_to_gpu);
         assert!(!a.promote_prev_texture, "blank GPU: nothing to promote");
@@ -852,18 +860,27 @@ mod tests {
         let r = decode_result(1000.0, 2, "reflectivity");
 
         // Prior live elevation → promote.
-        let a = reduce_live_decoded(live_env(true, None, Some("live|1")), &r);
+        let mut e = live_env(true, None, Some("live|1"));
+        e.desired_display = DesiredDisplay::LivePartial {
+            elevation_number: 2,
+        };
+        let a = reduce_live_decoded(e, &r);
         assert!(a.promote_prev_texture);
 
         // Completed cached cut on the GPU → promote.
-        let a = reduce_live_decoded(
-            live_env(true, None, Some("KDMX|1000000|2|reflectivity")),
-            &r,
-        );
+        let mut e = live_env(true, None, Some("KDMX|1000000|2|reflectivity"));
+        e.desired_display = DesiredDisplay::LivePartial {
+            elevation_number: 2,
+        };
+        let a = reduce_live_decoded(e, &r);
         assert!(a.promote_prev_texture);
 
         // Same live sweep → in-place overwrite.
-        let a = reduce_live_decoded(live_env(true, None, Some("live|2")), &r);
+        let mut e = live_env(true, None, Some("live|2"));
+        e.desired_display = DesiredDisplay::LivePartial {
+            elevation_number: 2,
+        };
+        let a = reduce_live_decoded(e, &r);
         assert!(!a.promote_prev_texture);
         assert!(a.upload_to_gpu);
     }
@@ -891,7 +908,37 @@ mod tests {
         assert_eq!(a.gpu_sweep_id, "live|2");
     }
 
-    // (12) Display-angle fallbacks (live variant): no volume model, or a
+    // (12) A transient blank resolver result does not grant a live decode
+    // ownership of a held frame.
+    #[wasm_bindgen_test]
+    fn live_decode_does_not_upload_when_display_is_blank() {
+        let r = decode_result(1000.0, 2, "reflectivity");
+        let a = reduce_live_decoded(live_env(true, None, Some("live|1")), &r);
+
+        assert!(!a.upload_to_gpu);
+        assert!(!a.promote_prev_texture);
+        assert_eq!(a.new_displayed, None);
+        assert_eq!(a.update_overlay, None);
+    }
+
+    // (13) A stale result for another live elevation cannot replace the live
+    // cut currently selected by the resolver.
+    #[wasm_bindgen_test]
+    fn live_decode_requires_matching_selected_elevation() {
+        let r = decode_result(1000.0, 2, "reflectivity");
+        let mut e = live_env(true, None, Some("live|1"));
+        e.desired_display = DesiredDisplay::LivePartial {
+            elevation_number: 1,
+        };
+
+        let a = reduce_live_decoded(e, &r);
+
+        assert!(!a.upload_to_gpu);
+        assert!(!a.promote_prev_texture);
+        assert_eq!(a.new_displayed, None);
+    }
+
+    // (14) Display-angle fallbacks (live variant): no volume model, or a
     // pattern without the requested cut → the encoder mean. Storm rerun
     // mirrors the visibility toggle while attached.
     #[wasm_bindgen_test]
@@ -899,6 +946,9 @@ mod tests {
         // No volume model at all.
         let r = decode_result(1000.0, 1, "reflectivity");
         let mut e = live_env(true, None, None);
+        e.desired_display = DesiredDisplay::LivePartial {
+            elevation_number: 1,
+        };
         e.storm_cells_visible = true;
         let a = reduce_live_decoded(e, &r);
         assert_eq!(a.new_displayed.unwrap().elevation_deg, 0.44);
@@ -907,25 +957,33 @@ mod tests {
         // Pattern too short for elev 3 → mean fallback.
         let vol = live_volume(&[0.5, 1.5]);
         let r3 = decode_result(1000.0, 3, "reflectivity");
-        let a = reduce_live_decoded(live_env(true, Some(&vol), None), &r3);
+        let mut e = live_env(true, Some(&vol), None);
+        e.desired_display = DesiredDisplay::LivePartial {
+            elevation_number: 3,
+        };
+        let a = reduce_live_decoded(e, &r3);
         assert_eq!(a.update_overlay, Some((1000.0, 1010.0, 0.44)));
         assert!(!a.run_storm_cells, "storm rerun follows the toggle");
     }
 
-    // (13) Overlay gate (live variant): gated on sweep END time — a
+    // (15) Overlay gate (live variant): gated on sweep END time — a
     // partial with end 0 refreshes nothing even while attached.
     #[wasm_bindgen_test]
     fn live_overlay_gate_on_sweep_end() {
         let mut r = decode_result(1000.0, 1, "reflectivity");
         r.sweep_end_secs = 0.0;
-        let a = reduce_live_decoded(live_env(true, None, None), &r);
+        let mut e = live_env(true, None, None);
+        e.desired_display = DesiredDisplay::LivePartial {
+            elevation_number: 1,
+        };
+        let a = reduce_live_decoded(e, &r);
         assert!(a.upload_to_gpu);
         assert_eq!(a.update_overlay, None);
     }
 
     // ── live decode: phase 2 (azimuth bookkeeping) ──────────────────────────
 
-    // (14) Chronological first/last from radial times — NOT sorted min/max:
+    // (16) Chronological first/last from radial times — NOT sorted min/max:
     // the earliest-by-time radial seeds the sweep start (once), the
     // latest-by-time radial is the trailing edge.
     #[wasm_bindgen_test]
@@ -949,7 +1007,7 @@ mod tests {
         assert_eq!(live.live_data_azimuth_range, Some((350.0, 60.0)));
     }
 
-    // (15) Positional fallbacks without radial times, and the empty-azimuth
+    // (17) Positional fallbacks without radial times, and the empty-azimuth
     // no-op.
     #[wasm_bindgen_test]
     fn live_azimuths_fallbacks_and_empty_noop() {

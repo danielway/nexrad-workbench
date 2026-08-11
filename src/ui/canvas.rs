@@ -205,8 +205,19 @@ pub(crate) fn render_canvas_with_geo(
                 }
 
                 let sweep_info = compute_sweep_line_azimuth(state, timeline, playback);
-                let (gpu_sweep, between_sweeps) =
-                    compute_gpu_sweep_state(state, timeline, live, playback, derived, sweep_info);
+                let live_owns_canvas = gpu_renderer
+                    .and_then(|renderer| renderer.lock().ok())
+                    .and_then(|renderer| renderer.current_sweep_id().map(str::to_string))
+                    .is_some_and(|id| id.starts_with("live|"));
+                let (gpu_sweep, between_sweeps) = compute_gpu_sweep_state(
+                    state,
+                    timeline,
+                    live,
+                    playback,
+                    derived,
+                    live_owns_canvas,
+                    sweep_info,
+                );
 
                 // Age desaturation needs the estimated antenna azimuth; only
                 // supply it while the view's sweep animation is active so a
@@ -584,6 +595,7 @@ fn compute_gpu_sweep_state(
     live: &crate::subsystem::Live,
     playback: &crate::subsystem::Playback,
     derived: &crate::subsystem::Derived,
+    live_owns_canvas: bool,
     sweep_info: Option<(f32, f32)>,
 ) -> (Option<(f32, f32)>, bool) {
     // Live partial compositing only when the in-progress elevation matches
@@ -592,6 +604,7 @@ fn compute_gpu_sweep_state(
     // of a fixed elevation. Archive animation still uses effective_sweep_animation.
     let selected_elev = state.viz_state.elevation_selection.elevation_number();
     let live_range = crate::core::canvas::live_compositing_azimuth_range(
+        live_owns_canvas,
         selected_elev,
         live.radar_model.collecting_elevation(),
         live.radar_model

@@ -75,14 +75,16 @@ pub(crate) fn data_age_desaturation_effective(pref: bool, effective_sweep_animat
     pref && effective_sweep_animation
 }
 
-/// Live partial azimuth range for GPU compositing, or `None` when the in-progress
-/// elevation is not the one on screen (fixed elevation filter between visits).
+/// Live partial azimuth range for GPU compositing, or `None` when the primary
+/// texture is cached or the in-progress elevation is not the one on screen.
 pub(crate) fn live_compositing_azimuth_range(
+    live_owns_canvas: bool,
     selected_elevation: Option<u8>,
     active_elevation: Option<u8>,
     data_azimuth_range: Option<(f32, f32)>,
 ) -> Option<(f32, f32)> {
-    if !displayed_elevation_is_collecting(selected_elevation, active_elevation) {
+    if !live_owns_canvas || !displayed_elevation_is_collecting(selected_elevation, active_elevation)
+    {
         return None;
     }
     data_azimuth_range
@@ -816,16 +818,26 @@ mod coverage_tests {
         // Live compositing range suppressed off-elevation so other tilts
         // don't drive the GPU sweep boundary for the filtered product.
         assert_eq!(
-            live_compositing_azimuth_range(Some(1), Some(1), Some((10.0, 40.0))),
+            live_compositing_azimuth_range(true, Some(1), Some(1), Some((10.0, 40.0))),
             Some((10.0, 40.0))
         );
         assert_eq!(
-            live_compositing_azimuth_range(Some(1), Some(2), Some((10.0, 40.0))),
+            live_compositing_azimuth_range(true, Some(1), Some(2), Some((10.0, 40.0))),
             None
         );
         assert_eq!(
-            live_compositing_azimuth_range(None, Some(2), Some((10.0, 40.0))),
+            live_compositing_azimuth_range(true, None, Some(2), Some((10.0, 40.0))),
             Some((10.0, 40.0))
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn cached_primary_texture_disables_live_compositing() {
+        // Otherwise the shader samples the previous texture outside the live
+        // range and visually hides the cached sweep in the primary texture.
+        assert_eq!(
+            live_compositing_azimuth_range(false, Some(1), Some(1), Some((10.0, 40.0))),
+            None
         );
     }
 
