@@ -263,7 +263,7 @@ fn orbit_eye_pivot_up(s: &OrbitState) -> (Vec3, Vec3, Vec3) {
 /// target, so it projects to the exact screen center.
 fn orbit_view_matrix(s: &OrbitState) -> Mat4 {
     let (eye, pivot, cam_up) = orbit_eye_pivot_up(s);
-    Mat4::look_at_rh(eye, pivot, cam_up)
+    glam::camera::rh::view::look_at_mat4(eye, pivot, cam_up)
 }
 
 /// Near-plane distance for a given surface distance: proportional to
@@ -398,7 +398,12 @@ impl Camera {
             Camera::Flat2D(_) => (DEFAULT_FOV_Y, 1.0, DEFAULT_SITE_SURFACE_DIST),
             Camera::Orbit(s) => (s.common.fov_y, s.common.aspect, s.distance),
         };
-        Mat4::perspective_rh_gl(fov_y, aspect, near_plane_for(surface_dist), 100.0)
+        glam::camera::rh::proj::opengl::perspective(
+            fov_y,
+            aspect,
+            near_plane_for(surface_dist),
+            100.0,
+        )
     }
 
     /// Combined view-projection matrix.

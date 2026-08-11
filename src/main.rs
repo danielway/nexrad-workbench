@@ -812,7 +812,9 @@ impl eframe::App for WorkbenchApp {
     //   - (19) side/top/bottom panels must render before the CentralPanel
     //     (canvas in step 20); this is an egui layout requirement.
     //   - (21) modal overlays render last so they layer above the canvas.
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx_owned = ui.ctx().clone();
+        let ctx = &ctx_owned;
         // 1. PER-FRAME SETUP: theme, staleness, site-change cleanup.
         self.apply_frame_setup(ctx);
 
@@ -999,6 +1001,7 @@ impl eframe::App for WorkbenchApp {
         let is_mobile = self.state.is_mobile;
         let mut layout_ctx = ui::LayoutCtx {
             ctx,
+            root_ui: ui,
             state: &mut self.state,
             timeline: &self.timeline,
             live: &mut self.live,
@@ -1015,7 +1018,7 @@ impl eframe::App for WorkbenchApp {
 
         // 21. RENDER (canvas): GPU-based radar rendering in the CentralPanel.
         ui::render_canvas_with_geo(
-            ctx,
+            ui,
             &mut self.state,
             &self.timeline,
             &self.live,

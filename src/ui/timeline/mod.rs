@@ -48,7 +48,7 @@ pub(super) struct TrackRects {
 /// egui doesn't expose it directly). When reduced, pulses render as a static
 /// partial fill and the tier morph switches instantly.
 pub(super) fn reduced_motion(ctx: &egui::Context) -> bool {
-    ctx.style().animation_time == 0.0
+    ctx.global_style().animation_time == 0.0
 }
 
 /// Read-only per-frame context shared by every timeline renderer.

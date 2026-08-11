@@ -34,7 +34,7 @@ impl Layer for MobileTopBarLayer {
     }
     fn render(&self, ctx: &mut LayoutCtx) {
         draw_mobile_top_bar(
-            ctx.ctx,
+            ctx.root_ui,
             ctx.state,
             ctx.live,
             ctx.diagnostics,
@@ -76,7 +76,7 @@ fn render_mobile_time_readout(ui: &mut egui::Ui, state: &mut AppState) {
 
 #[allow(clippy::too_many_arguments)]
 fn draw_mobile_top_bar(
-    ctx: &egui::Context,
+    root_ui: &mut egui::Ui,
     state: &mut AppState,
     live: &crate::subsystem::Live,
     diagnostics: &crate::subsystem::Diagnostics,
@@ -85,12 +85,13 @@ fn draw_mobile_top_bar(
     activity_vm: &crate::core::activity::ActivityVm,
     chrome: &mut crate::subsystem::Chrome,
 ) {
+    let ctx = root_ui.ctx().clone();
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
     // under the translucent status bar / notch. Pad the top so OS icons
     // don't overlap our content.
     let (inset_top, _inset_right, _inset_bottom, _inset_left) = super::safe_area_insets();
 
-    let panel_fill = ctx.style().visuals.panel_fill;
+    let panel_fill = ctx.global_style().visuals.panel_fill;
     let accent_color = crate::ui::colors::mode::color(live.app_mode);
 
     // Zero inner-margin frame so the content sits as high as possible —
@@ -98,11 +99,11 @@ fn draw_mobile_top_bar(
     // every side, which is noticeable below the iOS status bar.
     let frame = Frame::NONE.fill(panel_fill).inner_margin(Margin::ZERO);
 
-    egui::TopBottomPanel::top("mobile_top_bar")
+    egui::Panel::top("mobile_top_bar")
         .resizable(false)
-        .exact_height(inset_top + TOP_BAR_CONTENT_HEIGHT)
+        .exact_size(inset_top + TOP_BAR_CONTENT_HEIGHT)
         .frame(frame)
-        .show(ctx, |ui| {
+        .show_inside(root_ui, |ui| {
             if inset_top > 0.0 {
                 ui.add_space(inset_top);
             }

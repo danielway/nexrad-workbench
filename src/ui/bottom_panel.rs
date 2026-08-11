@@ -26,7 +26,7 @@ impl Layer for BottomPanelLayer {
     }
     fn render(&self, ctx: &mut LayoutCtx) {
         draw_bottom_panel(
-            ctx.ctx,
+            ctx.root_ui,
             ctx.state,
             &mut ctx.modals.datetime,
             ctx.timeline,
@@ -42,7 +42,7 @@ impl Layer for BottomPanelLayer {
 
 #[allow(clippy::too_many_arguments)]
 fn draw_bottom_panel(
-    ctx: &egui::Context,
+    root_ui: &mut egui::Ui,
     state: &mut AppState,
     picker: &mut crate::ui::DateTimePickerState,
     timeline: &crate::subsystem::Timeline,
@@ -53,6 +53,7 @@ fn draw_bottom_panel(
     chrome: &mut crate::subsystem::Chrome,
     activity_vm: &crate::core::activity::ActivityVm,
 ) {
+    let ctx = root_ui.ctx().clone();
     let dt = ctx.input(|i| i.stable_dt);
 
     // Handle spacebar to toggle playback (only when no text input is focused).
@@ -108,9 +109,9 @@ fn draw_bottom_panel(
     let _ = max_panel_height;
     let total_height = controls_height;
 
-    egui::TopBottomPanel::bottom("bottom_panel")
-        .exact_height(total_height)
-        .show(ctx, |ui| {
+    egui::Panel::bottom("bottom_panel")
+        .exact_size(total_height)
+        .show_inside(root_ui, |ui| {
             ui.vertical(|ui| {
                 // Transport/controls row ABOVE the timeline strip (spec §5
                 // bottom cluster: "transport row … above the timeline").

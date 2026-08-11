@@ -22,7 +22,7 @@ impl Layer for TopBarLayer {
     }
     fn render(&self, ctx: &mut LayoutCtx) {
         draw_top_bar(
-            ctx.ctx,
+            ctx.root_ui,
             ctx.state,
             ctx.timeline,
             ctx.live,
@@ -37,7 +37,7 @@ impl Layer for TopBarLayer {
 
 #[allow(clippy::too_many_arguments)]
 fn draw_top_bar(
-    ctx: &egui::Context,
+    root_ui: &mut egui::Ui,
     state: &mut AppState,
     _timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
@@ -47,6 +47,7 @@ fn draw_top_bar(
     diagnostics_vm: &crate::core::diagnostics::DiagnosticsVm,
     chrome: &mut crate::subsystem::Chrome,
 ) {
+    let ctx = root_ui.ctx().clone();
     // Detect status message changes: if the message content differs from when we
     // last recorded the timestamp, update the timestamp now. This works even when
     // callers assign directly to `status_message` without using `set_status()`.
@@ -58,17 +59,17 @@ fn draw_top_bar(
     }
 
     // Thin mode-colored accent bar along the very top edge of the window.
-    egui::TopBottomPanel::top("mode_accent")
+    egui::Panel::top("mode_accent")
         .resizable(false)
-        .exact_height(3.0)
+        .exact_size(3.0)
         .frame(Frame::NONE.fill(crate::ui::colors::mode::color(live.app_mode)))
-        .show(ctx, |ui| {
+        .show_inside(root_ui, |ui| {
             ui.allocate_space(ui.available_size());
         });
 
-    egui::TopBottomPanel::top("top_bar")
-        .exact_height(36.0)
-        .show(ctx, |ui| {
+    egui::Panel::top("top_bar")
+        .exact_size(36.0)
+        .show_inside(root_ui, |ui| {
             ui.horizontal_centered(|ui| {
                 // Left panel toggle — hidden in Basic since the left panel
                 // (radar diagnostics) is itself force-hidden in Basic.

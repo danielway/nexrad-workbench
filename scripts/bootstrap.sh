@@ -4,7 +4,7 @@
 set -euo pipefail
 
 # Must match Cargo.lock's wasm-bindgen version and CI's install step.
-WASM_BINDGEN_CLI_VERSION="${WASM_BINDGEN_CLI_VERSION:-0.2.114}"
+WASM_BINDGEN_CLI_VERSION="${WASM_BINDGEN_CLI_VERSION:-0.2.127}"
 
 echo "==> Rust toolchain (stable + wasm32 + clippy/rustfmt)"
 rustup show active-toolchain >/dev/null 2>&1 || rustup toolchain install stable

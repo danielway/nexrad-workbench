@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 /// Render canvas with optional geographic layers and NEXRAD data.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_canvas_with_geo(
-    ctx: &egui::Context,
+    root_ui: &mut egui::Ui,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
@@ -38,7 +38,8 @@ pub(crate) fn render_canvas_with_geo(
     let geo_line_renderer = gpu.geo_line.as_ref();
     let globe_radar_renderer = gpu.globe_radar.as_ref();
     let volume_ray_renderer = gpu.volume_ray.as_ref();
-    egui::CentralPanel::default().show(ctx, |ui| {
+    let ctx = root_ui.ctx().clone();
+    egui::CentralPanel::default().show_inside(root_ui, |ui| {
         let available_size = ui.available_size();
 
         let (response, painter) = ui.allocate_painter(available_size, Sense::click_and_drag());
