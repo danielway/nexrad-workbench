@@ -7,21 +7,21 @@ license = "MIT"
 description = "A web-based NEXRAD radar data visualization workbench"
 
 [dependencies]
-eframe = { version = "0.33", default-features = false, features = [
+eframe = { version = "0.34", default-features = false, features = [
     "default_fonts",
     "glow",
 ] }
-egui_glow = "0.33"
-glow = "0.16"
+egui_glow = "0.34"
+glow = "0.17"
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-base64 = "0.22"
+base64 = "0.23"
 geo-types = "0.7"
 geo = "0.29"
-i_overlay = "1.9"
-glam = "0.29"
-shapefile = "0.7"
+i_overlay = "8.0"
+glam = "0.33"
+shapefile = "0.9"
 chrono = { version = "0.4", default-features = false, features = ["std", "wasmbind"] }
 nexrad = { version = "1.0.0-rc.4", default-features = false, features = ["wasm"] }
 nexrad-data = "1.0.0-rc.7"
@@ -81,14 +81,14 @@ web-sys = { version = "0.3", features = [
 ] }
 js-sys = "0.3"
 serde-wasm-bindgen = "0.6"
-egui-phosphor = { version = "0.11.0", features = ["regular"] }
+egui-phosphor = { version = "0.12.0", features = ["regular"] }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
 # Used by the browser-driven integration suite (tests/idb.rs) for tiny
 # inter-step delays — necessary because `touch_scan` is fire-and-forget
 # (spawn_local) and the `now()` clock has 1 ms resolution.
-gloo-timers = { version = "0.3", features = ["futures"] }
+gloo-timers = { version = "0.4", features = ["futures"] }
 
 [dev-dependencies.cargo-husky]
 version = "1"

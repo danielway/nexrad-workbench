@@ -87,7 +87,7 @@ pub(crate) fn handle_globe_interaction(
     }
 
     if response.hovered() {
-        let scroll_delta = response.ctx.input(|i| i.raw_scroll_delta);
+        let scroll_delta = response.ctx.input(|i| i.smooth_scroll_delta);
         if scroll_delta.y != 0.0 {
             state
                 .viz_state
@@ -219,7 +219,7 @@ pub(crate) fn handle_canvas_interaction(
         }
 
         if response.hovered() {
-            let scroll_delta = response.ctx.input(|i| i.raw_scroll_delta);
+            let scroll_delta = response.ctx.input(|i| i.smooth_scroll_delta);
             if scroll_delta.y != 0.0 {
                 // Same log-space step per scroll unit as the 3D camera, so
                 // the wheel feels identical in both views.

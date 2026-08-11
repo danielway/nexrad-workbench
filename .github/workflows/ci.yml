@@ -78,7 +78,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install wasm-bindgen-cli
-        run: cargo install wasm-bindgen-cli --locked --version 0.2.114
+        run: cargo install wasm-bindgen-cli --locked --version 0.2.127
 
       # Inline `#[wasm_bindgen_test]` blocks across the bin's `src/` tree.
       # Run in node (default) — no browser needed. ~50ms.
@@ -101,7 +101,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install wasm-bindgen-cli
-        run: cargo install wasm-bindgen-cli --locked --version 0.2.114
+        run: cargo install wasm-bindgen-cli --locked --version 0.2.127
 
       # ubuntu-latest ships chromium + chromedriver in apt. Headless
       # Chromium drives the wasm-bindgen-test-runner; tests/idb.rs is

@@ -22,22 +22,22 @@ impl Layer for LeftPanelLayer {
         ctx.chrome.left_sidebar_visible && ctx.state.show_advanced()
     }
     fn render(&self, ctx: &mut LayoutCtx) {
-        draw_left_panel(ctx.ctx, ctx.timeline, ctx.live, ctx.playback);
+        draw_left_panel(ctx.root_ui, ctx.timeline, ctx.live, ctx.playback);
     }
 }
 
 fn draw_left_panel(
-    ctx: &egui::Context,
+    root_ui: &mut egui::Ui,
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
     playback: &crate::subsystem::Playback,
 ) {
-    egui::SidePanel::left("left_panel")
+    egui::Panel::left("left_panel")
         .resizable(true)
-        .default_width(235.0)
-        .min_width(235.0)
-        .max_width(400.0)
-        .show(ctx, |ui| {
+        .default_size(235.0)
+        .min_size(235.0)
+        .max_size(400.0)
+        .show_inside(root_ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 render_radar_operations_section(ui, timeline, live, playback);
             });

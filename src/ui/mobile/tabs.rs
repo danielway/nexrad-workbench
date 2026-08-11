@@ -2,7 +2,7 @@
 //! (spec §13 phone: "Condensed transport (play · LIVE · speed · loop preset)
 //! over ~44px strip").
 //!
-//! Two stacked `TopBottomPanel::bottom` panels:
+//! Two stacked `Panel::bottom` panels:
 //!   1. Transport row (~48px) — bottommost. The primary controls, directly
 //!      visible per spec: frame step ‹ ›, Play/Pause, a stateful LIVE button
 //!      (re-tether / go-live / freeze), a compact speed tap-cycle, and a loop
@@ -38,7 +38,7 @@ impl super::super::layout::Layer for MobileChromeLayer {
     }
     fn render(&self, ctx: &mut super::super::layout::LayoutCtx) {
         draw_mobile_chrome(
-            ctx.ctx,
+            ctx.root_ui,
             ctx.state,
             ctx.timeline,
             ctx.live,
@@ -49,31 +49,32 @@ impl super::super::layout::Layer for MobileChromeLayer {
 }
 
 fn draw_mobile_chrome(
-    ctx: &egui::Context,
+    root_ui: &mut egui::Ui,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
 ) {
+    let ctx = root_ui.ctx().clone();
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
     // under the home indicator reservation. Pad the transport row below so the
     // controls don't sit flush with the bottom edge of the screen.
     let (_t, _r, inset_bottom, _l) = super::safe_area_insets();
 
     // Bottommost — the condensed transport row.
-    let transport = egui::TopBottomPanel::bottom("mobile_transport_bar")
+    let transport = egui::Panel::bottom("mobile_transport_bar")
         .resizable(false)
-        .exact_height(TRANSPORT_BAR_HEIGHT + inset_bottom)
-        .show(ctx, |ui| {
+        .exact_size(TRANSPORT_BAR_HEIGHT + inset_bottom)
+        .show_inside(root_ui, |ui| {
             render_transport_row(ui, state, timeline, live, playback, chrome);
         });
 
     // Scrubber — sits just above the transport row.
-    let scrubber = egui::TopBottomPanel::bottom("mobile_scrubber")
+    let scrubber = egui::Panel::bottom("mobile_scrubber")
         .resizable(false)
-        .exact_height(SCRUBBER_AREA_HEIGHT)
-        .show(ctx, |ui| {
+        .exact_size(SCRUBBER_AREA_HEIGHT)
+        .show_inside(root_ui, |ui| {
             ui.add_space(2.0);
             super::scrubber::render_scrubber(ui, state, timeline, live, playback, chrome);
         });

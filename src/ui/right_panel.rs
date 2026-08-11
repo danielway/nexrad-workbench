@@ -19,7 +19,7 @@ impl Layer for RightPanelLayer {
     }
     fn render(&self, ctx: &mut LayoutCtx) {
         draw_right_panel(
-            ctx.ctx,
+            ctx.root_ui,
             ctx.state,
             ctx.timeline,
             ctx.live,
@@ -33,7 +33,7 @@ impl Layer for RightPanelLayer {
 
 #[allow(clippy::too_many_arguments)]
 fn draw_right_panel(
-    ctx: &egui::Context,
+    root_ui: &mut egui::Ui,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
@@ -42,12 +42,12 @@ fn draw_right_panel(
     derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    egui::SidePanel::right("right_panel")
+    egui::Panel::right("right_panel")
         .resizable(true)
-        .default_width(220.0)
-        .min_width(180.0)
-        .max_width(350.0)
-        .show(ctx, |ui| {
+        .default_size(220.0)
+        .min_size(180.0)
+        .max_size(350.0)
+        .show_inside(root_ui, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Controls");
                 ui.separator();

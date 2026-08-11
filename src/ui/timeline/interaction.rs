@@ -176,7 +176,7 @@ pub(super) fn handle_timeline_interaction(
     // -- Scroll: vertical zooms, horizontal pans -----------------------------
     // (Skip when a pinch already handled this frame's zoom.)
     if response.hovered() && !pinched {
-        let scroll = ui.input(|i| i.raw_scroll_delta);
+        let scroll = ui.input(|i| i.smooth_scroll_delta);
         if scroll.y != 0.0 {
             let zoom_factor = 1.0 + scroll.y as f64 * 0.002;
             let anchor_x = response
