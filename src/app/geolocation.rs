@@ -9,7 +9,7 @@
 //! modal's own channel for site selection. The UI never touches `web_sys` or
 //! spawns these futures itself.
 
-use crate::core::LocationResult;
+use crate::core::{LocationResult, LocationSource};
 use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
 use crate::WorkbenchApp;
 use eframe::egui;
@@ -81,7 +81,11 @@ pub(super) fn start_geolocation(
             .unwrap()
             .as_f64()
             .unwrap_or(0.0);
-        let _ = results_ok.unbounded_send(LocationResult::Success(lat, lon));
+        let _ = results_ok.unbounded_send(LocationResult::Success {
+            lat,
+            lon,
+            source: LocationSource::Geolocation,
+        });
         ctx_ok.request_repaint();
     });
 
@@ -128,7 +132,11 @@ fn start_zip_lookup(zip: &str, results: UnboundedSender<LocationResult>, ctx: eg
             });
 
         let payload = match result {
-            Ok((lat, lon)) => LocationResult::Success(lat, lon),
+            Ok((lat, lon)) => LocationResult::Success {
+                lat,
+                lon,
+                source: LocationSource::Zip,
+            },
             Err(e) => LocationResult::Error(e),
         };
         let _ = results.unbounded_send(payload);

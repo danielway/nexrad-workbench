@@ -20,11 +20,33 @@
 use crate::core::UserPreferences;
 use crate::core::ViewState;
 
+/// How a lat/lon was obtained. Distinguishes browser geolocation from zip
+/// geocoding so site-pick can enable the My Location layer only for the
+/// former (issue #135).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocationSource {
+    /// `navigator.geolocation` (site "Use My Location" or the GPS overlay).
+    Geolocation,
+    /// Zippopotam.us zip-code lookup.
+    Zip,
+}
+
+/// Whether a successful site-pick location fix should also turn on the
+/// My Location layer and seed it with the user's coordinates.
+pub(crate) fn enable_location_layer_on_site_pick(source: LocationSource) -> bool {
+    matches!(source, LocationSource::Geolocation)
+}
+
 /// Result of an async location operation (browser geolocation or zip-code
-/// geocoding) — the response vocabulary of [`Effect::StartGeolocation`].
+/// geocoding) — the response vocabulary of [`Effect::StartGeolocation`] /
+/// [`Effect::LocateForSite`] / [`Effect::GeocodeZip`].
 pub(crate) enum LocationResult {
     /// Successfully resolved to a lat/lon.
-    Success(f64, f64),
+    Success {
+        lat: f64,
+        lon: f64,
+        source: LocationSource,
+    },
     /// The operation failed with an error message.
     Error(String),
 }
@@ -67,4 +89,22 @@ pub(crate) enum Effect {
     /// and deliver the coordinates to the site modal's [`LocationResult`]
     /// channel.
     GeocodeZip(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn geolocation_site_pick_enables_location_layer() {
+        assert!(enable_location_layer_on_site_pick(
+            LocationSource::Geolocation
+        ));
+    }
+
+    #[wasm_bindgen_test]
+    fn zip_site_pick_leaves_location_layer_alone() {
+        assert!(!enable_location_layer_on_site_pick(LocationSource::Zip));
+    }
 }
