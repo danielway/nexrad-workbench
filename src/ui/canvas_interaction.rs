@@ -242,7 +242,7 @@ pub(crate) fn handle_canvas_interaction(
     }
 
     if response.double_clicked() {
-        state.viz_state.set_zoom(1.0);
+        state.viz_state.set_zoom(crate::geo::DEFAULT_FLAT_ZOOM);
         state.viz_state.set_pan_offset(Vec2::ZERO);
     }
 }

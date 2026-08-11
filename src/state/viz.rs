@@ -155,7 +155,10 @@ impl VizState {
     /// Current 2D zoom level (1.0 = 100%). Falls back to the default zoom in
     /// 3D modes (the 2D pan/zoom is only meaningful in the Flat2D variant).
     pub(crate) fn zoom(&self) -> f32 {
-        self.camera.flat_2d().map(|s| s.zoom).unwrap_or(1.0)
+        self.camera
+            .flat_2d()
+            .map(|s| s.zoom)
+            .unwrap_or(crate::geo::DEFAULT_FLAT_ZOOM)
     }
 
     /// Current 2D pan offset. `ZERO` in 3D modes.
@@ -261,7 +264,7 @@ mod tests {
         viz.switch_to_3d_view();
         assert_eq!(viz.view_mode(), ViewMode::Globe3D);
         assert!(!viz.is_2d());
-        assert!((viz.zoom() - 1.0).abs() < 1e-6);
+        assert!((viz.zoom() - crate::geo::DEFAULT_FLAT_ZOOM).abs() < 1e-6);
         assert_eq!(viz.pan_offset(), Vec2::ZERO);
     }
 
@@ -353,7 +356,7 @@ mod coverage_tests {
         // No flat-2D state to write -> setters are no-ops, getters fall back.
         viz.set_zoom(5.0);
         viz.set_pan_offset(Vec2::new(9.0, 9.0));
-        assert!((viz.zoom() - 1.0).abs() < 1e-6);
+        assert!((viz.zoom() - crate::geo::DEFAULT_FLAT_ZOOM).abs() < 1e-6);
         assert_eq!(viz.pan_offset(), Vec2::ZERO);
         // flat_pan_mut yields None in 3D.
         assert!(viz.flat_pan_mut().is_none());
