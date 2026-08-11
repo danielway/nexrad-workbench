@@ -1,3 +1,5 @@
+# Keep GitHub Actions and Cargo deps current without drowning the PR queue.
+# Security updates still open immediately (outside this schedule).
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -5,23 +7,16 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
-    # Group noisy transitive TLS/crypto bumps so one PR covers the chain
-    # (aws-lc-sys is constrained by aws-lc-rs; bumping the leaf alone is a no-op).
     groups:
-      rustls-crypto:
+      cargo:
         patterns:
-          - "aws-lc-*"
-          - "rustls*"
-          - "webpki*"
-          - "ring"
-          - "quinn*"
-      tokio-runtime:
-        patterns:
-          - "tokio*"
-          - "hyper*"
-          - "reqwest"
+          - "*"
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: monthly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
