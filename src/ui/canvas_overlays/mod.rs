@@ -26,6 +26,7 @@ mod compass;
 mod globe;
 mod gps_location;
 mod info;
+mod mosaic_time;
 mod mping;
 mod national_mosaic;
 mod scale_bar;
@@ -59,12 +60,7 @@ pub(crate) struct OverlayContext<'a> {
     /// Live streaming subsystem (for the in-progress chunk indicator
     /// that the overlay info panel shows).
     pub live: &'a Live,
-    /// Per-frame derived snapshot. Currently unused by the chrome
-    /// overlays themselves, but available so future predicates (e.g.
-    /// hide the color scale while data is stale) can gate on it
-    /// without changing the signature.
-    #[allow(dead_code)]
-    // Doc above: kept so future overlay predicates don't change the signature.
+    /// Per-frame derived snapshot (e.g. `data_is_live` for mosaic stamp).
     pub derived: &'a Derived,
 }
 
@@ -100,6 +96,7 @@ pub(crate) fn render_chrome_overlays(ui: &mut egui::Ui, ctx: &OverlayContext) {
         &color_scale::ColorScaleOverlay, // z=20
         &compass::CompassOverlay,        // z=30
         &scale_bar::ScaleBarOverlay,     // z=40
+        &mosaic_time::MosaicTimeOverlay, // z=50
     ];
 
     debug_assert!(
