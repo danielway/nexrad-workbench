@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/danielway/nexrad-workbench/discussions/categories/q-a
+    about: Get help using NEXRAD Workbench or ask how the project works.
+  - name: Discuss an idea
+    url: https://github.com/danielway/nexrad-workbench/discussions/categories/ideas
+    about: Explore an idea before turning it into an actionable feature request.

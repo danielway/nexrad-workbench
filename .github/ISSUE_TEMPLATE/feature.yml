@@ -1,0 +1,56 @@
+name: Feature request
+description: Propose an actionable product improvement
+title: ""
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature issues should describe the user problem and desired outcome. Open-ended ideas are better suited to Discussions.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or user need is not adequately supported today?
+      placeholder: Describe the problem without assuming a particular implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What should users be able to accomplish?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Describe a possible solution, if you have one.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include current workarounds or other approaches you considered.
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List observable conditions that would make this feature complete.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and Discussions for this request.
+          required: true

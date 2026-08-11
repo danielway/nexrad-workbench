@@ -1,0 +1,84 @@
+name: Bug report
+description: Report incorrect or unexpected behavior
+title: ""
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve NEXRAD Workbench. Details about the radar data and browser make issues much easier to reproduce.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the incorrect behavior and what you expected instead.
+      placeholder: Tell us what you observed and what should have happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the settings and actions needed to reproduce the problem.
+      placeholder: |
+        1. Select site ...
+        2. Select product ...
+        3. Start live streaming ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: data-mode
+    attributes:
+      label: Data mode
+      options:
+        - Live streaming
+        - Archived data
+        - Both
+        - Not applicable
+    validations:
+      required: true
+
+  - type: input
+    id: radar-context
+    attributes:
+      label: Radar site and product
+      description: Include the radar site, product, elevation, and viewing mode when relevant.
+      placeholder: KTLX, reflectivity, 0.5 degrees, 2D
+
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser
+      options:
+        - Chrome or Chromium
+        - Firefox
+        - Safari
+        - Edge
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: browser-version
+    attributes:
+      label: Browser version
+      placeholder: "For example: Chrome 140.0.7339.41"
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Add screenshots, console output, or relevant diagnostics. Remove any sensitive information first.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
