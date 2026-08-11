@@ -429,6 +429,15 @@ impl WorkbenchApp {
             });
             let env = LiveDecodedEnv {
                 playhead_attached: !self.live.is_detached(&self.playback.state),
+                desired_display: crate::core::playback_manager::resolve_desired_display(
+                    &self.state.viz_state.site_id,
+                    self.playback.state.playback_position(),
+                    &self.state.viz_state.elevation_selection,
+                    self.state.viz_state.product,
+                    &self.timeline.scans,
+                    MAX_SCAN_AGE_SECS,
+                    self.live_render_sources(),
+                ),
                 live_volume: self.live.radar_model.volume.as_ref(),
                 gpu_current_sweep_id,
                 storm_cells_visible: self.state.viz_state.storm_cells_visible,

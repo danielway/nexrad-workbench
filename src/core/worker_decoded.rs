@@ -18,7 +18,7 @@
 //! Live decode is **two phases separated by the GPU upload**, preserving the
 //! original log interleaving exactly ("Live decode:" → GPU upload logs →
 //! "Live azimuth range:"): [`reduce_live_decoded`] decides the
-//! attached-playhead effect set (env carries the GPU renderer's
+//! live-canvas effect set (env carries the GPU renderer's
 //! `current_sweep_id`, shell-read, for the promote decision), and
 //! [`reduce_live_decoded_azimuths`] applies the chronological azimuth
 //! bookkeeping to [`LiveModeState`] after the upload.
@@ -256,6 +256,9 @@ pub(crate) fn reduce_decoded(
 pub(crate) struct LiveDecodedEnv<'a> {
     /// `!self.live.is_detached(&self.playback.state)`.
     pub playhead_attached: bool,
+    /// The current canvas selection from [`resolve_desired_display`]. A cached
+    /// selection owns the canvas even while live data continues arriving.
+    pub desired_display: DesiredDisplay,
     /// `live.radar_model.volume` — VCP target-angle lookup.
     pub live_volume: Option<&'a LiveVolumeModel>,
     /// The GPU renderer's `current_sweep_id()`, shell-read under the lock.
@@ -267,9 +270,9 @@ pub(crate) struct LiveDecodedEnv<'a> {
 }
 
 /// Described effects the shell executes, in this field order. When the
-/// playhead is detached every field is suppressed (upload false, no
-/// displayed roll, no overlay, no storm rerun) — only the azimuth
-/// bookkeeping ([`reduce_live_decoded_azimuths`]) still runs.
+/// live data does not own the canvas, every display field is suppressed
+/// (upload false, no displayed roll, no overlay, no storm rerun) — only the
+/// azimuth bookkeeping ([`reduce_live_decoded_azimuths`]) still runs.
 #[derive(Default, Debug, PartialEq)]
 pub(crate) struct LiveDecodedActions {
     /// Run the GPU upload block (playhead attached).
@@ -307,12 +310,11 @@ pub(crate) fn reduce_live_decoded(
         result.total_ms,
     );
 
-    // While the playhead is detached (browsing the archive with the
-    // stream ingesting in the background), the canvas belongs to the
-    // scrubbed position — skip the GPU upload, `displayed` mutation,
-    // and overlay refresh. The azimuth bookkeeping (phase 2) still runs
-    // so sweep compositing is correct the instant the user re-pins.
-    let playhead_attached = env.playhead_attached;
+    // While detached, or when the unified resolver selected a cached cut,
+    // the canvas belongs to that selection. Keep ingesting and tracking live
+    // azimuths, but do not let an asynchronous live result overwrite it.
+    let live_owns_canvas =
+        env.playhead_attached && !matches!(env.desired_display, DesiredDisplay::Cached(_));
 
     // VCP target angle for the cut (mirrors archived path).
     let display_angle = env
@@ -324,7 +326,7 @@ pub(crate) fn reduce_live_decoded(
     let live_elev = result.context.elevation_number;
     let live_sweep_id = format!("live|{}", live_elev);
 
-    if playhead_attached {
+    if live_owns_canvas {
         // If the current texture has data from a different sweep
         // (complete or different live elevation), promote it to
         // previous so it becomes the background for compositing
@@ -365,7 +367,7 @@ pub(crate) fn reduce_live_decoded(
 
     // Update overlay staleness so the age counter reflects
     // the most recently received live data.
-    if playhead_attached && result.sweep_end_secs > 0.0 {
+    if live_owns_canvas && result.sweep_end_secs > 0.0 {
         actions.update_overlay = Some((
             result.sweep_start_secs,
             result.sweep_end_secs,
@@ -795,6 +797,7 @@ mod tests {
     ) -> LiveDecodedEnv<'a> {
         LiveDecodedEnv {
             playhead_attached,
+            desired_display: DesiredDisplay::Blank,
             live_volume,
             gpu_current_sweep_id: gpu_current_sweep_id.map(str::to_string),
             storm_cells_visible: false,
@@ -865,7 +868,30 @@ mod tests {
         assert!(a.upload_to_gpu);
     }
 
-    // (11) Display-angle fallbacks (live variant): no volume model, or a
+    // (11) A completed cached cut selected during live streaming owns the
+    // canvas. Incoming live chunks continue updating their bookkeeping but
+    // must not replace the selected cached sweep or its metadata.
+    #[wasm_bindgen_test]
+    fn live_decode_does_not_clobber_selected_cached_cut() {
+        let r = decode_result(1000.0, 2, "reflectivity");
+        let mut e = live_env(true, None, Some("KDMX|1000000|1|reflectivity"));
+        e.desired_display = DesiredDisplay::Cached(SweepIdentity::new(
+            ScanKey::from_secs_f64("KDMX", 1000.0),
+            1,
+            "reflectivity",
+        ));
+
+        let a = reduce_live_decoded(e, &r);
+
+        assert!(!a.upload_to_gpu);
+        assert!(!a.promote_prev_texture);
+        assert_eq!(a.new_displayed, None);
+        assert!(!a.run_storm_cells);
+        assert_eq!(a.update_overlay, None);
+        assert_eq!(a.gpu_sweep_id, "live|2");
+    }
+
+    // (12) Display-angle fallbacks (live variant): no volume model, or a
     // pattern without the requested cut → the encoder mean. Storm rerun
     // mirrors the visibility toggle while attached.
     #[wasm_bindgen_test]
@@ -886,7 +912,7 @@ mod tests {
         assert!(!a.run_storm_cells, "storm rerun follows the toggle");
     }
 
-    // (12) Overlay gate (live variant): gated on sweep END time — a
+    // (13) Overlay gate (live variant): gated on sweep END time — a
     // partial with end 0 refreshes nothing even while attached.
     #[wasm_bindgen_test]
     fn live_overlay_gate_on_sweep_end() {
@@ -899,7 +925,7 @@ mod tests {
 
     // ── live decode: phase 2 (azimuth bookkeeping) ──────────────────────────
 
-    // (13) Chronological first/last from radial times — NOT sorted min/max:
+    // (14) Chronological first/last from radial times — NOT sorted min/max:
     // the earliest-by-time radial seeds the sweep start (once), the
     // latest-by-time radial is the trailing edge.
     #[wasm_bindgen_test]
@@ -923,7 +949,7 @@ mod tests {
         assert_eq!(live.live_data_azimuth_range, Some((350.0, 60.0)));
     }
 
-    // (14) Positional fallbacks without radial times, and the empty-azimuth
+    // (15) Positional fallbacks without radial times, and the empty-azimuth
     // no-op.
     #[wasm_bindgen_test]
     fn live_azimuths_fallbacks_and_empty_noop() {
