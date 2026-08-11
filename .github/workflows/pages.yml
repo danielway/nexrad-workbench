@@ -38,7 +38,7 @@ jobs:
         run: cargo clippy --target wasm32-unknown-unknown --all-targets -- -D warnings
 
       - name: Install Trunk
-        uses: jetli/trunk-action@v0.5.0
+        uses: jetli/trunk-action@v0.5.1
         with:
           version: latest
 
