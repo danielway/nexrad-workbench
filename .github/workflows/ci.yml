@@ -113,3 +113,21 @@ jobs:
         env:
           CHROMEDRIVER: /usr/bin/chromedriver
         run: cargo test --test idb
+
+  # Advisories on the locked graph (native TLS path included via --target all).
+  # Keep in lockstep with scripts/bootstrap.sh installing cargo-audit.
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cargo audit

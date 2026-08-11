@@ -6,6 +6,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 NEXRAD Workbench is a browser-based NEXRAD (WSR-88D) weather radar visualization tool. Rust compiled to WebAssembly, runs entirely client-side with no backend. Uses eframe/egui for UI, WebGL2 via glow for GPU rendering.
 
+## Local setup
+
+```bash
+# Installs pinned wasm-bindgen-cli (must match Cargo.lock + CI), cargo-audit,
+# wasm32 target, clippy/rustfmt. Requires Node.js on PATH (pre-commit tests).
+bash scripts/bootstrap.sh
+```
+
+`wasm-bindgen-cli` must be **exactly** the version in `Cargo.lock` (currently
+`0.2.114`). CI and `scripts/bootstrap.sh` pin it; `cargo install` without
+`--version` installs latest and breaks `cargo test --bin nexrad-workbench`.
+
 ## Build Commands
 
 ```bash
@@ -22,7 +34,7 @@ cargo fmt -- --check
 # The full headless suite: core decision logic + data-layer types + the
 # IDB layer's pure decision functions (key range bounds, eviction order,
 # throttle math, quota math, time-window filter, ScanIndexEntry accessors).
-# Requires: `cargo install wasm-bindgen-cli --locked` and node.js installed.
+# Requires: pinned wasm-bindgen-cli (see bootstrap) and node.js installed.
 cargo test --bin nexrad-workbench
 
 # IDB orchestration tests (real IndexedDB in headless Chromium).
@@ -30,6 +42,9 @@ cargo test --bin nexrad-workbench
 # eviction order against a real DB, and full-entry round-tripping.
 # Requires chromium + chromedriver installed locally.
 CHROMEDRIVER=/usr/bin/chromedriver cargo test --test idb
+
+# RustSec advisories on the locked graph (also runs in CI)
+cargo audit
 
 # Dev server with hot reload (requires: cargo install --locked trunk)
 trunk serve
@@ -42,6 +57,25 @@ Pre-commit hooks via cargo-husky run `cargo fmt`, `cargo clippy`, and
 `cargo test --bin nexrad-workbench` (the fast logic suite — no browser
 needed). The browser-driven `tests/idb.rs` suite runs in CI only and
 requires Chromium + chromedriver.
+
+## Dependabot / transitive security bumps
+
+Open alerts: `gh api repos/:owner/:repo/dependabot/alerts --jq '.[] | select(.state=="open")'`
+
+Many advisories land on lockfile-only crates (e.g. `aws-lc-sys`) that a parent
+pins. `cargo update -p <leaf>` is a no-op when the parent constrains the range.
+
+```bash
+# Who pulls it in (use --target all; default build is wasm32 and hides native TLS)
+cargo tree --target all -i <crate>
+
+# Bump the parent that actually moves the leaf (example: aws-lc-sys via aws-lc-rs)
+cargo update -p aws-lc-rs
+# or: cargo update -p aws-lc-rs --precise <version>
+```
+
+After a clean `cargo check` / clippy, commit only the intended `Cargo.lock`
+diff — discard unrelated lock drift before branching.
 
 ## Commits
 

@@ -1,0 +1,27 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    # Group noisy transitive TLS/crypto bumps so one PR covers the chain
+    # (aws-lc-sys is constrained by aws-lc-rs; bumping the leaf alone is a no-op).
+    groups:
+      rustls-crypto:
+        patterns:
+          - "aws-lc-*"
+          - "rustls*"
+          - "webpki*"
+          - "ring"
+          - "quinn*"
+      tokio-runtime:
+        patterns:
+          - "tokio*"
+          - "hyper*"
+          - "reqwest"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
