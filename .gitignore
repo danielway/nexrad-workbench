@@ -17,7 +17,3 @@ Thumbs.db
 
 # Debug
 *.pdb
-
-# Local-only environment (copy from your host; do not commit)
-/devcontainer.json
-.devcontainer/
