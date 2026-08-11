@@ -5,6 +5,7 @@
 //! visit (no preferred site saved), shows welcome verbiage; on subsequent
 //! visits, shows a shorter "change site" heading instead.
 
+use crate::core::effect::enable_location_layer_on_site_pick;
 use crate::core::LocationResult;
 use crate::data::{all_sites_sorted, get_site, nearest_site};
 use crate::state::AppState;
@@ -128,13 +129,24 @@ fn draw_site_modal(
     // Poll for async location results
     for result in modal_state.drain_location_results() {
         match result {
-            LocationResult::Success(lat, lon) => {
+            LocationResult::Success { lat, lon, source } => {
                 if let Some(site) = nearest_site(lat, lon) {
                     state.push_command(crate::core::Intent::SelectSite {
                         site_id: site.id.to_string(),
                         lat: site.lat,
                         lon: site.lon,
                     });
+                    // Physical geolocation: show the user's position on the map
+                    // using this same fix (issue #135). Zip picks leave the layer off.
+                    if enable_location_layer_on_site_pick(source) {
+                        state.push_command(crate::core::Intent::SetGeoLayer(
+                            crate::core::GeoLayer::GpsLocation,
+                            true,
+                        ));
+                        state.push_command(crate::core::Intent::Diagnostics(
+                            crate::core::diagnostics::DiagnosticsIntent::GpsResolved(lat, lon),
+                        ));
+                    }
                     modal_state.mode = SiteModalMode::Welcome;
                     modal_state.filter.clear();
                     modal_state.zip_input.clear();

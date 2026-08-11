@@ -923,7 +923,7 @@ impl eframe::App for WorkbenchApp {
         // inline — so the success/auto-off-on-failure rules stay testable.
         for r in self.diagnostics.gps.drain_results() {
             let intent = match r {
-                core::LocationResult::Success(lat, lon) => {
+                core::LocationResult::Success { lat, lon, .. } => {
                     core::diagnostics::DiagnosticsIntent::GpsResolved(lat, lon)
                 }
                 core::LocationResult::Error(msg) => {

@@ -94,7 +94,7 @@ pub(crate) use domain::worker::{
     CacheLoadResult, ChunkIngestContext, ChunkIngestResult, DecodeResult, IngestContext,
     IngestResult, RenderContext, VolumeData, VolumeSweepMeta, WorkerLoad,
 };
-pub(crate) use effect::{Effect, LocationResult};
+pub(crate) use effect::{Effect, LocationResult, LocationSource};
 pub(crate) use geo_layers::GeoLayer;
 pub(crate) use live_mode::{
     should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase, StreamActivity,
