@@ -1,9 +1,10 @@
-//! National mosaic image-time stamp in the bottom-right canvas corner.
+//! National mosaic product-valid-time stamp in the bottom-right canvas corner.
 //!
 //! Shown only while the mosaic layer is on, data is live, and a texture has
-//! been successfully loaded. Formats through the shared clock helpers so a
-//! local/UTC flip reformats this stamp in the same frame as every other
-//! readout.
+//! been successfully loaded. The time is the MRMS product valid time from the
+//! WMS `time` dimension (not client fetch time). Formats through the shared
+//! clock helpers so a local/UTC flip reformats this stamp in the same frame as
+//! every other readout.
 
 use crate::ui::time_format::format_mosaic_stamp;
 use eframe::egui::{self, Align2, Color32, FontId, Vec2};

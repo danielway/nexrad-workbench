@@ -169,11 +169,12 @@ fn to_12h(hour24: u32) -> (u32, &'static str) {
     (hour12, meridiem)
 }
 
-/// Canvas stamp for the national mosaic image time.
+/// Canvas stamp for the national mosaic product valid time.
 ///
-/// `ts` is the wall-clock seconds when the currently held mosaic PNG was
-/// fetched. Returns `None` when there is no image yet so the caller can skip
-/// painting. Honors `use_local` the same way as other canvas clocks.
+/// `ts` is the MRMS product valid time (unix seconds) from the WMS `time`
+/// dimension, not the client fetch clock. Returns `None` when there is no
+/// image yet so the caller can skip painting. Honors `use_local` the same way
+/// as other canvas clocks.
 pub(crate) fn format_mosaic_stamp(ts: Option<f64>, use_local: bool) -> Option<String> {
     let ts = ts?;
     let clock = format_clock_12h(ts, use_local, Compaction::Full);
