@@ -57,7 +57,7 @@ pub(crate) struct DecodedEnv<'a> {
     /// `self.live_render_sources()` — the live collecting cut + anchor
     /// feeding [`resolve_desired_display`].
     pub live_cut: Option<(u8, i64)>,
-    /// `state.effective_sweep_animation(&playback.state)`.
+    /// `state.effective_sweep_animation(&playback.state, streaming, collecting)`.
     pub sweep_animation: bool,
     /// `viz_state.storm_cells_visible`.
     pub storm_cells_visible: bool,

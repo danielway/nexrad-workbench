@@ -38,6 +38,56 @@ pub(crate) fn sweep_animation_effective(
     pref && mode == crate::core::PlaybackMode::Micro && advanced && streaming && playhead_attached
 }
 
+/// Whether the beam is currently collecting the elevation the user is viewing.
+///
+/// - `selected_elevation = None` (Latest / all tilts): any collecting cut counts.
+/// - `selected_elevation = Some(n)` (fixed cut / filter): only while the antenna
+///   is on elevation `n`. Between visits the beam is on other tilts, so sweep
+///   animation and age desaturation must stay off.
+pub(crate) fn displayed_elevation_is_collecting(
+    selected_elevation: Option<u8>,
+    collecting_elevation: Option<u8>,
+) -> bool {
+    match selected_elevation {
+        None => true,
+        Some(want) => collecting_elevation == Some(want),
+    }
+}
+
+/// Sweep animation as shown for the current view: base live/mode gates plus
+/// the elevation-filter gate from [`displayed_elevation_is_collecting`].
+pub(crate) fn sweep_animation_for_view(
+    base_effective: bool,
+    selected_elevation: Option<u8>,
+    collecting_elevation: Option<u8>,
+) -> bool {
+    base_effective && displayed_elevation_is_collecting(selected_elevation, collecting_elevation)
+}
+
+/// Whether data-age desaturation should run this frame.
+///
+/// Desaturation only makes sense while the sweep animation is effectively
+/// active (beam collecting / oldest-data wedge). Live mode still enables the
+/// GPU sweep path for partial-chunk compositing when animation is off, so the
+/// preference alone is not enough — gate on both the stored toggle and
+/// [`sweep_animation_effective`] (via the view-level effective flag).
+pub(crate) fn data_age_desaturation_effective(pref: bool, effective_sweep_animation: bool) -> bool {
+    pref && effective_sweep_animation
+}
+
+/// Live partial azimuth range for GPU compositing, or `None` when the in-progress
+/// elevation is not the one on screen (fixed elevation filter between visits).
+pub(crate) fn live_compositing_azimuth_range(
+    selected_elevation: Option<u8>,
+    active_elevation: Option<u8>,
+    data_azimuth_range: Option<(f32, f32)>,
+) -> Option<(f32, f32)> {
+    if !displayed_elevation_is_collecting(selected_elevation, active_elevation) {
+        return None;
+    }
+    data_azimuth_range
+}
+
 /// Interpolate the rotating sweep-line azimuth within `sweep` at playback time
 /// `ts`, returning `(current_az, start_az)` in degrees, or `None` if the sweep
 /// has no positive duration.
@@ -733,6 +783,50 @@ mod coverage_tests {
         assert!(!sweep_animation_effective(false, Micro, true, true, true));
         assert!(!sweep_animation_effective(true, Macro, true, true, true));
         assert!(!sweep_animation_effective(true, Micro, false, true, true));
+    }
+
+    // --- data_age_desaturation_effective ---------------------------------------
+
+    #[wasm_bindgen_test]
+    fn data_age_desaturation_requires_effective_sweep_animation() {
+        // Preference on + animation effectively on → desaturate.
+        assert!(data_age_desaturation_effective(true, true));
+        // Preference on but animation inactive (toggle/mode/filter) → no desat.
+        assert!(!data_age_desaturation_effective(true, false));
+        // Animation on but preference off → no desat.
+        assert!(!data_age_desaturation_effective(false, true));
+        assert!(!data_age_desaturation_effective(false, false));
+    }
+
+    #[wasm_bindgen_test]
+    fn displayed_elevation_filter_gates_animation_between_visits() {
+        // Latest (no fixed cut): always collecting for animation purposes.
+        assert!(displayed_elevation_is_collecting(None, None));
+        assert!(displayed_elevation_is_collecting(None, Some(3)));
+        // Fixed cut: only while the antenna is on that elevation.
+        assert!(displayed_elevation_is_collecting(Some(1), Some(1)));
+        assert!(!displayed_elevation_is_collecting(Some(1), Some(2)));
+        assert!(!displayed_elevation_is_collecting(Some(1), None));
+
+        assert!(sweep_animation_for_view(true, Some(1), Some(1)));
+        assert!(!sweep_animation_for_view(true, Some(1), Some(4)));
+        assert!(!sweep_animation_for_view(false, Some(1), Some(1)));
+        assert!(sweep_animation_for_view(true, None, Some(4)));
+
+        // Live compositing range suppressed off-elevation so other tilts
+        // don't drive the GPU sweep boundary for the filtered product.
+        assert_eq!(
+            live_compositing_azimuth_range(Some(1), Some(1), Some((10.0, 40.0))),
+            Some((10.0, 40.0))
+        );
+        assert_eq!(
+            live_compositing_azimuth_range(Some(1), Some(2), Some((10.0, 40.0))),
+            None
+        );
+        assert_eq!(
+            live_compositing_azimuth_range(None, Some(2), Some((10.0, 40.0))),
+            Some((10.0, 40.0))
+        );
     }
 
     // --- sweep_line_azimuth: uncovered branches -------------------------------

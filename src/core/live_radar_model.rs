@@ -40,6 +40,13 @@ pub(crate) struct LiveRadarModel {
     pub frame_now: FrameDerivedPosition,
 }
 
+impl LiveRadarModel {
+    /// Elevation number currently being collected, if any.
+    pub(crate) fn collecting_elevation(&self) -> Option<u8> {
+        self.active_sweep.as_ref().map(|s| s.elevation_number)
+    }
+}
+
 /// Derived values that need to be evaluated at "now" for live mode but
 /// must agree with the frame's canonical timestamp. Populated only when
 /// `position` is `Some` and live mode is active; otherwise all fields

@@ -208,9 +208,24 @@ pub(crate) fn render_canvas_with_geo(
                 let (gpu_sweep, between_sweeps) =
                     compute_gpu_sweep_state(state, timeline, live, playback, derived, sweep_info);
 
-                let chunk_boundary = live.radar_model.estimated_azimuth;
+                // Age desaturation needs the estimated antenna azimuth; only
+                // supply it while the view's sweep animation is active so a
+                // fixed elevation filter doesn't keep fading between visits.
+                let chunk_boundary = derived
+                    .effective_sweep_animation
+                    .then_some(live.radar_model.estimated_azimuth)
+                    .flatten();
 
                 if let Some(renderer) = gpu_renderer {
+                    // Live compositing keeps `gpu_sweep` set even when animation
+                    // is off; force desaturation off in that case so age fades
+                    // only accompany an active sweep animation (#134).
+                    let mut processing = state.render_processing.clone();
+                    processing.data_age_desaturation =
+                        crate::core::canvas::data_age_desaturation_effective(
+                            processing.data_age_desaturation,
+                            derived.effective_sweep_animation,
+                        );
                     draw_radar_gpu(
                         ui,
                         &projection,
@@ -218,7 +233,7 @@ pub(crate) fn render_canvas_with_geo(
                         &rect,
                         state.viz_state.center_lat,
                         state.viz_state.center_lon,
-                        &state.render_processing,
+                        &processing,
                         gpu_sweep,
                         chunk_boundary,
                     );
@@ -571,20 +586,19 @@ fn compute_gpu_sweep_state(
     derived: &crate::subsystem::Derived,
     sweep_info: Option<(f32, f32)>,
 ) -> (Option<(f32, f32)>, bool) {
-    // In live mode the GPU needs the partial-data azimuth range to
-    // composite incoming chunks (and the overlay needs it to colour the
-    // donut wedges), so the live branch always emits sweep boundaries
-    // regardless of the user's sweep_animation preference. The overlay
-    // suppresses the rotating lines separately when the toggle is off.
-    // The archive branch still respects effective_sweep_animation().
-    // The live partial's azimuth range is the GPU's sweep boundary; otherwise,
-    // when animating, resolve the archive sweep the playhead sits in. The
-    // before/within/after classification + sentinel handling is pure core.
-    let live_range = live
-        .radar_model
-        .active_sweep
-        .as_ref()
-        .and_then(|s| s.data_azimuth_range);
+    // Live partial compositing only when the in-progress elevation matches
+    // the user's filter (Latest accepts any cut). Otherwise other tilts would
+    // keep driving the GPU sweep boundary and age desaturation between visits
+    // of a fixed elevation. Archive animation still uses effective_sweep_animation.
+    let selected_elev = state.viz_state.elevation_selection.elevation_number();
+    let live_range = crate::core::canvas::live_compositing_azimuth_range(
+        selected_elev,
+        live.radar_model.collecting_elevation(),
+        live.radar_model
+            .active_sweep
+            .as_ref()
+            .and_then(|s| s.data_azimuth_range),
+    );
     let playback_ts = playback.state.playback_position();
     let sweep_bounds = if live_range.is_none() && derived.effective_sweep_animation {
         timeline
