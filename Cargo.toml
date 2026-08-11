@@ -88,7 +88,7 @@ wasm-bindgen-test = "0.3"
 # Used by the browser-driven integration suite (tests/idb.rs) for tiny
 # inter-step delays — necessary because `touch_scan` is fire-and-forget
 # (spawn_local) and the `now()` clock has 1 ms resolution.
-gloo-timers = { version = "0.3", features = ["futures"] }
+gloo-timers = { version = "0.4", features = ["futures"] }
 
 [dev-dependencies.cargo-husky]
 version = "1"
