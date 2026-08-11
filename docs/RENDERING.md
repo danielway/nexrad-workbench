@@ -151,8 +151,11 @@ progressively against transparent background.
 ### Data-age desaturation
 
 When `data_age_desaturation` is on, sweep animation is effectively
-active, and the chunk boundary is known, three angular zones get
-different treatments:
+active for the current view, and the chunk boundary is known, three
+angular zones get different treatments. Effective animation requires
+the usual live/mode gates **and** — with a fixed elevation filter —
+that the antenna is currently collecting that cut (so age fades stop
+between visits while other tilts collect).
 
 ```
    [fresh data] ← received edge ← [gap] ← now line ← [fade 90°] ← [no desat]

@@ -832,6 +832,7 @@ impl eframe::App for WorkbenchApp {
             &self.state,
             &self.playback,
             self.live.mode_state.is_active(),
+            self.live.radar_model.collecting_elevation(),
         );
         self.state.national_mosaic.poll_tick(
             ctx,
@@ -949,6 +950,7 @@ impl eframe::App for WorkbenchApp {
             &self.state,
             &self.playback,
             self.live.mode_state.is_active(),
+            self.live.radar_model.collecting_elevation(),
         );
 
         // 19. Consume any deferred geolocation request raised by the

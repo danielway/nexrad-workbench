@@ -118,10 +118,11 @@ impl WorkbenchApp {
             return;
         }
 
-        if !self
-            .state
-            .effective_sweep_animation(&self.playback.state, self.live.mode_state.is_active())
-        {
+        if !self.state.effective_sweep_animation(
+            &self.playback.state,
+            self.live.mode_state.is_active(),
+            self.live.radar_model.collecting_elevation(),
+        ) {
             self.state.viz_state.previous_displayed = None;
             self.state.viz_state.last_sweep_line_cache = None;
             return;

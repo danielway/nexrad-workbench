@@ -458,17 +458,27 @@ impl AppState {
     /// edge. Macro mode, Basic UI, and historical viewing all suppress the
     /// animation regardless of the stored preference, which is preserved
     /// across mode toggles.
+    ///
+    /// `collecting_elevation` is the live in-progress cut (`None` when not
+    /// streaming or between elevations). A fixed elevation filter further
+    /// suppresses animation while the antenna is on any other tilt.
     pub(crate) fn effective_sweep_animation(
         &self,
         playback: &PlaybackState,
         streaming: bool,
+        collecting_elevation: Option<u8>,
     ) -> bool {
-        crate::core::canvas::sweep_animation_effective(
+        let base = crate::core::canvas::sweep_animation_effective(
             self.render_processing.sweep_animation,
             playback.playback_mode(),
             self.advanced_mode,
             streaming,
             playback.time_model.is_pinned() || playback.time_model.is_lookback(),
+        );
+        crate::core::canvas::sweep_animation_for_view(
+            base,
+            self.viz_state.elevation_selection.elevation_number(),
+            collecting_elevation,
         )
     }
 

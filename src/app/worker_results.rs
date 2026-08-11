@@ -330,6 +330,7 @@ impl WorkbenchApp {
                 sweep_animation: self.state.effective_sweep_animation(
                     &self.playback.state,
                     self.live.mode_state.is_active(),
+                    self.live.radar_model.collecting_elevation(),
                 ),
                 storm_cells_visible: self.state.viz_state.storm_cells_visible,
                 in_flight_scans: &self.state.download_progress.in_flight_scans,

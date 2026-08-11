@@ -43,7 +43,8 @@ pub(crate) struct Derived {
     pub data_is_live: bool,
     /// Whether sweep animation is effectively enabled this frame
     /// (`render_processing.sweep_animation && micro mode && advanced
-    /// && streaming && playhead attached to the live edge`).
+    /// && streaming && playhead attached to the live edge`, and — when a
+    /// fixed elevation filter is set — the antenna is on that cut).
     pub effective_sweep_animation: bool,
 }
 
@@ -52,12 +53,22 @@ impl Derived {
     /// before any subsystem tick or panel render, so every consumer
     /// downstream reads the same values. `streaming` is the live
     /// subsystem's `mode_state.is_active()` — an active stream session.
-    pub(crate) fn for_frame(state: &AppState, playback: &Playback, streaming: bool) -> Self {
+    /// `collecting_elevation` is the live in-progress cut when known.
+    pub(crate) fn for_frame(
+        state: &AppState,
+        playback: &Playback,
+        streaming: bool,
+        collecting_elevation: Option<u8>,
+    ) -> Self {
         Self {
             frame_now_secs: state.frame_now.secs(),
             visible_bounds: state.viz_state.last_visible_bounds,
             data_is_live: crate::state::recency::data_is_live(&playback.state),
-            effective_sweep_animation: state.effective_sweep_animation(&playback.state, streaming),
+            effective_sweep_animation: state.effective_sweep_animation(
+                &playback.state,
+                streaming,
+                collecting_elevation,
+            ),
         }
     }
 }
