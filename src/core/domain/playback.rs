@@ -1001,13 +1001,17 @@ impl PlaybackState {
 
     /// → LIVE-NOW. Pins the playhead to `now`; the per-frame live tick
     /// keeps it there via [`Self::pin_tick`]. Drops any bounds (live owns
-    /// its own constraints).
+    /// its own constraints). Realtime lock is the only meaningful speed
+    /// while tethered to the live edge (spec §8.2) — force it so a prior
+    /// Macro cadence (or Macro→Micro snap that lands on 1200×) cannot
+    /// remain selected in the transport readout.
     pub(crate) fn enter_pinned_live(&mut self, now: f64) {
         self.time_model.playback_bounds = None;
         self.loop_window = None;
         self.pending_loop_window = None;
         self.time_model.mode = PlayheadMode::PinnedToNow;
         self.time_model.playback_position = now;
+        self.speed = PlaybackSpeed::Realtime;
     }
 
     /// LIVE-* → ARCHIVE (`Free`). Clears the lookback replay's anchored
@@ -1060,7 +1064,8 @@ impl PlaybackState {
 
     /// LIVE-LOOKBACK → LIVE-NOW (pause during replay): drop the loop window
     /// (its anchored selection included) and re-pin to `now`. The stream is
-    /// untouched.
+    /// untouched. Restores Realtime lock the same way [`Self::enter_pinned_live`]
+    /// does — lookback often runs at Macro fps labels that must not stick.
     pub(crate) fn exit_lookback_to_now(&mut self, now: f64) {
         self.clear_anchored_selection();
         self.loop_window = None;
@@ -1068,6 +1073,7 @@ impl PlaybackState {
         self.time_model.clear_bounds();
         self.time_model.mode = PlayheadMode::PinnedToNow;
         self.time_model.playback_position = now;
+        self.speed = PlaybackSpeed::Realtime;
     }
 
     /// Per-frame position pin while LIVE-NOW (called from the live tick,
@@ -1187,6 +1193,10 @@ impl PlaybackState {
     /// the sub-frame accumulator on a behavioral flip. No-op when the tier is
     /// unchanged. Runs regardless of `playing`, so paused (and mobile)
     /// transitions get cadence preservation too.
+    ///
+    /// While [`PlayheadMode::PinnedToNow`], cadence conversion is skipped —
+    /// live edge lock is always Realtime (spec §8.2), and a Macro→Micro snap
+    /// on the way into live must not rewrite that to a large × multiple.
     fn apply_tier(&mut self, next: TimelineTier, median_frame_spacing: f64) {
         let prev = self.timeline_tier;
         if prev == next {
@@ -1197,7 +1207,9 @@ impl PlaybackState {
         let new_mode = mode_of_tier(next, self.time_model.is_lookback());
 
         if prev_mode != new_mode {
-            self.preserve_cadence_across_snap(prev_mode, new_mode, median_frame_spacing);
+            if !self.time_model.is_pinned() {
+                self.preserve_cadence_across_snap(prev_mode, new_mode, median_frame_spacing);
+            }
             // Reset the sub-frame accumulator on any behavioral flip so the
             // next advance starts clean.
             self.macro_playback.frame_accumulator = 0.0;
@@ -3050,6 +3062,48 @@ mod coverage_tests {
         assert!(ps.loop_window.is_none());
         assert!(ps.pending_loop_window.is_none());
         assert_eq!(ps.playback_position(), 1234.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn enter_pinned_live_forces_realtime_speed() {
+        // Regression for #139: archive/macro default (or a Macro→Micro snap
+        // that lands on 1200×) must not remain selected once tethered.
+        let mut ps = PlaybackState::default();
+        ps.speed = PlaybackSpeed::Quadruple;
+        ps.enter_pinned_live(1000.0);
+        assert_eq!(ps.speed, PlaybackSpeed::Realtime);
+        assert_eq!(ps.speed.label(), "1×");
+    }
+
+    #[wasm_bindgen_test]
+    fn exit_lookback_to_now_restores_realtime_speed() {
+        let mut ps = PlaybackState::default();
+        ps.enter_pinned_live(1000.0);
+        ps.enter_lookback(Some(940.0), LoopBasis::FrameCount(6));
+        // Lookback UI may leave a macro fps selection selected.
+        ps.speed = PlaybackSpeed::Normal;
+        ps.exit_lookback_to_now(1010.0);
+        assert!(ps.time_model.is_pinned());
+        assert_eq!(ps.speed, PlaybackSpeed::Realtime);
+    }
+
+    #[wasm_bindgen_test]
+    fn pinned_live_zoom_into_micro_keeps_realtime() {
+        // start_live_mode pins first, then floors zoom into Micro. Without
+        // suppressing cadence while pinned, Macro 5 fps × 300s spacing snaps
+        // to 1200× and the transport readout lies about live speed.
+        let mut ps = PlaybackState::default();
+        ps.set_timeline_zoom(0.5, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+        ps.speed = PlaybackSpeed::Normal; // 5 fps macro
+        ps.macro_playback.sweep_frames = vec![0.0, 300.0, 600.0, 900.0];
+        ps.enter_pinned_live(1000.0);
+        assert_eq!(ps.speed, PlaybackSpeed::Realtime);
+        ps.set_timeline_zoom(2.0, 1000.0, ps.median_frame_spacing());
+        assert_eq!(ps.timeline_tier, TimelineTier::Micro);
+        assert_eq!(ps.speed, PlaybackSpeed::Realtime);
+        assert_eq!(ps.effective_playback_mode(), PlaybackMode::Micro);
+        assert_eq!(ps.speed.label(), "1×");
     }
 
     #[wasm_bindgen_test]

@@ -442,11 +442,10 @@ impl WorkbenchApp {
             Intent::StartLive => self.start_live_mode(ctx),
             Intent::GoLive => {
                 // GO LIVE from any surface: drop the selection first (so the
-                // pinned playhead isn't fenced by stale bounds), open the
-                // stream, then pace at realtime.
+                // pinned playhead isn't fenced by stale bounds), then open the
+                // stream. Realtime lock is applied inside `enter_pinned_live`.
                 self.playback.state.clear_selection();
                 self.start_live_mode(ctx);
-                self.playback.state.speed = crate::core::PlaybackSpeed::Realtime;
             }
             Intent::ReturnToLive => self.return_to_live(ctx),
 

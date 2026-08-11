@@ -67,8 +67,9 @@ impl WorkbenchApp {
         let now = self.state.frame_now.secs();
         self.live.mode_state.detached_since = None;
         self.playback.state.clear_selection();
+        // `enter_pinned_live` owns Realtime lock (and keeps it across any
+        // Micro floor zoom below — cadence snaps are suppressed while pinned).
         self.playback.state.enter_pinned_live(now);
-        self.playback.state.speed = crate::core::PlaybackSpeed::Realtime;
         // Return-to-live re-tethers, so the zoom floor must land the tier back
         // in Micro. The Micro-enter threshold carries hysteresis (≥ 1.15),
         // so floor to LIVE_DEFAULT_ZOOM (2.0) rather than the nominal 1.0.
