@@ -3,6 +3,8 @@ description: Propose an actionable product improvement
 title: ""
 labels:
   - enhancement
+projects:
+  - danielway/5
 body:
   - type: markdown
     attributes:

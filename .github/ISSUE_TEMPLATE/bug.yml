@@ -3,6 +3,8 @@ description: Report incorrect or unexpected behavior
 title: ""
 labels:
   - bug
+projects:
+  - danielway/5
 body:
   - type: markdown
     attributes:
