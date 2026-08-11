@@ -211,6 +211,15 @@ pub(crate) fn render_canvas_with_geo(
                 let chunk_boundary = live.radar_model.estimated_azimuth;
 
                 if let Some(renderer) = gpu_renderer {
+                    // Live compositing keeps `gpu_sweep` set even when animation
+                    // is off; force desaturation off in that case so age fades
+                    // only accompany an active sweep animation (#134).
+                    let mut processing = state.render_processing.clone();
+                    processing.data_age_desaturation =
+                        crate::core::canvas::data_age_desaturation_effective(
+                            processing.data_age_desaturation,
+                            derived.effective_sweep_animation,
+                        );
                     draw_radar_gpu(
                         ui,
                         &projection,
@@ -218,7 +227,7 @@ pub(crate) fn render_canvas_with_geo(
                         &rect,
                         state.viz_state.center_lat,
                         state.viz_state.center_lon,
-                        &state.render_processing,
+                        &processing,
                         gpu_sweep,
                         chunk_boundary,
                     );

@@ -150,8 +150,9 @@ progressively against transparent background.
 
 ### Data-age desaturation
 
-When `data_age_desaturation` is on and the chunk boundary is known,
-three angular zones get different treatments:
+When `data_age_desaturation` is on, sweep animation is effectively
+active, and the chunk boundary is known, three angular zones get
+different treatments:
 
 ```
    [fresh data] ← received edge ← [gap] ← now line ← [fade 90°] ← [no desat]

@@ -38,6 +38,17 @@ pub(crate) fn sweep_animation_effective(
     pref && mode == crate::core::PlaybackMode::Micro && advanced && streaming && playhead_attached
 }
 
+/// Whether data-age desaturation should run this frame.
+///
+/// Desaturation only makes sense while the sweep animation is effectively
+/// active (beam collecting / oldest-data wedge). Live mode still enables the
+/// GPU sweep path for partial-chunk compositing when animation is off, so the
+/// preference alone is not enough — gate on both the stored toggle and
+/// [`sweep_animation_effective`].
+pub(crate) fn data_age_desaturation_effective(pref: bool, effective_sweep_animation: bool) -> bool {
+    pref && effective_sweep_animation
+}
+
 /// Interpolate the rotating sweep-line azimuth within `sweep` at playback time
 /// `ts`, returning `(current_az, start_az)` in degrees, or `None` if the sweep
 /// has no positive duration.
@@ -733,6 +744,19 @@ mod coverage_tests {
         assert!(!sweep_animation_effective(false, Micro, true, true, true));
         assert!(!sweep_animation_effective(true, Macro, true, true, true));
         assert!(!sweep_animation_effective(true, Micro, false, true, true));
+    }
+
+    // --- data_age_desaturation_effective ---------------------------------------
+
+    #[wasm_bindgen_test]
+    fn data_age_desaturation_requires_effective_sweep_animation() {
+        // Preference on + animation effectively on → desaturate.
+        assert!(data_age_desaturation_effective(true, true));
+        // Preference on but animation inactive (toggle/mode/filter) → no desat.
+        assert!(!data_age_desaturation_effective(true, false));
+        // Animation on but preference off → no desat.
+        assert!(!data_age_desaturation_effective(false, true));
+        assert!(!data_age_desaturation_effective(false, false));
     }
 
     // --- sweep_line_azimuth: uncovered branches -------------------------------
