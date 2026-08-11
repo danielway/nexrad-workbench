@@ -58,6 +58,9 @@ pub(crate) struct NationalMosaic {
     /// Timestamp (seconds) of the last attempt — successful or not. Used to
     /// gate the next attempt against `REFRESH_INTERVAL_SECS`.
     last_attempt_ts: Option<f64>,
+    /// Wall-clock seconds when the currently held texture was successfully
+    /// fetched. Cleared with the texture; never set on failed attempts.
+    image_time: Option<f64>,
     in_flight: Rc<RefCell<bool>>,
     sender: Sender<FetchOutcome>,
     receiver: Receiver<FetchOutcome>,
@@ -69,6 +72,7 @@ impl Default for NationalMosaic {
         Self {
             texture: None,
             last_attempt_ts: None,
+            image_time: None,
             in_flight: Rc::new(RefCell::new(false)),
             sender,
             receiver,
@@ -82,9 +86,10 @@ impl NationalMosaic {
     /// so no GPU memory is held while the layer is off.
     pub(crate) fn poll_tick(&mut self, ctx: &egui::Context, enabled: bool) {
         if !enabled {
-            if self.texture.is_some() || self.last_attempt_ts.is_some() {
+            if self.texture.is_some() || self.last_attempt_ts.is_some() || self.image_time.is_some()
+            {
                 self.texture = None;
-                self.last_attempt_ts = None;
+                clear_on_disable(&mut self.last_attempt_ts, &mut self.image_time);
             }
             while self.receiver.try_recv().is_ok() {}
             return;
@@ -96,10 +101,10 @@ impl NationalMosaic {
                     let handle =
                         ctx.load_texture("national_mosaic", image, egui::TextureOptions::LINEAR);
                     self.texture = Some(handle);
-                    self.last_attempt_ts = Some(fetched_at);
+                    record_loaded(&mut self.last_attempt_ts, &mut self.image_time, fetched_at);
                 }
                 FetchOutcome::Failed { attempted_at } => {
-                    self.last_attempt_ts = Some(attempted_at);
+                    record_failed(&mut self.last_attempt_ts, attempted_at);
                 }
             }
         }
@@ -159,10 +164,36 @@ impl NationalMosaic {
         self.texture.as_ref()
     }
 
+    /// Wall-clock seconds when the currently displayed mosaic image was
+    /// successfully fetched. `None` when no texture is held.
+    pub(crate) fn image_time(&self) -> Option<f64> {
+        self.image_time
+    }
+
     /// Mosaic geographic bounds as (min_lon, min_lat, max_lon, max_lat).
     pub(crate) fn bounds(&self) -> (f64, f64, f64, f64) {
         MOSAIC_BOUNDS
     }
+}
+
+/// Pure state transition for a successful mosaic load: stamp both the
+/// attempt clock and the image time. Kept free of I/O so unit tests can
+/// pin the contract without a GPU texture.
+fn record_loaded(last_attempt_ts: &mut Option<f64>, image_time: &mut Option<f64>, fetched_at: f64) {
+    *last_attempt_ts = Some(fetched_at);
+    *image_time = Some(fetched_at);
+}
+
+/// Pure state transition for a failed mosaic attempt: advance the attempt
+/// clock only — leave any previously loaded image time alone.
+fn record_failed(last_attempt_ts: &mut Option<f64>, attempted_at: f64) {
+    *last_attempt_ts = Some(attempted_at);
+}
+
+/// Pure disable path: drop texture-associated timestamps.
+fn clear_on_disable(last_attempt_ts: &mut Option<f64>, image_time: &mut Option<f64>) {
+    *last_attempt_ts = None;
+    *image_time = None;
 }
 
 /// Fetch a PNG via browser-native image decoding and convert to an
@@ -237,4 +268,49 @@ async fn fetch_and_decode(url: &str) -> Result<egui::ColorImage, String> {
         [w as usize, h as usize],
         &bytes,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn loaded_sets_image_time() {
+        let mut last = None;
+        let mut image = None;
+        record_loaded(&mut last, &mut image, 1_700_000_000.0);
+        assert_eq!(last, Some(1_700_000_000.0));
+        assert_eq!(image, Some(1_700_000_000.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn failed_does_not_touch_image_time() {
+        let mut last = Some(100.0);
+        let image = Some(100.0);
+        record_failed(&mut last, 200.0);
+        assert_eq!(last, Some(200.0));
+        assert_eq!(image, Some(100.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn disable_clears_image_time() {
+        let mut last = Some(100.0);
+        let mut image = Some(100.0);
+        clear_on_disable(&mut last, &mut image);
+        assert_eq!(last, None);
+        assert_eq!(image, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn failed_then_loaded_updates_image_time() {
+        let mut last = None;
+        let mut image = None;
+        record_failed(&mut last, 50.0);
+        assert_eq!(image, None);
+        record_loaded(&mut last, &mut image, 75.0);
+        assert_eq!(image, Some(75.0));
+        record_failed(&mut last, 90.0);
+        assert_eq!(image, Some(75.0));
+    }
 }

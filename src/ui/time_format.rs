@@ -169,6 +169,17 @@ fn to_12h(hour24: u32) -> (u32, &'static str) {
     (hour12, meridiem)
 }
 
+/// Canvas stamp for the national mosaic image time.
+///
+/// `ts` is the wall-clock seconds when the currently held mosaic PNG was
+/// fetched. Returns `None` when there is no image yet so the caller can skip
+/// painting. Honors `use_local` the same way as other canvas clocks.
+pub(crate) fn format_mosaic_stamp(ts: Option<f64>, use_local: bool) -> Option<String> {
+    let ts = ts?;
+    let clock = format_clock_12h(ts, use_local, Compaction::Full);
+    Some(format!("Mosaic \u{00B7} {clock}"))
+}
+
 /// Plain-language data-age phrasing for the live edge (spec §5/§11.3):
 /// "updated just now", "updated 1m ago", "updated 2h ago". `age_secs` is
 /// wall-clock now minus the displayed frame's collection time. Negative ages
@@ -293,5 +304,18 @@ mod tests {
     #[wasm_bindgen_test]
     fn updated_ago_negative_reads_as_just_now() {
         assert_eq!(format_updated_ago(-5.0), "updated just now");
+    }
+
+    #[wasm_bindgen_test]
+    fn mosaic_stamp_none_when_no_image() {
+        assert_eq!(format_mosaic_stamp(None, false), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn mosaic_stamp_utc_includes_label_and_clock() {
+        assert_eq!(
+            format_mosaic_stamp(Some(TS), false).as_deref(),
+            Some("Mosaic \u{00B7} 7:41:07 PM UTC")
+        );
     }
 }
