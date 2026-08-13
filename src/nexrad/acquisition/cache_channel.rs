@@ -4,7 +4,7 @@
 //! from IndexedDB asynchronously. The UI can request a cache load and poll
 //! for results each frame.
 
-use crate::core::{CacheLoadResult, ScanMetadata};
+use crate::core::{CacheLoadResult, ScanMetadata, TimelineRevision};
 use crate::data::{MainThreadStore, SiteId, UnixMillis};
 use eframe::egui::Context;
 use std::cell::RefCell;
@@ -42,6 +42,7 @@ impl CacheLoadChannel {
         ctx: Context,
         facade: MainThreadStore,
         site_id: String,
+        dispatched_at: TimelineRevision,
     ) {
         if *self.loading.borrow() {
             log::debug!("Cache load already in progress, ignoring request");
@@ -91,6 +92,7 @@ impl CacheLoadChannel {
                     );
 
                     CacheLoadResult::Success {
+                        dispatched_at,
                         site_id,
                         metadata,
                         total_cache_size,
@@ -121,7 +123,12 @@ impl CacheLoadChannel {
     }
 
     /// Clears all cached data.
-    pub(crate) fn clear_cache(&self, ctx: Context, facade: MainThreadStore) {
+    pub(crate) fn clear_cache(
+        &self,
+        ctx: Context,
+        facade: MainThreadStore,
+        dispatched_at: TimelineRevision,
+    ) {
         if *self.loading.borrow() {
             log::debug!("Cache operation in progress, ignoring clear request");
             return;
@@ -138,6 +145,7 @@ impl CacheLoadChannel {
                 Ok(()) => {
                     log::debug!("Cache cleared successfully");
                     CacheLoadResult::Success {
+                        dispatched_at,
                         site_id: String::new(),
                         metadata: Vec::new(),
                         total_cache_size: 0,
@@ -216,6 +224,7 @@ mod coverage_tests {
     fn try_recv_takes_success_result_and_leaves_none() {
         let ch = CacheLoadChannel::new();
         *ch.receiver.borrow_mut() = Some(CacheLoadResult::Success {
+            dispatched_at: TimelineRevision::default(),
             site_id: "KDMX".to_string(),
             metadata: vec![sample_metadata()],
             total_cache_size: 8192,
@@ -224,10 +233,12 @@ mod coverage_tests {
         let got = ch.try_recv();
         match got {
             Some(CacheLoadResult::Success {
+                dispatched_at,
                 site_id,
                 metadata,
                 total_cache_size,
             }) => {
+                assert_eq!(dispatched_at, TimelineRevision::default());
                 assert_eq!(site_id, "KDMX");
                 assert_eq!(metadata.len(), 1);
                 assert_eq!(metadata[0].file_size, 4096);
@@ -246,7 +257,7 @@ mod coverage_tests {
         *ch.receiver.borrow_mut() = Some(CacheLoadResult::Error("boom".to_string()));
 
         match ch.try_recv() {
-            Some(CacheLoadResult::Error(msg)) => assert_eq!(msg, "boom"),
+            Some(CacheLoadResult::Error(message)) => assert_eq!(message, "boom"),
             other => panic!("expected Error, got {:?}", other),
         }
         assert!(ch.try_recv().is_none());
@@ -257,6 +268,7 @@ mod coverage_tests {
         // Mirrors the clear_cache success payload shape.
         let ch = CacheLoadChannel::new();
         *ch.receiver.borrow_mut() = Some(CacheLoadResult::Success {
+            dispatched_at: TimelineRevision::default(),
             site_id: String::new(),
             metadata: Vec::new(),
             total_cache_size: 0,
@@ -264,10 +276,12 @@ mod coverage_tests {
 
         match ch.try_recv() {
             Some(CacheLoadResult::Success {
+                dispatched_at,
                 site_id,
                 metadata,
                 total_cache_size,
             }) => {
+                assert_eq!(dispatched_at, TimelineRevision::default());
                 assert!(site_id.is_empty());
                 assert!(metadata.is_empty());
                 assert_eq!(total_cache_size, 0);

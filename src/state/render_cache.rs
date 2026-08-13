@@ -67,7 +67,7 @@ pub(crate) struct PrevSweepCacheKey {
     pub playback_ts_bits: u64,
     pub displayed_elev: u8,
     pub is_auto: bool,
-    pub scan_count: usize,
+    pub timeline_revision: crate::core::TimelineRevision,
 }
 
 /// Bundle of small caches used by the per-frame render path.
@@ -190,7 +190,10 @@ mod coverage_tests {
         assert_eq!(k.playback_ts_bits, 0);
         assert_eq!(k.displayed_elev, 0);
         assert!(!k.is_auto);
-        assert_eq!(k.scan_count, 0);
+        assert_eq!(
+            k.timeline_revision,
+            crate::core::TimelineRevision::default()
+        );
     }
 
     #[wasm_bindgen_test]
@@ -199,7 +202,7 @@ mod coverage_tests {
             playback_ts_bits: 42,
             displayed_elev: 3,
             is_auto: true,
-            scan_count: 7,
+            timeline_revision: crate::core::TimelineRevision::from_test_value(7),
         };
         let b = a.clone();
         assert_eq!(a, b);
@@ -211,7 +214,7 @@ mod coverage_tests {
             playback_ts_bits: 42,
             displayed_elev: 3,
             is_auto: true,
-            scan_count: 7,
+            timeline_revision: crate::core::TimelineRevision::from_test_value(7),
         };
         assert_ne!(
             base,
@@ -237,7 +240,7 @@ mod coverage_tests {
         assert_ne!(
             base,
             PrevSweepCacheKey {
-                scan_count: 8,
+                timeline_revision: crate::core::TimelineRevision::from_test_value(8),
                 ..base.clone()
             }
         );

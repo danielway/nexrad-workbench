@@ -544,10 +544,11 @@ impl WorkbenchApp {
 
     fn handle_clear_cache(&mut self, ctx: &egui::Context) {
         if !self.acquisition.coordinator.cache_load_channel.is_loading() {
-            self.acquisition
-                .coordinator
-                .cache_load_channel
-                .clear_cache(ctx.clone(), self.acquisition.coordinator.facade().clone());
+            self.acquisition.coordinator.cache_load_channel.clear_cache(
+                ctx.clone(),
+                self.acquisition.coordinator.facade().clone(),
+                self.timeline.revision(),
+            );
             // An explicit cache wipe is one of the cases where blanking IS
             // correct (spec §11.2): the data the displayed frame came from is
             // gone, so drop it rather than holding a stale frame with a
@@ -600,6 +601,7 @@ impl WorkbenchApp {
                     ctx.clone(),
                     self.acquisition.coordinator.facade().clone(),
                     self.state.viz_state.site_id.clone(),
+                    self.timeline.revision(),
                 );
         } else {
             // Cache loader is busy; replay (without auto-position) next frame.

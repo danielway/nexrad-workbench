@@ -42,6 +42,7 @@ pub(crate) mod render;
 pub(crate) mod render_loop;
 pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;
+pub(crate) mod timeline_commit;
 pub(crate) mod timeline_geometry;
 pub(crate) mod timeline_interaction;
 pub(crate) mod timeline_view;
@@ -104,6 +105,10 @@ pub(crate) use live_status::{derive_live_status, LiveStatus, LiveStatusInputs, L
 pub(crate) use persist::{decide_persist, persist_due, PersistDecision};
 pub(crate) use streaming_filter::StreamingFilter;
 pub(crate) use streaming_plan::{ChunkProjectedTimes, ChunkProjectionInfo, StreamingPlan};
+pub(crate) use timeline_commit::{
+    commit_chunk_ingest, commit_timeline_snapshot, live_chunk_matches_scope, reset_timeline,
+    TimelineCommit, TimelineRevision, TimelineSnapshotCommit,
+};
 pub(crate) use timeline_geometry::{
     block_extent, cell_gap_px, layout_block, should_draw_sweep_texture, MIN_BLOCK_W,
 };

@@ -31,6 +31,7 @@ impl WorkbenchApp {
                 volume_3d_active: self.volume_3d_active(),
                 coordinator_scan_key: self.render.coordinator.scan_key(),
                 max_scan_age_secs: MAX_SCAN_AGE_SECS,
+                timeline_revision: self.timeline.revision(),
             },
             AdvancePlaybackSlices {
                 playback: &mut self.playback.state,
@@ -152,7 +153,7 @@ impl WorkbenchApp {
             playback_ts_bits: playback_ts.to_bits(),
             displayed_elev,
             is_auto,
-            scan_count: self.timeline.scans.scans.len(),
+            timeline_revision: self.timeline.revision(),
         };
         let prev_info = if self.state.render_cache.prev_sweep_cache_key.as_ref() == Some(&cache_key)
         {

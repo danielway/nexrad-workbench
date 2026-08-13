@@ -135,6 +135,7 @@ impl WorkbenchApp {
         self.render.coordinator.clear_for_site_change();
         self.state.viz_state.displayed = None;
         self.state.viz_state.previous_displayed = None;
+        self.timeline.reset();
         self.timeline.shadow_scan_boundaries.clear();
     }
 }

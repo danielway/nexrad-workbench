@@ -45,7 +45,7 @@ use crate::data::ScanKey;
 pub(crate) struct ScrubCache {
     pub last_playback_ts: Option<f64>,
     pub last_elevation_selection: Option<ElevationSelection>,
-    pub last_scan_count: usize,
+    pub last_timeline_revision: crate::core::TimelineRevision,
     /// Active scan timestamp (sub-second Unix seconds) from
     /// `RenderCoordinator::scan_key`.
     pub last_active_scan_ts: Option<f64>,
@@ -70,6 +70,8 @@ pub(crate) struct AdvancePlaybackEnv<'a> {
     pub coordinator_scan_key: Option<&'a ScanKey>,
     /// `crate::MAX_SCAN_AGE_SECS`.
     pub max_scan_age_secs: f64,
+    /// Revision of the timeline inventory consumed by this decision.
+    pub timeline_revision: crate::core::TimelineRevision,
 }
 
 /// Mutable borrows of the core state the reducer updates directly.
@@ -132,7 +134,7 @@ pub(crate) fn reduce_advance_playback(
     let live_active = env.live_active;
 
     // Rebuild macro frame list when dirty (elevation selection, bounds, or
-    // scan count changed). Uses the *effective* mode so the list is also
+    // timeline inventory changed). Uses the *effective* mode so the list is also
     // built during a lookback replay (which frame-steps regardless of zoom).
     if playback.effective_playback_mode() == PlaybackMode::Macro {
         let product = env.product.to_worker_string();
@@ -147,7 +149,7 @@ pub(crate) fn reduce_advance_playback(
                 playback.view_width_secs(),
                 playback.playback_position(),
             ),
-            scan_count: timeline.scans.len(),
+            timeline_revision: env.timeline_revision,
             volume_3d: env.volume_3d_active,
         };
 
@@ -180,7 +182,7 @@ pub(crate) fn reduce_advance_playback(
             // ends — without snapping, the resolver's
             // `start_time <= playback_position` filter rejects every
             // sweep at the new elevation in the current scan, blanking
-            // the canvas. Skip on bounds/scan_count changes so
+            // the canvas. Skip on bounds/timeline changes so
             // streaming and selection edits don't teleport the cursor.
             if cause == RebuildCause::ElevationChanged {
                 playback.snap_playback_to_macro_frame();
@@ -213,11 +215,10 @@ pub(crate) fn reduce_advance_playback(
         // decision has moved since last frame. The O(scans) search
         // below used to run every frame even while paused; this lets
         // the idle case cost only a few comparisons.
-        let scan_count = timeline.scans.len();
         let elev_sel = &*elevation_selection;
         let active_ts = env.coordinator_scan_key.map(|k| k.scan_start.as_secs_f64());
         let scrub_cache_hit = scrub_cache.last_playback_ts == Some(playback_ts)
-            && scrub_cache.last_scan_count == scan_count
+            && scrub_cache.last_timeline_revision == env.timeline_revision
             && scrub_cache.last_active_scan_ts == active_ts
             && scrub_cache
                 .last_elevation_selection
@@ -226,7 +227,7 @@ pub(crate) fn reduce_advance_playback(
 
         if !scrub_cache_hit {
             scrub_cache.last_playback_ts = Some(playback_ts);
-            scrub_cache.last_scan_count = scan_count;
+            scrub_cache.last_timeline_revision = env.timeline_revision;
             scrub_cache.last_active_scan_ts = active_ts;
             scrub_cache.last_elevation_selection = Some(elev_sel.clone());
         }
@@ -559,6 +560,7 @@ mod tests {
             volume_3d_active: false,
             coordinator_scan_key: None,
             max_scan_age_secs: MAX_AGE,
+            timeline_revision: crate::core::TimelineRevision::default(),
         }
     }
 
@@ -672,24 +674,25 @@ mod tests {
         assert_eq!(fx.playback.playback_position(), 2020.0);
     }
 
-    // (3) A scan-count change rebuilds without snapping (streaming must not
+    // (3) A timeline-revision change rebuilds without snapping (streaming must not
     // teleport the cursor).
     #[wasm_bindgen_test]
-    fn macro_scan_count_change_rebuilds_without_snap() {
+    fn macro_timeline_revision_change_rebuilds_without_snap() {
         let tl = two_scan_timeline();
         let mut fx = Fx::at(2005.0, TimelineTier::Macro);
         let _ = fx.run(base_env(), &tl);
 
         let mut grown = two_scan_timeline();
-        grown.scans.push(scan(
-            3000.0,
-            vec![sweep(1, 3000.0, 3010.0, vec!["reflectivity"])],
-        ));
-        let _ = fx.run(base_env(), &grown);
+        grown.scans[1]
+            .sweeps
+            .push(sweep(1, 2020.0, 2030.0, vec!["reflectivity"]));
+        let mut env = base_env();
+        env.timeline_revision = crate::core::TimelineRevision::from_test_value(1);
+        let _ = fx.run(env, &grown);
 
         assert_eq!(
             fx.playback.macro_playback.sweep_frames,
-            vec![1010.0, 2010.0, 3010.0]
+            vec![1010.0, 2010.0, 2030.0]
         );
         assert_eq!(fx.playback.playback_position(), 2005.0, "no snap");
     }
@@ -762,7 +765,7 @@ mod tests {
         let key = ScanKey::from_secs_f64("KDMX", 2000.0);
         let mut fx = Fx::at(2005.0, TimelineTier::Micro);
         fx.scrub.last_playback_ts = Some(2005.0);
-        fx.scrub.last_scan_count = 2;
+        fx.scrub.last_timeline_revision = crate::core::TimelineRevision::default();
         fx.scrub.last_active_scan_ts = Some(2000.0);
         fx.scrub.last_elevation_selection = Some(fx.selection.clone());
 
@@ -808,7 +811,10 @@ mod tests {
         // Cache snapshot reflects the post-sync coordinator key.
         assert_eq!(fx.scrub.last_active_scan_ts, Some(2000.0));
         assert_eq!(fx.scrub.last_playback_ts, Some(2005.0));
-        assert_eq!(fx.scrub.last_scan_count, 1);
+        assert_eq!(
+            fx.scrub.last_timeline_revision,
+            crate::core::TimelineRevision::default()
+        );
     }
 
     // (8) On scan change the fixed elevation selection re-resolves against

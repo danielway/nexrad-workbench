@@ -70,10 +70,19 @@ impl WorkbenchApp {
     fn handle_cache_load_outcome(&mut self, result: CacheLoadResult) {
         match result {
             CacheLoadResult::Success {
+                dispatched_at,
                 site_id,
                 metadata,
                 total_cache_size,
             } => {
+                if !site_id.is_empty() && site_id != self.state.viz_state.site_id {
+                    log::debug!(
+                        "Ignoring cache snapshot for stale site {} (current {})",
+                        site_id,
+                        self.state.viz_state.site_id,
+                    );
+                    return;
+                }
                 log::debug!(
                     "Timeline loaded from cache: {} scan(s) for site {}",
                     metadata.len(),
@@ -83,8 +92,14 @@ impl WorkbenchApp {
                 // Update cache size in session stats
                 self.state.session_stats.cache_size_bytes = total_cache_size;
 
-                // Build timeline from metadata
-                self.timeline.scans = RadarTimeline::from_metadata(metadata);
+                // Reconcile against commits acknowledged after this async
+                // snapshot started so an older load cannot erase new sweeps.
+                let snapshot = RadarTimeline::from_metadata(metadata);
+                if site_id.is_empty() {
+                    self.timeline.reset();
+                } else {
+                    self.timeline.commit_snapshot(dispatched_at, snapshot);
+                }
 
                 // Reconcile the request ledger against what the timeline now
                 // actually holds: satisfied requests retire, ingested-but-
@@ -116,8 +131,8 @@ impl WorkbenchApp {
                     log::debug!("Timeline has {} contiguous range(s)", ranges.len());
                 }
             }
-            CacheLoadResult::Error(msg) => {
-                log::error!("Cache load failed: {}", msg);
+            CacheLoadResult::Error(message) => {
+                log::error!("Cache load failed: {}", message);
             }
         }
     }
@@ -234,6 +249,28 @@ impl WorkbenchApp {
         };
 
         let is_live = self.live.mode_state.is_active();
+
+        let active_volume = self
+            .live
+            .mode_state
+            .current_volume
+            .as_ref()
+            .map(|volume| &volume.scan_key);
+        if !crate::core::live_chunk_matches_scope(
+            &self.state.viz_state.site_id,
+            active_volume,
+            &result,
+        ) {
+            log::debug!("Ignoring stale chunk outcome for {}", result.scan_key);
+            return;
+        }
+
+        // The worker posts this result only after its IDB transaction commits.
+        // Publish that committed inventory synchronously so timeline, resolver,
+        // and render dispatch observe the same sweep in this frame.
+        if !result.elevations_completed.is_empty() {
+            self.timeline.commit_chunk_ingest(&result);
+        }
 
         // Update scan key, growing elevation list, and displayed timestamp
         // through the single owner so they can never drift.

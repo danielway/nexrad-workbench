@@ -71,6 +71,10 @@ impl RenderCoordinator {
 
     /// Set just the scan key (e.g. during scrub or chunk ingest).
     pub(crate) fn set_scan_key(&mut self, key: ScanKey) {
+        if self.current_scan_key.as_ref() != Some(&key) {
+            self.available_elevations.clear();
+            self.last_render = None;
+        }
         self.current_scan_key = Some(key);
     }
 
@@ -308,12 +312,20 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn set_scan_key_only_leaves_elevations_untouched() {
+    fn set_scan_key_clears_elevations_for_new_scan() {
         let mut c = RenderCoordinator::new(None);
         c.set_scan(key("KDMX", 100), vec![4, 5]);
         c.set_scan_key(key("KFTG", 200));
         assert_eq!(c.scan_key(), Some(&key("KFTG", 200)));
-        // elevations from the prior set_scan remain
+        assert!(c.available_elevations().is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn set_same_scan_key_preserves_incremental_elevations() {
+        let mut c = RenderCoordinator::new(None);
+        let scan = key("KDMX", 100);
+        c.set_scan(scan.clone(), vec![4, 5]);
+        c.set_scan_key(scan);
         assert_eq!(c.available_elevations(), &[4, 5]);
     }
 

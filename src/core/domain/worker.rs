@@ -6,7 +6,7 @@
 //! deserialization (`*Msg` structs) and the channel machinery that produces
 //! them stay in `crate::nexrad`.
 
-use crate::core::ScanMetadata;
+use crate::core::{ScanMetadata, TimelineRevision};
 
 /// How much work the decode-worker pool is carrying right now.
 ///
@@ -245,6 +245,8 @@ pub(crate) struct VolumeData {
 pub(crate) enum CacheLoadResult {
     /// Successfully loaded metadata for a site
     Success {
+        /// Timeline revision captured when this asynchronous load started.
+        dispatched_at: TimelineRevision,
         site_id: String,
         metadata: Vec<ScanMetadata>,
         /// Total cache size across all sites (in bytes)
@@ -338,6 +340,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn success_result_clone_preserves_fields() {
         let original = CacheLoadResult::Success {
+            dispatched_at: TimelineRevision::default(),
             site_id: "KTLX".to_string(),
             metadata: vec![sample_metadata(), sample_metadata()],
             total_cache_size: 100,
@@ -345,10 +348,12 @@ mod coverage_tests {
         let cloned = original.clone();
         match cloned {
             CacheLoadResult::Success {
+                dispatched_at,
                 site_id,
                 metadata,
                 total_cache_size,
             } => {
+                assert_eq!(dispatched_at, TimelineRevision::default());
                 assert_eq!(site_id, "KTLX");
                 assert_eq!(metadata.len(), 2);
                 assert_eq!(total_cache_size, 100);
@@ -362,7 +367,7 @@ mod coverage_tests {
         let original = CacheLoadResult::Error("io failure".to_string());
         let cloned = original.clone();
         match cloned {
-            CacheLoadResult::Error(msg) => assert_eq!(msg, "io failure"),
+            CacheLoadResult::Error(message) => assert_eq!(message, "io failure"),
             other => panic!("expected Error, got {:?}", other),
         }
     }
@@ -374,6 +379,7 @@ mod coverage_tests {
         let s2 = format!(
             "{:?}",
             CacheLoadResult::Success {
+                dispatched_at: TimelineRevision::default(),
                 site_id: "KDMX".to_string(),
                 metadata: Vec::new(),
                 total_cache_size: 5,

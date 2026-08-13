@@ -235,7 +235,7 @@ pub(crate) struct MacroFrameInputs {
     /// doesn't heap-allocate during macro/lookback playback.
     pub product: &'static str,
     pub bounds: Option<(f64, f64)>,
-    pub scan_count: usize,
+    pub timeline_revision: crate::core::TimelineRevision,
     /// Whether the volumetric (3D) render path is active. In 3D a frame is a
     /// whole scan (the volume render is keyed per scan), so flipping this
     /// must rebuild the list — without this term a stale per-sweep list
@@ -297,7 +297,7 @@ pub(crate) fn macro_frame_bounds(
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum RebuildCause {
     ElevationChanged,
-    /// Bounds or scan count changed (streaming, selection edits) — rebuild
+    /// Bounds or timeline inventory changed (streaming, selection edits) — rebuild
     /// without teleporting the cursor.
     WindowChanged,
 }
@@ -337,7 +337,7 @@ impl MacroPlaybackState {
             Some(RebuildCause::ElevationChanged)
         } else if self.built_from.product != inputs.product
             || self.built_from.bounds != inputs.bounds
-            || self.built_from.scan_count != inputs.scan_count
+            || self.built_from.timeline_revision != inputs.timeline_revision
             || self.built_from.volume_3d != inputs.volume_3d
         {
             // A product switch re-filters the frame list (frame = product +
@@ -2060,10 +2060,10 @@ mod tests {
             elevation: crate::core::ElevationSelection::default(),
             product: "reflectivity",
             bounds: None,
-            scan_count: 3,
+            timeline_revision: crate::core::TimelineRevision::default(),
             volume_3d: false,
         };
-        // Fresh state vs non-default inputs: scan count differs → window change.
+        // Fresh state vs non-default inputs: product differs → window change.
         assert_eq!(mp.rebuild_cause(&base), Some(RebuildCause::WindowChanged));
         mp.store_rebuilt(base.clone(), vec![1.0, 2.0]);
         assert_eq!(mp.sweep_frames, vec![1.0, 2.0]);
@@ -2090,13 +2090,13 @@ mod tests {
             Some(RebuildCause::WindowChanged)
         );
 
-        // Scan count change alone → window change.
-        let scans_changed = MacroFrameInputs {
-            scan_count: 4,
+        // Timeline revision change alone → window change.
+        let timeline_changed = MacroFrameInputs {
+            timeline_revision: crate::core::TimelineRevision::from_test_value(1),
             ..base.clone()
         };
         assert_eq!(
-            mp.rebuild_cause(&scans_changed),
+            mp.rebuild_cause(&timeline_changed),
             Some(RebuildCause::WindowChanged)
         );
 
@@ -2118,7 +2118,7 @@ mod tests {
                 elevation_number: 2,
                 angle: 1.45,
             },
-            scan_count: 9,
+            timeline_revision: crate::core::TimelineRevision::from_test_value(9),
             ..base.clone()
         };
         assert_eq!(

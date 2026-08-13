@@ -219,8 +219,9 @@ impl ProjectionEngine {
 
     /// Refresh the cached cuts recorded for one scan from the volume
     /// observations' completed-sweep metas (drives `CollectedByUs`). Reads the
-    /// metas as of now — call before `update_sweep_metas` for this ingest to
-    /// preserve the prior-metas semantics. Always bumps.
+    /// metas as of now. Call after applying the current ingest's metadata so
+    /// newly committed cuts become `CollectedByUs` in the same transition.
+    /// Always bumps.
     pub(crate) fn set_cached_sweeps_for_scan(&mut self, scan_start_secs: f64) {
         self.cached_sweeps
             .set_for_scan(scan_start_secs, &self.observed.completed_sweep_metas);

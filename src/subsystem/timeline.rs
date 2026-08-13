@@ -13,8 +13,10 @@
 //! single handle and gives a place for future timeline-derivation
 //! helpers (e.g. matching-completion lookups, sweep accessors) to land.
 
-use crate::core::RadarTimeline;
-use crate::core::ScanBoundary;
+use crate::core::{
+    commit_chunk_ingest, commit_timeline_snapshot, reset_timeline, ChunkIngestResult,
+    RadarTimeline, ScanBoundary, TimelineCommit, TimelineRevision, TimelineSnapshotCommit,
+};
 
 /// Owner of the timeline (real + shadowed) scan inventory.
 #[derive(Default)]
@@ -28,4 +30,43 @@ pub(crate) struct Timeline {
     /// users see where scans exist before they're downloaded; cleared on
     /// site change.
     pub shadow_scan_boundaries: Vec<ScanBoundary>,
+    revision: TimelineRevision,
+    commits: Vec<TimelineCommit>,
+}
+
+impl Timeline {
+    /// Revision token to capture when dispatching an asynchronous cache load.
+    pub(crate) fn revision(&self) -> TimelineRevision {
+        self.revision
+    }
+
+    /// Immediately commit metadata confirmed by a completed worker chunk.
+    pub(crate) fn commit_chunk_ingest(&mut self, result: &ChunkIngestResult) {
+        commit_chunk_ingest(
+            &mut self.scans,
+            &mut self.revision,
+            &mut self.commits,
+            result,
+        );
+    }
+
+    /// Commit a cache snapshot using the revision captured at load dispatch.
+    pub(crate) fn commit_snapshot(
+        &mut self,
+        dispatched_at: TimelineRevision,
+        snapshot: RadarTimeline,
+    ) -> TimelineSnapshotCommit {
+        commit_timeline_snapshot(
+            &mut self.scans,
+            &mut self.revision,
+            &mut self.commits,
+            dispatched_at,
+            snapshot,
+        )
+    }
+
+    /// Apply an explicit cache wipe as an authoritative empty inventory.
+    pub(crate) fn reset(&mut self) {
+        reset_timeline(&mut self.scans, &mut self.revision, &mut self.commits);
+    }
 }
