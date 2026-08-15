@@ -484,12 +484,12 @@ state field.
 
 Two `RealtimeResult` variants per chunk (in this order):
 
-- **`ChunkData`** — raw bytes for the worker to ingest. Carries
-  `is_start`, `is_end`, `timestamp` (provisional scan-start, used as
-  IDB key), and `is_last_in_sweep` (resolved from the mapper at emission
-  time so the worker can flush mid-sweep without waiting for the next
-  sweep's first chunk — important under filter mode where that next
-  chunk may never arrive).
+- **`ChunkData`** — raw bytes for the worker to ingest. Carries `is_start`,
+  `is_end`, `timestamp` (provisional scan-start, used as IDB key), plus the
+  mapper-derived source sequence and exact position/count in its sweep. The
+  worker serializes these operations and persists a sweep only after every
+  expected sequence is present and the atomic IDB upsert acknowledges it.
+  `is_last_in_sweep` remains a diagnostic hint, not completion proof.
 - **`ChunkReceived`** — UI status update. Carries `chunks_in_volume`,
   `is_volume_end`, `fetch_latency_ms`, a `plan: Option<StreamingPlan>`, and an
   `arrival_stat: Option<ChunkArrivalStat>`. The `plan` is the single canonical

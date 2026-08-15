@@ -32,6 +32,7 @@ pub(crate) mod geo_labels;
 pub(crate) mod geo_layers;
 pub(crate) mod geocode;
 pub(crate) mod intent;
+pub(crate) mod live_coverage;
 pub(crate) mod live_mode;
 pub(crate) mod live_radar_model;
 pub(crate) mod live_status;
