@@ -28,6 +28,7 @@ pub(crate) mod canvas;
 pub(crate) mod diagnostics;
 pub(crate) mod domain;
 pub(crate) mod effect;
+pub(crate) mod geo_labels;
 pub(crate) mod geo_layers;
 pub(crate) mod geocode;
 pub(crate) mod intent;

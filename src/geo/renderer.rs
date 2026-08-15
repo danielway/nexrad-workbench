@@ -1,11 +1,13 @@
 //! Geographic layer rendering.
 //!
 //! Renders geographic features to the egui canvas. Lines and point markers
-//! repaint every frame using the projection cache; labels follow a tiered
-//! invalidation strategy — galleys are laid out once per camera-settle
-//! event and reprojected to screen positions every frame thereafter.
+//! repaint every frame using the projection cache; labels are measured and
+//! globally selected once per settled viewport, then reprojected each frame.
 
-use super::layer::{FeatureProjection, GeoLayerType, LabelCacheToken, LabelEntry, LayerLabelCache};
+use super::layer::{
+    CityTier, FeatureProjection, GeoLabelCandidate, GeoLabelClass, GeoLayerType, LabelEntry,
+    ScreenBounds,
+};
 use super::{GeoFeature, GeoLayer, GeoLayerSet, MapProjection};
 use crate::geo::GeoLayerVisibility;
 use eframe::egui::{Align2, Color32, FontId, Painter, Pos2, Stroke, Vec2};
@@ -13,8 +15,7 @@ use eframe::epaint::Galley;
 use geo_types::Coord;
 use std::sync::Arc;
 
-/// Which geo rendering pass to execute. Split so lines/markers can draw
-/// below the radar texture while labels draw on top of it for legibility.
+/// Which NEXRAD-site rendering pass to execute.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum GeoPass {
     Lines,
@@ -88,37 +89,21 @@ fn aligned_galley_pos(pos: Pos2, galley_size: Vec2, align: Align2) -> Pos2 {
     Pos2::new(x, y)
 }
 
-/// Renders all visible geographic layers to the canvas.
+/// Renders lines and markers for all visible geographic layers.
 ///
 /// Visibility is passed in separately (rather than via a cloned
 /// [`GeoLayerSet`]) so the large coord data never gets cloned per
-/// frame. Each layer holds a projection-keyed cache of screen points
-/// (refreshed on the Lines pass) and a settle-debounced label cache
-/// (refreshed on the Labels pass when camera motion has stopped).
-#[allow(clippy::too_many_arguments)]
+/// frame. Each layer holds a projection-keyed cache of screen points.
 pub(crate) fn render_geo_layers(
     painter: &Painter,
     layers: &GeoLayerSet,
     visibility: &GeoLayerVisibility,
     projection: &MapProjection,
     zoom: f32,
-    show_labels: bool,
-    pass: GeoPass,
-    dark: bool,
-    camera_settled: bool,
 ) {
     for (layer, visible) in layers_with_visibility(layers, visibility) {
         if visible && layer.visible && zoom >= layer.layer_type.min_zoom() {
-            render_layer(
-                painter,
-                layer,
-                projection,
-                show_labels,
-                zoom,
-                pass,
-                dark,
-                camera_settled,
-            );
+            render_lines_pass(painter, layer, projection, zoom);
         }
     }
 }
@@ -138,32 +123,6 @@ fn layers_with_visibility<'a>(
     .filter_map(|(layer, vis)| layer.map(|l| (l, vis)))
 }
 
-/// Renders a single geographic layer.
-#[allow(clippy::too_many_arguments)]
-fn render_layer(
-    painter: &Painter,
-    layer: &GeoLayer,
-    projection: &MapProjection,
-    show_labels: bool,
-    zoom: f32,
-    pass: GeoPass,
-    dark: bool,
-    camera_settled: bool,
-) {
-    match pass {
-        GeoPass::Lines => render_lines_pass(painter, layer, projection, zoom),
-        GeoPass::Labels => render_labels_pass(
-            painter,
-            layer,
-            projection,
-            show_labels,
-            zoom,
-            dark,
-            camera_settled,
-        ),
-    }
-}
-
 /// Lines pass: draw line geometry and point markers using the projection
 /// cache. Repaints every frame; per-feature visibility is rejected by
 /// bounding-box checks.
@@ -177,7 +136,7 @@ fn render_lines_pass(painter: &Painter, layer: &GeoLayer, projection: &MapProjec
 
     for (feature, entry) in layer.features.iter().zip(entries.iter()) {
         match (feature, entry) {
-            (GeoFeature::Point(coord, _), _) => {
+            (GeoFeature::Point { coord, .. }, _) => {
                 render_point_marker(painter, coord, projection, color, zoom);
             }
             (GeoFeature::LineString(coords), FeatureProjection::Single(points)) => {
@@ -201,88 +160,99 @@ fn render_lines_pass(painter: &Painter, layer: &GeoLayer, projection: &MapProjec
     }
 }
 
-/// Labels pass: project cached anchors and paint cached galleys. Rebuilds
-/// the cache when the camera has settled and the cache token has changed.
-fn render_labels_pass(
+/// Collect and measure all eligible labels for one global placement decision.
+pub(crate) fn build_geo_label_candidates(
     painter: &Painter,
-    layer: &GeoLayer,
+    layers: &GeoLayerSet,
+    visibility: &GeoLayerVisibility,
     projection: &MapProjection,
-    show_labels: bool,
     zoom: f32,
     dark: bool,
-    camera_settled: bool,
-) {
-    if !show_labels {
-        return;
+) -> Vec<GeoLabelCandidate> {
+    if !visibility.labels {
+        return Vec::new();
     }
 
-    let token = LabelCacheToken {
-        zoom_bucket: (zoom * 4.0).round().clamp(0.0, u16::MAX as f32) as u16,
-        dark,
-        show_labels,
-    };
+    let mut candidates = Vec::new();
+    let mut source_order = 0;
+    for (layer, visible) in layers_with_visibility(layers, visibility) {
+        if !visible
+            || !layer.visible
+            || zoom < layer.layer_type.min_zoom()
+            || zoom < layer.layer_type.min_label_zoom()
+        {
+            source_order += layer.features.len();
+            continue;
+        }
 
-    {
-        let mut cache = layer.label_cache_mut();
-        let needs_rebuild = match cache.token {
-            None => true,
-            Some(t) if t != token && camera_settled => true,
-            _ => false,
-        };
-        if needs_rebuild {
-            rebuild_label_cache(layer, projection, zoom, dark, &mut cache);
-            cache.token = Some(token);
+        for feature in &layer.features {
+            let current_source_order = source_order;
+            source_order += 1;
+
+            let Some(text) = feature.label_text() else {
+                continue;
+            };
+            let Some(anchor) = feature.label_anchor() else {
+                continue;
+            };
+            if !projection.is_visible(anchor, 0.5) {
+                continue;
+            }
+
+            let class = label_class(layer.layer_type, feature);
+            let entry = match feature {
+                GeoFeature::Polygon { .. } | GeoFeature::MultiPolygon { .. } => {
+                    build_polygon_label_entry(anchor, text, zoom, layer.layer_type, class, dark)
+                }
+                GeoFeature::Point { .. } => {
+                    Some(build_point_label_entry(anchor, text, zoom, class, dark))
+                }
+                _ => None,
+            };
+            let Some(entry) = entry else {
+                continue;
+            };
+
+            let galley = painter.layout_no_wrap(
+                entry.text.clone(),
+                FontId::proportional(entry.font_size),
+                entry.color,
+            );
+            let anchor_screen = projection.geo_to_screen(entry.anchor) + entry.pixel_offset;
+            let pos = aligned_galley_pos(anchor_screen, galley.size(), entry.align);
+            candidates.push(GeoLabelCandidate {
+                entry,
+                bounds: ScreenBounds {
+                    min_x: pos.x,
+                    min_y: pos.y,
+                    max_x: pos.x + galley.size().x,
+                    max_y: pos.y + galley.size().y,
+                },
+                source_order: current_source_order,
+            });
         }
     }
 
-    let cache = layer.label_cache();
-    paint_label_cache(painter, projection, &cache);
+    candidates
 }
 
-/// Build the per-layer label cache: one [`LabelEntry`] per visible
-/// labelable feature, recording its text and font size (the galley is laid
-/// out per-frame at paint time). Skips features whose `min_label_zoom`
-/// threshold isn't met or whose anchor isn't within the visible bounds at
-/// build time.
-fn rebuild_label_cache(
-    layer: &GeoLayer,
-    projection: &MapProjection,
-    zoom: f32,
-    dark: bool,
-    cache: &mut LayerLabelCache,
-) {
-    cache.entries.clear();
-
-    if zoom < layer.layer_type.min_label_zoom() {
-        return;
-    }
-
-    let layer_type = layer.layer_type;
-
-    for feature in &layer.features {
-        let Some(text) = feature.label_text() else {
-            continue;
-        };
-        let Some(anchor) = feature.label_anchor() else {
-            continue;
-        };
-        // Visibility check at build time uses generous margin so labels
-        // near the edge stay cached and stay positioned correctly during
-        // small pans before the next settle.
-        if !projection.is_visible(anchor, 0.5) {
-            continue;
-        }
-
-        let entry = match feature {
-            GeoFeature::Polygon { .. } | GeoFeature::MultiPolygon { .. } => {
-                build_polygon_label_entry(anchor, text, zoom, layer_type, dark)
-            }
-            GeoFeature::Point(_, _) => build_point_label_entry(anchor, text, zoom, dark),
-            _ => None,
-        };
-        if let Some(entry) = entry {
-            cache.entries.push(entry);
-        }
+fn label_class(layer_type: GeoLayerType, feature: &GeoFeature) -> GeoLabelClass {
+    match layer_type {
+        GeoLayerType::States => GeoLabelClass::State,
+        GeoLayerType::Counties => GeoLabelClass::County,
+        GeoLayerType::Highways => GeoLabelClass::Highway,
+        GeoLayerType::Lakes => GeoLabelClass::Lake,
+        GeoLayerType::Cities => match feature {
+            GeoFeature::Point {
+                city_tier: Some(CityTier::Major),
+                ..
+            } => GeoLabelClass::CityMajor,
+            GeoFeature::Point {
+                city_tier: Some(CityTier::Medium),
+                ..
+            } => GeoLabelClass::CityMedium,
+            _ => GeoLabelClass::CitySmall,
+        },
     }
 }
 
@@ -291,6 +261,7 @@ fn build_polygon_label_entry(
     text: &str,
     zoom: f32,
     layer_type: GeoLayerType,
+    class: GeoLabelClass,
     _dark: bool,
 ) -> Option<LabelEntry> {
     let (base_size, color) = polygon_label_style(layer_type);
@@ -302,6 +273,7 @@ fn build_polygon_label_entry(
         text: text.to_string(),
         font_size,
         color,
+        class,
     })
 }
 
@@ -309,19 +281,21 @@ fn build_point_label_entry(
     anchor: Coord<f64>,
     text: &str,
     zoom: f32,
+    class: GeoLabelClass,
     _dark: bool,
-) -> Option<LabelEntry> {
+) -> LabelEntry {
     let radius = (2.5 * zoom.sqrt()).clamp(2.0, 5.0);
     let font_size = (9.0 * zoom.sqrt()).clamp(8.0, 13.0);
     let color = Color32::from_rgb(180, 180, 200);
-    Some(LabelEntry {
+    LabelEntry {
         anchor,
         align: Align2::LEFT_CENTER,
         pixel_offset: Vec2::new(radius + 2.0, -2.0),
         text: text.to_string(),
         font_size,
         color,
-    })
+        class,
+    }
 }
 
 fn polygon_label_style(layer_type: GeoLayerType) -> (f32, Color32) {
@@ -338,8 +312,20 @@ fn polygon_label_style(layer_type: GeoLayerType) -> (f32, Color32) {
 /// egui's internal galley cache, which self-invalidates on font-atlas
 /// recreate) and project its anchor through the current projection before
 /// emitting one halo'd galley.
-fn paint_label_cache(painter: &Painter, projection: &MapProjection, cache: &LayerLabelCache) {
-    for entry in &cache.entries {
+pub(crate) fn paint_geo_labels(
+    painter: &Painter,
+    projection: &MapProjection,
+    visibility: &GeoLayerVisibility,
+    entries: &[LabelEntry],
+) {
+    if !visibility.labels {
+        return;
+    }
+
+    for entry in entries {
+        if !label_class_enabled(entry.class, visibility) {
+            continue;
+        }
         let galley = painter.layout_no_wrap(
             entry.text.clone(),
             FontId::proportional(entry.font_size),
@@ -352,8 +338,19 @@ fn paint_label_cache(painter: &Painter, projection: &MapProjection, cache: &Laye
     }
 }
 
-/// Renders a point feature's marker dot. Labels for points are emitted via
-/// the layer label cache during the Labels pass.
+fn label_class_enabled(class: GeoLabelClass, visibility: &GeoLayerVisibility) -> bool {
+    match class {
+        GeoLabelClass::State => visibility.states,
+        GeoLabelClass::CityMajor | GeoLabelClass::CityMedium | GeoLabelClass::CitySmall => {
+            visibility.cities
+        }
+        GeoLabelClass::Highway => visibility.highways,
+        GeoLabelClass::Lake => visibility.lakes,
+        GeoLabelClass::County => visibility.counties,
+    }
+}
+
+/// Renders a point feature's marker dot. Point labels use the global label pass.
 fn render_point_marker(
     painter: &Painter,
     coord: &Coord<f64>,

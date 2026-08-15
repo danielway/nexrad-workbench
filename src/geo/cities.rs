@@ -8,26 +8,14 @@
 //! should pick a citable source (e.g. the Census Bureau gazetteer) and note it
 //! here — ideally alongside a regeneration script, matching the zones pipeline.
 
-use super::layer::{GeoFeature, GeoLayer, GeoLayerType};
+use super::layer::{CityTier as Tier, GeoFeature, GeoLayer, GeoLayerType};
 use geo_types::Coord;
 
 /// Population tier for controlling visibility at different zoom levels.
-#[derive(Clone, Copy)]
-enum Tier {
-    /// Major metro (pop > 500k) — visible at all zoom levels
-    Major,
-    /// Medium city (pop 200k-500k) — visible at zoom >= 1.5
-    Medium,
-    /// Smaller city (pop 100k-200k) — visible at zoom >= 3.0
-    Small,
-}
-
 struct CityEntry {
     name: &'static str,
     lat: f64,
     lon: f64,
-    #[allow(dead_code)]
-    // Curated zoom-visibility tier (doc on `Tier`); city-layer LOD not wired yet.
     tier: Tier,
 }
 
@@ -853,13 +841,14 @@ pub(crate) fn build_cities_layer() -> GeoLayer {
     let mut layer = GeoLayer::new(GeoLayerType::Cities);
 
     for city in CITIES {
-        layer.features.push(GeoFeature::Point(
-            Coord {
+        layer.features.push(GeoFeature::Point {
+            coord: Coord {
                 x: city.lon,
                 y: city.lat,
             },
-            Some(city.name.to_string()),
-        ));
+            label: Some(city.name.to_string()),
+            city_tier: Some(city.tier),
+        });
     }
 
     layer
@@ -894,15 +883,35 @@ mod coverage_tests {
         assert_eq!(layer.features.len(), 135);
     }
 
+    #[wasm_bindgen_test]
+    fn build_cities_layer_preserves_tier_counts_and_source_order() {
+        let layer = build_cities_layer();
+        let tiers: Vec<_> = layer
+            .features
+            .iter()
+            .map(|feature| match feature {
+                GeoFeature::Point { city_tier, .. } => city_tier.expect("city tier"),
+                other => panic!("expected Point feature, got {other:?}"),
+            })
+            .collect();
+
+        assert_eq!(tiers[..42], [Tier::Major; 42]);
+        assert_eq!(tiers[42..73], [Tier::Medium; 31]);
+        assert_eq!(tiers[73..], [Tier::Small; 62]);
+    }
+
     /// Every feature is a Point carrying a non-empty label (the city name).
     #[wasm_bindgen_test]
     fn all_features_are_labeled_points() {
         let layer = build_cities_layer();
         for feature in &layer.features {
             match feature {
-                GeoFeature::Point(_coord, label) => {
+                GeoFeature::Point {
+                    label, city_tier, ..
+                } => {
                     let name = label.as_ref().expect("city point must have a name");
                     assert!(!name.is_empty(), "city name must be non-empty");
+                    assert!(city_tier.is_some(), "city point must retain its tier");
                 }
                 other => panic!("expected Point feature, got {:?}", other),
             }
@@ -915,8 +924,13 @@ mod coverage_tests {
     fn first_city_is_new_york_with_lon_x_lat_y() {
         let layer = build_cities_layer();
         match &layer.features[0] {
-            GeoFeature::Point(coord, label) => {
+            GeoFeature::Point {
+                coord,
+                label,
+                city_tier,
+            } => {
                 assert_eq!(label.as_deref(), Some("New York"));
+                assert_eq!(*city_tier, Some(Tier::Major));
                 assert!(
                     (coord.x - (-74.0060)).abs() < 1e-9,
                     "lon→x, got {}",
@@ -949,7 +963,12 @@ mod coverage_tests {
 
         let find = |name: &str| -> Coord<f64> {
             for f in &layer.features {
-                if let GeoFeature::Point(coord, Some(label)) = f {
+                if let GeoFeature::Point {
+                    coord,
+                    label: Some(label),
+                    ..
+                } = f
+                {
                     if label == name {
                         return *coord;
                     }
@@ -981,7 +1000,12 @@ mod coverage_tests {
     fn all_coords_in_us_bounds() {
         let layer = build_cities_layer();
         for f in &layer.features {
-            if let GeoFeature::Point(coord, Some(name)) = f {
+            if let GeoFeature::Point {
+                coord,
+                label: Some(name),
+                ..
+            } = f
+            {
                 // Longitude (x): western hemisphere, roughly -180..-60.
                 assert!(
                     coord.x < -60.0 && coord.x > -180.0,
