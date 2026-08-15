@@ -232,12 +232,18 @@ pub(crate) struct DiagnosticsVm {
     /// Alerts whose bbox intersects the current view, severity-sorted. Empty in
     /// 3D / before the first canvas frame (no bounds), or when none match.
     pub visible_alerts: Vec<VisibleAlert>,
+    /// Unix seconds when this browser last successfully checked the NWS feed.
+    /// Independent of map bounds so canvas provenance remains available even
+    /// when no alert intersects the current view.
+    pub alerts_last_checked_secs: Option<f64>,
 }
 
 impl DiagnosticsVm {
     /// Build the view-model from the diagnostics state and this frame's visible
     /// bounds (`None` in 3D globe mode / before the canvas has rendered).
     pub(crate) fn build(alerts: &AlertsState, bounds: Option<(f64, f64, f64, f64)>) -> Self {
+        let alerts_last_checked_secs =
+            (alerts.last_success_ms > 0.0).then_some(alerts.last_success_ms / 1000.0);
         let visible_alerts = match bounds {
             Some(b) => alerts
                 .visible_in(b)
@@ -253,7 +259,10 @@ impl DiagnosticsVm {
                 .collect(),
             None => Vec::new(),
         };
-        Self { visible_alerts }
+        Self {
+            visible_alerts,
+            alerts_last_checked_secs,
+        }
     }
 }
 
@@ -993,6 +1002,25 @@ mod coverage_tests {
     fn vm_default_is_empty() {
         let vm = DiagnosticsVm::default();
         assert!(vm.visible_alerts.is_empty());
+        assert_eq!(vm.alerts_last_checked_secs, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn vm_projects_last_success_independent_of_bounds() {
+        let mut alerts = AlertsState {
+            last_success_ms: 123_456.0,
+            ..AlertsState::default()
+        };
+        alerts.alerts.push(warning(
+            "a",
+            AlertSeverity::Extreme,
+            vec![vec![square(0.0, 10.0)]],
+        ));
+
+        let vm = DiagnosticsVm::build(&alerts, None);
+
+        assert!(vm.visible_alerts.is_empty());
+        assert_eq!(vm.alerts_last_checked_secs, Some(123.456));
     }
 
     #[wasm_bindgen_test]
