@@ -66,6 +66,26 @@ pub enum GeoLayerType {
     Lakes,
 }
 
+/// Curated population tier retained for city-label placement priority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CityTier {
+    Major,
+    Medium,
+    Small,
+}
+
+/// Global geographic-label priority class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GeoLabelClass {
+    State,
+    CityMajor,
+    CityMedium,
+    CitySmall,
+    Highway,
+    Lake,
+    County,
+}
+
 impl GeoLayerType {
     /// Returns the default color for this layer type.
     pub fn default_color(&self) -> Color32 {
@@ -141,8 +161,12 @@ pub enum GeoFeature {
         label: Option<String>,
         label_anchor: Coord<f64>,
     },
-    /// A single point (for cities, landmarks)
-    Point(Coord<f64>, Option<String>),
+    /// A single point (for cities, landmarks).
+    Point {
+        coord: Coord<f64>,
+        label: Option<String>,
+        city_tier: Option<CityTier>,
+    },
 }
 
 /// Computes the true geometric centroid of a polygon using the shoelace formula.
@@ -223,12 +247,6 @@ pub struct GeoLayer {
     /// Invisible (idle) views hit the cache every frame and skip all
     /// trig on feature coords.
     cache: RefCell<LayerProjectionCache>,
-    /// Cache of laid-out label galleys + their lat/lon anchors. Rebuilt
-    /// only when the camera has settled and the label-cache token (zoom
-    /// bucket, theme) has changed. Per-frame label rendering reprojects
-    /// the cached anchors and reuses the cached galleys with halo offsets,
-    /// avoiding text layout on every frame.
-    label_cache: RefCell<LayerLabelCache>,
 }
 
 /// Single retained label, ready to paint at the projected position of its
@@ -256,26 +274,64 @@ pub(crate) struct LabelEntry {
     pub font_size: f32,
     /// Foreground text color (halo offsets paint in black).
     pub color: Color32,
+    /// Source class, retained so disabled layers can be filtered immediately.
+    pub class: GeoLabelClass,
 }
 
-/// Inputs that, when changed, force a label-cache rebuild on next settle:
-/// font sizes scale with zoom, and label colors flip with theme. The
-/// projection fingerprint is *not* part of the token because pan/zoom
-/// within a bucket should reuse the same galleys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct LabelCacheToken {
-    /// `(zoom * 4.0).round() as u16` — quarter-zoom resolution. Coarse
-    /// enough to absorb tiny floating-point jitter, fine enough that font
-    /// sizes update visibly during sustained zoom.
-    pub zoom_bucket: u16,
-    pub dark: bool,
-    pub show_labels: bool,
+/// Primitive screen-space rectangle used by the headless selector.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ScreenBounds {
+    pub min_x: f32,
+    pub min_y: f32,
+    pub max_x: f32,
+    pub max_y: f32,
 }
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct LayerLabelCache {
-    pub token: Option<LabelCacheToken>,
-    pub entries: Vec<LabelEntry>,
+impl ScreenBounds {
+    pub(crate) fn is_valid(self) -> bool {
+        self.min_x.is_finite()
+            && self.min_y.is_finite()
+            && self.max_x.is_finite()
+            && self.max_y.is_finite()
+            && self.max_x > self.min_x
+            && self.max_y > self.min_y
+    }
+
+    pub(crate) fn area(self) -> Option<f32> {
+        self.is_valid()
+            .then_some((self.max_x - self.min_x) * (self.max_y - self.min_y))
+    }
+
+    pub(crate) fn expanded(self, amount: f32) -> Self {
+        Self {
+            min_x: self.min_x - amount,
+            min_y: self.min_y - amount,
+            max_x: self.max_x + amount,
+            max_y: self.max_y + amount,
+        }
+    }
+
+    pub(crate) fn intersects(self, other: Self) -> bool {
+        self.min_x < other.max_x
+            && self.max_x > other.min_x
+            && self.min_y < other.max_y
+            && self.max_y > other.min_y
+    }
+
+    pub(crate) fn contains(self, other: Self) -> bool {
+        self.min_x <= other.min_x
+            && self.min_y <= other.min_y
+            && self.max_x >= other.max_x
+            && self.max_y >= other.max_y
+    }
+}
+
+/// Measured label candidate presented to the pure global selector.
+#[derive(Debug, Clone)]
+pub(crate) struct GeoLabelCandidate {
+    pub entry: LabelEntry,
+    pub bounds: ScreenBounds,
+    pub source_order: usize,
 }
 
 /// Cached screen-space projection of a single feature's line/ring
@@ -309,7 +365,7 @@ fn project_line(coords: &[Coord<f64>], projection: &MapProjection) -> Vec<Pos2> 
 
 fn project_feature(feature: &GeoFeature, projection: &MapProjection) -> FeatureProjection {
     match feature {
-        GeoFeature::Point(_, _) => FeatureProjection::Empty,
+        GeoFeature::Point { .. } => FeatureProjection::Empty,
         GeoFeature::LineString(coords) => {
             FeatureProjection::Single(project_line(coords, projection))
         }
@@ -344,7 +400,11 @@ impl GeoFeature {
                 label_anchor,
                 ..
             } => Some(*label_anchor),
-            GeoFeature::Point(coord, Some(_)) => Some(*coord),
+            GeoFeature::Point {
+                coord,
+                label: Some(_),
+                ..
+            } => Some(*coord),
             _ => None,
         }
     }
@@ -354,7 +414,7 @@ impl GeoFeature {
         match self {
             GeoFeature::Polygon { label: Some(s), .. }
             | GeoFeature::MultiPolygon { label: Some(s), .. }
-            | GeoFeature::Point(_, Some(s)) => Some(s.as_str()),
+            | GeoFeature::Point { label: Some(s), .. } => Some(s.as_str()),
             _ => None,
         }
     }
@@ -370,18 +430,7 @@ impl GeoLayer {
             line_width: None,
             visible: true,
             cache: RefCell::new(LayerProjectionCache::default()),
-            label_cache: RefCell::new(LayerLabelCache::default()),
         }
-    }
-
-    /// Borrow the label cache mutably for rebuild.
-    pub(crate) fn label_cache_mut(&self) -> std::cell::RefMut<'_, LayerLabelCache> {
-        self.label_cache.borrow_mut()
-    }
-
-    /// Borrow the label cache for paint.
-    pub(crate) fn label_cache(&self) -> std::cell::Ref<'_, LayerLabelCache> {
-        self.label_cache.borrow()
     }
 
     /// Ensures the cache of projected screen points matches the current
@@ -471,7 +520,11 @@ fn convert_shapefile_shape(shape: &shapefile::Shape, label: Option<String>) -> O
     match shape {
         shapefile::Shape::Point(p) => {
             let coord = Coord { x: p.x, y: p.y };
-            Some(GeoFeature::Point(coord, label))
+            Some(GeoFeature::Point {
+                coord,
+                label,
+                city_tier: None,
+            })
         }
         shapefile::Shape::Polyline(pl) => {
             let parts = pl.parts();
@@ -826,7 +879,11 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn label_anchor_point_with_label_returns_point() {
-        let f = GeoFeature::Point(c(-98.0, 39.0), Some("City".to_string()));
+        let f = GeoFeature::Point {
+            coord: c(-98.0, 39.0),
+            label: Some("City".to_string()),
+            city_tier: Some(CityTier::Major),
+        };
         let anchor = f.label_anchor().expect("labeled point has anchor");
         assert!((anchor.x + 98.0).abs() < 1e-9);
         assert!((anchor.y - 39.0).abs() < 1e-9);
@@ -834,7 +891,11 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn label_anchor_point_without_label_is_none() {
-        let f = GeoFeature::Point(c(1.0, 2.0), None);
+        let f = GeoFeature::Point {
+            coord: c(1.0, 2.0),
+            label: None,
+            city_tier: None,
+        };
         assert!(f.label_anchor().is_none());
     }
 
@@ -856,7 +917,11 @@ mod coverage_tests {
         };
         assert_eq!(poly.label_text(), Some("Poly"));
 
-        let point = GeoFeature::Point(c(0.0, 0.0), Some("Pt".to_string()));
+        let point = GeoFeature::Point {
+            coord: c(0.0, 0.0),
+            label: Some("Pt".to_string()),
+            city_tier: None,
+        };
         assert_eq!(point.label_text(), Some("Pt"));
 
         let multi = GeoFeature::MultiPolygon {
@@ -866,7 +931,11 @@ mod coverage_tests {
         };
         assert_eq!(multi.label_text(), Some("M"));
 
-        let unlabeled = GeoFeature::Point(c(0.0, 0.0), None);
+        let unlabeled = GeoFeature::Point {
+            coord: c(0.0, 0.0),
+            label: None,
+            city_tier: None,
+        };
         assert_eq!(unlabeled.label_text(), None);
 
         let line = GeoFeature::MultiLineString(vec![vec![c(0.0, 0.0)]]);
@@ -912,7 +981,14 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn point_feature_projects_to_empty() {
         let proj = test_proj();
-        let pf = project_feature(&GeoFeature::Point(c(-98.0, 39.0), None), &proj);
+        let pf = project_feature(
+            &GeoFeature::Point {
+                coord: c(-98.0, 39.0),
+                label: None,
+                city_tier: None,
+            },
+            &proj,
+        );
         assert!(matches!(pf, FeatureProjection::Empty));
     }
 
@@ -981,7 +1057,11 @@ mod coverage_tests {
     fn refresh_projection_cache_builds_parallel_entries() {
         let proj = test_proj();
         let mut layer = GeoLayer::new(GeoLayerType::States);
-        layer.features.push(GeoFeature::Point(c(-98.0, 39.0), None));
+        layer.features.push(GeoFeature::Point {
+            coord: c(-98.0, 39.0),
+            label: None,
+            city_tier: None,
+        });
         layer
             .features
             .push(GeoFeature::LineString(vec![c(-98.0, 39.0), c(-97.0, 39.0)]));
@@ -1021,30 +1101,6 @@ mod coverage_tests {
         );
     }
 
-    // ----- LabelCacheToken default / equality -----
-
-    #[wasm_bindgen_test]
-    fn label_cache_token_default_and_eq() {
-        let a = LabelCacheToken::default();
-        assert_eq!(a.zoom_bucket, 0);
-        assert!(!a.dark);
-        assert!(!a.show_labels);
-
-        let b = LabelCacheToken {
-            zoom_bucket: 0,
-            dark: false,
-            show_labels: false,
-        };
-        assert_eq!(a, b);
-
-        let c_tok = LabelCacheToken {
-            zoom_bucket: 4,
-            dark: true,
-            show_labels: true,
-        };
-        assert_ne!(a, c_tok);
-    }
-
     // ----- LabelEntry construction sanity (pure struct) -----
 
     #[wasm_bindgen_test]
@@ -1056,6 +1112,7 @@ mod coverage_tests {
             text: "Topeka".to_string(),
             font_size: 12.0,
             color: Color32::WHITE,
+            class: GeoLabelClass::CityMajor,
         };
         assert_eq!(e.text, "Topeka");
         assert!((e.font_size - 12.0).abs() < 1e-6);

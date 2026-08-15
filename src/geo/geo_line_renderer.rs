@@ -223,7 +223,7 @@ fn emit_feature_lines(feature: &GeoFeature, verts: &mut Vec<f32>) {
                 emit_linestring(ext, verts);
             }
         }
-        GeoFeature::Point(..) => {} // handled by egui text
+        GeoFeature::Point { .. } => {} // handled by egui text
     }
 }
 

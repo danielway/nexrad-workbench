@@ -10,9 +10,9 @@ use super::canvas_overlays::{
     AlertRenderPhase, OverlayContext, RadarCutout,
 };
 use super::colors::canvas as canvas_colors;
+use crate::core::geo_labels::{GeoLabelPlacementKey, GeoLabelVisibilityKey};
 use crate::core::RenderProcessing;
-use crate::geo::ViewMode;
-use crate::geo::{GeoLayerSet, MapProjection};
+use crate::geo::{GeoLayerSet, MapProjection, ScreenBounds, ViewMode};
 use crate::nexrad::RadarGpuRenderer;
 use crate::state::AppState;
 use eframe::egui::{self, Color32, Rect, Sense, Stroke};
@@ -120,7 +120,7 @@ pub(crate) fn render_canvas_with_geo(
                     .observe(projection.fingerprint(), now_secs);
                 let camera_settled = state.render_cache.camera_motion.is_settled(now_secs);
                 // Schedule exactly one wake-up at the settle moment so the
-                // label tier rebuilds on time even when nothing else is
+                // label placement rebuilds on time even when nothing else is
                 // animating. No-op if already settled.
                 if let Some(remaining) =
                     state.render_cache.camera_motion.time_until_settle(now_secs)
@@ -174,10 +174,6 @@ pub(crate) fn render_canvas_with_geo(
                         &state.layer_state.geo,
                         &projection,
                         state.viz_state.zoom(),
-                        state.layer_state.geo.labels,
-                        crate::geo::GeoPass::Lines,
-                        dark,
-                        camera_settled,
                     );
                 }
 
@@ -302,16 +298,43 @@ pub(crate) fn render_canvas_with_geo(
                 // legible over bright reflectivity fills. Halo-stroked inside
                 // the renderer for contrast.
                 if let Some(layers) = geo_layers {
-                    crate::geo::render_geo_layers(
-                        &painter,
-                        layers,
-                        &state.layer_state.geo,
-                        &projection,
-                        state.viz_state.zoom(),
-                        state.layer_state.geo.labels,
-                        crate::geo::GeoPass::Labels,
+                    let visibility = &state.layer_state.geo;
+                    let placement_key = GeoLabelPlacementKey {
+                        projection: projection.fingerprint(),
+                        visibility: GeoLabelVisibilityKey::from(visibility),
                         dark,
-                        camera_settled,
+                    };
+
+                    if state
+                        .render_cache
+                        .geo_labels
+                        .needs_rebuild(placement_key, camera_settled)
+                    {
+                        let candidates = crate::geo::build_geo_label_candidates(
+                            &painter,
+                            layers,
+                            visibility,
+                            &projection,
+                            state.viz_state.zoom(),
+                            dark,
+                        );
+                        state.render_cache.geo_labels.replace(
+                            placement_key,
+                            &candidates,
+                            ScreenBounds {
+                                min_x: rect.min.x,
+                                min_y: rect.min.y,
+                                max_x: rect.max.x,
+                                max_y: rect.max.y,
+                            },
+                        );
+                    }
+
+                    crate::geo::paint_geo_labels(
+                        &painter,
+                        &projection,
+                        visibility,
+                        &state.render_cache.geo_labels.entries,
                     );
                 }
 

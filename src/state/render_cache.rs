@@ -4,15 +4,56 @@
 //! math) can be deferred until the user has stopped panning/zooming, plus a
 //! handful of small caches that smooth over per-frame recomputation.
 
-use crate::geo::ProjectionFingerprint;
+use crate::core::geo_labels::{
+    select_geo_labels, should_rebuild_labels, GeoLabelPlacementKey, GeoLabelSelectionCandidate,
+};
+use crate::geo::{GeoLabelCandidate, LabelEntry, ProjectionFingerprint, ScreenBounds};
 
 /// Default settle window: how long the camera must be stable before the
-/// label tier rebuilds its cache. 180 ms feels responsive without thrashing
+/// label selector rebuilds its cache. 180 ms feels responsive without thrashing
 /// the cache during a continuous pan/zoom gesture.
 pub(crate) const SETTLE_WINDOW_SECS: f64 = 0.18;
 
+/// One global retained placement for all 2D geographic feature labels.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GeoLabelCache {
+    pub key: Option<GeoLabelPlacementKey>,
+    pub entries: Vec<LabelEntry>,
+}
+
+impl GeoLabelCache {
+    pub(crate) fn needs_rebuild(
+        &self,
+        requested: GeoLabelPlacementKey,
+        camera_settled: bool,
+    ) -> bool {
+        should_rebuild_labels(self.key, requested, camera_settled)
+    }
+
+    pub(crate) fn replace(
+        &mut self,
+        key: GeoLabelPlacementKey,
+        candidates: &[GeoLabelCandidate],
+        viewport: ScreenBounds,
+    ) {
+        let selection_candidates: Vec<_> = candidates
+            .iter()
+            .map(|candidate| GeoLabelSelectionCandidate {
+                class: candidate.entry.class,
+                bounds: candidate.bounds,
+                source_order: candidate.source_order,
+            })
+            .collect();
+        self.entries = select_geo_labels(&selection_candidates, viewport)
+            .into_iter()
+            .map(|index| candidates[index].entry.clone())
+            .collect();
+        self.key = Some(key);
+    }
+}
+
 /// Tracks whether the map camera (projection) has come to rest. Consumers
-/// (e.g. the label tier in the geo renderer) check `is_settled()` to decide
+/// (e.g. the geographic label selector) check `is_settled()` to decide
 /// whether to do expensive recomputation this frame.
 #[derive(Debug, Clone)]
 pub(crate) struct CameraMotion {
@@ -74,6 +115,9 @@ pub(crate) struct PrevSweepCacheKey {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct RenderCache {
     pub camera_motion: CameraMotion,
+
+    /// Settled, globally selected geographic labels for the flat map.
+    pub geo_labels: GeoLabelCache,
 
     /// Last value of `is_dark` pushed to `egui::Context::set_visuals`. Used
     /// to skip the per-frame `Visuals` reconstruction unless the theme

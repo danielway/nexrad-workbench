@@ -236,6 +236,24 @@ pub(crate) struct ProjectionFingerprint {
 }
 
 #[cfg(test)]
+impl ProjectionFingerprint {
+    pub(crate) fn test_value(value: u64) -> Self {
+        Self {
+            center_lat: value,
+            center_lon: value,
+            range_deg: value,
+            zoom: value as u32,
+            pan_x: value as u32,
+            pan_y: value as u32,
+            rect_min_x: value as u32,
+            rect_min_y: value as u32,
+            rect_max_x: value as u32,
+            rect_max_y: value as u32,
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
