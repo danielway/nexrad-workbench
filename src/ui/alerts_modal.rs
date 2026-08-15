@@ -17,7 +17,13 @@ use crate::alerts::{event_color, Alert};
 use crate::core::diagnostics::{DiagnosticsIntent, DiagnosticsVm};
 use crate::core::Intent;
 use crate::state::AppState;
-use eframe::egui::{self, Color32, RichText, ScrollArea, Vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, RichText, ScrollArea, Vec2};
+
+const LIST_SIZE: Vec2 = Vec2::new(520.0, 560.0);
+const DETAIL_SIZE: Vec2 = Vec2::new(560.0, 600.0);
+const MODAL_GUTTER: f32 = 8.0;
+const WINDOW_CHROME: Vec2 = Vec2::new(16.0, 40.0);
+const ALERT_ROW_HEIGHT: f32 = 68.0;
 
 pub(super) struct AlertsModalsLayer;
 
@@ -32,11 +38,10 @@ impl Layer for AlertsModalsLayer {
         ctx.diagnostics.alerts.list_modal_open || ctx.diagnostics.alerts.selected_alert_id.is_some()
     }
     fn render(&self, ctx: &mut LayoutCtx) {
-        if ctx.diagnostics.alerts.list_modal_open {
-            render_list_modal(ctx.ctx, ctx.state, ctx.diagnostics_vm, ctx.derived);
-        }
         if ctx.diagnostics.alerts.selected_alert_id.is_some() {
             render_detail_modal(ctx.ctx, ctx.state, ctx.diagnostics);
+        } else if ctx.diagnostics.alerts.list_modal_open {
+            render_list_modal(ctx.ctx, ctx.state, ctx.diagnostics_vm, ctx.derived);
         }
     }
 }
@@ -54,20 +59,23 @@ fn render_list_modal(
 
     // The severity-sorted visible-alert list is the view-model; no recompute here.
     let visible = &vm.visible_alerts;
+    let (bounds, size) = modal_geometry(ctx, LIST_SIZE);
 
     egui::Window::new("Active Alerts in View")
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(520.0, 560.0))
+        .fixed_size(size)
+        .constrain_to(bounds)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(format!(
-                        "{} alert(s) intersect the visible area",
-                        visible.len()
+                        "{} alert{} in view",
+                        visible.len(),
+                        if visible.len() == 1 { "" } else { "s" }
                     ))
                     .size(13.0)
                     .color(Color32::from_rgb(180, 180, 180)),
@@ -101,54 +109,16 @@ fn render_list_modal(
                 return;
             }
 
-            ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
-                for va in visible {
-                    ui.add_space(2.0);
-                    let bg_stroke = event_stroke(&va.event);
-                    let frame = egui::Frame::default()
-                        .stroke(bg_stroke)
-                        .inner_margin(egui::Margin::symmetric(10, 8))
-                        .corner_radius(egui::CornerRadius::same(4));
-                    let response = frame
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                event_dot(ui, &va.event);
-                                ui.vertical(|ui| {
-                                    ui.label(RichText::new(&va.event).size(14.0).strong());
-                                    if !va.area_desc.is_empty() {
-                                        ui.label(
-                                            RichText::new(truncate(&va.area_desc, 120))
-                                                .size(11.0)
-                                                .color(Color32::from_rgb(170, 170, 170)),
-                                        );
-                                    }
-                                    if let Some(exp) = va.expires_secs {
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "Expires {}",
-                                                format_relative(derived.frame_now_secs, exp)
-                                            ))
-                                            .size(10.0)
-                                            .color(Color32::from_rgb(140, 140, 140)),
-                                        );
-                                    }
-                                });
-                            });
-                        })
-                        .response
-                        .interact(egui::Sense::click());
-
-                    if response.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            let body_height = ui.available_height().max(0.0);
+            ScrollArea::vertical()
+                .id_salt("alerts_list_scroll")
+                .max_height(body_height)
+                .auto_shrink([false, false])
+                .show_rows(ui, ALERT_ROW_HEIGHT, visible.len(), |ui, rows| {
+                    for index in rows {
+                        render_alert_row(ui, &visible[index], derived, state);
                     }
-                    if response.clicked() {
-                        state.push_command(Intent::Diagnostics(DiagnosticsIntent::SelectAlert(
-                            va.id.clone(),
-                        )));
-                    }
-                    ui.add_space(2.0);
-                }
-            });
+                });
         });
 }
 
@@ -162,94 +132,78 @@ fn render_detail_modal(
         return;
     }
 
-    // Clone the alert once so we don't hold a borrow through the UI closure.
-    let alert: Alert = match diagnostics
+    let alert: &Alert = match diagnostics
         .alerts
         .selected_alert_id
         .as_ref()
         .and_then(|id| diagnostics.alerts.find(id))
     {
-        Some(a) => a.clone(),
+        Some(a) => a,
         None => {
             // Stale selection (e.g. alert expired while modal was open).
             state.push_command(Intent::Diagnostics(DiagnosticsIntent::ClearAlertSelection));
             return;
         }
     };
+    let (bounds, size) = modal_geometry(ctx, DETAIL_SIZE);
 
-    egui::Window::new(format!("{} — {}", alert.severity.label(), alert.event))
+    egui::Window::new("Alert details")
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(560.0, 600.0))
+        .fixed_size(size)
+        .constrain_to(bounds)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
-            ui.add_space(4.0);
-
-            // Severity / urgency / certainty badges.
-            ui.horizontal_wrapped(|ui| {
-                severity_badge(ui, &alert);
-                if !alert.urgency.is_empty() {
-                    chip_badge(
-                        ui,
-                        &format!("Urgency: {}", alert.urgency),
-                        Color32::from_rgb(90, 110, 140),
-                    );
-                }
-                if !alert.certainty.is_empty() {
-                    chip_badge(
-                        ui,
-                        &format!("Certainty: {}", alert.certainty),
-                        Color32::from_rgb(90, 110, 140),
-                    );
-                }
-            });
-
-            if !alert.headline.is_empty() {
-                ui.add_space(6.0);
-                ui.label(RichText::new(&alert.headline).size(14.0).strong());
-            }
-
-            ui.add_space(6.0);
-            ui.separator();
-
-            // Timing + area meta block.
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    if let Some(t) = alert.effective_secs {
-                        meta_row(ui, "Effective", &format_absolute(t));
-                    }
-                    if let Some(t) = alert.onset_secs {
-                        meta_row(ui, "Onset", &format_absolute(t));
-                    }
-                    if let Some(t) = alert.expires_secs {
-                        meta_row(ui, "Expires", &format_absolute(t));
-                    }
-                    if let Some(t) = alert.ends_secs {
-                        meta_row(ui, "Ends", &format_absolute(t));
-                    }
-                    if !alert.sender.is_empty() {
-                        meta_row(ui, "Sender", &alert.sender);
-                    }
-                });
-            });
-
-            ui.separator();
-            ui.add_space(4.0);
-            if !alert.area_desc.is_empty() {
-                ui.label(RichText::new("Area").strong().size(12.0));
-                ui.label(
-                    RichText::new(&alert.area_desc)
-                        .size(12.0)
-                        .color(Color32::from_rgb(200, 200, 200)),
-                );
-                ui.add_space(6.0);
-            }
-
+            // Reserve the footer, then let every data-provided text field scroll
+            // so unusually long alerts cannot push actions outside the viewport.
+            let body_height = (ui.available_height() - 46.0).max(0.0);
             ScrollArea::vertical()
-                .id_salt("alert_detail_scroll")
-                .max_height(360.0)
+                .id_salt(("alert_detail_scroll", &alert.id))
+                .max_height(body_height)
+                .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        severity_badge(ui, alert);
+                        if !alert.urgency.is_empty() {
+                            chip_badge(
+                                ui,
+                                &format!("Urgency: {}", alert.urgency),
+                                Color32::from_rgb(90, 110, 140),
+                            );
+                        }
+                        if !alert.certainty.is_empty() {
+                            chip_badge(
+                                ui,
+                                &format!("Certainty: {}", alert.certainty),
+                                Color32::from_rgb(90, 110, 140),
+                            );
+                        }
+                    });
+
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(&alert.event).size(16.0).strong());
+                    if !alert.headline.is_empty() {
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(&alert.headline).size(13.0).strong());
+                    }
+
+                    ui.add_space(6.0);
+                    ui.separator();
+                    render_timing_meta(ui, alert, state.use_local_time);
+
+                    ui.separator();
+                    ui.add_space(4.0);
+                    if !alert.area_desc.is_empty() {
+                        ui.label(RichText::new("Area").strong().size(12.0));
+                        ui.label(
+                            RichText::new(&alert.area_desc)
+                                .size(12.0)
+                                .color(Color32::from_rgb(200, 200, 200)),
+                        );
+                        ui.add_space(8.0);
+                    }
                     if !alert.description.is_empty() {
                         ui.label(RichText::new("Description").strong().size(12.0));
                         ui.label(RichText::new(&alert.description).size(12.0));
@@ -270,7 +224,7 @@ fn render_detail_modal(
                     }
                 });
 
-            ui.add_space(8.0);
+            ui.add_space(4.0);
             ui.separator();
             ui.horizontal(|ui| {
                 if ui
@@ -295,6 +249,167 @@ fn render_detail_modal(
                 });
             });
         });
+}
+
+fn render_alert_row(
+    ui: &mut egui::Ui,
+    alert: &crate::core::diagnostics::VisibleAlert,
+    derived: &crate::subsystem::Derived,
+    state: &mut AppState,
+) {
+    let (_, rect) = ui.allocate_space(Vec2::new(ui.available_width(), ALERT_ROW_HEIGHT));
+    let response = ui.interact(
+        rect,
+        ui.make_persistent_id(("alert_row", &alert.id)),
+        egui::Sense::click(),
+    );
+    let card_rect = rect.shrink2(Vec2::new(0.0, 2.0));
+    if response.hovered() {
+        ui.painter().rect_filled(
+            card_rect,
+            egui::CornerRadius::same(4),
+            Color32::from_rgba_unmultiplied(255, 255, 255, 8),
+        );
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter().rect_stroke(
+        card_rect,
+        egui::CornerRadius::same(4),
+        event_stroke(&alert.event),
+        egui::StrokeKind::Inside,
+    );
+
+    let content_rect = card_rect.shrink2(Vec2::new(10.0, 7.0));
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .id_salt(&alert.id)
+            .max_rect(content_rect),
+        |ui| {
+            ui.horizontal(|ui| {
+                event_dot(ui, &alert.event);
+                ui.vertical(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(
+                        egui::Label::new(RichText::new(&alert.event).size(14.0).strong())
+                            .truncate(),
+                    );
+                    if !alert.area_desc.is_empty() {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&alert.area_desc)
+                                    .size(11.0)
+                                    .color(Color32::from_rgb(170, 170, 170)),
+                            )
+                            .truncate(),
+                        );
+                    }
+                    if let Some(exp) = alert.expires_secs {
+                        ui.label(
+                            RichText::new(format!(
+                                "Expires {}",
+                                format_relative(derived.frame_now_secs, exp)
+                            ))
+                            .size(10.0)
+                            .color(Color32::from_rgb(140, 140, 140)),
+                        );
+                    }
+                });
+            });
+        },
+    );
+
+    if response.clicked() {
+        state.push_command(Intent::Diagnostics(DiagnosticsIntent::SelectAlert(
+            alert.id.clone(),
+        )));
+    }
+}
+
+fn render_timing_meta(ui: &mut egui::Ui, alert: &Alert, use_local_time: bool) {
+    if ui.available_width() >= 420.0 {
+        ui.columns(2, |columns| {
+            if let Some(t) = alert.effective_secs {
+                meta_row(
+                    &mut columns[0],
+                    "Effective",
+                    &format_absolute(t, use_local_time),
+                );
+            }
+            if let Some(t) = alert.onset_secs {
+                meta_row(
+                    &mut columns[0],
+                    "Onset",
+                    &format_absolute(t, use_local_time),
+                );
+            }
+            if let Some(t) = alert.expires_secs {
+                meta_row(
+                    &mut columns[1],
+                    "Expires",
+                    &format_absolute(t, use_local_time),
+                );
+            }
+            if let Some(t) = alert.ends_secs {
+                meta_row(&mut columns[1], "Ends", &format_absolute(t, use_local_time));
+            }
+        });
+    } else {
+        for (label, time) in [
+            ("Effective", alert.effective_secs),
+            ("Onset", alert.onset_secs),
+            ("Expires", alert.expires_secs),
+            ("Ends", alert.ends_secs),
+        ] {
+            if let Some(time) = time {
+                meta_row(ui, label, &format_absolute(time, use_local_time));
+            }
+        }
+    }
+    if !alert.sender.is_empty() {
+        meta_row(ui, "Sender", &alert.sender);
+    }
+}
+
+fn modal_geometry(ctx: &egui::Context, desired: Vec2) -> (Rect, Vec2) {
+    modal_geometry_for_viewport(
+        ctx.content_rect(),
+        super::mobile::safe_area_insets(),
+        desired,
+    )
+}
+
+fn modal_geometry_for_viewport(
+    viewport: Rect,
+    insets: (f32, f32, f32, f32),
+    desired: Vec2,
+) -> (Rect, Vec2) {
+    let (top, right, bottom, left) = insets;
+    let (left, right) = bounded_margins(
+        viewport.width(),
+        left.max(0.0) + MODAL_GUTTER,
+        right.max(0.0) + MODAL_GUTTER,
+    );
+    let (top, bottom) = bounded_margins(
+        viewport.height(),
+        top.max(0.0) + MODAL_GUTTER,
+        bottom.max(0.0) + MODAL_GUTTER,
+    );
+    let bounds = Rect::from_min_max(
+        Pos2::new(viewport.left() + left, viewport.top() + top),
+        Pos2::new(viewport.right() - right, viewport.bottom() - bottom),
+    );
+    let available_content = (bounds.size() - WINDOW_CHROME).max(Vec2::ZERO);
+    (bounds, desired.min(available_content))
+}
+
+fn bounded_margins(length: f32, before: f32, after: f32) -> (f32, f32) {
+    let total = before + after;
+    if total > length && total > 0.0 {
+        let scale = length.max(0.0) / total;
+        (before * scale, after * scale)
+    } else {
+        (before, after)
+    }
 }
 
 fn event_dot(ui: &mut egui::Ui, event: &str) {
@@ -339,22 +454,12 @@ fn meta_row(ui: &mut egui::Ui, label: &str, value: &str) {
     });
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
-        out.push('\u{2026}');
-        out
-    }
-}
-
-fn format_absolute(ts_secs: f64) -> String {
-    // Show as local date-time; the user can mentally convert if needed.
-    let p = super::time_format::parts(ts_secs, true);
+fn format_absolute(ts_secs: f64, use_local_time: bool) -> String {
+    let p = super::time_format::parts(ts_secs, use_local_time);
+    let zone = if use_local_time { "local" } else { "UTC" };
     format!(
-        "{:04}-{:02}-{:02} {:02}:{:02} local",
-        p.year, p.month, p.day, p.hour, p.minute
+        "{:04}-{:02}-{:02} {:02}:{:02} {zone}",
+        p.year, p.month, p.day, p.hour, p.minute,
     )
 }
 
@@ -372,5 +477,59 @@ fn format_relative(now_secs: f64, ts_secs: f64) -> String {
         format!("in {}h{}m", delta / 3600, (delta % 3600) / 60)
     } else {
         format!("in {}d", delta / 86400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn desktop_modal_keeps_desired_content_size() {
+        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0));
+        let (_, size) = modal_geometry_for_viewport(viewport, (0.0, 0.0, 0.0, 0.0), DETAIL_SIZE);
+        assert_eq!(size, DETAIL_SIZE);
+    }
+
+    #[wasm_bindgen_test]
+    fn phone_modal_fits_inside_gutter_and_window_chrome() {
+        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(390.0, 844.0));
+        let (bounds, size) =
+            modal_geometry_for_viewport(viewport, (0.0, 0.0, 0.0, 0.0), DETAIL_SIZE);
+        assert_eq!(
+            bounds,
+            Rect::from_min_max(Pos2::new(8.0, 8.0), Pos2::new(382.0, 836.0))
+        );
+        assert!(size.x + WINDOW_CHROME.x <= bounds.width());
+        assert!(size.y + WINDOW_CHROME.y <= bounds.height());
+    }
+
+    #[wasm_bindgen_test]
+    fn landscape_modal_caps_height() {
+        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(844.0, 390.0));
+        let (bounds, size) =
+            modal_geometry_for_viewport(viewport, (0.0, 0.0, 0.0, 0.0), DETAIL_SIZE);
+        assert_eq!(size.y, bounds.height() - WINDOW_CHROME.y);
+    }
+
+    #[wasm_bindgen_test]
+    fn safe_area_insets_reduce_modal_bounds() {
+        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(390.0, 844.0));
+        let (bounds, _) =
+            modal_geometry_for_viewport(viewport, (47.0, 0.0, 34.0, 0.0), DETAIL_SIZE);
+        assert_eq!(bounds.top(), 55.0);
+        assert_eq!(bounds.bottom(), 802.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn tiny_viewport_never_produces_negative_geometry() {
+        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(10.0, 10.0));
+        let (bounds, size) =
+            modal_geometry_for_viewport(viewport, (20.0, 20.0, 20.0, 20.0), DETAIL_SIZE);
+        assert!(bounds.width() >= 0.0);
+        assert!(bounds.height() >= 0.0);
+        assert!(size.x >= 0.0);
+        assert!(size.y >= 0.0);
     }
 }

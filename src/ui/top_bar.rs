@@ -3,7 +3,7 @@
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use super::overflow_menu::overflow_menu;
 use super::time_format::{format_clock_12h, format_updated_ago, Compaction};
-use crate::alerts::{event_color, AlertSeverity};
+use crate::alerts::event_color;
 use crate::core::ErrorContext;
 use crate::core::Intent;
 use crate::core::RadarProduct;
@@ -594,11 +594,7 @@ pub(super) fn render_alerts_chip(
     }
 
     // The severity-sorted visible-alert list is the view-model.
-    let visible: Vec<(String, String, AlertSeverity, bool)> = diagnostics_vm
-        .visible_alerts
-        .iter()
-        .map(|a| (a.id.clone(), a.event.clone(), a.severity, a.is_warning))
-        .collect();
+    let visible = &diagnostics_vm.visible_alerts;
 
     if visible.is_empty() {
         // Render a quiet dimmed icon so users know the feed is live when hovered.
@@ -632,16 +628,16 @@ pub(super) fn render_alerts_chip(
 
     // Color the chip after the highest-severity alert's event type (the list is
     // already sorted by severity descending by `visible_in`).
-    let (r, g, b) = event_color(&visible[0].1);
+    let (r, g, b) = event_color(&visible[0].event);
     let chip_color = Color32::from_rgb(r, g, b);
 
     let label = if visible.len() == 1 {
-        let event = &visible[0].1;
+        let event = &visible[0].event;
         format!("{} {}", egui_phosphor::regular::WARNING, event)
     } else {
         // Split the count into warnings vs everything else (watches/advisories),
         // omitting a side when it's zero.
-        let warnings = visible.iter().filter(|a| a.3).count();
+        let warnings = visible.iter().filter(|a| a.is_warning).count();
         let watches = visible.len() - warnings;
         let mut parts = Vec::new();
         if warnings > 0 {
@@ -670,11 +666,15 @@ pub(super) fn render_alerts_chip(
     }
 
     let hover = if visible.len() == 1 {
-        format!("{} — click for details", visible[0].1,)
+        format!("{} — click for details", visible[0].event,)
     } else {
         let mut lines = String::from("Click to view alerts in this area:\n");
-        for (_, event, sev, _) in visible.iter().take(6) {
-            lines.push_str(&format!("\n  \u{2022} [{}] {}", sev.label(), event));
+        for alert in visible.iter().take(6) {
+            lines.push_str(&format!(
+                "\n  \u{2022} [{}] {}",
+                alert.severity.label(),
+                alert.event
+            ));
         }
         if visible.len() > 6 {
             lines.push_str(&format!("\n  \u{2026} and {} more", visible.len() - 6));
@@ -685,7 +685,7 @@ pub(super) fn render_alerts_chip(
     if response.on_hover_text(hover).clicked() {
         if visible.len() == 1 {
             state.push_command(Intent::Diagnostics(DiagnosticsIntent::SelectAlert(
-                visible[0].0.clone(),
+                visible[0].id.clone(),
             )));
         } else {
             state.push_command(Intent::Diagnostics(DiagnosticsIntent::OpenAlertList));
