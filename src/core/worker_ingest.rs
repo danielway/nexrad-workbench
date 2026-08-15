@@ -186,14 +186,12 @@ pub(crate) fn reduce_chunk_ingested(
         engine
             .observations_mut()
             .set_last_volume_duration_secs(last_dur);
+        // Reads the engine's own completed metas — the prior ingest's,
+        // since `update_sweep_metas` runs later this ingest.
+        engine.set_cached_sweeps_for_scan(scan_start_secs);
         // Same source as the old `LiveModeState.current_in_progress_elevation`
         // so the projection and the live model agree on the collecting cut.
-        // A completed cut is no longer in progress unless this chunk already
-        // moved the accumulator to a different elevation.
-        let projection_elevation = result
-            .current_elevation
-            .filter(|elevation| !result.elevations_completed.contains(elevation));
-        engine.set_in_progress_elevation(scan_start_secs, projection_elevation);
+        engine.set_in_progress_elevation(scan_start_secs, result.current_elevation);
 
         // Push the most recent chunk's collection-end time down to the
         // streaming loop so the next projection anchors on the current
@@ -256,9 +254,10 @@ pub(crate) fn reduce_chunk_ingested(
             }
         }
 
-        let elev_changed = engine
-            .observations_mut()
-            .record_in_progress_elevation(projection_elevation, result.current_elevation_radials);
+        let elev_changed = engine.observations_mut().record_in_progress_elevation(
+            result.current_elevation,
+            result.current_elevation_radials,
+        );
         if elev_changed {
             // The per-chunk az list (engine) and the decoder-side sweep
             // start azimuth (live) reset together on an elevation change.
@@ -266,7 +265,7 @@ pub(crate) fn reduce_chunk_ingested(
         }
 
         // Record per-chunk azimuth ranges for the current elevation
-        if let Some(cur_elev) = projection_elevation {
+        if let Some(cur_elev) = result.current_elevation {
             for &(elev, first_az, last_az) in &result.chunk_elev_az_ranges {
                 if elev == cur_elev {
                     let radial_count = result
@@ -287,10 +286,6 @@ pub(crate) fn reduce_chunk_ingested(
                 .observations_mut()
                 .update_sweep_metas(result.sweeps.clone());
         }
-        // Refresh collected status after applying this result's committed
-        // sweep metadata. Doing this before the update made the projection
-        // deterministically one completion behind.
-        engine.set_cached_sweeps_for_scan(scan_start_secs);
 
         live_mode.record_last_radial(result.last_radial_azimuth, result.last_radial_time_secs);
 
@@ -332,8 +327,6 @@ pub(crate) fn reduce_chunk_ingested(
         // accumulated — the user expects to see live progress
         // regardless of which elevation was previously displayed.
         if !result.is_end {
-            // The accumulator intentionally retains a just-completed sweep so
-            // its final live image can render while the cached decode starts.
             if let Some(target_elev) = result.current_elevation {
                 let product = env.product_worker_string.to_string();
 
@@ -615,28 +608,6 @@ mod tests {
         assert_eq!(obs.current_in_progress_radials, Some(120));
         assert_eq!(obs.chunk_elev_spans, vec![(1, 1_000.0, 1_010.0, 120)]);
         assert_eq!(obs.current_elev_chunks, vec![(0.0, 120.0, 120)]);
-    }
-
-    #[wasm_bindgen_test]
-    fn completed_sweep_leaves_projection_progress_but_dispatches_final_live_render() {
-        let mut fx = Fx::new();
-        let mut r = base_result(1_000.0);
-        r.current_elevation = Some(1);
-        r.current_elevation_radials = Some(360);
-        r.elevations_completed = vec![1];
-        r.sweeps = vec![crate::data::CachedSweep {
-            start: 1_000.0,
-            end: 1_010.0,
-            elevation: 0.5,
-            elevation_number: 1,
-            start_azimuth: 0.0,
-            cached_products: vec!["reflectivity".to_string()],
-        }];
-
-        let actions = fx.run(env(true, false, &[1]), &r);
-
-        assert_eq!(actions.render_live, Some((1, "reflectivity".to_string())));
-        assert_eq!(fx.engine.observations().current_in_progress_elevation, None);
     }
 
     // (3) Live volume end: promote, seal-before-reset, status message, both

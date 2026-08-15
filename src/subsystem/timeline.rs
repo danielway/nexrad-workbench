@@ -14,8 +14,9 @@
 //! helpers (e.g. matching-completion lookups, sweep accessors) to land.
 
 use crate::core::{
-    commit_chunk_ingest, commit_timeline_snapshot, reset_timeline, ChunkIngestResult,
-    RadarTimeline, ScanBoundary, TimelineCommit, TimelineRevision, TimelineSnapshotCommit,
+    commit_archive_ingest, commit_chunk_ingest, commit_timeline_snapshot, reset_timeline,
+    ChunkIngestResult, IngestResult, RadarTimeline, ScanBoundary, TimelineCommit, TimelineRevision,
+    TimelineSnapshotCommit,
 };
 
 /// Owner of the timeline (real + shadowed) scan inventory.
@@ -43,6 +44,16 @@ impl Timeline {
     /// Immediately commit metadata confirmed by a completed worker chunk.
     pub(crate) fn commit_chunk_ingest(&mut self, result: &ChunkIngestResult) {
         commit_chunk_ingest(
+            &mut self.scans,
+            &mut self.revision,
+            &mut self.commits,
+            result,
+        );
+    }
+
+    /// Immediately commit metadata confirmed by a completed archive ingest.
+    pub(crate) fn commit_archive_ingest(&mut self, result: &IngestResult) {
+        commit_archive_ingest(
             &mut self.scans,
             &mut self.revision,
             &mut self.commits,

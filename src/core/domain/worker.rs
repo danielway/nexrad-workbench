@@ -86,9 +86,6 @@ pub(crate) struct IngestResult {
     /// Per-sweep metadata extracted from radials during ingest.
     pub sweeps: Vec<crate::data::CachedSweep>,
     /// Full extracted VCP pattern (from Message Type 5).
-    /// Available for direct VCP inspection; primary propagation is via IDB metadata.
-    #[allow(dead_code)]
-    // Doc above: kept for direct VCP inspection; IDB metadata is the live path.
     pub vcp: Option<crate::data::ExtractedVcp>,
     /// Total time in worker (ms).
     pub total_ms: f64,
@@ -367,7 +364,7 @@ mod coverage_tests {
         let original = CacheLoadResult::Error("io failure".to_string());
         let cloned = original.clone();
         match cloned {
-            CacheLoadResult::Error(message) => assert_eq!(message, "io failure"),
+            CacheLoadResult::Error(msg) => assert_eq!(msg, "io failure"),
             other => panic!("expected Error, got {:?}", other),
         }
     }

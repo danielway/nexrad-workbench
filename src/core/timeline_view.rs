@@ -211,7 +211,11 @@ impl<'a> TimelineView<'a> {
                 let anchor_ms = ls.current_volume.as_ref().map(|a| a.scan_key.scan_start.0);
                 let mut merged = pos.clone();
                 if let Some(ms) = anchor_ms {
-                    if let Some(scan) = scan_with_key_ms(cache, ms) {
+                    for scan in cache
+                        .scans
+                        .iter()
+                        .filter(|scan| scan_matches_key_ms(scan, ms))
+                    {
                         merge_cached_into_live(&mut merged, scan);
                     }
                 }
@@ -726,14 +730,15 @@ fn clamped_display_end(scans: &[Scan], shadows: &[ScanBoundary], i: usize) -> f6
 /// Whether `scan` is the in-progress live volume identified by `live_ms`.
 fn is_live_scan(scan: &Scan, live_ms: Option<i64>) -> bool {
     match live_ms {
-        Some(ms) => scan.key_ms() == ms,
+        Some(ms) => scan_matches_key_ms(scan, ms),
         None => false,
     }
 }
 
-/// Find the cached scan whose key matches `key_ms` (exact, rounded millis).
-fn scan_with_key_ms(cache: &RadarTimeline, key_ms: i64) -> Option<&Scan> {
-    cache.scans.iter().find(|s| s.key_ms() == key_ms)
+/// Whether a cached scan and another source represent the same volume.
+fn scan_matches_key_ms(scan: &Scan, key_ms: i64) -> bool {
+    let tolerance_ms = SCAN_JOIN_TOLERANCE_SECS as u64 * 1_000;
+    scan.key_ms().abs_diff(key_ms) <= tolerance_ms
 }
 
 /// Overlay the already-cached sweeps of a volume onto its in-progress
@@ -1333,6 +1338,7 @@ mod coverage_tests {
         ProjectionScanRole, SweepProjection, SweepProjectionStatus, SweepTimingProvenance,
     };
     use crate::core::Sweep;
+    use crate::data::ScanKey;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn sweep_pos(elev: u8, status: SweepProjectionStatus) -> SweepProjection {
@@ -1494,12 +1500,13 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn is_live_scan_none_never_live() {
+    fn live_scan_match_uses_physical_volume_tolerance() {
         let scan = cached_scan(1_700_000_000.0, Vec::new());
         assert!(!is_live_scan(&scan, None));
         let ms = scan.key_ms();
         assert!(is_live_scan(&scan, Some(ms)));
-        assert!(!is_live_scan(&scan, Some(ms + 1)));
+        assert!(is_live_scan(&scan, Some(ms + 60_000)));
+        assert!(!is_live_scan(&scan, Some(ms + 60_001)));
     }
 
     #[wasm_bindgen_test]
@@ -1692,26 +1699,34 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn frame_containers_live_paints_last_at_equal_start() {
+    fn active_live_container_unions_shifted_archive_sweep() {
         let cache = RadarTimeline {
-            scans: vec![cached_scan(
-                1_700_000_000.0,
-                vec![cached_sweep_products(
-                    1,
-                    1_700_000_000.0,
-                    1_700_000_030.0,
-                    &["reflectivity"],
-                )],
-            )],
+            scans: vec![
+                cached_scan(1_700_000_000.0, Vec::new()),
+                cached_scan(
+                    1_700_000_003.0,
+                    vec![cached_sweep_products(
+                        1,
+                        1_700_000_003.0,
+                        1_700_000_030.0,
+                        &["reflectivity"],
+                    )],
+                ),
+            ],
         };
-        let mut sp = sweep_pos(1, SweepProjectionStatus::InProgress);
+        let mut sp = sweep_pos(1, SweepProjectionStatus::FutureExpected);
         sp.collection_start_secs = 1_700_000_000.0;
         sp.collection_end_secs = 1_700_000_030.0;
         sp.chunks_in_sweep = 3;
         let pos = live_model(vec![sp]);
-        let live = crate::core::LiveModeState::with_dummy_streaming(
+        let mut live = crate::core::LiveModeState::with_dummy_streaming(
             crate::core::LivePhase::Streaming,
             1_700_000_010.0,
+        );
+        live.set_or_confirm_volume(
+            ScanKey::from_secs("KDMX", 1_700_000_000),
+            1_700_000_000.0,
+            Some(1_700_000_003.0),
         );
         let shadows: Vec<ScanBoundary> = Vec::new();
         let view = TimelineView::build(&cache, &shadows, Some(&live), Some(&pos));
@@ -1720,10 +1735,24 @@ mod coverage_tests {
             1_700_001_000.0,
             empty_join("reflectivity", Some(1)),
         );
-        assert_eq!(c.len(), 2);
-        assert_eq!(c[0].start_secs, c[1].start_secs);
-        assert!(!c[0].is_live);
-        assert!(c[1].is_live);
+        assert_eq!(c.len(), 1);
+        assert!(c[0].is_live);
+        assert_eq!(c[0].cells.len(), 1);
+        assert_eq!(c[0].cells[0].state, FrameCellState::Cached);
+
+        let stopped = TimelineView::build(&cache, &shadows, None, None);
+        let stopped_containers = stopped.frame_containers_in_range(
+            1_699_999_000.0,
+            1_700_001_000.0,
+            empty_join("reflectivity", Some(1)),
+        );
+        assert!(stopped_containers.iter().any(|container| {
+            !container.is_live
+                && container
+                    .cells
+                    .iter()
+                    .any(|cell| cell.state == FrameCellState::Cached)
+        }));
     }
 
     #[wasm_bindgen_test]

@@ -131,8 +131,8 @@ impl WorkbenchApp {
                     log::debug!("Timeline has {} contiguous range(s)", ranges.len());
                 }
             }
-            CacheLoadResult::Error(message) => {
-                log::error!("Cache load failed: {}", message);
+            CacheLoadResult::Error(msg) => {
+                log::error!("Cache load failed: {}", msg);
             }
         }
     }
@@ -219,6 +219,11 @@ impl WorkbenchApp {
             crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
             js_sys::Date::now(),
         );
+
+        // The worker emits this result only after the archive sweep metadata
+        // is committed to IDB. Publish it in memory now; the later cache load
+        // is reconciliation, not the first point at which the UI learns it.
+        self.timeline.commit_archive_ingest(&result);
         self.set_active_scan(
             result.scan_key.clone(),
             result.elevation_numbers,

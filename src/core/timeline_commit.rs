@@ -6,7 +6,7 @@
 //! while one dispatched before a synchronous commit is reconciled with the
 //! newer inventory so it cannot erase that commit.
 
-use crate::core::{ChunkIngestResult, RadarTimeline, Scan, Sweep};
+use crate::core::{ChunkIngestResult, IngestResult, RadarTimeline, Scan, Sweep};
 use crate::data::{CachedSweep, ScanCompleteness};
 
 /// Monotonic version of the in-memory timeline inventory.
@@ -70,6 +70,26 @@ pub(crate) fn commit_chunk_ingest(
     result: &ChunkIngestResult,
 ) {
     let incoming = scan_from_chunk(result);
+    commit_scan(timeline, revision, commits, incoming);
+}
+
+/// Merge metadata from a completed archive ingest synchronously.
+pub(crate) fn commit_archive_ingest(
+    timeline: &mut RadarTimeline,
+    revision: &mut TimelineRevision,
+    commits: &mut Vec<TimelineCommit>,
+    result: &IngestResult,
+) {
+    let incoming = scan_from_archive(result);
+    commit_scan(timeline, revision, commits, incoming);
+}
+
+fn commit_scan(
+    timeline: &mut RadarTimeline,
+    revision: &mut TimelineRevision,
+    commits: &mut Vec<TimelineCommit>,
+    incoming: Scan,
+) {
     merge_scan(&mut timeline.scans, incoming.clone());
     sort_timeline(timeline);
     revision.advance();
@@ -128,8 +148,26 @@ pub(crate) fn live_chunk_matches_scope(
 }
 
 fn scan_from_chunk(result: &ChunkIngestResult) -> Scan {
-    let key_timestamp = result.scan_key.scan_start.as_secs_f64();
-    let sweeps: Vec<Sweep> = result.sweeps.iter().map(sweep_from_cached).collect();
+    scan_from_persisted(
+        &result.scan_key,
+        &result.sweeps,
+        result.vcp.as_ref(),
+        result.chunk_max_time_secs,
+    )
+}
+
+fn scan_from_archive(result: &IngestResult) -> Scan {
+    scan_from_persisted(&result.scan_key, &result.sweeps, result.vcp.as_ref(), None)
+}
+
+fn scan_from_persisted(
+    scan_key: &crate::data::ScanKey,
+    cached_sweeps: &[CachedSweep],
+    vcp: Option<&crate::data::ExtractedVcp>,
+    additional_end_secs: Option<f64>,
+) -> Scan {
+    let key_timestamp = scan_key.scan_start.as_secs_f64();
+    let sweeps: Vec<Sweep> = cached_sweeps.iter().map(sweep_from_cached).collect();
     let start_time = sweeps
         .iter()
         .map(|sweep| sweep.start_time)
@@ -137,20 +175,20 @@ fn scan_from_chunk(result: &ChunkIngestResult) -> Scan {
     let end_time = sweeps
         .iter()
         .map(|sweep| sweep.end_time)
-        .chain(result.chunk_max_time_secs)
+        .chain(additional_end_secs)
         .fold(key_timestamp, f64::max);
-    let planned_sweep_count = result.vcp.as_ref().map(|vcp| vcp.elevations.len() as u32);
+    let planned_sweep_count = vcp.map(|vcp| vcp.elevations.len() as u32);
     let cached_sweep_count = sweeps.len() as u32;
 
     Scan {
         start_time,
         end_time,
         key_timestamp,
-        vcp: result.vcp.as_ref().map(|vcp| vcp.number).unwrap_or(0),
-        vcp_pattern: result.vcp.clone(),
+        vcp: vcp.map(|vcp| vcp.number).unwrap_or(0),
+        vcp_pattern: vcp.cloned(),
         sweeps,
         completeness: Some(ScanCompleteness::from_counts(
-            result.vcp.is_some(),
+            vcp.is_some(),
             cached_sweep_count,
             planned_sweep_count,
         )),
@@ -252,7 +290,7 @@ fn sort_timeline(timeline: &mut RadarTimeline) {
 mod tests {
     use super::*;
     use crate::core::playback_manager::{resolve_desired_display, DesiredDisplay};
-    use crate::core::{ChunkIngestContext, ElevationSelection, RadarProduct};
+    use crate::core::{ChunkIngestContext, ElevationSelection, IngestContext, RadarProduct};
     use crate::data::{ExtractedVcp, ExtractedVcpElevation, ScanKey};
     use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -308,6 +346,29 @@ mod tests {
             chunk_max_time_secs: None,
             chunk_elev_spans: Vec::new(),
             chunk_elev_az_ranges: Vec::new(),
+        }
+    }
+
+    fn archive(sweeps: Vec<CachedSweep>, vcp: Option<ExtractedVcp>) -> IngestResult {
+        let scan_key = ScanKey::from_secs("KDMX", 1_003);
+        IngestResult {
+            context: IngestContext {
+                scan_key: scan_key.clone(),
+                timestamp_secs: 1_000.0,
+                fetch_latency_ms: 1.0,
+            },
+            scan_key,
+            records_stored: 1,
+            elevation_numbers: sweeps.iter().map(|s| s.elevation_number).collect(),
+            sweeps,
+            vcp,
+            total_ms: 1.0,
+            split_ms: 0.1,
+            decompress_ms: 0.1,
+            decode_ms: 0.1,
+            extract_ms: 0.1,
+            store_ms: 0.1,
+            index_ms: 0.1,
         }
     }
 
@@ -428,6 +489,38 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2]
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn archive_ingest_is_immediate_and_survives_older_snapshot() {
+        let mut timeline = RadarTimeline::default();
+        let mut revision = TimelineRevision::default();
+        let mut commits = Vec::new();
+        let dispatched_before_ingest = revision;
+
+        commit_archive_ingest(
+            &mut timeline,
+            &mut revision,
+            &mut commits,
+            &archive(vec![cached(2, "reflectivity")], Some(vcp(215, 2))),
+        );
+
+        assert_eq!(revision.value(), 1);
+        assert_eq!(timeline.scans.len(), 1);
+        assert_eq!(timeline.scans[0].key_ms(), 1_003_000);
+        assert_eq!(timeline.scans[0].sweeps[0].elevation_number, 2);
+
+        let decision = commit_timeline_snapshot(
+            &mut timeline,
+            &mut revision,
+            &mut commits,
+            dispatched_before_ingest,
+            RadarTimeline::default(),
+        );
+
+        assert_eq!(decision, TimelineSnapshotCommit::Reconciled);
+        assert_eq!(timeline.scans.len(), 1);
+        assert_eq!(timeline.scans[0].sweeps[0].elevation_number, 2);
     }
 
     #[wasm_bindgen_test]

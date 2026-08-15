@@ -306,37 +306,30 @@ pub(crate) fn resolve_active_sweep_target(
 ) -> Option<crate::core::SweepIdentity> {
     let scan = timeline.find_recent_scan(playback_position, max_scan_age_secs)?;
     let product_str = product.to_worker_string();
+    let target_ms = scan.key_ms();
+    let tolerance_ms = crate::core::SCAN_JOIN_TOLERANCE_SECS as u64 * 1_000;
 
-    let sweep = match elevation_selection {
+    let (scan, sweep) = match elevation_selection {
         crate::core::ElevationSelection::Fixed {
             elevation_number, ..
-        } => scan
-            .sweeps
+        } => timeline
+            .scans
             .iter()
-            .filter(|s| s.elevation_number == *elevation_number)
-            .filter(|s| s.start_time <= playback_position)
-            .max_by(|a, b| {
-                a.start_time
-                    .partial_cmp(&b.start_time)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })?,
-        crate::core::ElevationSelection::Latest => scan
-            .sweeps
+            .filter(|candidate| candidate.key_ms().abs_diff(target_ms) <= tolerance_ms)
+            .flat_map(|candidate| candidate.sweeps.iter().map(move |sweep| (candidate, sweep)))
+            .filter(|(_, sweep)| sweep.elevation_number == *elevation_number)
+            .filter(|(_, sweep)| sweep.start_time <= playback_position)
+            .filter(|(_, sweep)| sweep.cached_products.iter().any(|p| p == product_str))
+            .max_by(|(_, a), (_, b)| a.start_time.total_cmp(&b.start_time))?,
+        crate::core::ElevationSelection::Latest => timeline
+            .scans
             .iter()
-            .filter(|s| s.start_time <= playback_position)
-            .max_by(|a, b| {
-                a.start_time
-                    .partial_cmp(&b.start_time)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })?,
+            .filter(|candidate| candidate.key_ms().abs_diff(target_ms) <= tolerance_ms)
+            .flat_map(|candidate| candidate.sweeps.iter().map(move |sweep| (candidate, sweep)))
+            .filter(|(_, sweep)| sweep.start_time <= playback_position)
+            .filter(|(_, sweep)| sweep.cached_products.iter().any(|p| p == product_str))
+            .max_by(|(_, a), (_, b)| a.start_time.total_cmp(&b.start_time))?,
     };
-
-    // Require an exact product match. Empty `cached_products` is treated as
-    // "nothing stored for this sweep" — reject rather than optimistically
-    // ask the worker for a blob the index never claimed.
-    if !sweep.cached_products.iter().any(|p| p == product_str) {
-        return None;
-    }
 
     Some(crate::core::SweepIdentity::new(
         crate::data::ScanKey::from_secs_f64(site_id, scan.key_timestamp),
@@ -400,7 +393,9 @@ pub(crate) fn resolve_desired_display(
     if let Some((elev, anchor_ms)) = live_cut {
         if let Some(scan) = timeline.find_recent_scan(playback_position, max_scan_age_secs) {
             let scan_ms = scan.key_ms();
-            let intent_is_live_cut = scan_ms == anchor_ms
+            let same_live_volume =
+                scan_ms.abs_diff(anchor_ms) <= crate::core::SCAN_JOIN_TOLERANCE_SECS as u64 * 1_000;
+            let intent_is_live_cut = same_live_volume
                 && match elevation_selection {
                     crate::core::ElevationSelection::Fixed {
                         elevation_number, ..
@@ -829,6 +824,26 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    fn live_cut_matches_header_key_drift_within_volume_tolerance() {
+        let tl = live_scenario_timeline();
+        let d = resolve_desired_display(
+            "KDMX",
+            1005.0,
+            &fixed(2),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+            Some((2, 1_003_000)),
+        );
+        assert_eq!(
+            d,
+            DesiredDisplay::LivePartial {
+                elevation_number: 2
+            }
+        );
+    }
+
+    #[wasm_bindgen_test]
     fn cached_wins_for_completed_cut_during_live() {
         // The reload bug: live collecting elev 2, user viewing completed elev 1.
         // The completed cut must resolve to its cached blob, not blank.
@@ -845,6 +860,36 @@ mod tests {
         match d {
             DesiredDisplay::Cached(id) => assert_eq!(id.elevation_number, 1),
             other => panic!("expected Cached(elev 1), got {:?}", other),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn cached_resolver_preserves_shifted_archive_storage_key() {
+        let tl = timeline_with(vec![
+            scan_with(
+                999.5,
+                1040.0,
+                1003.0,
+                vec![sweep_with(1001.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
+            ),
+            scan_with(1000.0, 1040.0, 1000.0, Vec::new()),
+        ]);
+
+        let d = resolve_desired_display(
+            "KDMX",
+            1005.0,
+            &fixed(1),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+            Some((2, 1_000_000)),
+        );
+        match d {
+            DesiredDisplay::Cached(id) => {
+                assert_eq!(id.elevation_number, 1);
+                assert!((id.scan_timestamp_secs() - 1003.0).abs() < 1e-6);
+            }
+            other => panic!("expected shifted archive Cached(elev 1), got {other:?}"),
         }
     }
 
