@@ -254,8 +254,10 @@ impl DispatchState<'_> {
                 .camera
                 .center_on(center_lat, center_lon);
         }
-        // The original "Show on map" closed the detail modal after focusing.
+        // Both surfaces must close so a detail opened from the list exposes the
+        // newly focused map instead of immediately resurfacing the list.
         self.diagnostics.alerts.selected_alert_id = None;
+        self.diagnostics.alerts.list_modal_open = false;
     }
 
     /// Retry a failed archive download — the documented two-state-machine
@@ -1283,6 +1285,7 @@ mod dispatch_tests {
             .alerts
             .push(warning_alert("a1", (-94.0, 41.0, -92.0, 43.0)));
         f.diagnostics.alerts.selected_alert_id = Some("a1".to_string());
+        f.diagnostics.alerts.list_modal_open = true;
 
         f.apply(Intent::ShowAlertOnMap("a1".to_string()));
 
@@ -1294,6 +1297,7 @@ mod dispatch_tests {
         assert!((f.state.viz_state.center_lat - 42.0).abs() < 1e-9);
         assert!((f.state.viz_state.center_lon + 93.0).abs() < 1e-9);
         assert_eq!(f.diagnostics.alerts.selected_alert_id, None);
+        assert!(!f.diagnostics.alerts.list_modal_open);
     }
 
     /// An unknown alert id is inert — no layer is switched on and the open
