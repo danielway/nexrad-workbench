@@ -115,8 +115,11 @@ fn render_list_modal(
                 .max_height(body_height)
                 .auto_shrink([false, false])
                 .show_rows(ui, ALERT_ROW_HEIGHT, visible.len(), |ui, rows| {
-                    for index in rows {
-                        render_alert_row(ui, &visible[index], derived, state);
+                    let rows_rect = ui.max_rect();
+                    let row_spacing = ui.spacing().item_spacing.y;
+                    for (visible_row, index) in rows.enumerate() {
+                        let row_rect = alert_row_rect(rows_rect, visible_row, row_spacing);
+                        render_alert_row(ui, row_rect, &visible[index], derived, state);
                     }
                 });
         });
@@ -253,11 +256,11 @@ fn render_detail_modal(
 
 fn render_alert_row(
     ui: &mut egui::Ui,
+    rect: Rect,
     alert: &crate::core::diagnostics::VisibleAlert,
     derived: &crate::subsystem::Derived,
     state: &mut AppState,
 ) {
-    let (_, rect) = ui.allocate_space(Vec2::new(ui.available_width(), ALERT_ROW_HEIGHT));
     let response = ui.interact(
         rect,
         ui.make_persistent_id(("alert_row", &alert.id)),
@@ -323,6 +326,16 @@ fn render_alert_row(
             alert.id.clone(),
         )));
     }
+}
+
+fn alert_row_rect(rows_rect: Rect, visible_row: usize, row_spacing: f32) -> Rect {
+    Rect::from_min_size(
+        Pos2::new(
+            rows_rect.left(),
+            rows_rect.top() + visible_row as f32 * (ALERT_ROW_HEIGHT + row_spacing),
+        ),
+        Vec2::new(rows_rect.width(), ALERT_ROW_HEIGHT),
+    )
 }
 
 fn render_timing_meta(ui: &mut egui::Ui, alert: &Alert, use_local_time: bool) {
@@ -531,5 +544,14 @@ mod tests {
         assert!(bounds.height() >= 0.0);
         assert!(size.x >= 0.0);
         assert!(size.y >= 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn virtual_alert_card_borders_do_not_overlap() {
+        let rows_rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 500.0));
+        let first = alert_row_rect(rows_rect, 0, 0.0).shrink2(Vec2::new(0.0, 2.0));
+        let second = alert_row_rect(rows_rect, 1, 0.0).shrink2(Vec2::new(0.0, 2.0));
+
+        assert!(first.bottom() < second.top());
     }
 }
