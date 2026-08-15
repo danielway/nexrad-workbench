@@ -29,6 +29,7 @@ pub(crate) fn render_canvas_with_geo(
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    diagnostics_vm: &crate::core::diagnostics::DiagnosticsVm,
     derived: &crate::subsystem::Derived,
     geo_layers: Option<&GeoLayerSet>,
     gpu: &crate::GpuResources,
@@ -89,6 +90,7 @@ pub(crate) fn render_canvas_with_geo(
                         state,
                         live,
                         derived,
+                        diagnostics_vm,
                     },
                 );
 
@@ -418,6 +420,7 @@ pub(crate) fn render_canvas_with_geo(
                         state,
                         live,
                         derived,
+                        diagnostics_vm,
                     },
                 );
 

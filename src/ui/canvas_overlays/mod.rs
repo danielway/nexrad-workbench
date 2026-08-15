@@ -21,6 +21,7 @@
 //!    reading the canvas top-to-bottom.
 
 mod alerts;
+mod alerts_time;
 mod color_scale;
 mod compass;
 mod globe;
@@ -62,6 +63,8 @@ pub(crate) struct OverlayContext<'a> {
     pub live: &'a Live,
     /// Per-frame derived snapshot (e.g. `data_is_live` for mosaic stamp).
     pub derived: &'a Derived,
+    /// Pure diagnostics projection used by canvas provenance overlays.
+    pub diagnostics_vm: &'a crate::core::diagnostics::DiagnosticsVm,
 }
 
 /// A corner-chrome overlay: one of the small self-contained surfaces
@@ -97,6 +100,7 @@ pub(crate) fn render_chrome_overlays(ui: &mut egui::Ui, ctx: &OverlayContext) {
         &compass::CompassOverlay,        // z=30
         &scale_bar::ScaleBarOverlay,     // z=40
         &mosaic_time::MosaicTimeOverlay, // z=50
+        &alerts_time::AlertsTimeOverlay, // z=60
     ];
 
     debug_assert!(

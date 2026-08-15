@@ -1027,6 +1027,7 @@ impl eframe::App for WorkbenchApp {
             &mut self.playback,
             &mut self.chrome,
             &mut self.diagnostics,
+            &diagnostics_vm,
             &derived,
             Some(&self.geo_layers),
             &self.gpu,
