@@ -26,6 +26,20 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="NEXRAD">
 
+    <!-- Privacy-friendly aggregate pageview analytics. Include the host in the
+         recorded path so the custom and GitHub Pages domains remain distinct,
+         and keep PR preview traffic out of the production dashboard. -->
+    <script>
+        window.goatcounter = {
+            no_onload: window.location.pathname.indexOf('/pr-preview/') !== -1,
+            path: function (path) { return window.location.host + path; }
+        };
+    </script>
+    <script data-goatcounter="https://danielway.goatcounter.com/count"
+            async src="https://gc.zgo.at/count.v5.js"
+            crossorigin="anonymous"
+            integrity="sha384-atnOLvQb9t+jTSipvd75X2yginT4PjVbqDdlJAmxMm+wYElFmeR6EmLP5bYeoRVQ"></script>
+
     <link data-trunk rel="rust" data-wasm-opt="2" />
     <link data-trunk rel="copy-file" href="worker.js" />
     <link data-trunk rel="copy-file" href="service-worker.js" />
