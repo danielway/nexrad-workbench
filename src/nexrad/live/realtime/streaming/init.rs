@@ -92,6 +92,10 @@ pub(super) fn emit_mid_volume_start_chunk(
     let _ = results_tx.unbounded_send(RealtimeResult::ChunkData {
         data: start_data,
         chunk_index: 0,
+        source_sequence: 1,
+        elevation_number: None,
+        chunk_index_in_sweep: None,
+        chunks_in_sweep: None,
         is_start: true,
         is_end: false,
         timestamp: header_secs,
@@ -160,6 +164,17 @@ pub(super) fn emit_init_latest_chunk(
         let _ = results_tx.unbounded_send(RealtimeResult::ChunkData {
             data: latest_data,
             chunk_index: chunks_in_volume - 1,
+            source_sequence: latest_seq as u32,
+            elevation_number: iter
+                .chunk_metadata(latest_seq)
+                .and_then(|m| m.elevation_number())
+                .map(|n| n as u8),
+            chunk_index_in_sweep: iter
+                .chunk_metadata(latest_seq)
+                .map(|m| m.chunk_index_in_sweep() as u8),
+            chunks_in_sweep: iter
+                .chunk_metadata(latest_seq)
+                .map(|m| m.chunks_in_sweep() as u8),
             is_start: false,
             is_end: latest_is_end,
             timestamp: scan_start_secs,
@@ -221,6 +236,17 @@ pub(super) fn emit_join_at_volume_start(
     let _ = results_tx.unbounded_send(RealtimeResult::ChunkData {
         data: latest_data,
         chunk_index: 0,
+        source_sequence: latest_chunk.identifier.sequence() as u32,
+        elevation_number: iter
+            .chunk_metadata(latest_chunk.identifier.sequence())
+            .and_then(|m| m.elevation_number())
+            .map(|n| n as u8),
+        chunk_index_in_sweep: iter
+            .chunk_metadata(latest_chunk.identifier.sequence())
+            .map(|m| m.chunk_index_in_sweep() as u8),
+        chunks_in_sweep: iter
+            .chunk_metadata(latest_chunk.identifier.sequence())
+            .map(|m| m.chunks_in_sweep() as u8),
         is_start: latest_is_start,
         is_end: latest_is_end,
         timestamp: header_secs,

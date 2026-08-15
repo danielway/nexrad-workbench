@@ -103,6 +103,8 @@ function postError(id, err, prefix) {
     self.postMessage({ type: 'error', id, kind: cls.kind, message });
 }
 
+let chunkIngestQueue = Promise.resolve();
+
 self.onmessage = async function (e) {
     const msg = e.data;
 
@@ -156,21 +158,30 @@ self.onmessage = async function (e) {
     }
 
     if (msg.type === 'ingest_chunk') {
-        try {
+        // WASM chunk ingest mutates one worker-global accumulator and awaits
+        // IDB. Serialize entry so a burst cannot run a data chunk before Start
+        // has installed that accumulator.
+        chunkIngestQueue = chunkIngestQueue.then(async () => {
+          try {
             const result = await wasm.worker_ingest_chunk({
                 data: msg.data,
                 siteId: msg.siteId,
                 timestampSecs: msg.timestampSecs,
                 chunkIndex: msg.chunkIndex,
+                sourceSequence: msg.sourceSequence,
+                elevationNumber: msg.elevationNumber,
+                chunkIndexInSweep: msg.chunkIndexInSweep,
+                chunksInSweep: msg.chunksInSweep,
                 isStart: msg.isStart,
                 isEnd: msg.isEnd,
                 fileName: msg.fileName,
                 isLastInSweep: msg.isLastInSweep || false,
             });
             self.postMessage({ type: 'chunk_ingested', id: msg.id, result: result });
-        } catch (err) {
+          } catch (err) {
             postError(msg.id, err);
-        }
+          }
+        });
         return;
     }
 

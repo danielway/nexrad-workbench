@@ -560,6 +560,17 @@ pub(super) async fn streaming_loop(
                 let _ = results_tx.unbounded_send(RealtimeResult::ChunkData {
                     data: chunk_data,
                     chunk_index: chunks_in_volume - 1,
+                    source_sequence: chunk.identifier.sequence() as u32,
+                    elevation_number: iter
+                        .chunk_metadata(chunk.identifier.sequence())
+                        .and_then(|m| m.elevation_number())
+                        .map(|n| n as u8),
+                    chunk_index_in_sweep: iter
+                        .chunk_metadata(chunk.identifier.sequence())
+                        .map(|m| m.chunk_index_in_sweep() as u8),
+                    chunks_in_sweep: iter
+                        .chunk_metadata(chunk.identifier.sequence())
+                        .map(|m| m.chunks_in_sweep() as u8),
                     is_start,
                     is_end,
                     timestamp: current_scan_start_secs.0,

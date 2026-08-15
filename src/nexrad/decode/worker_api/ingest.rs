@@ -191,6 +191,7 @@ pub(super) struct ChunkAccumulator {
     pub completed_elevations: std::collections::HashSet<u8>,
     /// Sweep metadata accumulated from flushed elevations (for response).
     pub completed_sweep_metas: Vec<CachedSweep>,
+    pub coverage: crate::core::live_coverage::LiveCoverage,
     pub vcp: Option<ExtractedVcp>,
     pub has_vcp: bool,
     pub total_chunks: u32,
@@ -285,10 +286,27 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let site_id = p.site_id;
         let timestamp_secs = p.timestamp_secs;
         let chunk_index = p.chunk_index;
+        let coverage_chunk = match (
+            p.elevation_number,
+            p.chunk_index_in_sweep,
+            p.chunks_in_sweep,
+        ) {
+            (Some(elevation), Some(index_in_sweep), Some(chunks_in_sweep))
+                if chunks_in_sweep > 0 =>
+            {
+                Some(crate::core::live_coverage::SweepChunk {
+                    elevation,
+                    sequence: p.source_sequence,
+                    index_in_sweep,
+                    chunks_in_sweep,
+                })
+            }
+            _ => None,
+        };
         let is_start = p.is_start;
         let is_end = p.is_end;
         let file_name = p.file_name;
-        let is_last_in_sweep = p.is_last_in_sweep;
+        let _is_last_in_sweep = p.is_last_in_sweep;
 
         let data_len = data.len();
 
@@ -330,6 +348,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 current_elevation: None,
                 completed_elevations: pre_completed,
                 completed_sweep_metas: Vec::new(),
+                coverage: crate::core::live_coverage::LiveCoverage::default(),
                 vcp: None,
                 has_vcp: false,
                 total_chunks: 0,
@@ -394,7 +413,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             );
         }
 
-        with_chunk_accum_mut(|accum| {
+        let accepted = with_chunk_accum_mut(|accum| {
             let accum = accum.ok_or_else(|| {
                 wasm_bindgen::JsValue::from_str("No accumulator — missing Start chunk?")
             })?;
@@ -418,17 +437,20 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 }
             }
 
-            // Flush-on-transition: when the chunk's elevation differs from
-            // the current accumulator elevation, the previous elevation is
-            // complete. Flush it immediately and discard its radials.
+            // Elevation changes are not completion proof: filter backfill may
+            // revisit an earlier elevation while a later partial remains live.
             if let Some(elev) = chunk_elevation {
-                if let Some(prev) = accum.current_elevation {
-                    if elev != prev && !accum.completed_elevations.contains(&prev) {
-                        newly_completed.push(prev);
-                        accum.completed_elevations.insert(prev);
+                accum.current_elevation = Some(elev);
+            }
+
+            if let Some(coverage_chunk) = coverage_chunk {
+                match accum.coverage.accept(coverage_chunk) {
+                    crate::core::live_coverage::ChunkDecision::Duplicate => return Ok(false),
+                    crate::core::live_coverage::ChunkDecision::Partial => {}
+                    crate::core::live_coverage::ChunkDecision::ReadyToCommit(elevation) => {
+                        newly_completed.push(elevation);
                     }
                 }
-                accum.current_elevation = Some(elev);
             }
 
             // Append radials and metadata for the current elevation.
@@ -442,39 +464,12 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             }
             accum.current_radials.extend(chunk_radials);
 
-            // Flush-on-last-chunk: when the projection says this is the last
-            // chunk in the sweep, complete the elevation immediately rather
-            // than waiting for the next elevation's first chunk.
-            if is_last_in_sweep {
-                if let Some(elev) = accum.current_elevation {
-                    if !accum.completed_elevations.contains(&elev) {
-                        log::debug!(
-                            "Chunk#{}: last in sweep for elev {} — flushing ({} radials)",
-                            chunk_index,
-                            elev,
-                            accum.current_radials.len(),
-                        );
-                        newly_completed.push(elev);
-                        accum.completed_elevations.insert(elev);
-                    }
-                }
-            }
-
-            Ok::<(), wasm_bindgen::JsValue>(())
+            Ok::<bool, wasm_bindgen::JsValue>(true)
         })?;
-
-        // On end, finalize the current (last) elevation.
-        if is_end {
-            with_chunk_accum_mut(|accum| {
-                if let Some(accum) = accum {
-                    if let Some(elev) = accum.current_elevation {
-                        if !accum.completed_elevations.contains(&elev) {
-                            newly_completed.push(elev);
-                            accum.completed_elevations.insert(elev);
-                        }
-                    }
-                }
-            });
+        if !accepted {
+            // Duplicate chunks have no state effect. The JS queue still posts a
+            // normal acknowledgement so callers need not special-case retries.
+            newly_completed.clear();
         }
 
         // --- Flush completed elevations to IDB ---
@@ -488,36 +483,11 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             // radials are in memory — no filtering needed.
             let elevations = with_chunk_accum_mut(|accum| {
                 let accum = accum.unwrap();
-                let result =
-                    crate::nexrad::decode::ingest_phases::build_elevation_uploads_for_flush(
-                        &accum.current_radials,
-                        &accum.current_radial_metas,
-                        &newly_completed,
-                    );
-                // Mirror the derived manifest into the accumulator's response
-                // log, then clean up radials. The IDB layer derives the same
-                // CachedSweep set on its side from these uploads.
-                accum
-                    .completed_sweep_metas
-                    .extend(result.iter().map(|e| e.to_cached_sweep()));
-
-                if is_last_in_sweep {
-                    // Flushed the current elevation on its last chunk.
-                    // Keep radials in the accumulator so render_live can still
-                    // read the complete sweep data for the final GPU upload.
-                    // They'll be cleared when the next elevation's first chunk
-                    // arrives (via the transition logic).
-                } else {
-                    // Transition flush: discard the completed elevation's radials,
-                    // retain the new elevation's radials from the transition chunk.
-                    accum
-                        .current_radials
-                        .retain(|r| !newly_completed.contains(&r.elevation_number()));
-                    accum
-                        .current_radial_metas
-                        .retain(|&(_, elev, _, _)| !newly_completed.contains(&elev));
-                }
-                result
+                crate::nexrad::decode::ingest_phases::build_elevation_uploads_for_flush(
+                    &accum.current_radials,
+                    &accum.current_radial_metas,
+                    &newly_completed,
+                )
             });
 
             sweeps_stored = elevations.iter().map(|e| e.blobs.len() as u32).sum();
@@ -542,6 +512,25 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             store.upsert_scan(&header, &elevations).await.map_err(|e| {
                 wasm_bindgen::JsValue::from_str(&format!("Failed to store scan: {}", e))
             })?;
+
+            // Do not publish completion or discard retry data until the atomic
+            // IDB transaction acknowledges the sweep blobs and manifest.
+            with_chunk_accum_mut(|accum| {
+                let accum = accum.unwrap();
+                accum
+                    .completed_sweep_metas
+                    .extend(elevations.iter().map(|e| e.to_cached_sweep()));
+                for elevation in &newly_completed {
+                    accum.coverage.commit_succeeded(*elevation);
+                    accum.completed_elevations.insert(*elevation);
+                }
+                accum
+                    .current_radials
+                    .retain(|r| !newly_completed.contains(&r.elevation_number()));
+                accum
+                    .current_radial_metas
+                    .retain(|&(_, elevation, _, _)| !newly_completed.contains(&elevation));
+            });
         }
 
         // --- Build the scan key for response ---
@@ -627,10 +616,8 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             accum.and_then(|a| a.current_elevation.map(|_| a.current_radials.len() as u32))
         });
 
-        // --- Clear accumulator on end ---
-        if is_end {
-            set_chunk_accum(None);
-        }
+        // Keep incomplete End state retryable. A following Start replaces it;
+        // clearing here would make a late backfill unable to repair a gap.
 
         // --- Build JS response ---
         let response = ChunkIngestResponse {
@@ -677,6 +664,7 @@ mod accum_tests {
             current_elevation: Some(2),
             completed_elevations: std::collections::HashSet::new(),
             completed_sweep_metas: Vec::new(),
+            coverage: crate::core::live_coverage::LiveCoverage::default(),
             vcp: None,
             has_vcp: false,
             total_chunks: 3,
@@ -764,6 +752,7 @@ mod coverage_tests {
             current_elevation: None,
             completed_elevations: std::collections::HashSet::new(),
             completed_sweep_metas: Vec::new(),
+            coverage: crate::core::live_coverage::LiveCoverage::default(),
             vcp: None,
             has_vcp: false,
             total_chunks: 0,

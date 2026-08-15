@@ -124,9 +124,14 @@ async fn emit_backfill_chunks(
         emitted += 1;
         let chunk_index = chunks_in_volume_start + emitted - 1;
         let is_last_in_sweep = iter.chunk_metadata(seq).map(|m| m.is_last_in_sweep());
+        let metadata = iter.chunk_metadata(seq);
         let _ = results_tx.unbounded_send(RealtimeResult::ChunkData {
             data: chunk_data,
             chunk_index,
+            source_sequence: seq as u32,
+            elevation_number: metadata.and_then(|m| m.elevation_number()).map(|n| n as u8),
+            chunk_index_in_sweep: metadata.map(|m| m.chunk_index_in_sweep() as u8),
+            chunks_in_sweep: metadata.map(|m| m.chunks_in_sweep() as u8),
             is_start: false,
             is_end: false,
             timestamp,

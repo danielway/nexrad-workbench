@@ -80,6 +80,12 @@ pub(crate) enum RealtimeResult {
     ChunkData {
         data: Vec<u8>,
         chunk_index: u32,
+        /// Stable AWS sequence identity, distinct from the local delivery counter.
+        source_sequence: u32,
+        /// Mapper-derived sweep coverage position. `None` for Start/End metadata.
+        elevation_number: Option<u8>,
+        chunk_index_in_sweep: Option<u8>,
+        chunks_in_sweep: Option<u8>,
         is_start: bool,
         is_end: bool,
         /// Volume scan start (Unix seconds, sub-second precision). Carries

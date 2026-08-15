@@ -68,6 +68,14 @@ pub(super) struct IngestChunkParams {
     #[serde(default)]
     pub chunk_index: u32,
     #[serde(default)]
+    pub source_sequence: u32,
+    #[serde(default)]
+    pub elevation_number: Option<u8>,
+    #[serde(default)]
+    pub chunk_index_in_sweep: Option<u8>,
+    #[serde(default)]
+    pub chunks_in_sweep: Option<u8>,
+    #[serde(default)]
     pub is_start: bool,
     #[serde(default)]
     pub is_end: bool,
