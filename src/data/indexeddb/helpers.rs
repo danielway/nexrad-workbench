@@ -209,16 +209,33 @@ pub(super) async fn wait_for_transaction(tx: &IdbTransaction) -> Result<(), Data
         }
     }) as Box<dyn FnMut(_)>);
 
-    let tx_error = sender;
+    let tx_error = sender.clone();
+    let tx_for_error = tx.clone();
     let onerror = Closure::wrap(Box::new(move |_event: web_sys::Event| {
-        let error_msg = "Transaction error".to_string();
+        let error_msg = tx_for_error
+            .error()
+            .map(|error| format!("{}: {}", error.name(), error.message()))
+            .unwrap_or_else(|| "Transaction error".to_string());
         if let Some(tx) = tx_error.borrow_mut().take() {
+            let _ = tx.send(Err(error_msg));
+        }
+    }) as Box<dyn FnMut(_)>);
+
+    let tx_abort = sender;
+    let tx_for_abort = tx.clone();
+    let onabort = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+        let error_msg = tx_for_abort
+            .error()
+            .map(|error| format!("{}: {}", error.name(), error.message()))
+            .unwrap_or_else(|| "Transaction aborted".to_string());
+        if let Some(tx) = tx_abort.borrow_mut().take() {
             let _ = tx.send(Err(error_msg));
         }
     }) as Box<dyn FnMut(_)>);
 
     tx.set_oncomplete(Some(oncomplete.as_ref().unchecked_ref()));
     tx.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+    tx.set_onabort(Some(onabort.as_ref().unchecked_ref()));
 
     let result = rx
         .await
@@ -226,9 +243,11 @@ pub(super) async fn wait_for_transaction(tx: &IdbTransaction) -> Result<(), Data
 
     tx.set_oncomplete(None);
     tx.set_onerror(None);
+    tx.set_onabort(None);
 
     drop(oncomplete);
     drop(onerror);
+    drop(onabort);
 
     result.map_err(DataError::TransactionFailed)
 }

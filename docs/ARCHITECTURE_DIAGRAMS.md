@@ -643,18 +643,17 @@ In WASM, an IDB transaction **auto-commits when the event loop yields** — so a
 ```mermaid
 sequenceDiagram
     participant App
-    participant RO as readonly tx
     participant RW as readwrite tx
-    App->>RO: read (decide create vs merge)
-    RO-->>App: scan_availability
-    Note over App,RW: closure is synchronous — NO await inside
-    App->>RW: write blobs + index (+ seed touch) synchronously
+    App->>RW: queue manifest/blob reads
+    RW-->>App: request callback
+    Note over App,RW: callback synchronously queues merge writes — NO await inside
+    App->>RW: write blobs + index (+ seed/repair touch)
     App->>RW: wait_for_transaction().await  ← await is OUTSIDE
     RW-->>App: committed
 ```
 
-Concurrent same-scan upserts are rejected at runtime by an `UpsertScanGuard` RAII
-token (`DataError::ConcurrentUpsert`).
+Overlapping same-scan mutations serialize through IndexedDB's shared readwrite
+transaction scope, including calls from separate workers and tabs.
 
 ### Cache eviction (LRU)
 

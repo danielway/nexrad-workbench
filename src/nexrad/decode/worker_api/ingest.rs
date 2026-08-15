@@ -532,11 +532,8 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 )
             });
 
-            // The worker pool serializes per-scan via the per-worker
-            // `CHUNK_ACCUM` thread-local, so we're the sole writer for this
-            // scan key. `upsert_scan` internally dispatches first-write vs
-            // merge against the existing entry; `scan_touches` is seeded
-            // only on the first write.
+            // The accumulator serializes this worker's chunk stream only.
+            // IndexedDB serializes the cross-worker/tab scan mutation.
             let header = ScanHeader {
                 scan: scan_key,
                 vcp: accum_vcp,

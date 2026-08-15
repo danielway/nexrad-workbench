@@ -4,8 +4,8 @@
 //! IDB. Every function here is `pub(super)` and stateless.
 
 use super::{DataError, StorageQuotaEstimate};
-use crate::data::keys::{ScanIndexEntry, ScanKey, UnixMillis};
-use std::collections::HashMap;
+use crate::data::keys::{ElevationUpload, ScanHeader, ScanIndexEntry, ScanKey, UnixMillis};
+use std::collections::{BTreeSet, HashMap};
 
 /// Decides whether a `touch_scan` call should be deduplicated against
 /// an in-memory record of the previous touch.
@@ -64,6 +64,63 @@ pub(super) fn eviction_order(
     let mut sorted: Vec<&ScanIndexEntry> = entries.iter().collect();
     sorted.sort_by_key(|e| touches.get(&e.scan).copied().unwrap_or(UnixMillis(0)).0);
     sorted.into_iter().map(|e| e.scan.clone()).collect()
+}
+
+/// Merges an upsert into the transaction-visible scan manifest. Blob identity
+/// is `(scan, elevation_number, product)`; an upload adds product keys to its
+/// elevation and replaces that elevation's measured timing. Callers provide
+/// the actual old and new blob sizes so replacement accounting stays exact.
+pub(super) fn merge_scan_entry(
+    existing: Option<ScanIndexEntry>,
+    header: &ScanHeader,
+    elevations: &[ElevationUpload],
+    old_blob_sizes: &HashMap<String, u64>,
+    new_blob_sizes: &HashMap<String, u64>,
+) -> ScanIndexEntry {
+    let mut entry = existing.unwrap_or_else(|| ScanIndexEntry {
+        scan: header.scan.clone(),
+        vcp: header.vcp.clone(),
+        file_name: header.file_name.clone(),
+        cached_sweeps: Vec::new(),
+        total_size_bytes: 0,
+    });
+
+    if entry.vcp.is_none() {
+        entry.vcp = header.vcp.clone();
+    }
+    if entry.file_name.is_none() {
+        entry.file_name = header.file_name.clone();
+    }
+
+    for upload in elevations {
+        let incoming = upload.to_cached_sweep();
+        if let Some(current) = entry
+            .cached_sweeps
+            .iter_mut()
+            .find(|sweep| sweep.elevation_number == upload.elevation_number)
+        {
+            let mut products: BTreeSet<String> = current.cached_products.drain(..).collect();
+            products.extend(incoming.cached_products);
+            current.start = incoming.start;
+            current.end = incoming.end;
+            current.elevation = incoming.elevation;
+            current.start_azimuth = incoming.start_azimuth;
+            current.cached_products = products.into_iter().collect();
+        } else {
+            entry.cached_sweeps.push(incoming);
+        }
+    }
+    entry
+        .cached_sweeps
+        .sort_by_key(|sweep| sweep.elevation_number);
+
+    let replaced_bytes: u64 = old_blob_sizes.values().sum();
+    let incoming_bytes: u64 = new_blob_sizes.values().sum();
+    entry.total_size_bytes = entry
+        .total_size_bytes
+        .saturating_sub(replaced_bytes)
+        .saturating_add(incoming_bytes);
+    entry
 }
 
 /// Filters a list of scan-index entries to those within the inclusive
@@ -376,6 +433,15 @@ mod tests {
         assert_eq!(e.cached_sweep_count(), 0);
         e.cached_sweeps = vec![cached_sweep(1, 100.0), cached_sweep(2, 130.0)];
         assert_eq!(e.cached_sweep_count(), 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn entry_cached_sweep_count_ignores_duplicate_elevations() {
+        let mut e = entry("KDMX", 0, 0);
+        e.vcp = Some(vcp_with(2));
+        e.cached_sweeps = vec![cached_sweep(1, 100.0), cached_sweep(1, 130.0)];
+        assert_eq!(e.cached_sweep_count(), 1);
+        assert_eq!(e.completeness(), ScanCompleteness::PartialWithVcp);
     }
 
     #[wasm_bindgen_test]

@@ -338,7 +338,7 @@ pub struct CachedSweep {
 /// Timing metadata for a single elevation cut. Used as input to
 /// `IndexedDbStore::upsert_scan`, which derives the persisted
 /// [`CachedSweep`] from it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SweepTiming {
     /// Sweep start time (Unix seconds, sub-second precision).
     pub start_secs: f64,
@@ -450,7 +450,11 @@ impl ScanIndexEntry {
 
     /// Number of sweeps actually stored.
     pub fn cached_sweep_count(&self) -> u32 {
-        self.cached_sweeps.len() as u32
+        self.cached_sweeps
+            .iter()
+            .map(|sweep| sweep.elevation_number)
+            .collect::<std::collections::HashSet<_>>()
+            .len() as u32
     }
 
     /// Latest radial collection timestamp (Unix seconds) across all cached

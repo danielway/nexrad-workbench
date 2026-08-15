@@ -16,7 +16,7 @@ so the same code compiles and runs in both contexts.
 
 ## 1. Schema
 
-Database `nexrad-workbench`, version `5`. Three object stores; all keyed
+Database `nexrad-workbench`, version `6`. Three object stores; all keyed
 by string.
 
 | Store          | Key format                          | Value                                                            |
@@ -113,7 +113,7 @@ Derived (accessor methods, not stored):
 | ----------------------------------- | ----------------------------------------------------------------------- |
 | `has_vcp() -> bool`                 | `vcp.is_some()`                                                         |
 | `planned_sweep_count() -> Option<u32>` | `vcp.as_ref().map(|v| v.elevations.len() as u32)`                       |
-| `cached_sweep_count() -> u32`       | `cached_sweeps.len() as u32`                                            |
+| `cached_sweep_count() -> u32`       | Count of unique `elevation_number` values                               |
 | `end_timestamp_secs() -> Option<i64>` | `cached_sweeps.iter().map(|s| s.end as i64).max()`                      |
 | `completeness() -> ScanCompleteness` | `from_counts(has_vcp(), cached_sweep_count(), planned_sweep_count())`   |
 
@@ -199,23 +199,20 @@ moves across await points in non-WASM contexts.
 The actual transaction-completion wait (`wait_for_transaction`) happens
 *after* the closure returns, which is the only safe place to await.
 
-### 3c. Read-modify-write is not atomic — the `UpsertScanGuard`
+### 3c. Atomic scan mutations
 
-Because of (3b), no single transaction can read a value, mutate it,
-and write it back — the `await` between read and write would commit
-the read transaction. The one RMW in the store is `upsert_scan`
-(§6), which does a readonly `scan_availability` lookup, merges in
-memory, then writes in a separate readwrite transaction.
+`upsert_scan`, deletion, and access touches perform scan mutations in a
+single readwrite transaction spanning all three stores. Initial reads are
+queued synchronously; their request callbacks synchronously queue dependent
+writes before the transaction is allowed to complete. There is still no
+`await` inside the transaction.
 
-That split is racy in principle, so `upsert_scan` acquires an
-**`UpsertScanGuard`** at entry — a per-scan-key RAII lock in a
-thread-local `HashSet` (WASM is single-threaded; the only contention
-is between concurrently-running async futures on the same worker). A
-second task upserting the same scan while one is in flight gets
-`DataError::ConcurrentUpsert` instead of silently racing. The ingest
-pipeline already serializes per-scan via the per-worker `CHUNK_ACCUM`
-thread-local (`decode/worker_api/ingest.rs`); the guard is the
-type-system backstop.
+IndexedDB serializes overlapping readwrite transactions across database
+connections, so this is correct across workers and tabs. The merge key is
+`(scan, elevation_number, product)`: product membership is unique and sorted,
+retries with identical bytes are no-ops, and replacement accounting uses the
+actual old blob length. Concurrent differing bytes or timing are unexpected;
+the later serialized transaction wins and logs a warning.
 
 ## 5. Key-range queries
 
@@ -282,8 +279,9 @@ types live in [`src/data/keys.rs`](../src/data/keys.rs).
   transaction. The initial touch is what gives the scan its place in
   the LRU order.
 - **Merge** (entry exists): fill in `vcp` / `file_name` only if
-  currently `None`, append the derived `CachedSweep`s to
-  `existing.cached_sweeps`, add the batch size to `total_size_bytes`.
+  currently `None`, update the one manifest row for each supplied elevation,
+  union its durable product keys, and apply actual blob replacement deltas to
+  `total_size_bytes`.
   **`scan_touches` is preserved** — a chunk-ingest flush doesn't
   refresh the access timestamp (which would conflate writes with
   reads and break LRU).
@@ -299,9 +297,8 @@ Contract details:
 - An empty `elevations` slice is permitted — the entry is written (or
   its header fields merged) without any blob writes (used by
   chunk-ingest flushes that don't produce new blobs).
-- The read-then-write split is guarded per scan key by
-  `UpsertScanGuard` (§3c); a concurrent upsert for the same scan gets
-  `DataError::ConcurrentUpsert`.
+- Concurrent upserts serialize at the database. They retain independent
+  elevations and never publish blobs without the corresponding manifest.
 
 ### Sweep blobs
 
@@ -366,7 +363,6 @@ letting IDB fail mid-transaction. The decision itself is the pure
 | `RequestFailed`      | Single-request failure inside a transaction         |
 | `QuotaExceeded`      | Browser storage estimate insufficient for the batch |
 | `SerdeError`         | `serde-wasm-bindgen` round-trip failed              |
-| `ConcurrentUpsert`   | A second task tried to `upsert_scan` a scan mid-upsert (§3c) |
 
 Errors from `JsValue` are formatted via the `js_err` helper, which
 extracts `name`/`message` when the value looks like a `DOMException`,
@@ -374,7 +370,7 @@ and falls back to `{:?}` otherwise. This gives readable strings like
 `"QuotaExceededError: ..."` instead of opaque `JsValue(...)` blobs.
 
 `DataError::kind()` classifies every error as `Transient` (retry may
-succeed: `NotOpen`, `ConcurrentUpsert`, aborted/timed-out
+succeed: `NotOpen`, aborted/timed-out
 transactions), `Quota` (succeeds only after eviction), or `Permanent`
 — so callers pick retry/give-up/evict behavior without matching every
 variant. IDB failures are classified by the DOMException name `js_err`
@@ -480,9 +476,8 @@ Not part of pre-commit.
   `IndexedDbStore::evict_to_size` only knows "evict until this
   size"; whether to evict (and to what target) is `DataFacade`'s job.
 
-- Cross-tab coordination — none. Multiple tabs of the same site share
-  the database but do not coordinate writes; ingest is idempotent at
-  the scan-key level so concurrent tabs at worst duplicate work.
+- Cross-tab scan mutations rely on IndexedDB transaction serialization; no
+  process-local lock or worker affinity is required.
 
 ## 11. Access-time tracking
 

@@ -22,23 +22,18 @@
 //!   compiler rejects `.await` inside it — enforcing the WASM IDB rule that
 //!   readwrite transactions auto-commit when the event loop yields.
 //! - Cross-store transactions are supported by passing a multi-store slice.
-//! - `upsert_scan` does a readonly `scan_availability` lookup before its
-//!   readwrite transaction to decide create-vs-merge. The split is *not*
-//!   atomic across async awaits, so the function acquires an
-//!   [`UpsertScanGuard`] at entry and returns
-//!   [`DataError::ConcurrentUpsert`] when a second task tries to upsert
-//!   the same scan in parallel. The ingest pipeline already serializes
-//!   via the per-worker `CHUNK_ACCUM` thread-local; the guard is the
-//!   type-system backstop.
+//! - `upsert_scan` chains transaction-visible reads and dependent writes from
+//!   IDB request callbacks, so IndexedDB serializes same-scan mutations across
+//!   workers and tabs without awaiting inside the readwrite transaction.
 
 use crate::data::keys::*;
 use js_sys::{Array, ArrayBuffer, Uint8Array};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{IdbDatabase, IdbObjectStore, IdbRequest, IdbTransactionMode};
+use web_sys::{IdbDatabase, IdbObjectStore, IdbRequest, IdbTransaction, IdbTransactionMode};
 
 /// Structured error type for IndexedDB operations.
 #[derive(Debug)]
@@ -53,11 +48,6 @@ pub enum DataError {
     QuotaExceeded { available_mb: f64, required_mb: f64 },
     /// (De)serialization of stored data failed.
     SerdeError(String),
-    /// Another async task is already performing an upsert for this scan.
-    /// The non-atomic read-then-write split in `upsert_scan` requires
-    /// per-scan serialization; this is raised when that contract is
-    /// violated rather than letting the writes silently race.
-    ConcurrentUpsert { scan_key: String },
 }
 
 impl std::fmt::Display for DataError {
@@ -75,9 +65,6 @@ impl std::fmt::Display for DataError {
                 available_mb, required_mb
             ),
             DataError::SerdeError(msg) => write!(f, "Serde error: {}", msg),
-            DataError::ConcurrentUpsert { scan_key } => {
-                write!(f, "Concurrent upsert in flight for scan {}", scan_key)
-            }
         }
     }
 }
@@ -102,7 +89,7 @@ impl DataError {
     /// formatted message.
     pub fn kind(&self) -> ErrorKind {
         match self {
-            DataError::NotOpen | DataError::ConcurrentUpsert { .. } => ErrorKind::Transient,
+            DataError::NotOpen => ErrorKind::Transient,
             DataError::QuotaExceeded { .. } => ErrorKind::Quota,
             DataError::SerdeError(_) => ErrorKind::Permanent,
             DataError::TransactionFailed(msg) | DataError::RequestFailed(msg) => {
@@ -125,50 +112,6 @@ fn classify_js_error(msg: &str) -> ErrorKind {
         }
         _ => ErrorKind::Permanent,
     }
-}
-
-/// RAII token enforcing the single-writer invariant on
-/// [`IndexedDbStore::upsert_scan`]. The store's read-then-write split is
-/// not atomic across its two IDB transactions, so two concurrent async
-/// tasks writing the same scan would race; this token rejects the second
-/// caller via [`DataError::ConcurrentUpsert`] instead of corrupting
-/// `scan_availability`.
-///
-/// Acquire via [`UpsertScanGuard::try_acquire`]; drop releases the lock.
-/// The lock is per-scan-key and lives in a thread-local (WASM is
-/// single-threaded; the only contention is between concurrently-running
-/// async futures on the same worker).
-pub struct UpsertScanGuard {
-    key: String,
-}
-
-impl UpsertScanGuard {
-    /// Try to acquire the lock for `scan`. Returns `None` if another
-    /// task is mid-upsert for the same scan; the caller should propagate
-    /// [`DataError::ConcurrentUpsert`] in that case.
-    pub fn try_acquire(scan: &crate::data::ScanKey) -> Option<Self> {
-        let key = scan.to_storage_key();
-        UPSERT_LOCKS.with(|locks| {
-            if !locks.borrow_mut().insert(key.clone()) {
-                None
-            } else {
-                Some(Self { key })
-            }
-        })
-    }
-}
-
-impl Drop for UpsertScanGuard {
-    fn drop(&mut self) {
-        UPSERT_LOCKS.with(|locks| {
-            locks.borrow_mut().remove(&self.key);
-        });
-    }
-}
-
-thread_local! {
-    static UPSERT_LOCKS: std::cell::RefCell<std::collections::HashSet<String>> =
-        std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
 /// Format a `JsValue` error into a string. Tries to extract `name`/`message`
@@ -208,7 +151,7 @@ impl StorageQuotaEstimate {
 }
 
 /// Current database schema version.
-pub(super) const DATABASE_VERSION: u32 = 5;
+pub(super) const DATABASE_VERSION: u32 = 6;
 
 /// Database name.
 const DATABASE_NAME: &str = "nexrad-workbench";
@@ -224,6 +167,64 @@ pub(super) const STORE_SCAN_TOUCHES: &str = "scan_touches";
 /// Minimum interval between in-memory touch deduplications. Limits how often
 /// a single scan's `last_accessed_at` is rewritten to IDB during fast scrub.
 const TOUCH_THROTTLE_MS: i64 = 60_000;
+
+type EventCallbacks = Rc<RefCell<Vec<Closure<dyn FnMut(web_sys::Event)>>>>;
+
+/// Results collected by the callback chain of one atomic scan upsert.
+struct UpsertReadState {
+    existing: Option<ScanIndexEntry>,
+    index_read: bool,
+    touch_exists: Option<bool>,
+    pending_blobs: usize,
+    old_blob_sizes: HashMap<String, u64>,
+    old_blob_bytes: HashMap<String, Vec<u8>>,
+    writes_enqueued: bool,
+}
+
+fn canonical_uploads(elevations: &[ElevationUpload]) -> Vec<ElevationUpload> {
+    let mut canonical: BTreeMap<u8, ElevationUpload> = BTreeMap::new();
+    for upload in elevations.iter().filter(|upload| !upload.blobs.is_empty()) {
+        let target = canonical
+            .entry(upload.elevation_number)
+            .or_insert_with(|| ElevationUpload {
+                elevation_number: upload.elevation_number,
+                timing: upload.timing.clone(),
+                blobs: Vec::new(),
+            });
+        if target.timing != upload.timing {
+            log::warn!(
+                "Duplicate upload timing for elevation {} is inconsistent; later input wins",
+                upload.elevation_number
+            );
+            target.timing = upload.timing.clone();
+        }
+        for blob in &upload.blobs {
+            if let Some(existing) = target
+                .blobs
+                .iter_mut()
+                .find(|current| current.product == blob.product)
+            {
+                if existing.bytes != blob.bytes {
+                    log::warn!(
+                        "Duplicate upload for elevation {} product {} differs; later input wins",
+                        upload.elevation_number,
+                        blob.product
+                    );
+                }
+                existing.bytes = blob.bytes.clone();
+            } else {
+                target.blobs.push(blob.clone());
+            }
+        }
+        target.blobs.sort_by_key(|blob| blob.product);
+    }
+    canonical.into_values().collect()
+}
+
+fn abort_with(tx: &IdbTransaction, failure: &Rc<RefCell<Option<DataError>>>, error: DataError) {
+    *failure.borrow_mut() = Some(error);
+    let _ = tx.abort();
+}
 
 /// Open-state machine that coalesces concurrent `open()` calls into a single
 /// underlying `indexedDB.open(...)`. Without this, multiple `spawn_local`
@@ -424,15 +425,16 @@ impl IndexedDbStore {
     /// Atomically writes blobs + scan-index entry for a scan, creating the
     /// entry on first call and merging on subsequent calls.
     ///
-    /// Dispatches internally on `scan_availability`:
+    /// The transaction reads the current manifest and replaced blob keys, then
+    /// synchronously queues its merge writes from IDB request callbacks:
     ///
     /// - **First write** (no existing entry): derive a fresh `ScanIndexEntry`
     ///   from `header` and the uploads, then write blobs + index + an initial
     ///   `scan_touches=now` in one cross-store readwrite transaction. The
     ///   initial touch is what gives the scan its place in the LRU order.
     /// - **Merge** (entry exists): fill in `header.vcp` / `header.file_name`
-    ///   only if currently `None`, append derived `CachedSweep`s to
-    ///   `existing.cached_sweeps`, and add to `existing.total_size_bytes`.
+    ///   only if currently `None`, update the canonical elevation row, union
+    ///   its product keys, and apply actual replacement byte deltas.
     ///   `scan_touches` is preserved so a chunk-ingest flush doesn't refresh
     ///   the access timestamp on every partial write.
     ///
@@ -443,34 +445,14 @@ impl IndexedDbStore {
     /// Empty `elevations` is permitted: the entry is written (or its header
     /// fields merged) without any blob writes.
     ///
-    /// Read-modify-write is *not* atomic across the readonly and readwrite
-    /// transactions, so callers must serialize on the per-scan key. This
-    /// is enforced at runtime by an [`UpsertScanGuard`] acquired here:
-    /// two concurrent async tasks targeting the same scan are rejected
-    /// with [`DataError::ConcurrentUpsert`] rather than allowed to race.
-    /// (The ingest pipeline naturally serializes already via the
-    /// per-worker `CHUNK_ACCUM` thread-local; the guard is the
-    /// type-system backstop.)
+    /// Same-scan calls from independent workers or tabs serialize through the
+    /// common three-store IndexedDB transaction scope.
     pub async fn upsert_scan(
         &self,
         header: &ScanHeader,
         elevations: &[ElevationUpload],
     ) -> Result<(), DataError> {
-        let _guard = UpsertScanGuard::try_acquire(&header.scan).ok_or_else(|| {
-            DataError::ConcurrentUpsert {
-                scan_key: header.scan.to_storage_key(),
-            }
-        })?;
-
-        // Drop phantom elevations at the boundary. Everything downstream
-        // (manifest derivation, blob writes, size accounting) operates on
-        // the filtered list, so the manifest can never claim a sweep that
-        // wasn't written.
-        let kept: Vec<&ElevationUpload> =
-            elevations.iter().filter(|e| !e.blobs.is_empty()).collect();
-
-        // Materialize the blob (key, bytes) pairs once so we can both
-        // size-check and write them without redundant key formatting.
+        let kept = canonical_uploads(elevations);
         let sweep_blobs: Vec<(String, Vec<u8>)> = kept
             .iter()
             .flat_map(|elev| {
@@ -485,70 +467,209 @@ impl IndexedDbStore {
         Self::check_quota(&sweep_blobs).await?;
         self.ensure_open().await?;
 
+        // IndexedDB keeps a readwrite transaction active while a request
+        // callback runs. Chaining the merge and writes from these callbacks
+        // gives every worker/tab one database-scoped serialized mutation.
+        let db = self.get_db()?;
+        let names = Array::of3(
+            &JsValue::from_str(STORE_SWEEPS),
+            &JsValue::from_str(STORE_SCAN_INDEX),
+            &JsValue::from_str(STORE_SCAN_TOUCHES),
+        );
+        let tx = db
+            .transaction_with_str_sequence_and_mode(&names, IdbTransactionMode::Readwrite)
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
+        let sweeps = tx
+            .object_store(STORE_SWEEPS)
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
+        let index = tx
+            .object_store(STORE_SCAN_INDEX)
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
+        let touches = tx
+            .object_store(STORE_SCAN_TOUCHES)
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
         let entry_key = header.scan.to_storage_key();
-        let existing = self.scan_availability(&header.scan).await?;
-        let batch_bytes: u64 = sweep_blobs.iter().map(|(_, b)| b.len() as u64).sum();
+        let state = Rc::new(RefCell::new(UpsertReadState {
+            existing: None,
+            index_read: false,
+            touch_exists: None,
+            pending_blobs: 0,
+            old_blob_sizes: HashMap::new(),
+            old_blob_bytes: HashMap::new(),
+            writes_enqueued: false,
+        }));
+        let failure = Rc::new(RefCell::new(None));
+        let callbacks: EventCallbacks = Rc::new(RefCell::new(Vec::new()));
 
-        let (entry, seed_touch) = match existing {
-            Some(mut existing) => {
-                if existing.vcp.is_none() {
-                    existing.vcp = header.vcp.clone();
+        let enqueue_writes: Rc<dyn Fn()> = Rc::new({
+            let state = state.clone();
+            let failure = failure.clone();
+            let header = header.clone();
+            let kept = kept.clone();
+            let sweep_blobs = sweep_blobs.clone();
+            let entry_key = entry_key.clone();
+            let sweeps = sweeps.clone();
+            let index = index.clone();
+            let touches = touches.clone();
+            let tx = tx.clone();
+            move || {
+                let mut state = state.borrow_mut();
+                if state.writes_enqueued
+                    || !state.index_read
+                    || state.touch_exists.is_none()
+                    || state.pending_blobs != 0
+                {
+                    return;
                 }
-                if existing.file_name.is_none() {
-                    existing.file_name = header.file_name.clone();
-                }
-                existing
-                    .cached_sweeps
-                    .extend(kept.iter().map(|e| e.to_cached_sweep()));
-                existing.total_size_bytes += batch_bytes;
-                (existing, false)
-            }
-            None => {
-                let cached_sweeps = kept.iter().map(|e| e.to_cached_sweep()).collect();
-                let entry = ScanIndexEntry {
-                    scan: header.scan.clone(),
-                    vcp: header.vcp.clone(),
-                    file_name: header.file_name.clone(),
-                    cached_sweeps,
-                    total_size_bytes: batch_bytes,
+                let was_new = state.existing.is_none();
+                let new_sizes: HashMap<String, u64> = sweep_blobs
+                    .iter()
+                    .map(|(key, bytes)| (key.clone(), bytes.len() as u64))
+                    .collect();
+                let entry = logic::merge_scan_entry(
+                    state.existing.clone(),
+                    &header,
+                    &kept,
+                    &state.old_blob_sizes,
+                    &new_sizes,
+                );
+                let entry_value = match to_js_value(&entry) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        abort_with(&tx, &failure, error);
+                        return;
+                    }
                 };
-                (entry, true)
+                for (key, bytes) in &sweep_blobs {
+                    if let Some(old) = state.old_blob_bytes.get(key) {
+                        if old == bytes {
+                            continue;
+                        }
+                        log::warn!(
+                            "Conflicting cached blob {}: later serialized transaction wins",
+                            key
+                        );
+                    }
+                    let buffer = Uint8Array::from(bytes.as_slice()).buffer();
+                    if let Err(error) = sweeps.put_with_key(&buffer, &JsValue::from_str(key)) {
+                        abort_with(&tx, &failure, DataError::RequestFailed(js_err(error)));
+                        return;
+                    }
+                }
+                if let Err(error) = index.put_with_key(&entry_value, &JsValue::from_str(&entry_key))
+                {
+                    abort_with(&tx, &failure, DataError::RequestFailed(js_err(error)));
+                    return;
+                }
+                if was_new || state.touch_exists == Some(false) {
+                    let now = JsValue::from_f64(UnixMillis::now().0 as f64);
+                    if let Err(error) = touches.put_with_key(&now, &JsValue::from_str(&entry_key)) {
+                        abort_with(&tx, &failure, DataError::RequestFailed(js_err(error)));
+                        return;
+                    }
+                }
+                state.writes_enqueued = true;
             }
-        };
+        });
 
-        let entry_value = to_js_value(&entry)?;
-        let touch_value = if seed_touch {
-            Some(JsValue::from_f64(UnixMillis::now().0 as f64))
-        } else {
-            None
+        let touch_request = touches
+            .get(&JsValue::from_str(&entry_key))
+            .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+        let touch_callback = {
+            let state = state.clone();
+            let enqueue_writes = enqueue_writes.clone();
+            Closure::wrap(Box::new(move |event: web_sys::Event| {
+                let request: IdbRequest = event.target().unwrap().dyn_into().unwrap();
+                let result = request.result().unwrap_or(JsValue::UNDEFINED);
+                state.borrow_mut().touch_exists = Some(!result.is_null() && !result.is_undefined());
+                enqueue_writes();
+            }) as Box<dyn FnMut(_)>)
         };
+        touch_request.set_onsuccess(Some(touch_callback.as_ref().unchecked_ref()));
+        callbacks.borrow_mut().push(touch_callback);
 
-        let stores: &[&str] = if seed_touch {
-            &[STORE_SWEEPS, STORE_SCAN_INDEX, STORE_SCAN_TOUCHES]
-        } else {
-            &[STORE_SWEEPS, STORE_SCAN_INDEX]
+        let index_request = index
+            .get(&JsValue::from_str(&entry_key))
+            .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+        let index_callback = {
+            let state = state.clone();
+            let failure = failure.clone();
+            let callbacks = callbacks.clone();
+            let enqueue_writes = enqueue_writes.clone();
+            let sweep_blobs = sweep_blobs.clone();
+            let sweeps = sweeps.clone();
+            let tx = tx.clone();
+            Closure::wrap(Box::new(move |event: web_sys::Event| {
+                let request: IdbRequest = event.target().unwrap().dyn_into().unwrap();
+                let value = request.result().unwrap_or(JsValue::UNDEFINED);
+                match from_js_value_opt(&value) {
+                    Ok(existing) => {
+                        let mut read = state.borrow_mut();
+                        read.existing = existing;
+                        read.index_read = true;
+                        read.pending_blobs = sweep_blobs.len();
+                    }
+                    Err(error) => {
+                        abort_with(&tx, &failure, error);
+                        return;
+                    }
+                }
+                for (key, _) in &sweep_blobs {
+                    let request = match sweeps.get(&JsValue::from_str(key)) {
+                        Ok(request) => request,
+                        Err(error) => {
+                            abort_with(&tx, &failure, DataError::RequestFailed(js_err(error)));
+                            return;
+                        }
+                    };
+                    let state = state.clone();
+                    let failure = failure.clone();
+                    let enqueue_writes = enqueue_writes.clone();
+                    let key = key.clone();
+                    let tx = tx.clone();
+                    let callback = Closure::wrap(Box::new(move |event: web_sys::Event| {
+                        let request: IdbRequest = event.target().unwrap().dyn_into().unwrap();
+                        let value = request.result().unwrap_or(JsValue::UNDEFINED);
+                        let mut read = state.borrow_mut();
+                        if !value.is_null() && !value.is_undefined() {
+                            let buffer: Result<ArrayBuffer, _> = value.dyn_into();
+                            match buffer {
+                                Ok(buffer) => {
+                                    read.old_blob_sizes
+                                        .insert(key.clone(), buffer.byte_length() as u64);
+                                    read.old_blob_bytes
+                                        .insert(key.clone(), Uint8Array::new(&buffer).to_vec());
+                                }
+                                Err(_) => {
+                                    drop(read);
+                                    abort_with(
+                                        &tx,
+                                        &failure,
+                                        DataError::SerdeError("Expected ArrayBuffer".to_string()),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        read.pending_blobs -= 1;
+                        drop(read);
+                        enqueue_writes();
+                    }) as Box<dyn FnMut(_)>);
+                    request.set_onsuccess(Some(callback.as_ref().unchecked_ref()));
+                    callbacks.borrow_mut().push(callback);
+                }
+                enqueue_writes();
+            }) as Box<dyn FnMut(_)>)
         };
+        index_request.set_onsuccess(Some(index_callback.as_ref().unchecked_ref()));
+        callbacks.borrow_mut().push(index_callback);
 
-        self.write_tx(stores, |wtx| {
-            let sweeps = wtx.object_store(STORE_SWEEPS)?;
-            for (key, data) in &sweep_blobs {
-                let array = Uint8Array::from(data.as_slice());
-                let buffer = array.buffer();
-                sweeps
-                    .put_with_key(&buffer, &JsValue::from_str(key))
-                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-            }
-            wtx.object_store(STORE_SCAN_INDEX)?
-                .put_with_key(&entry_value, &JsValue::from_str(&entry_key))
-                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-            if let Some(ref touch) = touch_value {
-                wtx.object_store(STORE_SCAN_TOUCHES)?
-                    .put_with_key(touch, &JsValue::from_str(&entry_key))
-                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-            }
-            Ok(())
-        })
-        .await
+        let transaction_result = wait_for_transaction(&tx).await;
+        callbacks.borrow_mut().clear();
+        if let Some(error) = failure.borrow_mut().take() {
+            return Err(error);
+        }
+        transaction_result
     }
 
     /// Gets a pre-computed sweep blob, returning the raw JS ArrayBuffer.
@@ -635,14 +756,63 @@ impl IndexedDbStore {
     async fn write_touch(&self, scan: &ScanKey, time: UnixMillis) -> Result<(), DataError> {
         self.ensure_open().await?;
         let key = scan.to_storage_key();
-        let value = JsValue::from_f64(time.0 as f64);
-        self.write_tx(&[STORE_SCAN_TOUCHES], |wtx| {
-            wtx.object_store(STORE_SCAN_TOUCHES)?
-                .put_with_key(&value, &JsValue::from_str(&key))
-                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-            Ok(())
-        })
-        .await
+        let db = self.get_db()?;
+        let names = Array::of2(
+            &JsValue::from_str(STORE_SCAN_INDEX),
+            &JsValue::from_str(STORE_SCAN_TOUCHES),
+        );
+        let tx = db
+            .transaction_with_str_sequence_and_mode(&names, IdbTransactionMode::Readwrite)
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
+        let index = tx
+            .object_store(STORE_SCAN_INDEX)
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
+        let touches = tx
+            .object_store(STORE_SCAN_TOUCHES)
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
+        let callbacks: EventCallbacks = Rc::new(RefCell::new(Vec::new()));
+        let index_request = index
+            .get(&JsValue::from_str(&key))
+            .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+        let index_callback = {
+            let callbacks = callbacks.clone();
+            let key = key.clone();
+            let touches = touches.clone();
+            Closure::wrap(Box::new(move |event: web_sys::Event| {
+                let request: IdbRequest = event.target().unwrap().dyn_into().unwrap();
+                let index = request.result().unwrap_or(JsValue::UNDEFINED);
+                if index.is_null() || index.is_undefined() {
+                    let _ = touches.delete(&JsValue::from_str(&key));
+                    return;
+                }
+                let request = match touches.get(&JsValue::from_str(&key)) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        log::debug!("Failed to read touch for {}: {}", key, js_err(error));
+                        return;
+                    }
+                };
+                let key = key.clone();
+                let touches = touches.clone();
+                let callback = Closure::wrap(Box::new(move |event: web_sys::Event| {
+                    let request: IdbRequest = event.target().unwrap().dyn_into().unwrap();
+                    let existing = request.result().ok().and_then(|value| value.as_f64());
+                    let next = existing.unwrap_or(time.0 as f64).max(time.0 as f64);
+                    if let Err(error) =
+                        touches.put_with_key(&JsValue::from_f64(next), &JsValue::from_str(&key))
+                    {
+                        log::debug!("Failed to write touch for {}: {}", key, js_err(error));
+                    }
+                }) as Box<dyn FnMut(_)>);
+                request.set_onsuccess(Some(callback.as_ref().unchecked_ref()));
+                callbacks.borrow_mut().push(callback);
+            }) as Box<dyn FnMut(_)>)
+        };
+        index_request.set_onsuccess(Some(index_callback.as_ref().unchecked_ref()));
+        callbacks.borrow_mut().push(index_callback);
+        let result = wait_for_transaction(&tx).await;
+        callbacks.borrow_mut().clear();
+        result
     }
 
     /// Reads every entry in the `scan_touches` store as a map. Used by
@@ -785,32 +955,69 @@ impl IndexedDbStore {
     /// per-scan deletion semantics directly.
     pub async fn delete_scan(&self, scan: &ScanKey) -> Result<u64, DataError> {
         self.ensure_open().await?;
-
         let scan_storage_key = scan.to_storage_key();
-        let bytes_freed = self
-            .scan_availability(scan)
-            .await?
-            .map(|e| e.total_size_bytes)
-            .unwrap_or(0);
-
         let sweeps_range = scan_prefix_range(scan)?;
-
-        self.write_tx(
-            &[STORE_SWEEPS, STORE_SCAN_INDEX, STORE_SCAN_TOUCHES],
-            |wtx| {
-                wtx.object_store(STORE_SWEEPS)?
-                    .delete(&sweeps_range.into())
-                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-                wtx.object_store(STORE_SCAN_INDEX)?
-                    .delete(&JsValue::from_str(&scan_storage_key))
-                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-                wtx.object_store(STORE_SCAN_TOUCHES)?
-                    .delete(&JsValue::from_str(&scan_storage_key))
-                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-                Ok(())
-            },
-        )
-        .await?;
+        let db = self.get_db()?;
+        let names = Array::of3(
+            &JsValue::from_str(STORE_SWEEPS),
+            &JsValue::from_str(STORE_SCAN_INDEX),
+            &JsValue::from_str(STORE_SCAN_TOUCHES),
+        );
+        let tx = db
+            .transaction_with_str_sequence_and_mode(&names, IdbTransactionMode::Readwrite)
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
+        let sweeps = tx
+            .object_store(STORE_SWEEPS)
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
+        let index = tx
+            .object_store(STORE_SCAN_INDEX)
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
+        let touches = tx
+            .object_store(STORE_SCAN_TOUCHES)
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
+        let bytes_freed = Rc::new(RefCell::new(0u64));
+        let failure = Rc::new(RefCell::new(None));
+        let request = index
+            .get(&JsValue::from_str(&scan_storage_key))
+            .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+        let callback = {
+            let bytes_freed = bytes_freed.clone();
+            let failure = failure.clone();
+            let tx = tx.clone();
+            let scan_storage_key = scan_storage_key.clone();
+            Closure::wrap(Box::new(move |event: web_sys::Event| {
+                let request: IdbRequest = event.target().unwrap().dyn_into().unwrap();
+                let value = request.result().unwrap_or(JsValue::UNDEFINED);
+                match from_js_value_opt::<ScanIndexEntry>(&value) {
+                    Ok(entry) => {
+                        *bytes_freed.borrow_mut() =
+                            entry.map(|entry| entry.total_size_bytes).unwrap_or(0)
+                    }
+                    Err(error) => {
+                        abort_with(&tx, &failure, error);
+                        return;
+                    }
+                }
+                for result in [
+                    sweeps.delete(&sweeps_range.clone().into()),
+                    index.delete(&JsValue::from_str(&scan_storage_key)),
+                    touches.delete(&JsValue::from_str(&scan_storage_key)),
+                ] {
+                    if let Err(error) = result {
+                        abort_with(&tx, &failure, DataError::RequestFailed(js_err(error)));
+                        return;
+                    }
+                }
+            }) as Box<dyn FnMut(_)>)
+        };
+        request.set_onsuccess(Some(callback.as_ref().unchecked_ref()));
+        let result = wait_for_transaction(&tx).await;
+        drop(callback);
+        if let Some(error) = failure.borrow_mut().take() {
+            return Err(error);
+        }
+        result?;
+        let bytes_freed = *bytes_freed.borrow();
 
         // Drop the in-memory throttle entry so a subsequent re-ingest of the
         // same scan key isn't suppressed.
@@ -919,46 +1126,11 @@ use helpers::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::{ScanKey, SiteId, UnixMillis};
     use wasm_bindgen_test::wasm_bindgen_test;
-
-    fn key(site: &str, ms: i64) -> ScanKey {
-        ScanKey::new(SiteId::new(site), UnixMillis(ms))
-    }
-
-    #[wasm_bindgen_test]
-    fn upsert_guard_blocks_concurrent_acquisition_for_same_scan() {
-        let scan = key("KDMX", 1_700_000_000_000);
-        let g1 = UpsertScanGuard::try_acquire(&scan).expect("first acquire succeeds");
-        assert!(
-            UpsertScanGuard::try_acquire(&scan).is_none(),
-            "second concurrent acquire must fail"
-        );
-        drop(g1);
-        // Once the first guard is dropped, the lock is released and a
-        // fresh acquire is allowed again.
-        assert!(UpsertScanGuard::try_acquire(&scan).is_some());
-    }
-
-    #[wasm_bindgen_test]
-    fn upsert_guard_independent_per_scan() {
-        let scan_a = key("KDMX", 1_700_000_000_000);
-        let scan_b = key("KFTG", 1_700_000_000_000);
-        let _ga = UpsertScanGuard::try_acquire(&scan_a).expect("acquire A");
-        let _gb =
-            UpsertScanGuard::try_acquire(&scan_b).expect("acquire B independent of A succeeds");
-    }
 
     #[wasm_bindgen_test]
     fn error_kind_classifies_structured_variants() {
         assert_eq!(DataError::NotOpen.kind(), ErrorKind::Transient);
-        assert_eq!(
-            DataError::ConcurrentUpsert {
-                scan_key: "KDMX|0".into()
-            }
-            .kind(),
-            ErrorKind::Transient
-        );
         assert_eq!(
             DataError::QuotaExceeded {
                 available_mb: 1.0,

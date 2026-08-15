@@ -17,6 +17,8 @@
 //!   builds the index entry across multiple `upsert_scan` calls; each call
 //!   must leave the manifest consistent with the blobs actually in storage.
 //! - **Eviction**: ordering by `scan_touches`, missing-touch sorts first.
+//! - **Cross-instance mutation**: independent store handles serialize the
+//!   same scan without losing elevations or inflating replacement accounting.
 //!
 //! Each test runs in its own IndexedDB database (via
 //! `IndexedDbStore::with_database_name`) so siblings don't collide.
@@ -318,6 +320,149 @@ async fn upsert_incremental_keeps_manifest_and_blobs_in_agreement() {
                 sweep.elevation_number,
                 product
             );
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn concurrent_upserts_retain_each_elevation() {
+    let db_name = fresh_db_name();
+    let first = IndexedDbStore::with_database_name(db_name.clone());
+    let second = IndexedDbStore::with_database_name(db_name);
+    first.open().await.unwrap();
+    second.open().await.unwrap();
+    let scan = scan_key("KDMX", 1700000000000);
+    let first_header = header(scan.clone());
+    let second_header = header(scan.clone());
+    let first_upload = upload(1, &[("reflectivity", 100)]);
+    let second_upload = upload(2, &[("velocity", 80)]);
+
+    let (first_result, second_result) = futures_util::future::join(
+        first.upsert_scan(&first_header, &[first_upload]),
+        second.upsert_scan(&second_header, &[second_upload]),
+    )
+    .await;
+    first_result.unwrap();
+    second_result.unwrap();
+
+    let entry = first.scan_availability(&scan).await.unwrap().unwrap();
+    assert_eq!(entry.cached_sweeps.len(), 2);
+    assert_eq!(entry.cached_sweep_count(), 2);
+    assert_eq!(entry.total_size_bytes, 180);
+    assert_eq!(
+        first
+            .get_sweep(&sweep_key(&scan, 1, "reflectivity"))
+            .await
+            .unwrap()
+            .unwrap()
+            .byte_length(),
+        100
+    );
+    assert_eq!(
+        first
+            .get_sweep(&sweep_key(&scan, 2, "velocity"))
+            .await
+            .unwrap()
+            .unwrap()
+            .byte_length(),
+        80
+    );
+}
+
+#[wasm_bindgen_test]
+async fn retry_and_replacement_are_idempotent_and_accounted_by_delta() {
+    let store = fresh_store();
+    let scan = scan_key("KDMX", 1700000000000);
+    let first = upload(1, &[("reflectivity", 100)]);
+    store
+        .upsert_scan(&header(scan.clone()), std::slice::from_ref(&first))
+        .await
+        .unwrap();
+    store
+        .upsert_scan(&header(scan.clone()), std::slice::from_ref(&first))
+        .await
+        .unwrap();
+    let entry = store.scan_availability(&scan).await.unwrap().unwrap();
+    assert_eq!(entry.cached_sweeps.len(), 1);
+    assert_eq!(entry.total_size_bytes, 100);
+
+    store
+        .upsert_scan(&header(scan.clone()), &[upload(1, &[("reflectivity", 40)])])
+        .await
+        .unwrap();
+    let entry = store.scan_availability(&scan).await.unwrap().unwrap();
+    assert_eq!(entry.cached_sweeps.len(), 1);
+    assert_eq!(entry.total_size_bytes, 40);
+    assert_eq!(store.total_cache_size().await.unwrap(), 40);
+
+    store
+        .upsert_scan(&header(scan.clone()), &[upload(1, &[("velocity", 20)])])
+        .await
+        .unwrap();
+    let entry = store.scan_availability(&scan).await.unwrap().unwrap();
+    assert_eq!(entry.cached_sweeps.len(), 1);
+    assert_eq!(
+        entry.cached_sweeps[0].cached_products,
+        vec!["reflectivity", "velocity"]
+    );
+    assert_eq!(entry.total_size_bytes, 60);
+}
+
+#[wasm_bindgen_test]
+async fn concurrent_upsert_and_delete_leave_a_serializable_scan() {
+    let db_name = fresh_db_name();
+    let writer = IndexedDbStore::with_database_name(db_name.clone());
+    let deleter = IndexedDbStore::with_database_name(db_name);
+    writer.open().await.unwrap();
+    deleter.open().await.unwrap();
+    let scan = scan_key("KDMX", 1700000000000);
+    writer
+        .upsert_scan(
+            &header(scan.clone()),
+            &[upload(1, &[("reflectivity", 100)])],
+        )
+        .await
+        .unwrap();
+
+    let next_header = header(scan.clone());
+    let next_upload = upload(2, &[("velocity", 80)]);
+    let (upsert, delete) = futures_util::future::join(
+        writer.upsert_scan(&next_header, &[next_upload]),
+        deleter.delete_scan(&scan),
+    )
+    .await;
+    upsert.unwrap();
+    delete.unwrap();
+
+    match writer.scan_availability(&scan).await.unwrap() {
+        None => {
+            assert!(writer.read_touch(&scan).await.unwrap().is_none());
+            assert!(writer
+                .get_sweep(&sweep_key(&scan, 1, "reflectivity"))
+                .await
+                .unwrap()
+                .is_none());
+            assert!(writer
+                .get_sweep(&sweep_key(&scan, 2, "velocity"))
+                .await
+                .unwrap()
+                .is_none());
+        }
+        Some(entry) => {
+            assert_eq!(entry.cached_sweeps.len(), 1);
+            assert_eq!(entry.cached_sweeps[0].elevation_number, 2);
+            assert_eq!(entry.total_size_bytes, 80);
+            assert!(writer.read_touch(&scan).await.unwrap().is_some());
+            assert!(writer
+                .get_sweep(&sweep_key(&scan, 1, "reflectivity"))
+                .await
+                .unwrap()
+                .is_none());
+            assert!(writer
+                .get_sweep(&sweep_key(&scan, 2, "velocity"))
+                .await
+                .unwrap()
+                .is_some());
         }
     }
 }
