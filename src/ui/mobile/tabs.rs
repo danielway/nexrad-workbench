@@ -308,7 +308,12 @@ fn render_stream_health(ui: &mut egui::Ui, live: &crate::subsystem::Live) {
         return;
     }
     let resp = ui.label(
-        RichText::new(format!("{} stalled", egui_phosphor::regular::WAVE_SINE))
+        RichText::new(egui_phosphor::regular::BROADCAST)
+            .size(10.0)
+            .color(crate::ui::colors::live::ACQUIRING),
+    );
+    ui.label(
+        RichText::new("stalled")
             .size(10.0)
             .monospace()
             .color(crate::ui::colors::live::ACQUIRING),
