@@ -51,13 +51,13 @@ use super::left_panel::LeftPanelLayer;
 use super::mobile::{MobileChromeLayer, MobileSettingsModalLayer, MobileTopBarLayer};
 use super::mping_modal::MpingModalLayer;
 use super::range_download_modal::RangeDownloadModalLayer;
+use super::reset_settings_modal::ResetSettingsModalLayer;
 use super::right_panel::RightPanelLayer;
 use super::scan_inspector::ScanInspectorLayer;
 use super::shortcuts::ShortcutsHelpLayer;
 use super::site_modal::SiteModalLayer;
 use super::top_bar::TopBarLayer;
 use super::vcp_forecast_modal::VcpForecastModalLayer;
-use super::wipe_modal::WipeModalLayer;
 use crate::state::AppState;
 use crate::subsystem::{Acquisition, Chrome, Derived, Diagnostics, Live, Playback, Timeline};
 use crate::ui::modal_states::ModalStates;
@@ -169,7 +169,7 @@ pub(crate) fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
             // Modals: same set as desktop, in z-order.
             &SiteModalLayer,           // z=10
             &ShortcutsHelpLayer,       // z=20
-            &WipeModalLayer,           // z=30
+            &ResetSettingsModalLayer,  // z=30
             &RangeDownloadModalLayer,  // z=35
             &ActivitySheetLayer,       // z=37
             &ScanInspectorLayer,       // z=38
@@ -189,7 +189,7 @@ pub(crate) fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
             // Modals: same set as mobile, in z-order.
             &SiteModalLayer,           // z=10
             &ShortcutsHelpLayer,       // z=20
-            &WipeModalLayer,           // z=30
+            &ResetSettingsModalLayer,  // z=30
             &RangeDownloadModalLayer,  // z=35
             &ActivitySheetLayer,       // z=37
             &ScanInspectorLayer,       // z=38

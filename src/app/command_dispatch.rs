@@ -6,7 +6,7 @@
 //! 1. **Immediate state mutation** — flips a flag or mutates `AppState`
 //!    directly (e.g. `PauseQueue`, `OpenAlert`).
 //! 2. **Async side-effect** — spawns a future via `spawn_local`
-//!    (e.g. `WipeAll`, `CheckEviction`).
+//!    (e.g. `CheckEviction`).
 //! 3. **Deferred fan-out** — recorded on [`CommandOutcome`] so the
 //!    `update()` loop can run the work after worker results land
 //!    (`pump_queue`).
@@ -149,7 +149,7 @@ pub(crate) fn dispatch_state_only(
         //   LocateMeForSite ... browser geolocation
         //   SubmitZip ......... network geocode lookup
         //   ClearCache ........ IDB clear + GPU texture wipe
-        //   WipeAll ........... spawn_local IDB/localStorage wipe + reload
+        //   ResetSettings ..... localStorage reset + reload
         //   CheckEviction ..... spawn_local IDB eviction
         //   RefreshTimeline ... IDB cache-load channel (needs egui ctx)
         //   StartLive ......... opens the realtime stream (needs egui ctx)
@@ -163,7 +163,7 @@ pub(crate) fn dispatch_state_only(
         | Intent::LocateMeForSite
         | Intent::SubmitZip(_)
         | Intent::ClearCache
-        | Intent::WipeAll
+        | Intent::ResetSettings
         | Intent::CheckEviction
         | Intent::RefreshTimeline { .. }
         | Intent::StartLive
@@ -432,7 +432,7 @@ impl WorkbenchApp {
 
             // ---- Storage lifecycle ------------------------------------
             Intent::ClearCache => self.handle_clear_cache(ctx),
-            Intent::WipeAll => self.handle_wipe_all(),
+            Intent::ResetSettings => self.handle_reset_settings(),
             Intent::CheckEviction => self.handle_check_eviction(ctx),
 
             // ---- Timeline ---------------------------------------------
@@ -575,19 +575,36 @@ impl WorkbenchApp {
         }
     }
 
-    fn handle_wipe_all(&mut self) {
-        let facade = self.acquisition.coordinator.facade().clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Err(e) = facade.clear_all().await {
-                log::error!("Failed to clear IndexedDB: {}", e);
-            }
-            if let Some(window) = web_sys::window() {
-                if let Ok(Some(storage)) = window.local_storage() {
-                    let _ = storage.clear();
+    fn handle_reset_settings(&mut self) {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let Ok(Some(storage)) = window.local_storage() else {
+            log::error!("Unable to access localStorage while resetting settings");
+            return;
+        };
+        let Ok(len) = storage.length() else {
+            log::error!("Unable to read localStorage length while resetting settings");
+            return;
+        };
+        let mut keys = Vec::with_capacity(len as usize);
+        for i in 0..len {
+            match storage.key(i) {
+                Ok(Some(key)) => keys.push(key),
+                Ok(None) => {}
+                Err(e) => {
+                    log::error!("Failed to enumerate localStorage keys: {:?}", e);
+                    return;
                 }
-                let _ = window.location().reload();
             }
-        });
+        }
+        for key in crate::state::SavedEvents::keys_to_reset(keys) {
+            if let Err(e) = storage.remove_item(&key) {
+                log::error!("Failed to remove setting {key}: {:?}", e);
+                return;
+            }
+        }
+        let _ = window.location().reload();
     }
 
     fn handle_refresh_timeline(&mut self, ctx: &egui::Context, auto_position: bool) {
@@ -850,7 +867,7 @@ mod dispatch_tests {
             Intent::LocateMeForSite,
             Intent::SubmitZip("50309".to_string()),
             Intent::ClearCache,
-            Intent::WipeAll,
+            Intent::ResetSettings,
             Intent::CheckEviction,
             Intent::RefreshTimeline {
                 auto_position: true,

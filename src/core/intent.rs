@@ -52,8 +52,8 @@ pub(crate) enum Intent {
     ClearLoop,
     /// Check and run eviction after a storage operation.
     CheckEviction,
-    /// Wipe all data (IndexedDB + localStorage) and reload.
-    WipeAll,
+    /// Reset local settings and preferences while preserving saved events, then reload.
+    ResetSettings,
     /// Pause the acquisition queue.
     PauseQueue,
     /// Resume the acquisition queue.

@@ -1,6 +1,6 @@
 //! Modal for creating, editing, and deleting saved events.
 //!
-//! Follows the same backdrop + centered window pattern as site_modal and wipe_modal.
+//! Follows the same backdrop + centered window pattern as site_modal and reset_settings_modal.
 
 use crate::state::AppState;
 use chrono::{TimeZone, Utc};
