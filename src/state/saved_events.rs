@@ -29,7 +29,14 @@ pub(crate) struct SavedEvents {
 }
 
 impl SavedEvents {
-    const STORAGE_KEY: &'static str = "nexrad_saved_events";
+    pub(crate) const STORAGE_KEY: &'static str = "nexrad_saved_events";
+
+    /// localStorage keys a settings reset should delete. Saved events stay.
+    pub(crate) fn keys_to_reset(keys: impl IntoIterator<Item = String>) -> Vec<String> {
+        keys.into_iter()
+            .filter(|key| key != Self::STORAGE_KEY)
+            .collect()
+    }
 
     /// Load saved events from localStorage.
     pub(crate) fn load() -> Self {
@@ -136,6 +143,24 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn default_is_empty() {
         assert!(SavedEvents::default().events.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn settings_reset_keeps_saved_events_key() {
+        let keys = vec![
+            "nexrad_user_preferences".to_string(),
+            SavedEvents::STORAGE_KEY.to_string(),
+            "nexrad_storage_settings".to_string(),
+            "nexrad_volume_KDMX".to_string(),
+        ];
+        assert_eq!(
+            SavedEvents::keys_to_reset(keys),
+            vec![
+                "nexrad_user_preferences".to_string(),
+                "nexrad_storage_settings".to_string(),
+                "nexrad_volume_KDMX".to_string(),
+            ]
+        );
     }
 
     #[wasm_bindgen_test]

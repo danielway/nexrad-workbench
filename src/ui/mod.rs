@@ -35,6 +35,7 @@ mod mping_modal;
 mod overflow_menu;
 mod playback_controls;
 mod range_download_modal;
+mod reset_settings_modal;
 mod right_panel;
 mod scan_inspector;
 mod shortcuts;
@@ -44,7 +45,6 @@ mod timeline;
 mod top_bar;
 mod vcp_forecast_modal;
 mod vcp_forecast_serialize;
-mod wipe_modal;
 
 pub(crate) use canvas::render_canvas_with_geo;
 pub(crate) use event_modal::EventModalState;

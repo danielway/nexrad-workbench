@@ -107,7 +107,7 @@ fn any_overlay_open(
         || chrome.site_modal_open
         || chrome.activity_sheet_open
         || chrome.scan_inspector.is_some()
-        || chrome.wipe_modal_open
+        || chrome.reset_settings_modal_open
         || chrome.range_download_modal.is_some()
         || chrome.vcp_forecast_open
         || chrome.event_modal_open

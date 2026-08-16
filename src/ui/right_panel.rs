@@ -791,11 +791,13 @@ pub(super) fn render_storage_section(
             ui.add_space(4.0);
 
             if ui
-                .button("Reset App")
-                .on_hover_text("Wipe all data and settings, then reload")
+                .button("Reset Settings")
+                .on_hover_text(
+                    "Restore default settings while keeping saved events and cached data",
+                )
                 .clicked()
             {
-                chrome.wipe_modal_open = true;
+                chrome.reset_settings_modal_open = true;
             }
         });
 }

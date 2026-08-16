@@ -36,8 +36,8 @@ pub(crate) struct Chrome {
     pub shortcuts_help_visible: bool,
     /// Whether the site selection modal is open.
     pub site_modal_open: bool,
-    /// Whether the wipe-all-data confirmation modal is open.
-    pub wipe_modal_open: bool,
+    /// Whether the reset-settings confirmation modal is open.
+    pub reset_settings_modal_open: bool,
     /// When set, the range-download confirm modal is open and carries the
     /// pending `(start, end)` selection range to bulk-download on confirm.
     /// `Some` doubles as the open flag; the range is the modal's own snapshot,
