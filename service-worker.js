@@ -57,6 +57,10 @@ self.addEventListener('activate', (event) => {
 // for COEP instead of 'require-corp' so cross-origin resources (AWS S3, NOAA)
 // don't need to send Cross-Origin-Resource-Policy headers of their own.
 function withIsolationHeaders(response) {
+  // Opaque no-CORS responses (such as analytics beacons) have status 0 and
+  // cannot be reconstructed. COEP: credentialless allows them as-is.
+  if (response.type === 'opaque') return response;
+
   const headers = new Headers(response.headers);
   headers.set('Cross-Origin-Opener-Policy', 'same-origin');
   headers.set('Cross-Origin-Embedder-Policy', 'credentialless');
