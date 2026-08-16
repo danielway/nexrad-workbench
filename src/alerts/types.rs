@@ -226,9 +226,9 @@ pub(crate) fn triangulate_polygons(polygons: &[Vec<Ring>]) -> Vec<[(f64, f64); 3
             iter.map(|r| geo::LineString::from(r.clone())).collect(),
         );
         let raw = poly.earcut_triangles_raw();
-        let v = &raw.vertices; // flat [x0, y0, x1, y1, …]
+        let v = &raw.vertices; // one [x, y] entry per vertex
         for idx in raw.triangle_indices.chunks_exact(3) {
-            let pt = |i: usize| (v[2 * i], v[2 * i + 1]);
+            let pt = |i: usize| (v[i][0], v[i][1]);
             tris.push([pt(idx[0]), pt(idx[1]), pt(idx[2])]);
         }
     }
