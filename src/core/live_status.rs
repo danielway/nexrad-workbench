@@ -15,7 +15,7 @@
 //! A detached playhead over a healthy stream and a tethered one report the
 //! same activity; a tethered playhead over a stalled stream must say so.
 
-use crate::core::live_mode::LiveModeState;
+use crate::core::live_mode::{ExpectedSweep, LiveModeState, LivePhase};
 use crate::core::{format_lag, StreamActivity};
 
 /// The playhead's relationship to the live edge. Orthogonal to
@@ -46,9 +46,13 @@ pub(crate) struct LiveStatus {
     pub tether: LiveTether,
     /// Chunks received this session — the number that visibly ticks up.
     pub chunks_received: u32,
-    /// Seconds until the next chunk is expected in S3. `Some` only while
-    /// [`StreamActivity::Waiting`] — a stalled stream has no honest countdown.
+    /// Seconds until the next eligible sweep is expected in S3. `Some` only
+    /// while [`StreamActivity::Waiting`] — a stalled stream has no honest
+    /// countdown.
     pub countdown_secs: Option<f64>,
+    /// Next eligible sweep for the active filter. Present while waiting or
+    /// stalled so copy can name the expected cut.
+    pub expected_sweep: Option<ExpectedSweep>,
     /// Wall-now minus playhead — the "behind" readout. `Some` only while
     /// [`LiveTether::Detached`].
     pub lag_secs: Option<f64>,
@@ -56,7 +60,7 @@ pub(crate) struct LiveStatus {
     /// §11.3 data age). `None` before the first radial or when idle.
     pub data_age_secs: Option<f64>,
     /// Seconds spent in the current phase — feeds the connecting elapsed
-    /// readout and the stalled "no data for" duration.
+    /// readout.
     pub phase_elapsed_secs: f64,
 }
 
@@ -67,6 +71,7 @@ impl Default for LiveStatus {
             tether: LiveTether::None,
             chunks_received: 0,
             countdown_secs: None,
+            expected_sweep: None,
             lag_secs: None,
             data_age_secs: None,
             phase_elapsed_secs: 0.0,
@@ -81,6 +86,9 @@ pub(crate) struct LiveStatusInputs<'a> {
     /// From [`crate::subsystem::Live::countdown_remaining_secs`] (this frame's
     /// projection); already `None` outside `WaitingForChunk`.
     pub countdown_secs: Option<f64>,
+    /// Next eligible sweep from this frame's projection, already cleared
+    /// when the plan's filter does not match the current selection.
+    pub expected_sweep: Option<ExpectedSweep>,
     /// Whether the playhead rides the live edge (pinned or lookback).
     pub tethered: bool,
     pub playback_position_secs: f64,
@@ -92,11 +100,12 @@ pub(crate) fn derive_live_status(inputs: LiveStatusInputs<'_>) -> LiveStatus {
     let LiveStatusInputs {
         mode_state,
         countdown_secs,
+        expected_sweep,
         tethered,
         playback_position_secs,
         now_secs,
     } = inputs;
-    let activity = mode_state.stream_activity(now_secs);
+    let activity = mode_state.stream_activity(now_secs, expected_sweep.as_ref());
     let tether = if !mode_state.is_active() {
         LiveTether::None
     } else if tethered {
@@ -113,6 +122,10 @@ pub(crate) fn derive_live_status(inputs: LiveStatusInputs<'_>) -> LiveStatus {
         countdown_secs: (activity == StreamActivity::Waiting)
             .then_some(countdown_secs)
             .flatten(),
+        expected_sweep: (mode_state.phase == LivePhase::WaitingForChunk
+            && matches!(activity, StreamActivity::Waiting | StreamActivity::Stalled))
+        .then_some(expected_sweep)
+        .flatten(),
         lag_secs: (tether == LiveTether::Detached).then_some(now_secs - playback_position_secs),
         data_age_secs: if mode_state.is_active() {
             mode_state.last_radial_time_secs.map(|t| now_secs - t)
@@ -134,18 +147,23 @@ impl LiveStatus {
                 Some(format!("connecting… {}s", self.phase_elapsed_secs as i64))
             }
             StreamActivity::Receiving => Some(format!("receiving · {}", self.chunks_received)),
-            StreamActivity::Waiting => Some(match self.countdown_secs {
-                Some(s) => format!(
-                    "next in ~{}s · {}",
-                    s.max(0.0).ceil() as i64,
-                    self.chunks_received
+            StreamActivity::Waiting => {
+                let wait = self
+                    .expected_sweep
+                    .map(|e| format!("waiting for {}", e.label()))
+                    .unwrap_or_else(|| "waiting for next sweep".to_string());
+                Some(match self.countdown_secs {
+                    Some(s) => format!("{wait} · expected in ~{}s", s.max(0.0).ceil() as i64),
+                    None => wait,
+                })
+            }
+            StreamActivity::Stalled => Some(match self.expected_sweep {
+                Some(e) => format!("stalled — {} is late", e.label()),
+                None => format!(
+                    "stalled — no data for {}",
+                    format_lag(self.phase_elapsed_secs)
                 ),
-                None => format!("waiting · {}", self.chunks_received),
             }),
-            StreamActivity::Stalled => Some(format!(
-                "stalled — no data for {}",
-                format_lag(self.phase_elapsed_secs)
-            )),
         }
     }
 
@@ -155,8 +173,12 @@ impl LiveStatus {
             StreamActivity::Off => None,
             StreamActivity::Connecting => Some("Connecting to the live feed"),
             StreamActivity::Receiving => Some("Receiving live data now"),
-            StreamActivity::Waiting => Some("Stream healthy — waiting for the next chunk"),
-            StreamActivity::Stalled => Some("No data has arrived for a while"),
+            StreamActivity::Waiting => Some("Waiting for the next expected sweep"),
+            StreamActivity::Stalled => Some(if self.expected_sweep.is_some() {
+                "Expected sweep is late — change elevation or stop streaming"
+            } else {
+                "No data has arrived for a while"
+            }),
         }
     }
 
@@ -183,10 +205,23 @@ mod coverage_tests {
         s
     }
 
+    fn expected(
+        elevation_number: Option<u8>,
+        angle: Option<f32>,
+        available_at_secs: f64,
+    ) -> ExpectedSweep {
+        ExpectedSweep {
+            elevation_number,
+            elevation_angle: angle,
+            available_at_secs,
+        }
+    }
+
     fn inputs(mode_state: &LiveModeState) -> LiveStatusInputs<'_> {
         LiveStatusInputs {
             mode_state,
             countdown_secs: None,
+            expected_sweep: None,
             tethered: false,
             playback_position_secs: 0.0,
             now_secs: 0.0,
@@ -299,15 +334,112 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn countdown_suppressed_once_stalled() {
-        // 61s into WaitingForChunk → stalled; an overdue countdown is a lie.
+        // Expected sweep 31s late → stalled; an overdue countdown is a lie.
         let s = state_in_phase(LivePhase::WaitingForChunk, 1000.0);
         let status = derive_live_status(LiveStatusInputs {
             countdown_secs: Some(5.0),
+            expected_sweep: Some(expected(Some(1), Some(0.5), 1030.0)),
             now_secs: 1061.0,
             ..inputs(&s)
         });
         assert_eq!(status.activity, StreamActivity::Stalled);
         assert_eq!(status.countdown_secs, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn long_filtered_gap_stays_waiting_before_grace() {
+        // 3 minutes into the phase, but the eligible sweep is still 40s out.
+        let s = state_in_phase(LivePhase::WaitingForChunk, 1000.0);
+        let status = derive_live_status(LiveStatusInputs {
+            countdown_secs: Some(40.0),
+            expected_sweep: Some(expected(Some(3), Some(2.4), 1220.0)),
+            now_secs: 1180.0,
+            ..inputs(&s)
+        });
+        assert_eq!(status.activity, StreamActivity::Waiting);
+        assert_eq!(status.countdown_secs, Some(40.0));
+        assert_eq!(
+            status.detail_text().as_deref(),
+            Some("waiting for 2.4° · expected in ~40s")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn stall_starts_strictly_after_projected_completion_plus_grace() {
+        let s = state_in_phase(LivePhase::WaitingForChunk, 1000.0);
+        let exp = expected(Some(3), Some(2.4), 1100.0);
+        let at_boundary = derive_live_status(LiveStatusInputs {
+            expected_sweep: Some(exp),
+            now_secs: 1130.0,
+            ..inputs(&s)
+        });
+        assert_eq!(at_boundary.activity, StreamActivity::Waiting);
+
+        let late = derive_live_status(LiveStatusInputs {
+            expected_sweep: Some(exp),
+            now_secs: 1130.1,
+            ..inputs(&s)
+        });
+        assert_eq!(late.activity, StreamActivity::Stalled);
+        assert_eq!(
+            late.detail_text().as_deref(),
+            Some("stalled — 2.4° is late")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn filter_change_clears_stalled_when_expectation_is_dropped() {
+        let s = state_in_phase(LivePhase::WaitingForChunk, 1000.0);
+        let stalled = derive_live_status(LiveStatusInputs {
+            expected_sweep: Some(expected(Some(3), Some(2.4), 1000.0)),
+            now_secs: 1100.0,
+            ..inputs(&s)
+        });
+        assert_eq!(stalled.activity, StreamActivity::Stalled);
+
+        let after_filter = derive_live_status(LiveStatusInputs {
+            expected_sweep: None,
+            now_secs: 1100.0,
+            ..inputs(&s)
+        });
+        assert_eq!(after_filter.activity, StreamActivity::Waiting);
+        assert_eq!(
+            after_filter.detail_text().as_deref(),
+            Some("waiting for next sweep")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn arrival_clears_stalled_when_phase_leaves_waiting() {
+        let mut s = state_in_phase(LivePhase::WaitingForChunk, 1000.0);
+        let stalled = derive_live_status(LiveStatusInputs {
+            expected_sweep: Some(expected(Some(1), Some(0.5), 1000.0)),
+            now_secs: 1100.0,
+            ..inputs(&s)
+        });
+        assert_eq!(stalled.activity, StreamActivity::Stalled);
+
+        s.phase = LivePhase::Streaming;
+        s.phase_started_at = Some(1100.0);
+        let receiving = derive_live_status(LiveStatusInputs {
+            expected_sweep: Some(expected(Some(2), Some(1.5), 1120.0)),
+            now_secs: 1100.0,
+            ..inputs(&s)
+        });
+        assert_eq!(receiving.activity, StreamActivity::Receiving);
+        assert_eq!(receiving.expected_sweep, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn stop_clears_stalled() {
+        let s = LiveModeState::default();
+        let off = derive_live_status(LiveStatusInputs {
+            expected_sweep: Some(expected(Some(1), Some(0.5), 1000.0)),
+            now_secs: 1100.0,
+            ..inputs(&s)
+        });
+        assert_eq!(off.activity, StreamActivity::Off);
+        assert_eq!(off.detail_text(), None);
     }
 
     // ── data age ──
@@ -371,36 +503,59 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn detail_text_waiting_shows_countdown_ceil() {
-        let mut s = state_in_phase(LivePhase::WaitingForChunk, 100.0);
-        s.chunks_received = 12;
+    fn detail_text_waiting_shows_sweep_and_countdown_ceil() {
+        let s = state_in_phase(LivePhase::WaitingForChunk, 100.0);
         let status = derive_live_status(LiveStatusInputs {
             countdown_secs: Some(39.2),
+            expected_sweep: Some(expected(Some(3), Some(2.4), 141.0)),
             now_secs: 101.0,
             ..inputs(&s)
         });
-        assert_eq!(status.detail_text().as_deref(), Some("next in ~40s · 12"));
+        assert_eq!(
+            status.detail_text().as_deref(),
+            Some("waiting for 2.4° · expected in ~40s")
+        );
     }
 
     #[wasm_bindgen_test]
     fn detail_text_waiting_without_eta_falls_back() {
-        let mut s = state_in_phase(LivePhase::WaitingForChunk, 100.0);
-        s.chunks_received = 3;
+        let s = state_in_phase(LivePhase::WaitingForChunk, 100.0);
         let status = derive_live_status(LiveStatusInputs {
             now_secs: 101.0,
             ..inputs(&s)
         });
-        assert_eq!(status.detail_text().as_deref(), Some("waiting · 3"));
+        assert_eq!(
+            status.detail_text().as_deref(),
+            Some("waiting for next sweep")
+        );
     }
 
     #[wasm_bindgen_test]
-    fn detail_text_stalled_names_the_silence() {
-        // 2 minutes into WaitingForChunk → "no data for 2:00".
+    fn detail_text_stalled_names_the_late_sweep() {
         let s = state_in_phase(LivePhase::WaitingForChunk, 1000.0);
+        let status = derive_live_status(LiveStatusInputs {
+            expected_sweep: Some(expected(Some(3), None, 1000.0)),
+            now_secs: 1120.0,
+            ..inputs(&s)
+        });
+        assert_eq!(
+            status.detail_text().as_deref(),
+            Some("stalled — el 3 is late")
+        );
+        assert_eq!(
+            status.hover_text(),
+            Some("Expected sweep is late — change elevation or stop streaming")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn detail_text_connect_stall_keeps_generic_silence() {
+        let s = state_in_phase(LivePhase::AcquiringLock, 1000.0);
         let status = derive_live_status(LiveStatusInputs {
             now_secs: 1120.0,
             ..inputs(&s)
         });
+        assert_eq!(status.activity, StreamActivity::Stalled);
         assert_eq!(
             status.detail_text().as_deref(),
             Some("stalled — no data for 2:00")
@@ -451,14 +606,19 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn hover_text_present_for_every_active_activity() {
-        for (phase, elapsed) in [
-            (LivePhase::AcquiringLock, 1.0),
-            (LivePhase::Streaming, 1.0),
-            (LivePhase::WaitingForChunk, 1.0),
-            (LivePhase::WaitingForChunk, 999.0), // stalled
+        for (phase, elapsed, expected_sweep) in [
+            (LivePhase::AcquiringLock, 1.0, None),
+            (LivePhase::Streaming, 1.0, None),
+            (LivePhase::WaitingForChunk, 1.0, None),
+            (
+                LivePhase::WaitingForChunk,
+                999.0,
+                Some(expected(Some(1), Some(0.5), 1000.0)),
+            ),
         ] {
             let s = state_in_phase(phase, 1000.0);
             let status = derive_live_status(LiveStatusInputs {
+                expected_sweep,
                 now_secs: 1000.0 + elapsed,
                 ..inputs(&s)
             });

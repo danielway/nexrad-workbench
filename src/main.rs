@@ -629,10 +629,7 @@ impl WorkbenchApp {
             recent_requests: &self.state.recent_network_requests,
             cache_size_bytes: stats.cache_size_bytes,
             streaming: self.live.mode_state.is_active(),
-            stream_activity: self
-                .live
-                .mode_state
-                .stream_activity(self.state.frame_now.secs()),
+            stream_activity: self.live.frame_status.activity,
             sheet_open: self.chrome.activity_sheet_open,
             dev: self
                 .state
@@ -913,6 +910,7 @@ impl eframe::App for WorkbenchApp {
             playback: &self.playback.state,
             archive_boundaries: &self.timeline.shadow_scan_boundaries,
             now: self.state.frame_now,
+            elevation_selection: &self.state.viz_state.elevation_selection,
         });
         self.state.refresh_mobile_mode(ctx);
 

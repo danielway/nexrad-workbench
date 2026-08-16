@@ -281,8 +281,9 @@ mode — it is a tether state.
 - **Streaming visibility:** all live surfaces project one per-frame
   `LiveStatus` view-model, so "is data actually arriving?" reads the same
   everywhere. The transport activity chip carries the moving part —
-  "receiving · 12", "next in ~40s · 12", or an amber "stalled — no data for
-  2:00" — the tethered now-cap carries the countdown ("◉ LIVE · 12s"), and
+   "receiving · 12", "waiting for 2.4° · expected in ~40s", or an amber
+   "stalled — 2.4° is late" — the tethered now-cap carries the countdown
+   ("◉ LIVE · 12s"), and
   pulsing is reserved for data genuinely moving (connecting/receiving), never
   for a routine wait.
 - **Idle-stop:** while detached, background streaming auto-stops after **60 min**
