@@ -691,7 +691,7 @@ fn render_stream_activity(ui: &mut egui::Ui, state: &AppState, live: &crate::sub
         color
     };
 
-    let text = format!("{} {detail}", egui_phosphor::regular::WAVE_SINE);
+    let text = format!("{} {detail}", egui_phosphor::regular::BROADCAST);
     let resp = ui.label(RichText::new(text).size(11.0).monospace().color(color));
     if let Some(hover) = status.hover_text() {
         resp.on_hover_text(hover);

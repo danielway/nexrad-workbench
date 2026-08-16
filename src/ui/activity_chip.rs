@@ -32,7 +32,7 @@ fn glyph_icon(glyph: ActivityGlyph) -> &'static str {
         ActivityGlyph::Check => icons::CHECK_CIRCLE,
         ActivityGlyph::ArrowDown => icons::ARROW_DOWN,
         ActivityGlyph::Gear => icons::GEAR,
-        ActivityGlyph::Wave => icons::WAVE_SINE,
+        ActivityGlyph::Wave => icons::BROADCAST,
         ActivityGlyph::Pause => icons::PAUSE,
     }
 }
