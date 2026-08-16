@@ -94,11 +94,9 @@ pub(crate) struct ChunkProjectionInfo {
 /// this object.
 #[derive(Clone, Debug)]
 pub(crate) struct StreamingPlan {
-    /// Active filter at plan-build time. Diagnostic only — consumers
-    /// already know the active filter via the streaming channel; this
-    /// is preserved so a captured plan (e.g. for a per-chunk arrival
-    /// stat) carries enough context to be interpreted standalone.
-    #[allow(dead_code)] // Doc above: diagnostic context so captured plans read standalone.
+    /// Active filter at plan-build time. Status derivation compares this
+    /// against the current selection so a stale plan cannot keep a
+    /// previous elevation's stall after the user changes the filter.
     pub filter: StreamingFilter,
     /// Wall-clock time (Unix seconds) the plan was built. Lets consumers
     /// reason about plan staleness without threading `now` through every
@@ -365,6 +363,46 @@ impl StreamingPlan {
             next_volume_chunks: next,
             current_volume_end_collection_secs: None,
             next_target_key,
+        }
+    }
+
+    /// Test plan whose `next_target()` has projected availability.
+    #[cfg(test)]
+    pub(crate) fn with_projected_target_for_test(
+        filter: StreamingFilter,
+        elevation_number: Option<usize>,
+        available_at_secs: f64,
+    ) -> Self {
+        let seq = 1;
+        StreamingPlan {
+            filter,
+            built_at_secs: 0.0,
+            revision: 0,
+            current_volume_chunks: vec![ChunkProjectionInfo {
+                sequence: seq,
+                elevation_number,
+                azimuth_rate_dps: 0.0,
+                chunk_index_in_sweep: 0,
+                chunks_in_sweep: 3,
+                projected: Some(ChunkProjectedTimes {
+                    collection_time_secs: available_at_secs,
+                    available_at_secs,
+                    poll_at_secs: available_at_secs,
+                    physics_breakdown: crate::core::timing::PhysicsBreakdown {
+                        case: crate::core::timing::IntervalCase::IntraSweep,
+                        total_secs: 0.0,
+                        chunk_duration_secs: None,
+                        inter_sweep_gap_secs: None,
+                        waveform_penalty_secs: None,
+                    },
+                    stats_n: 0,
+                    scheduler_path: crate::core::timing::SchedulerPath::Physics,
+                    bucket: None,
+                }),
+            }],
+            next_volume_chunks: None,
+            current_volume_end_collection_secs: None,
+            next_target_key: Some((0, seq)),
         }
     }
 }

@@ -95,11 +95,65 @@ impl LivePhase {
     }
 }
 
-/// How long a `WaitingForChunk` phase may run before the stream reads as
-/// stalled rather than merely between chunks. NEXRAD chunks land every ~10-15 s;
-/// four times the upper end is late enough to mean something is wrong without
-/// crying wolf on a slow volume.
-const STREAM_STALL_SECS: f64 = 60.0;
+/// How long `AcquiringLock` may run before a connect that never completes
+/// reads as stalled.
+const CONNECT_STALL_SECS: f64 = 60.0;
+
+/// Grace after the expected sweep's projected availability before a
+/// `WaitingForChunk` phase reads as stalled. Multi-minute filtered VCP
+/// gaps stay in `Waiting` until this window after the eligible sweep
+/// was supposed to be in S3.
+pub(crate) const EXPECTED_SWEEP_STALL_SECS: f64 = 30.0;
+
+/// The next eligible sweep the stream is waiting for, derived from the
+/// VCP projection for the active filter. `None` elevation is a volume
+/// Start chunk (no cut yet).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct ExpectedSweep {
+    /// 1-based elevation number. `None` for a volume Start chunk.
+    pub elevation_number: Option<u8>,
+    /// Elevation angle in degrees when known (display only).
+    pub elevation_angle: Option<f32>,
+    /// Projected S3 availability (Unix seconds).
+    pub available_at_secs: f64,
+}
+
+impl ExpectedSweep {
+    /// Resolve the next eligible sweep from `plan` when it was built for
+    /// `active_filter`. A filter mismatch (stale plan after the user
+    /// changed elevation) yields `None` so status cannot stay stalled on
+    /// the previous target.
+    pub(crate) fn from_plan(
+        plan: &crate::core::StreamingPlan,
+        active_filter: crate::core::StreamingFilter,
+    ) -> Option<Self> {
+        if plan.filter != active_filter {
+            return None;
+        }
+        let target = plan.next_target()?;
+        let available_at_secs = target.projected.as_ref()?.available_at_secs;
+        Some(Self {
+            elevation_number: target.elevation_number.map(|n| n as u8),
+            elevation_angle: None,
+            available_at_secs,
+        })
+    }
+
+    /// Whether `now_secs` is strictly after projected availability plus
+    /// `grace_secs`. Equality is still waiting.
+    pub(crate) fn is_late(self, now_secs: f64, grace_secs: f64) -> bool {
+        now_secs > self.available_at_secs + grace_secs
+    }
+
+    /// Compact identity for waiting/stalled copy.
+    pub(crate) fn label(self) -> String {
+        match (self.elevation_angle, self.elevation_number) {
+            (Some(angle), _) => format!("{angle:.1}°"),
+            (None, Some(n)) => format!("el {n}"),
+            (None, None) => "next volume".to_string(),
+        }
+    }
+}
 
 /// Whether the live stream is actually pulling data right now.
 ///
@@ -130,19 +184,21 @@ impl StreamActivity {
     }
 }
 
-/// Derive the stream's activity from the live phase and how long it has sat
-/// there. Pure.
+/// Derive the stream's activity from the live phase, connect elapsed
+/// time, and — while waiting — the projected next eligible sweep. Pure.
 pub(crate) fn derive_stream_activity(
     phase: LivePhase,
     phase_elapsed_secs: f64,
-    stall_after_secs: f64,
+    connect_stall_after_secs: f64,
+    expected: Option<&ExpectedSweep>,
+    now_secs: f64,
 ) -> StreamActivity {
     match phase {
         LivePhase::Idle => StreamActivity::Off,
         LivePhase::Error => StreamActivity::Stalled,
         LivePhase::AcquiringLock => {
             // A connect that never completes is a stall, not a connect.
-            if phase_elapsed_secs > stall_after_secs {
+            if phase_elapsed_secs > connect_stall_after_secs {
                 StreamActivity::Stalled
             } else {
                 StreamActivity::Connecting
@@ -150,7 +206,10 @@ pub(crate) fn derive_stream_activity(
         }
         LivePhase::Streaming => StreamActivity::Receiving,
         LivePhase::WaitingForChunk => {
-            if phase_elapsed_secs > stall_after_secs {
+            // Stall only when the filter's next eligible sweep is late.
+            // No projection (or a just-changed filter) stays Waiting so
+            // a normal multi-minute gap cannot read as stalled.
+            if expected.is_some_and(|e| e.is_late(now_secs, EXPECTED_SWEEP_STALL_SECS)) {
                 StreamActivity::Stalled
             } else {
                 StreamActivity::Waiting
@@ -160,9 +219,19 @@ pub(crate) fn derive_stream_activity(
 }
 
 impl LiveModeState {
-    /// This frame's [`StreamActivity`], using the shared stall threshold.
-    pub(crate) fn stream_activity(&self, now: f64) -> StreamActivity {
-        derive_stream_activity(self.phase, self.phase_elapsed_secs(now), STREAM_STALL_SECS)
+    /// This frame's [`StreamActivity`] from phase + the expected sweep.
+    pub(crate) fn stream_activity(
+        &self,
+        now: f64,
+        expected: Option<&ExpectedSweep>,
+    ) -> StreamActivity {
+        derive_stream_activity(
+            self.phase,
+            self.phase_elapsed_secs(now),
+            CONNECT_STALL_SECS,
+            expected,
+            now,
+        )
     }
 }
 
@@ -835,52 +904,131 @@ mod tests {
 
     // ── derive_stream_activity: orthogonal to the tether ──
 
+    fn expected(available_at_secs: f64) -> ExpectedSweep {
+        ExpectedSweep {
+            elevation_number: Some(1),
+            elevation_angle: Some(0.5),
+            available_at_secs,
+        }
+    }
+
+    fn activity(
+        phase: LivePhase,
+        phase_elapsed_secs: f64,
+        expected: Option<&ExpectedSweep>,
+        now_secs: f64,
+    ) -> StreamActivity {
+        derive_stream_activity(
+            phase,
+            phase_elapsed_secs,
+            CONNECT_STALL_SECS,
+            expected,
+            now_secs,
+        )
+    }
+
     #[wasm_bindgen_test]
     fn activity_maps_each_phase() {
         let fresh = 1.0;
         assert_eq!(
-            derive_stream_activity(LivePhase::Idle, fresh, STREAM_STALL_SECS),
+            activity(LivePhase::Idle, fresh, None, 0.0),
             StreamActivity::Off
         );
         assert_eq!(
-            derive_stream_activity(LivePhase::AcquiringLock, fresh, STREAM_STALL_SECS),
+            activity(LivePhase::AcquiringLock, fresh, None, 0.0),
             StreamActivity::Connecting
         );
         assert_eq!(
-            derive_stream_activity(LivePhase::Streaming, fresh, STREAM_STALL_SECS),
+            activity(LivePhase::Streaming, fresh, None, 0.0),
             StreamActivity::Receiving
         );
         assert_eq!(
-            derive_stream_activity(LivePhase::WaitingForChunk, fresh, STREAM_STALL_SECS),
+            activity(LivePhase::WaitingForChunk, fresh, None, 0.0),
             StreamActivity::Waiting
         );
         assert_eq!(
-            derive_stream_activity(LivePhase::Error, fresh, STREAM_STALL_SECS),
+            activity(LivePhase::Error, fresh, None, 0.0),
             StreamActivity::Stalled
         );
     }
 
     #[wasm_bindgen_test]
-    fn waiting_past_the_threshold_reads_as_stalled() {
-        // The distinction the user actually needs: "between chunks" vs "nothing
-        // is coming". Both are non-Receiving, so a static indicator conflates
-        // them.
+    fn waiting_stays_waiting_until_projected_completion_plus_grace() {
+        let exp = expected(1000.0);
+        // Long phase elapsed is a normal filtered VCP gap, not a stall.
         assert_eq!(
-            derive_stream_activity(LivePhase::WaitingForChunk, STREAM_STALL_SECS, 60.0),
+            activity(LivePhase::WaitingForChunk, 180.0, Some(&exp), 1000.0),
             StreamActivity::Waiting
         );
         assert_eq!(
-            derive_stream_activity(LivePhase::WaitingForChunk, STREAM_STALL_SECS + 0.1, 60.0),
+            activity(
+                LivePhase::WaitingForChunk,
+                210.0,
+                Some(&exp),
+                1000.0 + EXPECTED_SWEEP_STALL_SECS
+            ),
+            StreamActivity::Waiting
+        );
+        assert_eq!(
+            activity(
+                LivePhase::WaitingForChunk,
+                210.1,
+                Some(&exp),
+                1000.0 + EXPECTED_SWEEP_STALL_SECS + 0.1
+            ),
             StreamActivity::Stalled
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn waiting_without_expected_sweep_never_stalls() {
+        assert_eq!(
+            activity(LivePhase::WaitingForChunk, 999.0, None, 10_000.0),
+            StreamActivity::Waiting
         );
     }
 
     #[wasm_bindgen_test]
     fn a_connect_that_never_completes_reads_as_stalled() {
         assert_eq!(
-            derive_stream_activity(LivePhase::AcquiringLock, 999.0, 60.0),
+            activity(LivePhase::AcquiringLock, 999.0, None, 0.0),
             StreamActivity::Stalled
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn expected_sweep_from_plan_uses_filter_and_availability() {
+        use crate::core::StreamingFilter;
+        let plan = StreamingPlan::with_projected_target_for_test(
+            StreamingFilter::Elevation(3),
+            Some(3),
+            1500.0,
+        );
+        let hit = ExpectedSweep::from_plan(&plan, StreamingFilter::Elevation(3)).unwrap();
+        assert_eq!(hit.elevation_number, Some(3));
+        assert_eq!(hit.available_at_secs, 1500.0);
+
+        assert!(
+            ExpectedSweep::from_plan(&plan, StreamingFilter::Elevation(1)).is_none(),
+            "stale plan after a filter change must not keep the old target"
+        );
+        assert!(ExpectedSweep::from_plan(&plan, StreamingFilter::All).is_none());
+
+        let unprojected = StreamingPlan::with_next_target_key_for_test(Some((0, 1)));
+        assert!(
+            ExpectedSweep::from_plan(&unprojected, StreamingFilter::All).is_none(),
+            "a target without projected times is not yet an expectation"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn expected_sweep_from_plan_names_start_chunk_without_elevation() {
+        use crate::core::StreamingFilter;
+        let plan =
+            StreamingPlan::with_projected_target_for_test(StreamingFilter::All, None, 2000.0);
+        let hit = ExpectedSweep::from_plan(&plan, StreamingFilter::All).unwrap();
+        assert_eq!(hit.elevation_number, None);
+        assert_eq!(hit.label(), "next volume");
     }
 
     #[wasm_bindgen_test]
@@ -901,10 +1049,10 @@ mod tests {
         let mut s = LiveModeState::new();
         s.start(0.0);
         s.start_streaming(10.0);
-        assert_eq!(s.stream_activity(10.5), StreamActivity::Receiving);
+        assert_eq!(s.stream_activity(10.5, None), StreamActivity::Receiving);
         // Nothing about detaching touches the phase.
         s.detached_since = Some(10.5);
-        assert_eq!(s.stream_activity(10.5), StreamActivity::Receiving);
+        assert_eq!(s.stream_activity(10.5, None), StreamActivity::Receiving);
     }
 
     // ── is_active() truth table ──

@@ -16,7 +16,8 @@
 use crate::core::projection::{new_shared_engine, Projection, SharedProjectionEngine};
 use crate::core::PlaybackState;
 use crate::core::RadarTimeline;
-use crate::core::{LiveModeState, LiveRadarModel};
+use crate::core::{ElevationSelection, StreamingFilter};
+use crate::core::{ExpectedSweep, LiveModeState, LiveRadarModel};
 use crate::nexrad::RealtimeChannel;
 use crate::state::AppMode;
 
@@ -31,6 +32,9 @@ pub(crate) struct LiveRefreshInputs<'a> {
     pub archive_boundaries: &'a [crate::core::ScanBoundary],
     /// This frame's wall clock (from `AppState::frame_now`).
     pub now: crate::core::FrameNow,
+    /// Current elevation selection — compared against the plan filter so a
+    /// just-changed cut cannot keep the previous sweep's stall.
+    pub elevation_selection: &'a ElevationSelection,
 }
 
 /// Owner of the real-time streaming pipeline and the derived
@@ -179,9 +183,30 @@ impl Live {
                 .is_some(),
         );
         // Last: the status snapshot reads the projection adopted above.
+        let active_filter = StreamingFilter::from(inputs.elevation_selection);
+        let mut expected_sweep = self
+            .frame_projection
+            .as_ref()
+            .and_then(|p| ExpectedSweep::from_plan(&p.plan, active_filter));
+        if let (Some(exp), Some(scan)) = (
+            expected_sweep.as_mut(),
+            self.frame_projection
+                .as_ref()
+                .and_then(|p| p.live_scan.as_ref()),
+        ) {
+            if let Some(n) = exp.elevation_number {
+                exp.elevation_angle = scan
+                    .sweeps
+                    .iter()
+                    .chain(scan.next_scan_ghost.iter().flat_map(|g| g.sweeps.iter()))
+                    .find(|s| s.elevation_number == n)
+                    .map(|s| s.elevation_angle);
+            }
+        }
         self.frame_status = crate::core::derive_live_status(crate::core::LiveStatusInputs {
             mode_state: &self.mode_state,
             countdown_secs: self.countdown_remaining_secs(now),
+            expected_sweep,
             tethered: playhead_live,
             playback_position_secs: inputs.playback.playback_position(),
             now_secs: now,
