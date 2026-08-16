@@ -28,11 +28,27 @@
 
     <!-- Privacy-friendly aggregate pageview analytics. Include the host in the
          recorded path so the custom and GitHub Pages domains remain distinct,
-         and keep PR preview traffic out of the production dashboard. -->
+         keep PR preview traffic out of the production dashboard, and only
+         retain the stable URL parameters that are useful for aggregation. -->
     <script>
         window.goatcounter = {
             no_onload: window.location.pathname.indexOf('/pr-preview/') !== -1,
-            path: function (path) { return window.location.host + path; }
+            path: function (path) {
+                var params = new URLSearchParams(window.location.search);
+                var query = [];
+                var site = params.get('site');
+
+                if (site) {
+                    query.push('site=' + encodeURIComponent(site));
+                }
+                if (params.get('dev') === 'true') {
+                    query.push('dev=true');
+                }
+
+                var cleanPath = path.split('?')[0].split('#')[0];
+                return window.location.host + cleanPath
+                    + (query.length ? '?' + query.join('&') : '');
+            }
         };
     </script>
     <script data-goatcounter="https://danielway.goatcounter.com/count"
