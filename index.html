@@ -28,11 +28,27 @@
 
     <!-- Privacy-friendly aggregate pageview analytics. Include the host in the
          recorded path so the custom and GitHub Pages domains remain distinct,
-         and keep PR preview traffic out of the production dashboard. -->
+         keep PR preview traffic out of the production dashboard, and only
+         retain the stable URL parameters that are useful for aggregation. -->
     <script>
         window.goatcounter = {
             no_onload: window.location.pathname.indexOf('/pr-preview/') !== -1,
-            path: function (path) { return window.location.host + path; }
+            path: function (path) {
+                var params = new URLSearchParams(window.location.search);
+                var query = [];
+                var site = params.get('site');
+
+                if (site) {
+                    query.push('site=' + encodeURIComponent(site));
+                }
+                if (params.get('dev') === 'true') {
+                    query.push('dev=true');
+                }
+
+                var cleanPath = path.split('?')[0].split('#')[0];
+                return window.location.host + cleanPath
+                    + (query.length ? '?' + query.join('&') : '');
+            }
         };
     </script>
     <script data-goatcounter="https://danielway.goatcounter.com/count"
@@ -42,8 +58,8 @@
 
     
 <script type="module">
-import init, * as bindings from '/nexrad-workbench/nexrad-workbench-19cd5d3aa6b63db7.js';
-const wasm = await init({ module_or_path: '/nexrad-workbench/nexrad-workbench-19cd5d3aa6b63db7_bg.wasm' });
+import init, * as bindings from '/nexrad-workbench/nexrad-workbench-98edf6ca17c71c2b.js';
+const wasm = await init({ module_or_path: '/nexrad-workbench/nexrad-workbench-98edf6ca17c71c2b_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -246,7 +262,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             to { transform: rotate(360deg); }
         }
     </style>
-<link rel="modulepreload" href="/nexrad-workbench/nexrad-workbench-19cd5d3aa6b63db7.js" crossorigin="anonymous" integrity="sha384-U6tXTAlFAvqvnMDUgc/Uao1NYDUnLJo4zmpLw+J8ToK/u9Y2o/ssyx1lcVth29xT"><link rel="preload" href="/nexrad-workbench/nexrad-workbench-19cd5d3aa6b63db7_bg.wasm" crossorigin="anonymous" integrity="sha384-42g1tjToarTHg+1Wp+czevmCKy8OCG3ssMH6YofJ9B5JHrV3rOvD9DHAzlCHWgFp" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/nexrad-workbench/nexrad-workbench-98edf6ca17c71c2b.js" crossorigin="anonymous" integrity="sha384-U6tXTAlFAvqvnMDUgc/Uao1NYDUnLJo4zmpLw+J8ToK/u9Y2o/ssyx1lcVth29xT"><link rel="preload" href="/nexrad-workbench/nexrad-workbench-98edf6ca17c71c2b_bg.wasm" crossorigin="anonymous" integrity="sha384-IuzzcUG3q1PooXhmiVO1IjnQQYN/YVtBKSqW2KDcPjMd6v/6J74ORYmS1vPb/QuZ" as="fetch" type="application/wasm"></head>
 <body>
     <canvas id="app_canvas"></canvas>
     <div id="loading_text">
