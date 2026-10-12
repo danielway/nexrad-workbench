@@ -576,8 +576,8 @@ fn view_start_anchored_at(view_start: f64, old_zoom: f64, new_zoom: f64, anchor_
 }
 
 /// Timeline zoom in/out on `+`/`−`, anchored at the playhead (spec §12). Routed
-/// through [`PlaybackState::set_timeline_zoom`] so tier hysteresis + cadence
-/// preservation apply, and the view start is recomputed to keep the playhead's
+/// through [`PlaybackState::set_timeline_zoom`] so tier hysteresis applies,
+/// and the view start is recomputed to keep the playhead's
 /// on-screen x fixed (mirrors the scroll-zoom-at-cursor path, anchored at the
 /// playhead instead of the pointer). Zoom is view-only: like the scroll/pinch
 /// path, it never detaches the playhead from live or ends a loop.
@@ -614,8 +614,7 @@ fn handle_zoom_step(
     let playhead = ps.playback_position();
     ps.timeline_view_start =
         view_start_anchored_at(ps.timeline_view_start, old_zoom, new_zoom, playhead);
-    let spacing = ps.median_frame_spacing();
-    ps.set_timeline_zoom(new_zoom, width, spacing);
+    ps.set_timeline_zoom(new_zoom, width);
 }
 
 /// Set a loop in/out point at the playhead (spec §8/§12 I/O keys). Editing a

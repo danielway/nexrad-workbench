@@ -96,6 +96,7 @@ pub(crate) fn dispatch_state_only(
 
         // ---- Loop presets -----------------------------------------
         Intent::ClearLoop => s.playback.state.clear_selection(),
+        Intent::SetPlayMode(mode) => s.playback.state.set_play_mode(mode),
 
         // ---- Queue management -------------------------------------
         // Mutations that may unblock work flip `pump_queue` so the
@@ -467,6 +468,7 @@ impl WorkbenchApp {
             | Intent::CenterTimelineOnNow
             | Intent::TogglePlayPause
             | Intent::ClearLoop
+            | Intent::SetPlayMode(_)
             | Intent::PauseQueue
             | Intent::ResumeQueue
             | Intent::SetActivitySheetOpen(_)
@@ -823,6 +825,7 @@ mod dispatch_tests {
             Intent::CenterTimelineOnNow,
             Intent::TogglePlayPause,
             Intent::ClearLoop,
+            Intent::SetPlayMode(crate::core::PlaybackMode::Micro),
             Intent::PauseQueue,
             Intent::ResumeQueue,
             Intent::RetryFailed(1),
@@ -840,7 +843,7 @@ mod dispatch_tests {
             },
             Intent::SetGeoLayer(GeoLayer::Cities, false),
         ];
-        assert_eq!(state_only.len(), 14);
+        assert_eq!(state_only.len(), 15);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -1256,6 +1259,24 @@ mod dispatch_tests {
         assert!(!GeoLayer::Cities.get(&f.state.layer_state.geo));
         f.apply(Intent::SetGeoLayer(GeoLayer::Cities, true));
         assert!(GeoLayer::Cities.get(&f.state.layer_state.geo));
+    }
+
+    /// Choosing a mode sticks through any zoom, and the speed always stays
+    /// one the chosen mode can express (an fps in Frames).
+    #[wasm_bindgen_test]
+    fn set_play_mode_survives_zoom_and_keeps_speed_valid() {
+        use crate::core::PlaybackMode;
+        let mut f = Fixture::new();
+        f.apply(Intent::SetPlayMode(PlaybackMode::Micro));
+        assert_eq!(f.playback.state.playback_mode(), PlaybackMode::Micro);
+        for zoom in [0.01, 0.5, 2.0] {
+            f.playback.state.set_timeline_zoom(zoom, 1000.0);
+            assert_eq!(f.playback.state.playback_mode(), PlaybackMode::Micro);
+        }
+        f.playback.state.speed = crate::core::PlaybackSpeed::Realtime;
+        f.apply(Intent::SetPlayMode(PlaybackMode::Macro));
+        assert_eq!(f.playback.state.playback_mode(), PlaybackMode::Macro);
+        assert!(f.playback.state.speed.macro_frames_per_second().is_some());
     }
 
     /// `PlaceDistancePoint` cycles start → end → start, so a third click

@@ -10,7 +10,7 @@
 //! original command set. (Formerly `crate::core::Intent`; the definition moved
 //! here so the contract's vocabulary lives in the core.)
 
-use crate::core::{GeoLayer, LoopPreset, OperationId};
+use crate::core::{GeoLayer, LoopPreset, OperationId, PlaybackMode};
 
 /// Intents dispatched by UI code and consumed by the main update loop.
 ///
@@ -50,6 +50,9 @@ pub(crate) enum Intent {
     ApplyLoopPreset(LoopPreset),
     /// Clear any active loop (selection bounds / pinned replay).
     ClearLoop,
+    /// Choose how playback advances: Frames (whole sweeps at an fps) or Rays
+    /// (continuous time at a realtime multiple). Independent of zoom.
+    SetPlayMode(PlaybackMode),
     /// Check and run eviction after a storage operation.
     CheckEviction,
     /// Reset local settings and preferences while preserving saved events, then reload.

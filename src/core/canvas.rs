@@ -23,7 +23,7 @@ use crate::core::Sweep;
 /// Whether the sweep animation is effectively enabled this frame.
 ///
 /// The animation's meaning is "the beam is collecting now", so beyond the
-/// stored preference it requires micro playback mode (zoomed in), Advanced UI
+/// stored preference it requires Rays playback mode, Advanced UI
 /// mode, an active live stream, and a playhead attached to the live edge
 /// (pinned or lookback). Historical playback — detached playhead or no stream
 /// — never animates: the reveal would be theater, and it costs a sustained

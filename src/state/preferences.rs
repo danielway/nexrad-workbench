@@ -25,6 +25,7 @@ impl UserPreferences {
     ) -> Self {
         Self {
             speed: playback.speed,
+            play_mode: playback.play_mode,
             elevation_auto: state.viz_state.elevation_selection.is_auto(),
             preferred_elevation_angle: state.viz_state.elevation_selection.angle(),
             layer_states: state.layer_state.geo.states,
@@ -61,6 +62,7 @@ impl UserPreferences {
         playback: &mut crate::core::PlaybackState,
     ) -> Option<String> {
         playback.speed = self.speed;
+        playback.restore_play_mode(self.play_mode);
         if self.elevation_auto {
             state.viz_state.elevation_selection = ElevationSelection::Latest;
         } else {
@@ -325,6 +327,7 @@ mod coverage_tests {
     fn full_struct_round_trips_through_json() {
         let mut prefs = UserPreferences::default();
         prefs.speed = PlaybackSpeed::Double;
+        prefs.play_mode = crate::core::PlaybackMode::Micro;
         prefs.elevation_auto = true;
         prefs.preferred_elevation_angle = 3.25;
         prefs.layer_states = false;

@@ -66,11 +66,8 @@ fn draw_bottom_panel(
         state.push_command(crate::core::Intent::TogglePlayPause);
     }
 
-    // Advance playback position when playing.
-    // Cadence preservation across a Micro↔Macro snap is owned by the tier
-    // state machine (PlaybackState::set_timeline_zoom / reconcile_tier), so it
-    // runs on every transition regardless of `playing` — paused transitions and
-    // mobile get it too. Here we only dispatch to the right advance path.
+    // Advance playback position when playing, dispatching on the Frames/Rays
+    // mode the user chose (cadence carries over in `set_play_mode`).
     if playback.state.playing && playback.state.must_halt_for_tier() {
         // The Archive tier is a navigator only (spec §6.4): unbounded play
         // halts there instead of stepping through years of cached frames

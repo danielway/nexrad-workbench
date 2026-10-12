@@ -47,6 +47,7 @@ impl Default for PlaybackState {
             playing: false,
             time_model: TimeModel::at_position(now),
             speed: PlaybackSpeed::default(),
+            play_mode: crate::core::PlaybackMode::default(),
             timeline_zoom: zoom,
             timeline_tier: Self::seed_tier(zoom, 1000.0),
             calendar_granularity: crate::core::BucketGranularity::seed(zoom),

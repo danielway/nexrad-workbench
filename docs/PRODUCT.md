@@ -228,12 +228,13 @@ cached scans.
 
 | Tier | Range (approx) | Shows | Playback |
 |---|---|---|---|
-| **Micro** | minutes → ~1–2 hr visible | Scan containers with frame cells, chunk segments, ghosts + countdown | True-time, realtime multiples; renders latest matching frame at/before playhead; optional radial animation |
-| **Macro** | hours → a few days | Each scan is a block spanning the volume's real duration — solid across downloaded sweeps, hollow across the rest; per-sweep hairlines once wide enough; gap glyphs where real spacing exceeds threshold. Blocks merge into a coverage fill once denser than ~1 per 3px | Equidistant frames at a chosen fps (classic radar loop) |
+| **Micro** | minutes → ~1–2 hr visible | Scan containers with frame cells, chunk segments, ghosts + countdown | Either mode (§8.2) |
+| **Macro** | hours → a few days | Each scan is a block spanning the volume's real duration — solid across downloaded sweeps, hollow across the rest; per-sweep hairlines once wide enough; gap glyphs where real spacing exceeds threshold. Blocks merge into a coverage fill once denser than ~1 per 3px | Either mode (§8.2) |
 | **Archive** | beyond ~2–3 days, out to the whole NEXRAD era | A zoomable **1-D coverage lane** whose cells coarsen with the span (day → week → month → quarter) so they stay legible at every zoom, with per-bucket availability + cache tone, period separators and bookmarks, over a keyline marking the addressable archive range | None started here — navigator only; tapping a cell frames that cell, one rung finer. A loop or live replay already running keeps playing |
 
 - **Zoom is view-only.** Changing tier never detaches the playhead from live,
-  ends a loop, or pauses one. Only unbounded play halts on entering Archive.
+  ends a loop, pauses one, or switches between Frames and Rays. Only unbounded
+  play halts on entering Archive.
 - **One tier state machine** owns the boundary, stored on playback state; all
   zoom writes go through it (the tier is never re-derived from raw zoom). Tuning
   constants are co-located in one place.
@@ -324,34 +325,36 @@ mode — it is a tether state.
 - **Frames mode.** Whole-sweep renders with no sweep-line animation — each sweep
   is a discrete frame.
 
-### 8.2 Zoom-dependent timing & speed
+### 8.2 Playback mode & speed
 
-Playback timing follows the zoom tier (§5.5), with the boundary at **1 px/sec**:
+Playback timing is the user's explicit choice of **Frames** or **Rays**, set by
+a toggle beside the speed control and saved with the preferences. Zoom never
+changes it (§5.5).
 
-- **Micro — true-time playback.** The position advances evenly in wall-clock
+- **Rays — true-time playback.** The position advances evenly in wall-clock
   time; radials are revealed at their actual collection timestamps. Speeds are
   realtime multiples: **1×, 2×, 15×, 30×, 60×, 120×, 300× (default), 600×,
   1200×** (e.g. 300× ≈ 5 minutes of weather per real second). Real-time lock is
-  available only in Micro.
-- **Macro — frame-stepping.** The position snaps between matching sweeps as
+  available only in Rays.
+- **Frames — frame-stepping.** The position snaps between matching sweeps as
   equidistant frames, giving each sweep equal screen time regardless of true
   collection duration or surrounding dead time. Speeds are frame rates:
   **1 / 2 / 5 / 10 / 15 fps** (5 fps default). Sweep animation is disabled in
-  Macro.
+  Frames. Frames is the default mode.
 
-The same adaptive control shows × in Micro and fps in Macro. Crossing the
-threshold mid-playback swaps the speed list and snaps the active speed to the
-nearest equivalent, so the perceived rhythm doesn't lurch.
+The speed control shows × in Rays and fps in Frames. Switching modes swaps the
+speed list and snaps the active speed to the nearest equivalent, so the
+perceived rhythm doesn't lurch. A live lookback replay always steps frames.
 
 ### 8.3 Gap glyphs
 
-In Macro, **gap glyphs** mark where true spacing exceeds a threshold (outages,
+On the zoomed-out strip, **gap glyphs** mark where true spacing exceeds a threshold (outages,
 VCP changes) so equidistant playback doesn't deceive.
 
 ### 8.4 Radial-animation gating
 
 Radial-level canvas animation (drawing radials as chunks arrive/replay) is gated
-to: Micro mode + low speed (≤ ~2×) + live or recent data with chunk timing
+to: Rays mode + low speed (≤ ~2×) + live or recent data with chunk timing
 available.
 
 ## 9. Rendering & Sweep Matching

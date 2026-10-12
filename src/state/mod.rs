@@ -453,9 +453,9 @@ impl AppState {
     }
 
     /// Whether sweep animation is effectively enabled. Requires the user
-    /// preference, micro playback mode (zoomed in), Advanced UI mode, and a
+    /// preference, Rays playback mode, Advanced UI mode, and a
     /// live context: an active stream with the playhead attached to the live
-    /// edge. Macro mode, Basic UI, and historical viewing all suppress the
+    /// edge. Frames mode, Basic UI, and historical viewing all suppress the
     /// animation regardless of the stored preference, which is preserved
     /// across mode toggles.
     ///

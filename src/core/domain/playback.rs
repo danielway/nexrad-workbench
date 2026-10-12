@@ -177,51 +177,50 @@ impl BucketGranularity {
     }
 }
 
-/// The single stored timeline tier. Replaces the two previously-uncoupled
-/// per-frame derivations (the behavioral [`PlaybackMode`] and the renderer's
-/// detail level). Transitions are owned by [`PlaybackState::set_timeline_zoom`]
-/// / the per-frame reconcile, which apply hysteresis; nothing else writes it.
+/// The single stored timeline tier: the strip's detail level. It only changes
+/// what the strip draws; the playback mode is the separate [`PlaybackMode`]
+/// choice. Transitions are owned by [`PlaybackState::set_timeline_zoom`] / the
+/// per-frame reconcile, which apply hysteresis; nothing else writes it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) enum TimelineTier {
-    /// Zoomed in (minutes–hours visible): realtime-multiple playback, frame
-    /// cells / sweep detail on the strip.
+    /// Zoomed in (minutes–hours visible): frame cells / sweep detail on the
+    /// strip.
     #[default]
     Micro,
-    /// Zoomed out (hours–days visible): equidistant frame (fps) playback.
+    /// Zoomed out (hours–days visible): scan blocks.
     Macro,
-    /// Far out (multi-day span): a navigator only — no playback.
+    /// Far out (multi-day span): the calendar navigator. Unbounded play can't
+    /// start here (see [`PlaybackState::must_halt_for_tier`]).
     Archive,
 }
 
-/// Playback mode derived from the stored timeline tier. The behavioral split
-/// the rest of the app reads: Micro tier → continuous realtime-multiple
-/// advance; Macro/Archive tier → equidistant frame stepping.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// How playback advances: the user's explicit choice, stored on
+/// [`PlaybackState::play_mode`] and independent of the timeline zoom.
+/// Shown to the user as **Frames** (Macro) and **Rays** (Micro).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PlaybackMode {
-    /// Frame-stepping between matching sweeps (Macro/Archive tier).
+    /// Frames: step between complete matching sweeps at a chosen fps.
+    #[default]
     Macro,
-    /// Continuous time-based playback (Micro tier).
+    /// Rays: continuous time at a realtime multiple, showing data as the
+    /// radar collected it.
     Micro,
+}
+
+impl PlaybackMode {
+    /// User-facing name of the mode.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            PlaybackMode::Macro => "Frames",
+            PlaybackMode::Micro => "Rays",
+        }
+    }
 }
 
 /// Fallback median frame spacing (seconds) for cadence conversion when the
 /// macro frame list is too short to derive one — a typical NEXRAD volume
 /// interval.
 pub(crate) const FALLBACK_FRAME_SPACING_SECS: f64 = 300.0;
-
-/// Map a tier (plus the lookback override) to the behavioral playback mode.
-/// Free function so it's callable from `apply_tier` before `&mut self`
-/// borrows settle, and shared by `playback_mode`/`effective_playback_mode`.
-/// Lookback always frame-steps regardless of tier.
-fn mode_of_tier(tier: TimelineTier, is_lookback: bool) -> PlaybackMode {
-    if is_lookback {
-        return PlaybackMode::Macro;
-    }
-    match tier {
-        TimelineTier::Micro => PlaybackMode::Micro,
-        TimelineTier::Macro | TimelineTier::Archive => PlaybackMode::Macro,
-    }
-}
 
 /// Inputs the macro `sweep_frames` list is built from. Compared against the
 /// previous build's inputs to decide whether a rebuild is needed.
@@ -491,7 +490,7 @@ impl PlaybackSpeed {
 
     /// The macro-capable variant whose fps is nearest `target_fps` (log-scale
     /// nearness, so doublings read symmetrically). Used by cadence
-    /// preservation entering Macro. Defaults to the slowest macro speed when
+    /// preservation switching to Frames. Defaults to the slowest macro speed when
     /// the target is non-positive.
     pub(crate) fn nearest_macro_fps(target_fps: f64) -> PlaybackSpeed {
         Self::nearest_by_log(target_fps, Self::macro_speeds(), |s| {
@@ -500,7 +499,7 @@ impl PlaybackSpeed {
     }
 
     /// The variant whose timeline multiple is nearest `target_multiple`
-    /// (log-scale nearness). Used by cadence preservation entering Micro;
+    /// (log-scale nearness). Used by cadence preservation switching to Rays;
     /// considers all variants since every one is a valid micro multiple.
     pub(crate) fn nearest_micro_multiple(target_multiple: f64) -> PlaybackSpeed {
         Self::nearest_by_log(target_multiple, Self::all(), |s| {
@@ -919,6 +918,11 @@ pub(crate) struct PlaybackState {
     /// Current playback speed
     pub speed: PlaybackSpeed,
 
+    /// The user's chosen playback mode (Frames or Rays). Never derived from
+    /// zoom; changed only through [`Self::set_play_mode`], which keeps
+    /// `speed` valid for the mode.
+    pub play_mode: PlaybackMode,
+
     /// Timeline zoom level (pixels per second)
     pub timeline_zoom: f64,
 
@@ -1001,17 +1005,17 @@ impl PlaybackState {
 
     /// → LIVE-NOW. Pins the playhead to `now`; the per-frame live tick
     /// keeps it there via [`Self::pin_tick`]. Drops any bounds (live owns
-    /// its own constraints). Realtime lock is the only meaningful speed
-    /// while tethered to the live edge (spec §8.2) — force it so a prior
-    /// Macro cadence (or Macro→Micro snap that lands on 1200×) cannot
-    /// remain selected in the transport readout.
+    /// its own constraints). In Rays, Realtime lock is the only meaningful
+    /// speed while tethered to the live edge (spec §8.2) — force it so a prior
+    /// large × multiple cannot remain selected in the transport readout. In
+    /// Frames the fps is kept (see [`Self::live_speed`]).
     pub(crate) fn enter_pinned_live(&mut self, now: f64) {
         self.time_model.playback_bounds = None;
         self.loop_window = None;
         self.pending_loop_window = None;
         self.time_model.mode = PlayheadMode::PinnedToNow;
         self.time_model.playback_position = now;
-        self.speed = PlaybackSpeed::Realtime;
+        self.speed = self.live_speed();
     }
 
     /// LIVE-* → ARCHIVE (`Free`). Clears the lookback replay's anchored
@@ -1064,8 +1068,8 @@ impl PlaybackState {
 
     /// LIVE-LOOKBACK → LIVE-NOW (pause during replay): drop the loop window
     /// (its anchored selection included) and re-pin to `now`. The stream is
-    /// untouched. Restores Realtime lock the same way [`Self::enter_pinned_live`]
-    /// does — lookback often runs at Macro fps labels that must not stick.
+    /// untouched. Restores the live speed the same way
+    /// [`Self::enter_pinned_live`] does.
     pub(crate) fn exit_lookback_to_now(&mut self, now: f64) {
         self.clear_anchored_selection();
         self.loop_window = None;
@@ -1073,7 +1077,7 @@ impl PlaybackState {
         self.time_model.clear_bounds();
         self.time_model.mode = PlayheadMode::PinnedToNow;
         self.time_model.playback_position = now;
-        self.speed = PlaybackSpeed::Realtime;
+        self.speed = self.live_speed();
     }
 
     /// Per-frame position pin while LIVE-NOW (called from the live tick,
@@ -1109,8 +1113,8 @@ impl PlaybackState {
 
     // ------------------------------------------------------------------
     // Timeline tier state machine. `timeline_tier` is the single source of
-    // truth for both the behavioral split (Micro/Macro playback) and the
-    // renderer's detail level. The raw `timeline_zoom` scalar feeds it but
+    // truth for the renderer's detail level. It never changes playback: the
+    // Frames/Rays mode is the user's separate choice (`play_mode`). The raw `timeline_zoom` scalar feeds it but
     // is never read directly for tier decisions — that would lose the
     // hysteresis memory the field carries.
     // ------------------------------------------------------------------
@@ -1188,34 +1192,6 @@ impl PlaybackState {
         }
     }
 
-    /// Apply a tier change, running the side effects a transition owns:
-    /// preserve playback cadence across a Micro↔Macro flip (spec §9) and reset
-    /// the sub-frame accumulator on a behavioral flip. No-op when the tier is
-    /// unchanged. Runs regardless of `playing`, so paused (and mobile)
-    /// transitions get cadence preservation too.
-    ///
-    /// While [`PlayheadMode::PinnedToNow`], cadence conversion is skipped —
-    /// live edge lock is always Realtime (spec §8.2), and a Macro→Micro snap
-    /// on the way into live must not rewrite that to a large × multiple.
-    fn apply_tier(&mut self, next: TimelineTier, median_frame_spacing: f64) {
-        let prev = self.timeline_tier;
-        if prev == next {
-            return;
-        }
-        let prev_mode = mode_of_tier(prev, self.time_model.is_lookback());
-        self.timeline_tier = next;
-        let new_mode = mode_of_tier(next, self.time_model.is_lookback());
-
-        if prev_mode != new_mode {
-            if !self.time_model.is_pinned() {
-                self.preserve_cadence_across_snap(prev_mode, new_mode, median_frame_spacing);
-            }
-            // Reset the sub-frame accumulator on any behavioral flip so the
-            // next advance starts clean.
-            self.macro_playback.frame_accumulator = 0.0;
-        }
-    }
-
     /// The width-aware minimum zoom (px/sec) — how far out the timeline may go.
     ///
     /// Two floors, whichever binds:
@@ -1246,24 +1222,18 @@ impl PlaybackState {
     /// The minimum is width-aware ([`Self::min_zoom_for_width`]) so the widest
     /// view stays a readable calendar span instead of the deprecated year-wide
     /// strip.
-    pub(crate) fn set_timeline_zoom(
-        &mut self,
-        zoom: f64,
-        width_px: f64,
-        median_frame_spacing: f64,
-    ) {
+    pub(crate) fn set_timeline_zoom(&mut self, zoom: f64, width_px: f64) {
         let min = Self::min_zoom_for_width(width_px);
         self.timeline_zoom = zoom.clamp(min, TIMELINE_ZOOM_MAX);
         self.calendar_granularity = self.calendar_granularity.advance(self.timeline_zoom);
-        let next = self.next_tier(self.timeline_zoom, width_px);
-        self.apply_tier(next, median_frame_spacing);
+        self.timeline_tier = self.next_tier(self.timeline_zoom, width_px);
     }
 
     /// Per-frame reconcile: the strip width can change (responsive layout)
     /// even when zoom is untouched, which moves the Archive span boundary.
     /// Re-evaluate the tier against the current width with hysteresis. Cheap
     /// and idempotent when nothing moved.
-    pub(crate) fn reconcile_tier(&mut self, width_px: f64, median_frame_spacing: f64) {
+    pub(crate) fn reconcile_tier(&mut self, width_px: f64) {
         // Also re-clamp the zoom itself. `min_zoom_for_width` is width-aware, so
         // a zoom restored from a URL was only ever clamped against the *seeded*
         // width — harmless at a 100-day ceiling, a real error now that the
@@ -1271,8 +1241,7 @@ impl PlaybackState {
         let min = Self::min_zoom_for_width(width_px);
         self.timeline_zoom = self.timeline_zoom.clamp(min, TIMELINE_ZOOM_MAX);
         self.calendar_granularity = self.calendar_granularity.advance(self.timeline_zoom);
-        let next = self.next_tier(self.timeline_zoom, width_px);
-        self.apply_tier(next, median_frame_spacing);
+        self.timeline_tier = self.next_tier(self.timeline_zoom, width_px);
     }
 
     /// Check if playback is allowed at the current tier. The Archive tier is a
@@ -1292,17 +1261,65 @@ impl PlaybackState {
             && !self.time_model.is_lookback()
     }
 
-    /// Derive the current playback mode from the stored tier.
+    /// The user's chosen playback mode (Frames or Rays).
     pub(crate) fn playback_mode(&self) -> PlaybackMode {
-        mode_of_tier(self.timeline_tier, false)
+        self.play_mode
     }
 
-    /// Playback mode for advance dispatch + speed UI. Lookback always
-    /// frame-steps (Macro) regardless of tier so it snaps between the recent
-    /// sweeps as frames; otherwise this is the tier-derived
-    /// [`Self::playback_mode`].
+    /// Playback mode for advance dispatch + speed UI. A lookback replay always
+    /// frame-steps (Macro) so it snaps between the recent sweeps as frames;
+    /// otherwise this is the chosen [`Self::playback_mode`].
     pub(crate) fn effective_playback_mode(&self) -> PlaybackMode {
-        mode_of_tier(self.timeline_tier, self.time_model.is_lookback())
+        if self.time_model.is_lookback() {
+            PlaybackMode::Macro
+        } else {
+            self.play_mode
+        }
+    }
+
+    /// Switch between Frames and Rays. Converts the speed to the nearest one
+    /// with the same perceived cadence in the new mode (spec §9) and resets the
+    /// sub-frame accumulator. While pinned to live there is no cadence to
+    /// carry (Rays is locked to 1×, spec §8.2), so each mode gets its live
+    /// default instead. No-op when the mode is unchanged.
+    pub(crate) fn set_play_mode(&mut self, mode: PlaybackMode) {
+        let prev = self.play_mode;
+        if prev == mode {
+            return;
+        }
+        self.play_mode = mode;
+        if self.time_model.is_pinned() {
+            self.speed = match mode {
+                PlaybackMode::Micro => PlaybackSpeed::Realtime,
+                PlaybackMode::Macro => PlaybackSpeed::default(),
+            };
+        } else {
+            let spacing = self.median_frame_spacing();
+            self.preserve_cadence_across_snap(prev, mode, spacing);
+        }
+        self.macro_playback.frame_accumulator = 0.0;
+    }
+
+    /// Restore a saved mode at boot, alongside an already-restored `speed`.
+    /// Unlike [`Self::set_play_mode`] there is no cadence to carry over; the
+    /// speed is only replaced when it can't be expressed in the mode (a
+    /// Rays-only multiple in Frames).
+    pub(crate) fn restore_play_mode(&mut self, mode: PlaybackMode) {
+        self.play_mode = mode;
+        if mode == PlaybackMode::Macro && self.speed.macro_frames_per_second().is_none() {
+            self.speed = PlaybackSpeed::default();
+        }
+    }
+
+    /// The speed the transport shows while pinned to live: 1× in Rays (the
+    /// live edge moves at real time), or the current fps in Frames, falling
+    /// back to the default when the current speed has no fps.
+    fn live_speed(&self) -> PlaybackSpeed {
+        match self.play_mode {
+            PlaybackMode::Micro => PlaybackSpeed::Realtime,
+            PlaybackMode::Macro if self.speed.macro_frames_per_second().is_some() => self.speed,
+            PlaybackMode::Macro => PlaybackSpeed::default(),
+        }
     }
 
     /// Median frame spacing (seconds) of the current macro frame list, for
@@ -1329,10 +1346,9 @@ impl PlaybackState {
         }
     }
 
-    /// Preserve perceived playback rhythm across a Micro↔Macro snap (spec §9).
+    /// Preserve perceived playback rhythm across a Frames↔Rays switch (spec §9).
     /// Converts the current effective frame cadence to the nearest valid speed
-    /// in the new mode. Runs regardless of `playing` (paused transitions and
-    /// mobile get it too). The shared [`PlaybackSpeed`] enum is kept intact —
+    /// in the new mode. Runs regardless of `playing`. The shared [`PlaybackSpeed`] enum is kept intact —
     /// only the selected variant changes.
     fn preserve_cadence_across_snap(
         &mut self,
@@ -1760,14 +1776,13 @@ mod tests {
     #[wasm_bindgen_test]
     fn effective_mode_is_macro_iff_lookback() {
         let mut ps = PlaybackState::default();
-        // Land the tier in Micro via the mutation path (zoom alone no longer
-        // drives the mode — the stored tier does).
-        ps.set_timeline_zoom(2.0, 1000.0, FALLBACK_FRAME_SPACING_SECS);
-        assert_eq!(ps.timeline_tier, TimelineTier::Micro);
+        ps.set_play_mode(PlaybackMode::Micro);
         assert!(ps.effective_playback_mode() == PlaybackMode::Micro);
         ps.enter_pinned_live(1000.0);
         ps.enter_lookback(None, LoopBasis::default());
         assert!(ps.effective_playback_mode() == PlaybackMode::Macro);
+        // The chosen mode itself is untouched by the replay.
+        assert_eq!(ps.playback_mode(), PlaybackMode::Micro);
     }
 
     #[wasm_bindgen_test]
@@ -1788,7 +1803,7 @@ mod tests {
 
         // A zoom request below the floor clamps UP to it.
         let mut ps = PlaybackState::default();
-        ps.set_timeline_zoom(1e-12, width, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(1e-12, width);
         assert_eq!(ps.timeline_zoom, min);
         // And the resulting view can't show beyond the ceiling.
         assert!(width / ps.timeline_zoom <= MAX_VIEW_SPAN_SECS + 1.0);
@@ -1940,13 +1955,9 @@ mod tests {
     #[wasm_bindgen_test]
     fn zooming_stores_the_granularity_on_state() {
         let mut ps = PlaybackState::default();
-        ps.set_timeline_zoom(
-            PlaybackState::min_zoom_for_width(1200.0),
-            1200.0,
-            FALLBACK_FRAME_SPACING_SECS,
-        );
+        ps.set_timeline_zoom(PlaybackState::min_zoom_for_width(1200.0), 1200.0);
         assert_eq!(ps.calendar_granularity, BucketGranularity::Quarter);
-        ps.set_timeline_zoom(0.15, 1200.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(0.15, 1200.0);
         assert_eq!(ps.calendar_granularity, BucketGranularity::Day);
     }
 
@@ -1958,7 +1969,7 @@ mod tests {
         let mut ps = PlaybackState::default();
         ps.timeline_zoom = 1e-12;
         ps.timeline_width_px = 1200.0;
-        ps.reconcile_tier(1200.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.reconcile_tier(1200.0);
         assert_eq!(ps.timeline_zoom, PlaybackState::min_zoom_for_width(1200.0));
     }
 
@@ -2208,8 +2219,9 @@ mod tests {
     /// A 1000px-wide strip whose tier sits in Micro, as a clean starting point.
     fn micro_state() -> PlaybackState {
         let mut ps = PlaybackState::default();
-        ps.set_timeline_zoom(2.0, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(2.0, 1000.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Micro);
+        ps.set_play_mode(PlaybackMode::Micro);
         ps
     }
 
@@ -2219,14 +2231,14 @@ mod tests {
         // it was: crossing the nominal 1.0 repeatedly never flips it.
         let mut ps = micro_state();
         for z in [1.10, 0.95, 1.05, 0.90, 1.14, 0.88] {
-            ps.set_timeline_zoom(z, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+            ps.set_timeline_zoom(z, 1000.0);
             assert_eq!(ps.timeline_tier, TimelineTier::Micro, "zoom {z} held Micro");
         }
         // Drop below the exit floor → Macro; then bouncing in-band stays Macro.
-        ps.set_timeline_zoom(0.80, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(0.80, 1000.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Macro);
         for z in [0.90, 1.05, 1.14, 0.88] {
-            ps.set_timeline_zoom(z, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+            ps.set_timeline_zoom(z, 1000.0);
             assert_eq!(ps.timeline_tier, TimelineTier::Macro, "zoom {z} held Macro");
         }
     }
@@ -2235,19 +2247,19 @@ mod tests {
     fn tier_micro_enter_exit_thresholds() {
         let mut ps = PlaybackState::default();
         // Start in Macro (default zoom 0.15).
-        ps.set_timeline_zoom(0.15, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(0.15, 1000.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Macro);
         // Just below the enter threshold: still Macro.
-        ps.set_timeline_zoom(1.14, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(1.14, 1000.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Macro);
         // At the enter threshold: Micro.
-        ps.set_timeline_zoom(1.15, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(1.15, 1000.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Micro);
         // Just above the exit floor: still Micro.
-        ps.set_timeline_zoom(0.88, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(0.88, 1000.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Micro);
         // At the exit floor: Macro.
-        ps.set_timeline_zoom(0.87, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(0.87, 1000.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Macro);
     }
 
@@ -2256,33 +2268,33 @@ mod tests {
         // Width 1000px: span (s) = width / zoom. Archive enter > 60h, exit < 48h.
         let mut ps = PlaybackState::default();
         // Start in Macro.
-        ps.set_timeline_zoom(0.15, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(0.15, 1000.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Macro);
 
         // Span just under 60h → still Macro. zoom = 1000 / (59*3600).
         let zoom_59h = 1000.0 / (59.0 * 3600.0);
-        ps.set_timeline_zoom(zoom_59h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(zoom_59h, 1000.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Macro);
 
         // Span just over 60h → Archive. zoom = 1000 / (61*3600).
         let zoom_61h = 1000.0 / (61.0 * 3600.0);
-        ps.set_timeline_zoom(zoom_61h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(zoom_61h, 1000.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Archive);
 
         // Span between 48h and 60h → hysteresis holds Archive (50h).
         let zoom_50h = 1000.0 / (50.0 * 3600.0);
-        ps.set_timeline_zoom(zoom_50h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(zoom_50h, 1000.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Archive);
 
         // Span under 48h → exits Archive (back to Macro by zoom). 47h.
         let zoom_47h = 1000.0 / (47.0 * 3600.0);
-        ps.set_timeline_zoom(zoom_47h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(zoom_47h, 1000.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Macro);
 
         // Archive is a navigator only — no playback there, allowed elsewhere.
-        ps.set_timeline_zoom(zoom_61h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(zoom_61h, 1000.0);
         assert!(!ps.is_playback_allowed());
-        ps.set_timeline_zoom(2.0, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(2.0, 1000.0);
         assert!(ps.is_playback_allowed());
     }
 
@@ -2319,12 +2331,12 @@ mod tests {
         let mut ps = PlaybackState::default();
         // zoom giving exactly 50h span at 1000px (Macro).
         let zoom = 1000.0 / (50.0 * 3600.0);
-        ps.set_timeline_zoom(zoom, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(zoom, 1000.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Macro);
         // Narrow to 1100px? span shrinks — stays Macro. Widen the *time* by
         // narrowing pixels: at 1300px width the span is 1300/zoom > 60h.
         ps.timeline_width_px = 1300.0;
-        ps.reconcile_tier(1300.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.reconcile_tier(1300.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Archive);
     }
 
@@ -2335,7 +2347,7 @@ mod tests {
         let mut ps = micro_state();
         ps.enter_pinned_live(5_000.0);
         for z in [0.5, 0.01, PlaybackState::min_zoom_for_width(1000.0), 2.0] {
-            ps.set_timeline_zoom(z, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+            ps.set_timeline_zoom(z, 1000.0);
             assert!(ps.time_model.is_pinned(), "unpinned at zoom {z}");
         }
     }
@@ -2346,7 +2358,7 @@ mod tests {
         // Unbounded play halts behind the calendar.
         let mut ps = micro_state();
         ps.playing = true;
-        ps.set_timeline_zoom(archive, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(archive, 1000.0);
         assert_eq!(ps.timeline_tier, TimelineTier::Archive);
         assert!(ps.must_halt_for_tier());
         // A fixed loop keeps playing.
@@ -2354,13 +2366,13 @@ mod tests {
         ps.set_selection(1_000.0, 2_000.0);
         ps.apply_selection_as_bounds();
         ps.playing = true;
-        ps.set_timeline_zoom(archive, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(archive, 1000.0);
         assert!(!ps.must_halt_for_tier());
         // So does a lookback replay.
         let mut ps = micro_state();
         ps.enter_pinned_live(5_000.0);
         ps.enter_lookback(Some(4_000.0), LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES));
-        ps.set_timeline_zoom(archive, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        ps.set_timeline_zoom(archive, 1000.0);
         assert!(!ps.must_halt_for_tier());
     }
 
@@ -2372,7 +2384,7 @@ mod tests {
         ps.enter_lookback(Some(4_000.0), LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES));
         let window = ps.loop_window;
         for z in [0.5, 0.01, PlaybackState::min_zoom_for_width(1000.0), 2.0] {
-            ps.set_timeline_zoom(z, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+            ps.set_timeline_zoom(z, 1000.0);
             assert!(ps.time_model.is_lookback(), "left lookback at zoom {z}");
             assert_eq!(ps.loop_window, window);
         }
@@ -2384,50 +2396,60 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn cadence_micro_to_macro_picks_nearest_fps() {
-        let mut ps = micro_state();
+        let mut ps = PlaybackState::default();
+        ps.set_play_mode(PlaybackMode::Micro);
         // Frame list with 300s spacing (median = 300).
         ps.macro_playback.sweep_frames = vec![0.0, 300.0, 600.0, 900.0];
         // Micro speed Normal = 300x. Effective fps = 300 / 300 = 1.0 → Quarter (1 fps).
         ps.speed = PlaybackSpeed::Normal;
-        ps.set_timeline_zoom(0.5, 1000.0, ps.median_frame_spacing());
-        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+        ps.set_play_mode(PlaybackMode::Macro);
         assert_eq!(ps.speed, PlaybackSpeed::Quarter);
 
         // Back to Micro from a 5 fps macro speed: 5 * 300 = 1500x → nearest
         // micro multiple is Quadruple (1200x), closer on log scale than 600x.
         ps.speed = PlaybackSpeed::Normal; // 5 fps in macro
-        ps.set_timeline_zoom(2.0, 1000.0, ps.median_frame_spacing());
-        assert_eq!(ps.timeline_tier, TimelineTier::Micro);
+        ps.set_play_mode(PlaybackMode::Micro);
         assert_eq!(ps.speed, PlaybackSpeed::Quadruple);
     }
 
     #[wasm_bindgen_test]
     fn cadence_macro_to_micro_with_fast_macro_speed() {
         let mut ps = PlaybackState::default();
-        ps.set_timeline_zoom(0.5, 1000.0, FALLBACK_FRAME_SPACING_SECS);
-        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+        assert_eq!(ps.playback_mode(), PlaybackMode::Macro);
         // 60s frame spacing.
         ps.macro_playback.sweep_frames = vec![0.0, 60.0, 120.0, 180.0];
         // Quadruple macro = 15 fps. 15 * 60 = 900x. On a log scale 900 sits
         // closer to 1200x (Quadruple) than 600x (Double).
         ps.speed = PlaybackSpeed::Quadruple;
-        ps.set_timeline_zoom(2.0, 1000.0, ps.median_frame_spacing());
-        assert_eq!(ps.timeline_tier, TimelineTier::Micro);
+        ps.set_play_mode(PlaybackMode::Micro);
         assert_eq!(ps.speed, PlaybackSpeed::Quadruple);
     }
 
     #[wasm_bindgen_test]
-    fn cadence_conversion_runs_while_paused() {
-        // Not playing: the transition still converts the speed (the tier
-        // machine owns it, not the playing-gated advance dispatch).
-        let mut ps = micro_state();
-        assert!(!ps.playing);
-        ps.speed = PlaybackSpeed::Realtime; // 1x micro
-        ps.macro_playback.sweep_frames = vec![0.0, 300.0, 600.0];
-        // 1 / 300 ≈ 0.0033 fps → clamps to slowest macro speed Quarter.
-        ps.set_timeline_zoom(0.5, 1000.0, ps.median_frame_spacing());
-        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
-        assert_eq!(ps.speed, PlaybackSpeed::Quarter);
+    fn zoom_never_changes_mode_or_speed() {
+        // The tier is the strip's detail level only: sweeping the zoom from
+        // Micro through Archive and back leaves the mode and speed alone.
+        for mode in [PlaybackMode::Macro, PlaybackMode::Micro] {
+            let mut ps = PlaybackState::default();
+            ps.set_play_mode(mode);
+            ps.macro_playback.sweep_frames = vec![0.0, 300.0, 600.0];
+            let speed = ps.speed;
+            for z in [2.0, 0.5, PlaybackState::min_zoom_for_width(1000.0), 2.0] {
+                ps.set_timeline_zoom(z, 1000.0);
+                assert_eq!(ps.playback_mode(), mode, "mode changed at zoom {z}");
+                assert_eq!(ps.speed, speed, "speed changed at zoom {z}");
+            }
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn restore_play_mode_keeps_a_valid_speed() {
+        let mut ps = PlaybackState::default();
+        ps.speed = PlaybackSpeed::Realtime; // a Rays-only multiple
+        ps.restore_play_mode(PlaybackMode::Micro);
+        assert_eq!(ps.speed, PlaybackSpeed::Realtime);
+        ps.restore_play_mode(PlaybackMode::Macro);
+        assert!(ps.speed.macro_frames_per_second().is_some());
     }
 
     #[wasm_bindgen_test]
@@ -3104,10 +3126,11 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn enter_pinned_live_forces_realtime_speed() {
-        // Regression for #139: archive/macro default (or a Macro→Micro snap
-        // that lands on 1200×) must not remain selected once tethered.
+    fn enter_pinned_live_forces_realtime_speed_in_rays() {
+        // Regression for #139: a large × multiple must not remain selected
+        // once tethered in Rays.
         let mut ps = PlaybackState::default();
+        ps.set_play_mode(PlaybackMode::Micro);
         ps.speed = PlaybackSpeed::Quadruple;
         ps.enter_pinned_live(1000.0);
         assert_eq!(ps.speed, PlaybackSpeed::Realtime);
@@ -3115,8 +3138,22 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn exit_lookback_to_now_restores_realtime_speed() {
+    fn enter_pinned_live_keeps_fps_in_frames() {
         let mut ps = PlaybackState::default();
+        ps.speed = PlaybackSpeed::Quadruple;
+        ps.enter_pinned_live(1000.0);
+        assert_eq!(ps.speed, PlaybackSpeed::Quadruple);
+        // A Rays-only speed falls back to the default fps.
+        let mut ps = PlaybackState::default();
+        ps.speed = PlaybackSpeed::Realtime;
+        ps.enter_pinned_live(1000.0);
+        assert!(ps.speed.macro_frames_per_second().is_some());
+    }
+
+    #[wasm_bindgen_test]
+    fn exit_lookback_to_now_restores_realtime_speed_in_rays() {
+        let mut ps = PlaybackState::default();
+        ps.set_play_mode(PlaybackMode::Micro);
         ps.enter_pinned_live(1000.0);
         ps.enter_lookback(Some(940.0), LoopBasis::FrameCount(6));
         // Lookback UI may leave a macro fps selection selected.
@@ -3127,40 +3164,20 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn pinned_live_zoom_into_micro_keeps_realtime() {
-        // start_live_mode pins first, then floors zoom into Micro. Without
-        // suppressing cadence while pinned, Macro 5 fps × 300s spacing snaps
-        // to 1200× and the transport readout lies about live speed.
+    fn switching_to_rays_while_pinned_shows_realtime() {
+        // Frames 5 fps × 300s spacing would convert to 1200×, which would
+        // misstate the speed of the live edge.
         let mut ps = PlaybackState::default();
-        ps.set_timeline_zoom(0.5, 1000.0, FALLBACK_FRAME_SPACING_SECS);
-        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
-        ps.speed = PlaybackSpeed::Normal; // 5 fps macro
+        ps.speed = PlaybackSpeed::Normal; // 5 fps
         ps.macro_playback.sweep_frames = vec![0.0, 300.0, 600.0, 900.0];
         ps.enter_pinned_live(1000.0);
+        ps.set_play_mode(PlaybackMode::Micro);
         assert_eq!(ps.speed, PlaybackSpeed::Realtime);
-        ps.set_timeline_zoom(2.0, 1000.0, ps.median_frame_spacing());
-        assert_eq!(ps.timeline_tier, TimelineTier::Micro);
-        assert_eq!(ps.speed, PlaybackSpeed::Realtime);
-        assert_eq!(ps.effective_playback_mode(), PlaybackMode::Micro);
         assert_eq!(ps.speed.label(), "1×");
-    }
-
-    #[wasm_bindgen_test]
-    fn playback_mode_derives_from_tier_ignoring_lookback() {
-        // playback_mode() always passes is_lookback=false: Micro tier → Micro.
-        let mut ps = PlaybackState::default();
-        ps.set_timeline_zoom(2.0, 1000.0, FALLBACK_FRAME_SPACING_SECS);
-        assert_eq!(ps.timeline_tier, TimelineTier::Micro);
-        assert_eq!(ps.playback_mode(), PlaybackMode::Micro);
-        // Macro tier → Macro.
-        ps.set_timeline_zoom(0.5, 1000.0, FALLBACK_FRAME_SPACING_SECS);
-        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
-        assert_eq!(ps.playback_mode(), PlaybackMode::Macro);
-        // Archive tier → Macro mode (frame-stepping, but playback disallowed).
-        let zoom_61h = 1000.0 / (61.0 * 3600.0);
-        ps.set_timeline_zoom(zoom_61h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
-        assert_eq!(ps.timeline_tier, TimelineTier::Archive);
-        assert_eq!(ps.playback_mode(), PlaybackMode::Macro);
+        // And back: 1× would convert to the slowest fps, so live Frames gets
+        // its default instead.
+        ps.set_play_mode(PlaybackMode::Macro);
+        assert_eq!(ps.speed, PlaybackSpeed::default());
     }
 
     #[wasm_bindgen_test]

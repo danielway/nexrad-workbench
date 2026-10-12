@@ -332,10 +332,40 @@ pub(super) fn render_playback_controls(
 
     ui.separator();
 
-    // Speed selector (mode-aware: macro shows fps labels, micro shows timeline speed).
-    // Disabled in Idle alongside the rest of the transport controls. Uses the
-    // effective mode so a lookback replay shows fps options for its frame rate.
+    // Frames / Rays: the user's explicit playback mode, never changed by zoom.
+    // A lookback replay always steps frames, so Rays is unavailable during one.
     let mode = playback.state.effective_playback_mode();
+    let lookback = playback.state.time_model.is_lookback();
+    ui.add_enabled_ui(interactive, |ui| {
+        for (choice, hint) in [
+            (
+                PlaybackMode::Macro,
+                "Frames: step between complete sweeps at a set frame rate",
+            ),
+            (
+                PlaybackMode::Micro,
+                "Rays: play continuously at a multiple of real time, showing \
+                 data as the radar collected it",
+            ),
+        ] {
+            let enabled = !(lookback && choice == PlaybackMode::Micro);
+            let resp = ui
+                .add_enabled(
+                    enabled,
+                    egui::Button::selectable(mode == choice, choice.label()),
+                )
+                .on_hover_text(hint)
+                .on_disabled_hover_text("Live loops play frame by frame");
+            if resp.clicked() && mode != choice {
+                state.push_command(crate::core::Intent::SetPlayMode(choice));
+            }
+        }
+    });
+
+    // Speed selector (mode-aware: Frames shows fps labels, Rays shows a
+    // realtime multiple). Disabled in Idle alongside the rest of the transport
+    // controls. Uses the effective mode so a lookback replay shows fps options
+    // for its frame rate.
     let selected_label = match mode {
         PlaybackMode::Macro => playback.state.speed.macro_label(),
         PlaybackMode::Micro => playback.state.speed.label(),

@@ -321,9 +321,9 @@ fn seek_to(
 
 /// Apply a multiplicative zoom anchored at screen-x `anchor_x`, keeping the
 /// timestamp under that x fixed. Zoom is view-only: it never detaches the
-/// playhead from live or ends a loop. The single zoom-mutation path
-/// (`set_timeline_zoom`) advances the tier with hysteresis and preserves
-/// playback cadence on a behavioral flip.
+/// playhead from live, ends a loop, or changes the Frames/Rays mode. The single
+/// zoom-mutation path (`set_timeline_zoom`) advances the tier with
+/// hysteresis.
 fn apply_zoom(
     playback: &mut crate::subsystem::Playback,
     frame: &super::TimelineFrame<'_>,
@@ -345,9 +345,7 @@ fn apply_zoom(
     let anchor_ts = frame.x_to_ts(anchor_x);
     let new_view_start = anchor_ts - (anchor_x - frame.rects.scan.left()) as f64 / new_zoom;
     playback.state.timeline_view_start = new_view_start;
-
-    let spacing = playback.state.median_frame_spacing();
-    playback.state.set_timeline_zoom(new_zoom, width, spacing);
+    playback.state.set_timeline_zoom(new_zoom, width);
 }
 
 /// Implicit live-anchoring: a fresh selection whose later edge lands within

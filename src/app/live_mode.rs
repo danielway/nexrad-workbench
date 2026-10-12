@@ -29,10 +29,9 @@ impl WorkbenchApp {
         // (LIVE_DEFAULT_ZOOM is comfortably above the Micro-enter threshold).
         if self.playback.state.timeline_zoom < crate::LIVE_DEFAULT_ZOOM {
             let width = self.playback.state.timeline_width_px;
-            let spacing = self.playback.state.median_frame_spacing();
             self.playback
                 .state
-                .set_timeline_zoom(crate::LIVE_DEFAULT_ZOOM, width, spacing);
+                .set_timeline_zoom(crate::LIVE_DEFAULT_ZOOM, width);
             self.playback.state.center_view_on(now);
         }
 
@@ -67,18 +66,17 @@ impl WorkbenchApp {
         let now = self.state.frame_now.secs();
         self.live.mode_state.detached_since = None;
         self.playback.state.clear_selection();
-        // `enter_pinned_live` owns Realtime lock (and keeps it across any
-        // Micro floor zoom below — cadence snaps are suppressed while pinned).
+        // `enter_pinned_live` owns the live speed (1× in Rays); the Micro floor
+        // zoom below only changes the view.
         self.playback.state.enter_pinned_live(now);
         // Return-to-live re-tethers, so the zoom floor must land the tier back
         // in Micro. The Micro-enter threshold carries hysteresis (≥ 1.15),
         // so floor to LIVE_DEFAULT_ZOOM (2.0) rather than the nominal 1.0.
         if self.playback.state.timeline_tier != crate::core::TimelineTier::Micro {
             let width = self.playback.state.timeline_width_px;
-            let spacing = self.playback.state.median_frame_spacing();
             self.playback
                 .state
-                .set_timeline_zoom(crate::LIVE_DEFAULT_ZOOM, width, spacing);
+                .set_timeline_zoom(crate::LIVE_DEFAULT_ZOOM, width);
             self.playback.state.center_view_on(now);
         }
     }

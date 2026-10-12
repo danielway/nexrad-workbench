@@ -200,6 +200,33 @@ fn render_playback_body(
     // (datetime jump above, the full speed list below, and the UTC/Local
     // toggle).
 
+    // Playback mode: Frames or Rays. Independent of zoom; a lookback replay
+    // always steps frames, so Rays is unavailable during one.
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
+        ui.label(RichText::new("Mode:").size(13.0));
+        let mode = playback.state.effective_playback_mode();
+        let lookback = playback.state.time_model.is_lookback();
+        for choice in [PlaybackMode::Macro, PlaybackMode::Micro] {
+            let enabled = !(lookback && choice == PlaybackMode::Micro);
+            if ui
+                .add_enabled(
+                    enabled,
+                    egui::Button::selectable(
+                        mode == choice,
+                        RichText::new(choice.label()).size(13.0),
+                    ),
+                )
+                .clicked()
+                && mode != choice
+            {
+                state.push_command(crate::core::Intent::SetPlayMode(choice));
+            }
+        }
+    });
+
+    ui.add_space(6.0);
+
     // Speed picker (the full list — the transport row only tap-cycles common
     // speeds).
     ui.horizontal(|ui| {

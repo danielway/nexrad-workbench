@@ -409,12 +409,12 @@ pub(super) fn render_rendering_section(
 
             ui.add_space(8.0);
 
-            // Sweep animation (disabled in macro mode — not meaningful when
+            // Sweep animation (disabled in Frames mode — not meaningful when
             // playback jumps between complete frames)
             ui.add_enabled_ui(!in_macro, |ui| {
                 ui.checkbox(&mut proc.sweep_animation, "Sweep Animation")
                     .on_hover_text(if in_macro {
-                        "Sweep animation is disabled at this zoom level (macro playback mode)"
+                        "Sweep animation needs Rays mode; Frames shows complete sweeps only"
                     } else {
                         "Progressively reveal new data behind the sweep line while streaming \
                          live; historical playback shows complete frames"
