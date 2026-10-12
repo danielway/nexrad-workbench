@@ -76,7 +76,7 @@ pub(super) fn render_loop_handles(
     };
     let overlay = &frame.rects.overlay;
     let now_x = frame.ts_to_x(frame.now_secs);
-    let pinned = playback.state.loop_window.is_some_and(|w| w.pinned);
+    let pinned = playback.state.is_live_range();
 
     // The painter for the band (and the thin connector lines up into the strip).
     let painter = ui.painter_at(Rect::from_min_max(
@@ -143,7 +143,7 @@ pub(super) fn render_loop_handles(
     // -- Paint: a connector line per edge up into the strip + the band glyph --
     // Re-read after the edit so the paint reflects this frame's bounds.
     if let Some((s, e)) = playback.state.selection_range() {
-        let pinned_now = playback.state.loop_window.is_some_and(|w| w.pinned);
+        let pinned_now = playback.state.is_live_range();
         let sx = frame.ts_to_x(s);
         let ex = frame.ts_to_x(e);
         // The end handle fuses with the now dot when pinned and at the live edge.
@@ -154,9 +154,9 @@ pub(super) fn render_loop_handles(
     }
 }
 
-/// Write a handle edit through the selection/anchor API (never direct field
-/// writes). Dragging pauses the pinned slide by converting to a fixed range,
-/// except when the right handle snapped to live (which (re)pins).
+/// Write a handle edit through the range-selection API (never direct field
+/// writes). A live range stays live unless its end was dragged off now; a
+/// fixed range becomes live when its end snaps to the now-line.
 fn apply_handle_edit(
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
@@ -166,23 +166,15 @@ fn apply_handle_edit(
     snapped_end_to_live: bool,
     dragged_end_off_live: bool,
 ) {
-    // Editing a handle is a Free-mode range edit: if a pinned *replay* is
-    // running (LookbackLoop), drop to a fixed selection first so the drag isn't
-    // clobbered by tick_live. The stream keeps running.
-    if playback.state.time_model.is_lookback() {
-        live.detach_playhead(
-            &mut playback.state,
-            state.frame_now.secs(),
-            state.pause_stream_while_reviewing,
-        );
-    }
-    playback.state.set_selection(new_start, new_end);
-    if snapped_end_to_live {
-        playback.state.anchor_selection_to_live();
-    } else if dragged_end_off_live {
-        playback.state.unanchor_selection_from_live();
-    }
-    playback.state.apply_selection_as_bounds();
+    let to_live = snapped_end_to_live || (playback.state.is_live_range() && !dragged_end_off_live);
+    live.select_range(
+        &mut playback.state,
+        new_start,
+        new_end,
+        to_live,
+        state.frame_now.secs(),
+        state.pause_stream_while_reviewing,
+    );
     if let Some(range) = playback.state.selection_range() {
         state.selection_just_finalized = Some(range);
     }

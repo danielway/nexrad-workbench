@@ -35,7 +35,7 @@ fn chrome_should_hide(
     let now_secs = ctx.input(|i| i.time);
     // "Playing" = archive playback advancing OR tethered to the live edge (the
     // feed is conceptually playing). Either should let the canvas go full-bleed.
-    let is_playing = playback.state.playing || playback.state.time_model.is_pinned();
+    let is_playing = playback.state.playing || playback.state.is_pinned();
     let gesture_active = ctx.input(|i| i.pointer.any_down() || i.any_touches());
 
     auto_hide::should_hide_chrome(auto_hide::AutoHideInputs {
@@ -84,7 +84,7 @@ pub(crate) fn resolve_mobile_auto_hide(
 
     // Keep the idle countdown ticking toward the hide moment without spinning.
     if !hidden {
-        let is_playing = playback.state.playing || playback.state.time_model.is_pinned();
+        let is_playing = playback.state.playing || playback.state.is_pinned();
         if let Some(remaining) = chrome
             .mobile_auto_hide
             .secs_until_hide(now_secs, is_playing)

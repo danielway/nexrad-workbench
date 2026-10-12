@@ -18,7 +18,7 @@ impl WorkbenchApp {
 
         // Initialize live mode state. Going live pins the playhead to "now"
         // but does NOT start playback — play/pause is decoupled and, while
-        // live, drives the lookback replay instead. The playhead is kept on
+        // live, drives the live-range replay instead. The playhead is kept on
         // "now" by `tick_live`, independent of `playing`.
         self.live.mode_state.start(now);
         self.playback.state.enter_pinned_live(now);
@@ -84,11 +84,11 @@ impl WorkbenchApp {
     /// Apply a loop preset (spec §8 "presets first"; the creation surface for
     /// loops, additive to the implicit alt/right/shift-drag paths). Routes every
     /// mode change through the named playhead transitions — never direct field
-    /// writes — so the `PlayheadMode` invariants hold.
+    /// writes — so the `Selection` invariants hold.
     ///
     /// - **Pin to live** always enters the pinned sliding loop: re-tether first
     ///   if detached/Free with a running stream (or start one), then
-    ///   `enter_lookback` from `PinnedToNow`.
+    ///   `enter_live_range` from the live point.
     /// - **Last N frames / duration** enter the pinned sliding loop when
     ///   streaming-and-near-now (so the loop follows the live edge), else create
     ///   a *fixed* loop of that extent ending at the current playhead.
@@ -109,25 +109,25 @@ impl WorkbenchApp {
         let want_pinned = matches!(preset, LoopPreset::PinToLive) || near_now;
 
         if want_pinned {
-            // Get to PinnedToNow without tripping enter_lookback's assert.
-            if !self.playback.state.time_model.is_pinned() {
+            // Get to the live point without tripping enter_live_range's assert.
+            if !self.playback.state.is_pinned() {
                 // Re-tether: instant if a stream is already running, otherwise
-                // start one. `return_to_live` lands the playhead in PinnedToNow
+                // start one. `return_to_live` lands the playhead on the live point
                 // synchronously (it calls `enter_pinned_live` in both the
                 // active-stream and cold-start paths), even when the cold path
                 // also queued a StartLive command for the channel.
                 self.return_to_live(ctx);
             }
-            // PinnedToNow is guaranteed here, so enter_lookback's `is_pinned`
-            // assert holds.
+            // The live point is guaranteed here, so enter_live_range's
+            // `is_pinned` assert holds.
             let seed = self.resolve_pinned_window(basis, now).0;
-            self.playback.state.enter_lookback(Some(seed), basis);
+            self.playback.state.enter_live_range(Some(seed), basis);
             return;
         }
 
         // Fixed loop ending at the current playhead. Detach a tether first so the
-        // selection lands as an ordinary Free-mode range (enter_lookback is only
-        // for the pinned case). The stream, if any, keeps running.
+        // selection lands as a fixed range (enter_live_range is only for the
+        // live case). The stream, if any, keeps running.
         if self.live.mode_state.is_active() {
             self.live.detach_playhead(
                 &mut self.playback.state,
@@ -141,8 +141,7 @@ impl WorkbenchApp {
             crate::core::LoopBasis::FrameCount(_) => self.frame_count_span_ending_at(basis, end),
         };
         let start = end - span;
-        self.playback.state.set_selection(start, end);
-        self.playback.state.apply_selection_as_bounds();
+        self.playback.state.select_range(start, end, false);
         // A fixed preset loop is created ready to play.
         if self.playback.state.is_playback_allowed() {
             self.playback.state.playing = true;
@@ -175,13 +174,13 @@ impl WorkbenchApp {
     /// Per-frame live tick — drives the playhead while streaming, independent
     /// of the `playing` flag (which now belongs to playback/lookback).
     ///
-    /// - `PinnedToNow` (LIVE-NOW): pin the playhead to this frame's now.
-    /// - `LookbackLoop` (LIVE-LOOKBACK): slide the loop window so its end
-    ///   follows the latest frame as new volumes complete. `advance` (driven
-    ///   by `playing` in the bottom panel) does the actual looping.
-    /// - Detached (`Free` while streaming): the user is browsing; leave the
-    ///   playhead and view alone, but stop the stream once the detour
-    ///   exceeds [`crate::LIVE_DETACHED_STOP_SECS`].
+    /// - Live point (LIVE-NOW): pin the playhead to this frame's now.
+    /// - Live range: slide the loop window so its end follows the latest
+    ///   frame as new volumes complete. `advance` (driven by `playing` in the
+    ///   bottom panel) does the actual looping, in Frames or Rays.
+    /// - Detached (a fixed point or range while streaming): the user is
+    ///   browsing; leave the playhead and view alone, but stop the stream once
+    ///   the detour exceeds [`crate::LIVE_DETACHED_STOP_SECS`].
     ///
     /// In the two live states, keep the live edge on-screen. No-op when not
     /// streaming.
@@ -191,12 +190,19 @@ impl WorkbenchApp {
         }
         let now = self.state.frame_now.secs();
 
-        if self.playback.state.time_model.is_pinned() {
+        if self.playback.state.is_pinned() {
             // LIVE-NOW: pin to this frame's now.
             self.playback.state.pin_tick(now);
-        } else if self.playback.state.time_model.is_lookback() {
-            // LIVE-LOOKBACK: own the frame window, sized from the loop window's
-            // basis (frame-count or duration — see `LoopWindow`). For a
+        } else if let Some(basis) = self
+            .playback
+            .state
+            .selection
+            .range()
+            .filter(|r| r.live)
+            .map(|r| r.basis)
+        {
+            // Live range: own the frame window, sized from the range's basis
+            // (frame-count or duration — see `RangeSelection`). For a
             // frame-count basis, prefer the exact last-N-frame span; before any
             // matching frame is cached, fall back to a time window of ~N volumes
             // so `render_loop` builds `sweep_frames` from recent data — not all
@@ -210,36 +216,14 @@ impl WorkbenchApp {
             // window stays fixed between wraps so the band doesn't stretch
             // mid-cycle. While paused/idle there's no cycle to disrupt, so the
             // window tracks now continuously.
-            let basis = self
-                .playback
-                .state
-                .loop_window
-                .map(|w| w.basis)
-                .unwrap_or_default();
             let (start, end) = self.resolve_pinned_window(basis, now);
-            let committed = self.playback.state.commit_pinned_window(start, end);
-            self.playback
-                .state
-                .time_model
-                .set_bounds_preserving(committed.0, committed.1);
-            let (start, end) = committed;
-            // Surface the replay window as a live-anchored selection so it
-            // renders like any other selection (one concept, one overlay).
-            self.playback.state.selection = Some(crate::core::TimeSelection {
-                a: start,
-                b: end,
-                in_progress: false,
-                anchored_to_live: true,
-            });
+            self.playback.state.slide_live_range(start, end);
         } else {
             // Detached: free browsing while the stream ingests in the
-            // background. No pin, no auto-scroll — but a live-anchored
-            // selection (a loop "up to now") keeps following the live edge,
-            // and the background S3 polling is bounded by an idle stop.
-            // `handle_streaming_results` reconciles the channel off on the
-            // next frame; `playing` is deliberately untouched so an archive
-            // replay keeps running.
-            self.playback.state.slide_anchored_selection(now);
+            // background. No pin, no auto-scroll, and the background S3
+            // polling is bounded by an idle stop. `handle_streaming_results`
+            // reconciles the channel off on the next frame; `playing` is
+            // deliberately untouched so an archive replay keeps running.
             if crate::core::should_stop_for_detached_idle(
                 self.live.mode_state.detached_since,
                 now,
@@ -408,9 +392,9 @@ impl WorkbenchApp {
     }
 
     /// Frames mode: live shows only complete sweeps, never the partial the
-    /// stream is filling in. Lookback replays are always Frames.
+    /// stream is filling in.
     pub(crate) fn live_shows_whole_sweeps(&self) -> bool {
-        self.playback.state.effective_playback_mode() == crate::core::PlaybackMode::Macro
+        self.playback.state.playback_mode() == crate::core::PlaybackMode::Macro
     }
 
     /// Whether the main GPU texture currently holds a live partial sweep

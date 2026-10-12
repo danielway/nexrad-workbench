@@ -72,12 +72,9 @@ pub(crate) use domain::ops::{
 pub(crate) use domain::playback::{
     format_lag, macro_frame_bounds, BucketGranularity, FreezeAt, LoopBasis, LoopMode, LoopPreset,
     MacroFrameInputs, MacroPlaybackState, PlaybackDirection, PlaybackMode, PlaybackSpeed,
-    PlaybackState, PlayheadMode, RebuildCause, TimeModel, TimeSelection, TimelineTier,
+    PlaybackState, RebuildCause, Selection, TimeModel, TimeSelection, TimelineTier,
     TIMELINE_ZOOM_MAX,
 };
-// Consumed only by test modules today; in a bin crate that reads as unused.
-#[allow(unused_imports)]
-pub(crate) use domain::playback::LoopWindow;
 pub(crate) use domain::prefs::UserPreferences;
 pub(crate) use domain::radar::{RadarTimeline, Scan, ScanBoundary, ScanMetadata, Sweep};
 #[allow(unused_imports)]

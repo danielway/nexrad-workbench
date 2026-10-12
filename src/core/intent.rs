@@ -46,7 +46,7 @@ pub(crate) enum Intent {
     /// [`crate::core::transport::reduce_toggle_play_pause`].
     TogglePlayPause,
     /// Apply a loop preset (spec §8): pin-to-live, last N frames, or a duration
-    /// window. Resolved into a [`crate::core::LoopWindow`] + the right playhead transition.
+    /// window. Resolved into a [`crate::core::Selection`] + the right playhead transition.
     ApplyLoopPreset(LoopPreset),
     /// Clear any active loop (selection bounds / pinned replay).
     ClearLoop,

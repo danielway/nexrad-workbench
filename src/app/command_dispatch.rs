@@ -1148,7 +1148,7 @@ mod dispatch_tests {
         f.apply(Intent::TogglePlayPause);
 
         assert!(!f.playback.state.playing);
-        assert!(!f.playback.state.time_model.is_pinned());
+        assert!(!f.playback.state.is_pinned());
         assert!(
             f.live.mode_state.is_active(),
             "a freeze must leave the stream running — stopping it is StopLive"
@@ -1181,7 +1181,7 @@ mod dispatch_tests {
         );
         assert_eq!(f.live.mode_state.detached_since, None);
         assert!(!f.playback.state.playing);
-        assert!(!f.playback.state.time_model.is_pinned());
+        assert!(!f.playback.state.is_pinned());
         assert!((f.playback.state.playback_position() - 5_000.0).abs() < 1e-9);
         assert_eq!(
             f.state.status_message,
@@ -1221,20 +1221,21 @@ mod dispatch_tests {
         assert!((f.playback.state.timeline_view_start - 9_950.0).abs() < 1e-9);
     }
 
-    /// `ClearLoop` drops the selection and the bounds it produced.
+    /// `ClearLoop` drops the range and the bounds it produced.
     #[wasm_bindgen_test]
     fn clear_loop_drops_the_selection() {
         let mut f = Fixture::new();
-        f.playback.state.set_selection(100.0, 200.0);
-        f.playback.state.apply_selection_as_bounds();
+        assert!(f.playback.state.select_range(100.0, 200.0, false));
         assert_eq!(f.playback.state.selection_range(), Some((100.0, 200.0)));
-        assert!(f.playback.state.loop_window.is_some());
 
         f.apply(Intent::ClearLoop);
 
         assert_eq!(f.playback.state.selection_range(), None);
-        assert!(f.playback.state.loop_window.is_none());
-        assert_eq!(f.playback.state.time_model.playback_bounds, None);
+        assert_eq!(
+            f.playback.state.selection,
+            crate::core::Selection::Point { live: false }
+        );
+        assert_eq!(f.playback.state.playback_bounds(), None);
     }
 
     // ---- canvas / overlays --------------------------------------------

@@ -229,11 +229,17 @@ fn handle_selection(
         if let Some(pos) = response.interact_pointer_pos() {
             let clicked_ts = frame.x_to_ts(pos.x);
             let current_pos = playback.state.playback_position();
-            playback.state.set_selection(current_pos, clicked_ts);
-            maybe_anchor_to_live(live, playback, frame.now_secs);
-            playback.state.apply_selection_as_bounds();
-            if let Some(range) = playback.state.selection_range() {
-                state.selection_just_finalized = Some(range);
+            if select_range(
+                state,
+                live,
+                playback,
+                current_pos,
+                clicked_ts,
+                frame.now_secs,
+            ) {
+                if let Some(range) = playback.state.selection_range() {
+                    state.selection_just_finalized = Some(range);
+                }
             }
             let duration_mins = (clicked_ts - current_pos).abs() / 60.0;
             log::debug!("Range from playhead: {:.0} minutes", duration_mins);
@@ -256,27 +262,48 @@ fn handle_selection(
         }
     }
 
-    if response.drag_stopped() && playback.state.end_selection_drag() {
-        if let Some((start, end)) = playback.state.selection_range() {
-            // At the widest zooms one pixel is days, so a short drag can span
-            // years — which is never a real request, just a way to queue a
-            // decade of downloads by accident.
-            if !crate::core::selection_span_allowed(start, end) {
-                playback.state.clear_selection();
-                state.status_message = format!(
-                    "Range too long — zoom in and select at most {} days",
-                    (crate::core::MAX_SELECTION_SPAN_SECS / 86_400.0) as i64
-                );
-                return;
-            }
-        }
-        maybe_anchor_to_live(live, playback, frame.now_secs);
-        playback.state.apply_selection_as_bounds();
-        if let Some((start, end)) = playback.state.selection_range() {
-            state.selection_just_finalized = Some((start, end));
-            log::debug!("Selected time range: {:.0} minutes", (end - start) / 60.0);
-        }
+    if !response.drag_stopped() {
+        return;
     }
+    let Some((start, end)) = playback.state.end_selection_drag() else {
+        return;
+    };
+    // At the widest zooms one pixel is days, so a short drag can span
+    // years — which is never a real request, just a way to queue a
+    // decade of downloads by accident.
+    if !crate::core::selection_span_allowed(start, end) {
+        state.status_message = format!(
+            "Range too long — zoom in and select at most {} days",
+            (crate::core::MAX_SELECTION_SPAN_SECS / 86_400.0) as i64
+        );
+        return;
+    }
+    if select_range(state, live, playback, start, end, frame.now_secs) {
+        state.selection_just_finalized = Some((start, end));
+        log::debug!("Selected time range: {:.0} minutes", (end - start) / 60.0);
+    }
+}
+
+/// Select a range drawn on the strip. A range whose later edge lands near
+/// "now" while streaming reads as "from then up to now" and becomes a live
+/// range that slides forward with new data; anything else is a fixed range.
+fn select_range(
+    state: &AppState,
+    live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
+    a: f64,
+    b: f64,
+    now_secs: f64,
+) -> bool {
+    let to_live = crate::core::transport::ends_at_live_edge(a.max(b), now_secs);
+    live.select_range(
+        &mut playback.state,
+        a,
+        b,
+        to_live,
+        state.frame_now.secs(),
+        state.pause_stream_while_reviewing,
+    )
 }
 
 /// Open the scan inspector for the scan under screen-x `x`. Resolves the
@@ -346,24 +373,4 @@ fn apply_zoom(
     let new_view_start = anchor_ts - (anchor_x - frame.rects.scan.left()) as f64 / new_zoom;
     playback.state.timeline_view_start = new_view_start;
     playback.state.set_timeline_zoom(new_zoom, width);
-}
-
-/// Implicit live-anchoring: a fresh selection whose later edge lands within
-/// one volume of "now" while streaming reads as "from then up to now" — make
-/// it follow the live edge as new data arrives. No extra chrome needed.
-fn maybe_anchor_to_live(
-    live: &crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
-    now_secs: f64,
-) {
-    if !live.mode_state.is_active() {
-        return;
-    }
-    let near_now = playback
-        .state
-        .selection_range()
-        .is_some_and(|(_, end)| (now_secs - end).abs() < crate::FALLBACK_SCAN_DURATION_SECS as f64);
-    if near_now {
-        playback.state.anchor_selection_to_live();
-    }
 }

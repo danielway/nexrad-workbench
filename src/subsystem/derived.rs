@@ -46,7 +46,7 @@ pub(crate) struct Derived {
     /// antenna is on that cut.
     pub effective_sweep_animation: bool,
     /// Frames mode: the canvas shows whole sweeps only, never a live
-    /// partial (`playback.effective_playback_mode() == Macro`).
+    /// partial (`playback.playback_mode() == Macro`).
     pub whole_sweeps_only: bool,
 }
 
@@ -71,8 +71,7 @@ impl Derived {
                 streaming,
                 collecting_elevation,
             ),
-            whole_sweeps_only: playback.state.effective_playback_mode()
-                == crate::core::PlaybackMode::Macro,
+            whole_sweeps_only: playback.state.playback_mode() == crate::core::PlaybackMode::Macro,
         }
     }
 }

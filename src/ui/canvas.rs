@@ -623,7 +623,7 @@ fn compute_gpu_sweep_state(
     // Archive animation still uses effective_sweep_animation.
     let selected_elev = state.viz_state.elevation_selection.elevation_number();
     let live_range = crate::core::canvas::live_compositing_azimuth_range(
-        playback.state.effective_playback_mode() == crate::core::PlaybackMode::Macro,
+        playback.state.playback_mode() == crate::core::PlaybackMode::Macro,
         selected_elev,
         live.radar_model.collecting_elevation(),
         live.radar_model

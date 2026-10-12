@@ -276,7 +276,7 @@ pub(super) fn render_playback_controls(
     // plays from the pause point. All branching lives in
     // `core::transport::reduce_toggle_play_pause`, reached via
     // `Intent::TogglePlayPause`.
-    let tethered = playback.state.time_model.is_pinned();
+    let tethered = playback.state.is_pinned();
     // Show PAUSE when the live feed is running (tethered) or archive playback
     // is active; PLAY otherwise.
     let play_text = if tethered || playback.state.playing {
@@ -286,7 +286,7 @@ pub(super) fn render_playback_controls(
     };
     let play_hover = if tethered {
         "Freeze (pause the live feed)"
-    } else if playback.state.time_model.is_lookback() {
+    } else if playback.state.is_live_range() {
         "Return to live"
     } else if playback.state.playing {
         "Pause"
@@ -334,8 +334,8 @@ pub(super) fn render_playback_controls(
 
     // Frames / Rays: the user's explicit playback mode, never changed by zoom.
     // A lookback replay always steps frames, so Rays is unavailable during one.
-    let mode = playback.state.effective_playback_mode();
-    let lookback = playback.state.time_model.is_lookback();
+    let mode = playback.state.playback_mode();
+    let lookback = playback.state.is_live_range();
     ui.add_enabled_ui(interactive, |ui| {
         for (choice, hint) in [
             (
@@ -399,7 +399,7 @@ pub(super) fn render_playback_controls(
     // Below the full width tier, the Advanced-only loop combo and UTC toggle
     // are demoted into a ⋯ overflow menu so they don't crowd the transport row.
     let compact = state.width_tier < WidthTier::Full;
-    let has_bounds = playback.state.time_model.playback_bounds.is_some();
+    let has_bounds = playback.state.playback_bounds().is_some();
 
     // Loop mode + clear-selection. The loop combo is Advanced-only and only
     // inline at full width; the clear-selection X always stays inline when
@@ -484,8 +484,7 @@ fn render_loop_preset_menu(
     interactive: bool,
 ) {
     use crate::core::LoopPreset;
-    let has_loop =
-        playback.state.loop_window.is_some() || playback.state.time_model.playback_bounds.is_some();
+    let has_loop = playback.state.selection.range().is_some();
     // Highlight the icon while a loop is active so the control reads as "on".
     let icon = egui_phosphor::regular::REPEAT;
     let tint = if has_loop {
@@ -496,10 +495,10 @@ fn render_loop_preset_menu(
     ui.add_enabled_ui(interactive, |ui| {
         ui.menu_button(RichText::new(icon).size(14.0).color(tint), |ui| {
             // Header: the active loop window (basis + pinned), or "Loop".
-            let header = match playback.state.loop_window {
-                Some(w) => {
-                    let pin = if w.pinned { " · pinned" } else { "" };
-                    format!("Loop · {}{}", w.basis.label(), pin)
+            let header = match playback.state.selection.range() {
+                Some(r) => {
+                    let pin = if r.live { " · pinned" } else { "" };
+                    format!("Loop · {}{}", r.basis.label(), pin)
                 }
                 None => "Loop".to_string(),
             };

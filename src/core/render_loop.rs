@@ -134,7 +134,7 @@ pub(crate) fn reduce_advance_playback(
     // Rebuild macro frame list when dirty (elevation selection, bounds, or
     // scan count changed). Uses the *effective* mode so the list is also
     // built during a lookback replay (which frame-steps regardless of zoom).
-    if playback.effective_playback_mode() == PlaybackMode::Macro {
+    if playback.playback_mode() == PlaybackMode::Macro {
         let product = env.product.to_worker_string();
         let inputs = MacroFrameInputs {
             elevation: elevation_selection.clone(),
@@ -142,7 +142,7 @@ pub(crate) fn reduce_advance_playback(
             // No explicit loop/selection falls back to the visible window, not
             // the whole cache — see `macro_frame_bounds`.
             bounds: crate::core::macro_frame_bounds(
-                playback.time_model.playback_bounds,
+                playback.playback_bounds(),
                 playback.timeline_view_start,
                 playback.view_width_secs(),
                 playback.playback_position(),
@@ -452,7 +452,7 @@ pub(crate) fn decide_prefetch_and_caption(
     // background stream resolves the cached frame at the cursor, so the
     // caption applies just like ordinary archive browsing.
     let pos = playback.playback_position();
-    let attached = playback.time_model.is_pinned() || playback.time_model.is_lookback();
+    let attached = playback.is_pinned() || playback.is_live_range();
     let displayed = env
         .displayed
         .map(|d| (d.start_time, d.end_time, (d.start_time + d.end_time) / 2.0));

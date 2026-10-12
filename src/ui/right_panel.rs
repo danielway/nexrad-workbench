@@ -36,7 +36,7 @@ fn draw_right_panel(
     root_ui: &mut egui::Ui,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
-    live: &crate::subsystem::Live,
+    live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
@@ -65,7 +65,7 @@ fn draw_right_panel(
                     ui.add_space(5.0);
                     render_tools_section(ui, state, chrome);
                     ui.add_space(5.0);
-                    render_events_section(ui, state, playback, chrome);
+                    render_events_section(ui, state, live, playback, chrome);
                     ui.add_space(5.0);
                     render_storage_section(ui, state, chrome);
                     ui.add_space(5.0);
@@ -518,6 +518,7 @@ pub(super) fn render_tools_section(
 pub(super) fn render_events_section(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
 ) {
@@ -576,7 +577,7 @@ pub(super) fn render_events_section(
                                 .small_button(egui_phosphor::regular::NAVIGATION_ARROW)
                                 .clicked()
                             {
-                                navigate_to_event(state, playback, event, chrome);
+                                navigate_to_event(state, live, playback, event, chrome);
                             }
                         });
                     });
@@ -628,7 +629,7 @@ pub(super) fn render_events_section(
                                         .small_button(egui_phosphor::regular::NAVIGATION_ARROW)
                                         .clicked()
                                     {
-                                        navigate_to_event(state, playback, event, chrome);
+                                        navigate_to_event(state, live, playback, event, chrome);
                                     }
                                 },
                             );
@@ -644,9 +645,10 @@ pub(super) fn render_events_section(
         });
 }
 
-/// Navigate to a saved event: switch site if needed, set selection, center timeline.
+/// Navigate to a saved event: switch site if needed, loop its span, center timeline.
 fn navigate_to_event(
     state: &mut AppState,
+    live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     event: &crate::state::SavedEvent,
     _chrome: &mut crate::subsystem::Chrome,
@@ -667,10 +669,15 @@ fn navigate_to_event(
         }
     }
 
-    // Set selection to event bounds
-    playback
-        .state
-        .set_selection(event.start_time, event.end_time);
+    // Loop the event's span (a fixed range: the playhead leaves live).
+    live.select_range(
+        &mut playback.state,
+        event.start_time,
+        event.end_time,
+        false,
+        state.frame_now.secs(),
+        state.pause_stream_while_reviewing,
+    );
 
     // Center timeline on the event
     let mid = (event.start_time + event.end_time) / 2.0;

@@ -120,12 +120,42 @@ impl Live {
         }
     }
 
+    /// Select a range from a timeline gesture: a live range when `to_live`
+    /// and streaming, else a fixed range with the playhead detached. Returns
+    /// whether a range was selected. See [`crate::core::transport::select_range`].
+    pub(crate) fn select_range(
+        &mut self,
+        playback: &mut PlaybackState,
+        a: f64,
+        b: f64,
+        to_live: bool,
+        now: f64,
+        pause_stream_while_reviewing: bool,
+    ) -> bool {
+        let (actions, selected) = crate::core::transport::select_range(
+            &crate::core::transport::TransportEnv {
+                now_secs: now,
+                pause_stream_while_reviewing,
+            },
+            crate::core::transport::TransportSlices {
+                live_mode: &mut self.mode_state,
+                engine: &mut self.engine.borrow_mut(),
+                playback,
+            },
+            a,
+            b,
+            to_live,
+        );
+        if actions.stop_channel {
+            self.channel.stop();
+        }
+        selected
+    }
+
     /// Whether the stream is running but the playhead has detached from the
     /// live edge (the user is browsing while ingestion continues).
     pub(crate) fn is_detached(&self, playback: &PlaybackState) -> bool {
-        self.mode_state.is_active()
-            && !playback.time_model.is_pinned()
-            && !playback.time_model.is_lookback()
+        self.mode_state.is_active() && !playback.is_pinned() && !playback.is_live_range()
     }
 
     /// Seconds until the next chunk is expected to be available in S3 — drives
@@ -172,8 +202,7 @@ impl Live {
             None
         };
         self.radar_model = self.mode_state.compute_model(now, live_scan);
-        let playhead_live =
-            inputs.playback.time_model.is_pinned() || inputs.playback.time_model.is_lookback();
+        let playhead_live = inputs.playback.is_pinned() || inputs.playback.is_live_range();
         self.app_mode = crate::state::derive_app_mode(
             self.mode_state.is_active(),
             playhead_live,
@@ -303,7 +332,7 @@ mod coverage_tests {
         l.mode_state.phase = LivePhase::Streaming;
         let mut lookback = PlaybackState::default();
         lookback.enter_pinned_live(1000.0);
-        lookback.enter_lookback(None, LoopBasis::default());
+        lookback.enter_live_range(None, LoopBasis::default());
         assert!(!l.is_detached(&lookback));
     }
 
@@ -337,8 +366,8 @@ mod coverage_tests {
         l.detach_playhead(&mut pb, 500.0, false);
 
         // exit_live(Keep) flips the playhead out of pinned-live...
-        assert!(!pb.time_model.is_pinned());
-        assert!(!pb.time_model.is_lookback());
+        assert!(!pb.is_pinned());
+        assert!(!pb.is_live_range());
         // ...but the inactive stream/state is untouched.
         assert_eq!(l.mode_state.phase, LivePhase::Idle);
         assert_eq!(l.mode_state.detached_since, None);
@@ -354,7 +383,7 @@ mod coverage_tests {
 
         l.detach_playhead(&mut pb, 700.0, /* pause_stream_while_reviewing */ true);
 
-        assert!(!pb.time_model.is_pinned());
+        assert!(!pb.is_pinned());
         assert_eq!(l.mode_state.phase, LivePhase::Idle);
         assert!(!l.mode_state.is_active());
         assert_eq!(
@@ -374,7 +403,7 @@ mod coverage_tests {
         pb.enter_pinned_live(1000.0);
 
         l.detach_playhead(&mut pb, 123.0, false);
-        assert!(!pb.time_model.is_pinned());
+        assert!(!pb.is_pinned());
         assert_eq!(l.mode_state.detached_since, Some(123.0));
         // Stream keeps running in the non-data-saver path.
         assert!(l.mode_state.is_active());

@@ -89,7 +89,7 @@ fn draw_mobile_settings_modal(
                     MobileSettingsTab::Layers => {
                         render_layers_body(ui, state, playback, diagnostics, derived, chrome)
                     }
-                    MobileSettingsTab::More => render_more_body(ui, state, playback, chrome),
+                    MobileSettingsTab::More => render_more_body(ui, state, live, playback, chrome),
                 });
 
             // The datetime picker popup (opened by tapping the current-time
@@ -205,8 +205,8 @@ fn render_playback_body(
     ui.horizontal(|ui| {
         ui.add_space(8.0);
         ui.label(RichText::new("Mode:").size(13.0));
-        let mode = playback.state.effective_playback_mode();
-        let lookback = playback.state.time_model.is_lookback();
+        let mode = playback.state.playback_mode();
+        let lookback = playback.state.is_live_range();
         for choice in [PlaybackMode::Macro, PlaybackMode::Micro] {
             let enabled = !(lookback && choice == PlaybackMode::Micro);
             if ui
@@ -232,7 +232,7 @@ fn render_playback_body(
     ui.horizontal(|ui| {
         ui.add_space(8.0);
         ui.label(RichText::new("Speed:").size(13.0));
-        let mode = playback.state.effective_playback_mode();
+        let mode = playback.state.playback_mode();
         let common: &[PlaybackSpeed] = &[
             PlaybackSpeed::Half,
             PlaybackSpeed::Normal,
@@ -321,6 +321,7 @@ fn render_layers_body(
 fn render_more_body(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
 ) {
@@ -329,7 +330,7 @@ fn render_more_body(
     ui.add_space(4.0);
     super::super::right_panel::render_tools_section(ui, state, chrome);
     ui.add_space(4.0);
-    super::super::right_panel::render_events_section(ui, state, playback, chrome);
+    super::super::right_panel::render_events_section(ui, state, live, playback, chrome);
     ui.add_space(4.0);
     super::super::right_panel::render_storage_section(ui, state, chrome);
 }
