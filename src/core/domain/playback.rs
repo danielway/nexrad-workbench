@@ -1275,19 +1275,21 @@ impl PlaybackState {
         self.apply_tier(next, median_frame_spacing);
     }
 
-    /// Whether a zoom change (at the current width) would transition *out of*
-    /// the Micro tier — i.e. the hysteresis-aware "zoomed out far enough to
-    /// detach" gesture. Pure; lets the interaction layer decide to detach
-    /// before committing the zoom.
-    pub(crate) fn zoom_would_exit_micro(&self, new_zoom: f64, width_px: f64) -> bool {
-        self.timeline_tier == TimelineTier::Micro
-            && self.next_tier(new_zoom, width_px) != TimelineTier::Micro
-    }
-
     /// Check if playback is allowed at the current tier. The Archive tier is a
     /// navigator only (spec §6.4); every other tier permits playback.
     pub(crate) fn is_playback_allowed(&self) -> bool {
         self.timeline_tier != TimelineTier::Archive
+    }
+
+    /// Whether playback that is already running must halt at the current
+    /// tier. Zoom is view-only, so a loop (a fixed range or a lookback replay)
+    /// keeps playing when the strip zooms out to the Archive calendar. Only
+    /// unbounded play halts there, because its frame list would fall back to
+    /// the whole visible window, which can span years.
+    pub(crate) fn must_halt_for_tier(&self) -> bool {
+        !self.is_playback_allowed()
+            && self.time_model.playback_bounds.is_none()
+            && !self.time_model.is_lookback()
     }
 
     /// Derive the current playback mode from the stored tier.
@@ -2327,16 +2329,53 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn zoom_would_exit_micro_is_hysteresis_aware() {
-        let ps = micro_state();
-        // A drop that stays above the exit floor does NOT exit Micro.
-        assert!(!ps.zoom_would_exit_micro(0.90, 1000.0));
-        // A drop to/below the exit floor exits Micro.
-        assert!(ps.zoom_would_exit_micro(0.87, 1000.0));
-        // From Macro it never reports a Micro exit.
-        let mut macro_ps = PlaybackState::default();
-        macro_ps.set_timeline_zoom(0.5, 1000.0, FALLBACK_FRAME_SPACING_SECS);
-        assert!(!macro_ps.zoom_would_exit_micro(0.2, 1000.0));
+    fn zoom_out_keeps_pinned_live() {
+        // Zoom is view-only: zooming all the way out (Micro → Macro → Archive)
+        // and back must leave the playhead pinned to now.
+        let mut ps = micro_state();
+        ps.enter_pinned_live(5_000.0);
+        for z in [0.5, 0.01, PlaybackState::min_zoom_for_width(1000.0), 2.0] {
+            ps.set_timeline_zoom(z, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+            assert!(ps.time_model.is_pinned(), "unpinned at zoom {z}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn archive_tier_halts_only_unbounded_play() {
+        let archive = PlaybackState::min_zoom_for_width(1000.0);
+        // Unbounded play halts behind the calendar.
+        let mut ps = micro_state();
+        ps.playing = true;
+        ps.set_timeline_zoom(archive, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Archive);
+        assert!(ps.must_halt_for_tier());
+        // A fixed loop keeps playing.
+        let mut ps = micro_state();
+        ps.set_selection(1_000.0, 2_000.0);
+        ps.apply_selection_as_bounds();
+        ps.playing = true;
+        ps.set_timeline_zoom(archive, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert!(!ps.must_halt_for_tier());
+        // So does a lookback replay.
+        let mut ps = micro_state();
+        ps.enter_pinned_live(5_000.0);
+        ps.enter_lookback(Some(4_000.0), LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES));
+        ps.set_timeline_zoom(archive, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert!(!ps.must_halt_for_tier());
+    }
+
+    #[wasm_bindgen_test]
+    fn zoom_out_keeps_lookback_loop() {
+        // A lookback replay survives the same zoom sweep with its window intact.
+        let mut ps = micro_state();
+        ps.enter_pinned_live(5_000.0);
+        ps.enter_lookback(Some(4_000.0), LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES));
+        let window = ps.loop_window;
+        for z in [0.5, 0.01, PlaybackState::min_zoom_for_width(1000.0), 2.0] {
+            ps.set_timeline_zoom(z, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+            assert!(ps.time_model.is_lookback(), "left lookback at zoom {z}");
+            assert_eq!(ps.loop_window, window);
+        }
     }
 
     // ---------------------------------------------------------------

@@ -168,7 +168,7 @@ pub(super) fn handle_timeline_interaction(
     let mut pinched = false;
     if let Some(t) = crate::ui::mobile::gestures::consume(ui.ctx()) {
         if frame.rects.scan.contains(t.focus) && (t.zoom - 1.0).abs() > f32::EPSILON {
-            apply_zoom(state, live, playback, frame, t.zoom as f64, t.focus.x);
+            apply_zoom(playback, frame, t.zoom as f64, t.focus.x);
             pinched = true;
         }
     }
@@ -183,7 +183,7 @@ pub(super) fn handle_timeline_interaction(
                 .hover_pos()
                 .map(|p| p.x)
                 .unwrap_or(frame.rects.scan.left());
-            apply_zoom(state, live, playback, frame, zoom_factor, anchor_x);
+            apply_zoom(playback, frame, zoom_factor, anchor_x);
         }
         // Horizontal scroll (trackpad two-finger) pans the view. Never clears
         // the selection (spec: pan/zoom preserve loop bounds).
@@ -320,13 +320,11 @@ fn seek_to(
 }
 
 /// Apply a multiplicative zoom anchored at screen-x `anchor_x`, keeping the
-/// timestamp under that x fixed. Zooming out of the Micro tier while tethered
-/// detaches (the stream keeps running) rather than fighting the tether. The
-/// single zoom-mutation path (`set_timeline_zoom`) advances the tier with
-/// hysteresis and preserves playback cadence on a behavioral flip.
+/// timestamp under that x fixed. Zoom is view-only: it never detaches the
+/// playhead from live or ends a loop. The single zoom-mutation path
+/// (`set_timeline_zoom`) advances the tier with hysteresis and preserves
+/// playback cadence on a behavioral flip.
 fn apply_zoom(
-    state: &mut AppState,
-    live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     frame: &super::TimelineFrame<'_>,
     zoom_factor: f64,
@@ -334,23 +332,14 @@ fn apply_zoom(
 ) {
     let old_zoom = playback.state.timeline_zoom;
     let width = playback.state.timeline_width_px;
-    // Clamp with the WIDTH-AWARE floor (not the loose hard min) so the
-    // zoom-would-exit-micro check and the anchor math below agree with the
-    // floor `set_timeline_zoom` will apply — the widest view stays the readable
-    // calendar span, never the deprecated year-wide strip.
+    // Clamp with the WIDTH-AWARE floor (not the loose hard min) so the anchor
+    // math below agrees with the floor `set_timeline_zoom` will apply — the
+    // widest view stays the readable calendar span, never the deprecated
+    // year-wide strip.
     let new_zoom = (old_zoom * zoom_factor).clamp(
         crate::core::PlaybackState::min_zoom_for_width(width),
         crate::core::TIMELINE_ZOOM_MAX,
     );
-
-    let attached = playback.state.time_model.is_pinned() || playback.state.time_model.is_lookback();
-    if attached && playback.state.zoom_would_exit_micro(new_zoom, width) {
-        live.detach_playhead(
-            &mut playback.state,
-            state.frame_now.secs(),
-            state.pause_stream_while_reviewing,
-        );
-    }
 
     // Keep the timestamp under the anchor fixed while scaling.
     let anchor_ts = frame.x_to_ts(anchor_x);
