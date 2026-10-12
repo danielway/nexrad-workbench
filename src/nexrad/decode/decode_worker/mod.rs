@@ -174,7 +174,7 @@ impl DecodeWorker {
     /// Flush any queued requests if the worker has become ready.
     pub(crate) fn flush_queue(&mut self) {
         if *self.ready.borrow() && !self.queue.is_empty() {
-            let queued: Vec<_> = self.queue.drain(..).collect();
+            let queued = std::mem::take(&mut self.queue);
             log::debug!("Flushing {} queued worker requests", queued.len());
             for request in queued {
                 match request {

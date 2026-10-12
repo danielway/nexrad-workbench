@@ -227,7 +227,7 @@ pub(crate) fn triangulate_polygons(polygons: &[Vec<Ring>]) -> Vec<[(f64, f64); 3
         );
         let raw = poly.earcut_triangles_raw();
         let v = &raw.vertices; // one [x, y] entry per vertex
-        for idx in raw.triangle_indices.chunks_exact(3) {
+        for idx in raw.triangle_indices.as_chunks::<3>().0 {
             let pt = |i: usize| (v[i][0], v[i][1]);
             tris.push([pt(idx[0]), pt(idx[1]), pt(idx[2])]);
         }
