@@ -57,6 +57,8 @@ pub(crate) struct DecodedEnv<'a> {
     /// `self.live_render_sources()` — the live collecting cut + anchor
     /// feeding [`resolve_desired_display`].
     pub live_cut: Option<(u8, i64)>,
+    /// `self.live_shows_whole_sweeps()` — Frames mode: never show a partial.
+    pub whole_sweeps_only: bool,
     /// `state.effective_sweep_animation(&playback.state, streaming, collecting)`.
     pub sweep_animation: bool,
     /// `viz_state.storm_cells_visible`.
@@ -185,6 +187,7 @@ pub(crate) fn reduce_decoded(
         timeline,
         env.max_scan_age_secs,
         env.live_cut,
+        env.whole_sweeps_only,
     );
     let is_current_scan = desired == DesiredDisplay::Cached(result_identity.clone());
     if env.sweep_animation && !is_current_scan {
@@ -256,6 +259,9 @@ pub(crate) fn reduce_decoded(
 pub(crate) struct LiveDecodedEnv<'a> {
     /// `!self.live.is_detached(&self.playback.state)`.
     pub playhead_attached: bool,
+    /// `self.live_shows_whole_sweeps()` — Frames mode keeps the last complete
+    /// sweep on the canvas, so the partial is decoded but not shown.
+    pub whole_sweeps_only: bool,
     /// `live.radar_model.volume` — VCP target-angle lookup.
     pub live_volume: Option<&'a LiveVolumeModel>,
     /// The GPU renderer's `current_sweep_id()`, shell-read under the lock.
@@ -312,7 +318,9 @@ pub(crate) fn reduce_live_decoded(
     // scrubbed position — skip the GPU upload, `displayed` mutation,
     // and overlay refresh. The azimuth bookkeeping (phase 2) still runs
     // so sweep compositing is correct the instant the user re-pins.
-    let playhead_attached = env.playhead_attached;
+    // Frames mode is handled the same way: the partial never reaches the
+    // canvas, but the bookkeeping keeps a switch to Rays seamless.
+    let playhead_attached = env.playhead_attached && !env.whole_sweeps_only;
 
     // VCP target angle for the cut (mirrors archived path).
     let display_angle = env
@@ -529,6 +537,7 @@ mod tests {
             product: RadarProduct::Reflectivity,
             max_scan_age_secs: MAX_AGE,
             live_cut: None,
+            whole_sweeps_only: false,
             sweep_animation: false,
             storm_cells_visible: false,
             in_flight_scans: in_flight,
@@ -795,10 +804,29 @@ mod tests {
     ) -> LiveDecodedEnv<'a> {
         LiveDecodedEnv {
             playhead_attached,
+            whole_sweeps_only: false,
             live_volume,
             gpu_current_sweep_id: gpu_current_sweep_id.map(str::to_string),
             storm_cells_visible: false,
         }
+    }
+
+    // Frames mode while attached: the partial is decoded for bookkeeping but
+    // never shown, exactly like a detached playhead.
+    #[wasm_bindgen_test]
+    fn live_frames_mode_keeps_partial_off_the_canvas() {
+        let vol = live_volume(&[0.5, 1.5]);
+        let r = decode_result(1000.0, 1, "reflectivity");
+        let mut e = live_env(true, Some(&vol), Some("KDMX|1|1|reflectivity"));
+        e.whole_sweeps_only = true;
+        e.storm_cells_visible = true;
+
+        let a = reduce_live_decoded(e, &r);
+
+        assert!(!a.upload_to_gpu);
+        assert!(!a.promote_prev_texture);
+        assert_eq!(a.new_displayed, None);
+        assert!(!a.run_storm_cells);
     }
 
     // (8) Detached playhead suppresses every display effect; only the live

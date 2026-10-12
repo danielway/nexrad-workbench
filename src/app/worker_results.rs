@@ -327,6 +327,7 @@ impl WorkbenchApp {
                 product: self.state.viz_state.product,
                 max_scan_age_secs: MAX_SCAN_AGE_SECS,
                 live_cut: self.live_render_sources(),
+                whole_sweeps_only: self.live_shows_whole_sweeps(),
                 sweep_animation: self.state.effective_sweep_animation(
                     &self.playback.state,
                     self.live.mode_state.is_active(),
@@ -429,6 +430,7 @@ impl WorkbenchApp {
             });
             let env = LiveDecodedEnv {
                 playhead_attached: !self.live.is_detached(&self.playback.state),
+                whole_sweeps_only: self.live_shows_whole_sweeps(),
                 live_volume: self.live.radar_model.volume.as_ref(),
                 gpu_current_sweep_id,
                 storm_cells_visible: self.state.viz_state.storm_cells_visible,

@@ -261,8 +261,9 @@ site if necessary.
 There is **one continuous timeline**; "live" is its right edge. Live is not a
 mode — it is a tether state.
 
-- **Tethered:** solid LIVE indicator; the playhead rides the live edge; new
-  chunks may animate in on the canvas.
+- **Tethered:** solid LIVE indicator; the playhead rides the live edge. In
+  Rays, new chunks draw in on the canvas as they arrive; in Frames, the last
+  complete sweep holds until the next one finishes (§8.2).
 - **Detached:** scrubbing backward auto-detaches. The LIVE button hollows out and
   shows lag ("● LIVE · 2:14 behind"). Streaming **continues in the background**
   by default, filling the cache at the right edge. One tap re-tethers with a
@@ -332,15 +333,20 @@ a toggle beside the speed control and saved with the preferences. Zoom never
 changes it (§5.5).
 
 - **Rays — true-time playback.** The position advances evenly in wall-clock
-  time; radials are revealed at their actual collection timestamps. Speeds are
+  time; radials are revealed at their actual collection timestamps behind a
+  rotating sweep line, in archive playback and live alike. Live, each chunk
+  draws in as it arrives and the canvas tag reads "streaming 2/3". Optional
+  data-age desaturation fades the oldest data behind the line. Speeds are
   realtime multiples: **1×, 2×, 15×, 30×, 60×, 120×, 300× (default), 600×,
   1200×** (e.g. 300× ≈ 5 minutes of weather per real second). Real-time lock is
   available only in Rays.
 - **Frames — frame-stepping.** The position snaps between matching sweeps as
   equidistant frames, giving each sweep equal screen time regardless of true
   collection duration or surrounding dead time. Speeds are frame rates:
-  **1 / 2 / 5 / 10 / 15 fps** (5 fps default). Sweep animation is disabled in
-  Frames. Frames is the default mode.
+  **1 / 2 / 5 / 10 / 15 fps** (5 fps default). Frames only ever shows whole
+  sweeps: live, the last complete sweep for the selected tilt holds until the
+  next one finishes, and the canvas tag reads "collecting 2/3" meanwhile.
+  Frames is the default mode.
 
 The speed control shows × in Rays and fps in Frames. Switching modes swaps the
 speed list and snaps the active speed to the nearest equivalent, so the
@@ -353,9 +359,10 @@ VCP changes) so equidistant playback doesn't deceive.
 
 ### 8.4 Radial-animation gating
 
-Radial-level canvas animation (drawing radials as chunks arrive/replay) is gated
-to: Rays mode + low speed (≤ ~2×) + live or recent data with chunk timing
-available.
+Radial-level canvas animation (drawing radials as chunks arrive/replay) is
+Rays mode itself; there is no separate toggle. The sweep line is dropped at
+high speeds (above 30×) where it would only strobe. While live with a fixed
+tilt selected, the reveal pauses while the antenna is on other tilts.
 
 ## 9. Rendering & Sweep Matching
 
@@ -628,8 +635,6 @@ not unfinished work:
 - **Tape-scrub (mobile):** a fixed-center playhead with the "tape" dragging
   beneath it on phones — more thumb-accurate, but inverts the shared mental model.
   Ship drag-anywhere-scrubs first; A/B the tape later.
-- **Radial-level canvas animation:** genuine delight, gated narrowly (§8.4); the
-  existing sweep animation stays as today. A clean v2 candidate.
 - **Tablet tier:** a layout distinct from desktop/phone. For now touch devices
   ≥600px get the desktop layout.
 - **Archive 2-D weekday grid:** a GitHub-contributions-style week-by-day grid,

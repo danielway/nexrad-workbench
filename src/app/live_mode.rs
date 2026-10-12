@@ -337,6 +337,7 @@ impl WorkbenchApp {
             &self.timeline.scans,
             MAX_SCAN_AGE_SECS,
             self.live_render_sources(),
+            self.live_shows_whole_sweeps(),
         );
 
         match desired {
@@ -352,6 +353,8 @@ impl WorkbenchApp {
                     self.state.session_stats.pipeline.processing = true;
                 }
             }
+            // Frames mode before any complete sweep is cached: keep the canvas.
+            DesiredDisplay::Hold => {}
             DesiredDisplay::Blank => {
                 // Don't clear a valid live partial: in a between-chunks frame
                 // the in-progress elevation can momentarily read `None` and
@@ -402,6 +405,12 @@ impl WorkbenchApp {
             .observations()
             .current_in_progress_elevation
             .zip(anchor_ms)
+    }
+
+    /// Frames mode: live shows only complete sweeps, never the partial the
+    /// stream is filling in. Lookback replays are always Frames.
+    pub(crate) fn live_shows_whole_sweeps(&self) -> bool {
+        self.playback.state.effective_playback_mode() == crate::core::PlaybackMode::Macro
     }
 
     /// Whether the main GPU texture currently holds a live partial sweep

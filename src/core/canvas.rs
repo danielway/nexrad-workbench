@@ -20,22 +20,24 @@ use crate::core::Sweep;
 // Sweep-animation decisions
 // ---------------------------------------------------------------------------
 
-/// Whether the sweep animation is effectively enabled this frame.
+/// Whether the sweep animation (beam line + progressive reveal) runs this
+/// frame. It is what Rays mode means: rays drawn as they were collected.
 ///
-/// The animation's meaning is "the beam is collecting now", so beyond the
-/// stored preference it requires Rays playback mode, Advanced UI
-/// mode, an active live stream, and a playhead attached to the live edge
-/// (pinned or lookback). Historical playback — detached playhead or no stream
-/// — never animates: the reveal would be theater, and it costs a sustained
-/// ~30 fps repaint loop.
+/// - Rays while attached to a live stream: the reveal tracks the beam, but
+///   only while the antenna is on the cut being viewed (a fixed elevation
+///   filter goes still between visits).
+/// - Rays in archive playback: the reveal follows the playhead through each
+///   sweep's recorded radial times.
+/// - Frames never animates; it shows whole sweeps only.
 pub(crate) fn sweep_animation_effective(
-    pref: bool,
     mode: crate::core::PlaybackMode,
-    advanced: bool,
-    streaming: bool,
-    playhead_attached: bool,
+    live_attached: bool,
+    selected_elevation: Option<u8>,
+    collecting_elevation: Option<u8>,
 ) -> bool {
-    pref && mode == crate::core::PlaybackMode::Micro && advanced && streaming && playhead_attached
+    mode == crate::core::PlaybackMode::Micro
+        && (!live_attached
+            || displayed_elevation_is_collecting(selected_elevation, collecting_elevation))
 }
 
 /// Whether the beam is currently collecting the elevation the user is viewing.
@@ -54,14 +56,30 @@ pub(crate) fn displayed_elevation_is_collecting(
     }
 }
 
-/// Sweep animation as shown for the current view: base live/mode gates plus
-/// the elevation-filter gate from [`displayed_elevation_is_collecting`].
-pub(crate) fn sweep_animation_for_view(
-    base_effective: bool,
-    selected_elevation: Option<u8>,
-    collecting_elevation: Option<u8>,
-) -> bool {
-    base_effective && displayed_elevation_is_collecting(selected_elevation, collecting_elevation)
+/// The live tag beside the "Current" sweep in the canvas info overlay.
+///
+/// Rays shows the partial itself, so the tag counts the chunks drawn so far
+/// ("streaming 2/3"). Frames keeps the last whole sweep up, so the tag says
+/// the next one is on its way ("collecting 2/3") and the canvas doesn't read
+/// as stalled while the beam fills it in.
+pub(crate) fn live_sweep_tag(
+    whole_sweeps_only: bool,
+    partial: bool,
+    chunks: u32,
+    chunks_expected: Option<u32>,
+) -> String {
+    if !partial {
+        return "live".to_string();
+    }
+    let verb = if whole_sweeps_only {
+        "collecting"
+    } else {
+        "streaming"
+    };
+    match chunks_expected {
+        Some(e) => format!("{verb} {chunks}/{e}"),
+        None => verb.to_string(),
+    }
 }
 
 /// Whether data-age desaturation should run this frame.
@@ -76,13 +94,16 @@ pub(crate) fn data_age_desaturation_effective(pref: bool, effective_sweep_animat
 }
 
 /// Live partial azimuth range for GPU compositing, or `None` when the in-progress
-/// elevation is not the one on screen (fixed elevation filter between visits).
+/// elevation is not the one on screen (fixed elevation filter between visits)
+/// or Frames mode is holding the last complete sweep instead of the partial.
 pub(crate) fn live_compositing_azimuth_range(
+    whole_sweeps_only: bool,
     selected_elevation: Option<u8>,
     active_elevation: Option<u8>,
     data_azimuth_range: Option<(f32, f32)>,
 ) -> Option<(f32, f32)> {
-    if !displayed_elevation_is_collecting(selected_elevation, active_elevation) {
+    if whole_sweeps_only || !displayed_elevation_is_collecting(selected_elevation, active_elevation)
+    {
         return None;
     }
     data_azimuth_range
@@ -766,23 +787,38 @@ mod coverage_tests {
         }
     }
 
-    // --- sweep_animation_effective: live/historical gate -----------------------
+    // --- sweep_animation_effective: Rays mode, live or archive ---------------
 
     #[wasm_bindgen_test]
-    fn sweep_animation_requires_live_attached_stream() {
+    fn sweep_animation_follows_rays_mode() {
         use crate::core::PlaybackMode::{Macro, Micro};
-        // Fully live: pref + Micro + advanced + streaming + attached → on.
-        assert!(sweep_animation_effective(true, Micro, true, true, true));
-        // Streaming but detached (historical review) → off.
-        assert!(!sweep_animation_effective(true, Micro, true, true, false));
-        // Attached-shaped playhead but no active stream → off.
-        assert!(!sweep_animation_effective(true, Micro, true, false, true));
-        // Historical playback entirely (no stream, detached) → off.
-        assert!(!sweep_animation_effective(true, Micro, true, false, false));
-        // Pre-existing gates still suppress: preference off, Macro, Basic UI.
-        assert!(!sweep_animation_effective(false, Micro, true, true, true));
-        assert!(!sweep_animation_effective(true, Macro, true, true, true));
-        assert!(!sweep_animation_effective(true, Micro, false, true, true));
+        // Rays animates live and in archive playback alike.
+        assert!(sweep_animation_effective(Micro, true, None, Some(3)));
+        assert!(sweep_animation_effective(Micro, false, None, None));
+        // Archive ignores the live collecting cut: a fixed filter still animates.
+        assert!(sweep_animation_effective(Micro, false, Some(1), None));
+        // Frames never animates.
+        assert!(!sweep_animation_effective(Macro, true, None, Some(3)));
+        assert!(!sweep_animation_effective(Macro, false, None, None));
+    }
+
+    #[wasm_bindgen_test]
+    fn live_fixed_filter_goes_still_between_visits() {
+        use crate::core::PlaybackMode::Micro;
+        assert!(sweep_animation_effective(Micro, true, Some(1), Some(1)));
+        assert!(!sweep_animation_effective(Micro, true, Some(1), Some(4)));
+        assert!(!sweep_animation_effective(Micro, true, Some(1), None));
+    }
+
+    // --- live_sweep_tag --------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn live_sweep_tag_names_what_the_canvas_shows() {
+        assert_eq!(live_sweep_tag(false, true, 2, Some(3)), "streaming 2/3");
+        assert_eq!(live_sweep_tag(true, true, 2, Some(3)), "collecting 2/3");
+        assert_eq!(live_sweep_tag(true, true, 1, None), "collecting");
+        assert_eq!(live_sweep_tag(true, false, 3, Some(3)), "live");
+        assert_eq!(live_sweep_tag(false, false, 0, None), "live");
     }
 
     // --- data_age_desaturation_effective ---------------------------------------
@@ -808,24 +844,24 @@ mod coverage_tests {
         assert!(!displayed_elevation_is_collecting(Some(1), Some(2)));
         assert!(!displayed_elevation_is_collecting(Some(1), None));
 
-        assert!(sweep_animation_for_view(true, Some(1), Some(1)));
-        assert!(!sweep_animation_for_view(true, Some(1), Some(4)));
-        assert!(!sweep_animation_for_view(false, Some(1), Some(1)));
-        assert!(sweep_animation_for_view(true, None, Some(4)));
-
         // Live compositing range suppressed off-elevation so other tilts
         // don't drive the GPU sweep boundary for the filtered product.
         assert_eq!(
-            live_compositing_azimuth_range(Some(1), Some(1), Some((10.0, 40.0))),
+            live_compositing_azimuth_range(false, Some(1), Some(1), Some((10.0, 40.0))),
             Some((10.0, 40.0))
         );
         assert_eq!(
-            live_compositing_azimuth_range(Some(1), Some(2), Some((10.0, 40.0))),
+            live_compositing_azimuth_range(false, Some(1), Some(2), Some((10.0, 40.0))),
             None
         );
         assert_eq!(
-            live_compositing_azimuth_range(None, Some(2), Some((10.0, 40.0))),
+            live_compositing_azimuth_range(false, None, Some(2), Some((10.0, 40.0))),
             Some((10.0, 40.0))
+        );
+        // Frames mode holds the last complete sweep: no partial compositing.
+        assert_eq!(
+            live_compositing_azimuth_range(true, Some(1), Some(1), Some((10.0, 40.0))),
+            None
         );
     }
 

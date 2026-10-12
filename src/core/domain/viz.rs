@@ -345,9 +345,8 @@ pub struct RenderProcessing {
     pub interpolation: InterpolationMode,
     /// Global opacity for radar data (0.0..1.0).
     pub opacity: f32,
-    /// Whether sweep animation is enabled (progressive radial reveal during playback).
-    pub sweep_animation: bool,
-    /// Whether data age desaturation is shown (desaturates oldest data behind sweep line).
+    /// Whether data age desaturation is shown in Rays mode (desaturates the
+    /// oldest data behind the sweep line).
     pub data_age_desaturation: bool,
 }
 
@@ -356,7 +355,6 @@ impl Default for RenderProcessing {
         Self {
             interpolation: InterpolationMode::Nearest,
             opacity: 1.0,
-            sweep_animation: false,
             data_age_desaturation: true,
         }
     }
@@ -639,7 +637,6 @@ mod coverage_tests {
         let rp = RenderProcessing::default();
         assert_eq!(rp.interpolation, InterpolationMode::Nearest);
         assert!((rp.opacity - 1.0).abs() < 1e-6);
-        assert!(!rp.sweep_animation);
         assert!(rp.data_age_desaturation);
     }
 

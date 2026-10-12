@@ -61,8 +61,6 @@ pub(crate) struct UserPreferences {
     pub interpolation: InterpolationMode,
     #[serde(default = "default_opacity")]
     pub opacity: f32,
-    #[serde(default)]
-    pub sweep_animation: bool,
     #[serde(default = "default_true")]
     pub data_age_desaturation: bool,
 
@@ -130,7 +128,6 @@ impl Default for UserPreferences {
             preferred_site: None,
             interpolation: InterpolationMode::default(),
             opacity: 1.0,
-            sweep_animation: false,
             data_age_desaturation: true,
             mobile_override: None,
             advanced_mode: false,

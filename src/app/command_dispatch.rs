@@ -50,6 +50,10 @@ pub(crate) struct CommandOutcome {
     /// Acquisition queue state changed (resume / retry / skip); pump it
     /// so newly-unblocked operations can advance this frame.
     pub pump_queue: bool,
+    /// What the canvas should show changed in a way the render dedup can't
+    /// see (Frames ↔ Rays swaps a live partial for the last whole sweep);
+    /// drop the dedup so the next resolve re-requests.
+    pub fresh_render: bool,
 }
 
 /// The slice of [`WorkbenchApp`] that the state-only intents mutate.
@@ -96,7 +100,10 @@ pub(crate) fn dispatch_state_only(
 
         // ---- Loop presets -----------------------------------------
         Intent::ClearLoop => s.playback.state.clear_selection(),
-        Intent::SetPlayMode(mode) => s.playback.state.set_play_mode(mode),
+        Intent::SetPlayMode(mode) => {
+            s.playback.state.set_play_mode(mode);
+            outcome.fresh_render = true;
+        }
 
         // ---- Queue management -------------------------------------
         // Mutations that may unblock work flip `pump_queue` so the
@@ -412,6 +419,9 @@ impl WorkbenchApp {
             };
             dispatch_state_only(cmd, &mut bundle, outcome)
         };
+        if std::mem::take(&mut outcome.fresh_render) {
+            self.render.coordinator.force_fresh_render();
+        }
         let Some(cmd) = cmd else {
             return;
         };
@@ -1269,6 +1279,8 @@ mod dispatch_tests {
         let mut f = Fixture::new();
         f.apply(Intent::SetPlayMode(PlaybackMode::Micro));
         assert_eq!(f.playback.state.playback_mode(), PlaybackMode::Micro);
+        // The canvas source can change (live partial ↔ last whole sweep).
+        assert!(f.outcome.fresh_render);
         for zoom in [0.01, 0.5, 2.0] {
             f.playback.state.set_timeline_zoom(zoom, 1000.0);
             assert_eq!(f.playback.state.playback_mode(), PlaybackMode::Micro);

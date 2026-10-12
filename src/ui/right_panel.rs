@@ -409,26 +409,15 @@ pub(super) fn render_rendering_section(
 
             ui.add_space(8.0);
 
-            // Sweep animation (disabled in Frames mode — not meaningful when
-            // playback jumps between complete frames)
+            // Data age desaturation only applies to Rays mode's sweep reveal;
+            // Frames shows whole sweeps with no sweep line to age behind.
             ui.add_enabled_ui(!in_macro, |ui| {
-                ui.checkbox(&mut proc.sweep_animation, "Sweep Animation")
+                ui.checkbox(&mut proc.data_age_desaturation, "Data Age Desaturation")
                     .on_hover_text(if in_macro {
-                        "Sweep animation needs Rays mode; Frames shows complete sweeps only"
+                        "Applies in Rays mode; Frames shows whole sweeps"
                     } else {
-                        "Progressively reveal new data behind the sweep line while streaming \
-                         live; historical playback shows complete frames"
+                        "Desaturate the oldest data behind the sweep line to indicate staleness"
                     });
-            });
-
-            // Data age desaturation (only meaningful when sweep animation is on)
-            ui.add_enabled_ui(proc.sweep_animation && !in_macro, |ui| {
-                ui.indent("data_age_desaturation_indent", |ui| {
-                    ui.checkbox(&mut proc.data_age_desaturation, "Data Age Desaturation")
-                        .on_hover_text(
-                            "Desaturate the oldest data behind the sweep line to indicate staleness",
-                        );
-                });
             });
 
             ui.add_space(4.0);
