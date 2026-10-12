@@ -579,12 +579,11 @@ fn view_start_anchored_at(view_start: f64, old_zoom: f64, new_zoom: f64, anchor_
 /// through [`PlaybackState::set_timeline_zoom`] so tier hysteresis + cadence
 /// preservation apply, and the view start is recomputed to keep the playhead's
 /// on-screen x fixed (mirrors the scroll-zoom-at-cursor path, anchored at the
-/// playhead instead of the pointer). Zooming out past the Micro threshold while
-/// tethered detaches the playhead (the stream continues in the background),
-/// matching the scroll/pinch zoom-out path.
+/// playhead instead of the pointer). Zoom is view-only: like the scroll/pinch
+/// path, it never detaches the playhead from live or ends a loop.
 fn handle_zoom_step(
-    state: &mut AppState,
-    live: &mut crate::subsystem::Live,
+    _state: &mut AppState,
+    _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
@@ -600,9 +599,9 @@ fn handle_zoom_step(
     let old_zoom = ps.timeline_zoom;
     let width = ps.timeline_width_px;
     // Clamp with the WIDTH-AWARE floor (not the loose hard min) so the
-    // early-return check, the detach decision, and the anchor math all agree
-    // with the floor `set_timeline_zoom` will actually store (mirrors
-    // `apply_zoom` in timeline/interaction.rs).
+    // early-return check and the anchor math agree with the floor
+    // `set_timeline_zoom` will actually store (mirrors `apply_zoom` in
+    // timeline/interaction.rs).
     let new_zoom = (old_zoom * factor).clamp(
         crate::core::PlaybackState::min_zoom_for_width(width),
         crate::core::TIMELINE_ZOOM_MAX,
@@ -610,17 +609,6 @@ fn handle_zoom_step(
     if new_zoom == old_zoom {
         return;
     }
-    // Zooming out past the Micro threshold while tethered detaches (stream keeps
-    // running in the background), exactly as the scroll/pinch path does.
-    let attached = ps.time_model.is_pinned() || ps.time_model.is_lookback();
-    if attached && ps.zoom_would_exit_micro(new_zoom, width) {
-        live.detach_playhead(
-            &mut playback.state,
-            state.frame_now.secs(),
-            state.pause_stream_while_reviewing,
-        );
-    }
-    let ps = &mut playback.state;
     // Anchor at the playhead: keep its current on-screen offset fixed while the
     // scale changes.
     let playhead = ps.playback_position();

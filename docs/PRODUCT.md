@@ -230,8 +230,10 @@ cached scans.
 |---|---|---|---|
 | **Micro** | minutes → ~1–2 hr visible | Scan containers with frame cells, chunk segments, ghosts + countdown | True-time, realtime multiples; renders latest matching frame at/before playhead; optional radial animation |
 | **Macro** | hours → a few days | Each scan is a block spanning the volume's real duration — solid across downloaded sweeps, hollow across the rest; per-sweep hairlines once wide enough; gap glyphs where real spacing exceeds threshold. Blocks merge into a coverage fill once denser than ~1 per 3px | Equidistant frames at a chosen fps (classic radar loop) |
-| **Archive** | beyond ~2–3 days, out to the whole NEXRAD era | A zoomable **1-D coverage lane** whose cells coarsen with the span (day → week → month → quarter) so they stay legible at every zoom, with per-bucket availability + cache tone, period separators and bookmarks, over a keyline marking the addressable archive range | None — navigator only; tapping a cell frames that cell, one rung finer |
+| **Archive** | beyond ~2–3 days, out to the whole NEXRAD era | A zoomable **1-D coverage lane** whose cells coarsen with the span (day → week → month → quarter) so they stay legible at every zoom, with per-bucket availability + cache tone, period separators and bookmarks, over a keyline marking the addressable archive range | None started here — navigator only; tapping a cell frames that cell, one rung finer. A loop or live replay already running keeps playing |
 
+- **Zoom is view-only.** Changing tier never detaches the playhead from live,
+  ends a loop, or pauses one. Only unbounded play halts on entering Archive.
 - **One tier state machine** owns the boundary, stored on playback state; all
   zoom writes go through it (the tier is never re-derived from raw zoom). Tuning
   constants are co-located in one place.
