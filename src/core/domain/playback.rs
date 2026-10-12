@@ -1540,6 +1540,9 @@ impl PlaybackState {
         }
         let (s, e) = self.commit_pinned_window(target_start, target_end);
         self.set_range_bounds_preserving(s, e);
+        // Keep the playhead inside the window as it slides past it (a paused
+        // range would otherwise leave the playhead behind).
+        self.time_model.playback_position = self.time_model.playback_position.clamp(s, e);
     }
 
     /// Clear the range selection. A live range falls back to the live point
@@ -2091,8 +2094,11 @@ mod tests {
         assert!(ps.select_range(100.0, 400.0, true));
         assert!(ps.is_live_range());
         ps.time_model.direction = PlaybackDirection::Backward;
+        ps.time_model.playback_position = 120.0;
         ps.slide_live_range(250.0, 550.0);
         assert_eq!(ps.playback_bounds(), Some((250.0, 550.0)));
+        // The playhead is carried along when the window slides past it.
+        assert_eq!(ps.playback_position(), 250.0);
         assert!(ps.time_model.direction == PlaybackDirection::Backward);
     }
 
