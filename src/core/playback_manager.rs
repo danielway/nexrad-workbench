@@ -345,6 +345,46 @@ pub(crate) fn resolve_active_sweep_target(
     ))
 }
 
+/// The newest *complete* sweep (product blob cached) matching the selection
+/// at or before `playback_position`, looking in the scan at the playhead and
+/// then the one before it. `Latest` means the most recently completed cut.
+pub(crate) fn resolve_latest_complete_sweep(
+    site_id: &str,
+    playback_position: f64,
+    elevation_selection: &crate::core::ElevationSelection,
+    product: crate::core::RadarProduct,
+    timeline: &RadarTimeline,
+    max_scan_age_secs: f64,
+) -> Option<crate::core::SweepIdentity> {
+    let product_str = product.to_worker_string();
+    let wanted = elevation_selection.elevation_number();
+    [
+        timeline.find_recent_scan(playback_position, max_scan_age_secs),
+        timeline.find_previous_scan(playback_position, max_scan_age_secs),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|scan| {
+        scan.sweeps
+            .iter()
+            .filter(|s| wanted.is_none_or(|n| s.elevation_number == n))
+            .filter(|s| s.start_time <= playback_position)
+            .filter(|s| s.cached_products.iter().any(|p| p == product_str))
+            .max_by(|a, b| {
+                a.start_time
+                    .partial_cmp(&b.start_time)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|sweep| {
+                crate::core::SweepIdentity::new(
+                    crate::data::ScanKey::from_secs_f64(site_id, scan.key_timestamp),
+                    sweep.elevation_number,
+                    product_str,
+                )
+            })
+    })
+}
+
 /// What the canvas should display this frame.
 ///
 /// Mode-agnostic: live and archive are *sources* feeding this decision, not
@@ -365,6 +405,9 @@ pub(crate) enum DesiredDisplay {
     /// valid live partial may legitimately hold the canvas (see the caller's
     /// `Blank` handling).
     Blank,
+    /// Keep whatever the canvas shows now (Frames mode while live, before
+    /// any complete sweep for the selection is cached).
+    Hold,
 }
 
 /// Resolve what the canvas should display, merging the live in-progress
@@ -385,6 +428,7 @@ pub(crate) enum DesiredDisplay {
 /// `scan_key.scan_start.0` (rounded millis, matching how `timeline_view`
 /// identifies the live volume). `None` collapses the resolver to the cache
 /// path.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_desired_display(
     site_id: &str,
     playback_position: f64,
@@ -393,7 +437,25 @@ pub(crate) fn resolve_desired_display(
     timeline: &RadarTimeline,
     max_scan_age_secs: f64,
     live_cut: Option<(u8, i64)>,
+    whole_sweeps_only: bool,
 ) -> DesiredDisplay {
+    // Frames mode attached to live: never show a partial. The newest
+    // complete sweep matching the selection holds the canvas until the next
+    // one finishes (from the previous volume if this one hasn't reached the
+    // selected cut yet).
+    if live_cut.is_some() && whole_sweeps_only {
+        return resolve_latest_complete_sweep(
+            site_id,
+            playback_position,
+            elevation_selection,
+            product,
+            timeline,
+            max_scan_age_secs,
+        )
+        .map(DesiredDisplay::Cached)
+        .unwrap_or(DesiredDisplay::Hold);
+    }
+
     // Does the user's intent point at the cut the live session is actively
     // collecting? Only then does the live partial win — anything else reads
     // from cache, which is what makes a completed cut visible during live.
@@ -819,6 +881,7 @@ mod tests {
             &tl,
             MAX_AGE,
             Some((2, 1_000_000)),
+            false,
         );
         assert_eq!(
             d,
@@ -841,6 +904,7 @@ mod tests {
             &tl,
             MAX_AGE,
             Some((2, 1_000_000)),
+            false,
         );
         match d {
             DesiredDisplay::Cached(id) => assert_eq!(id.elevation_number, 1),
@@ -861,6 +925,7 @@ mod tests {
             &tl,
             MAX_AGE,
             Some((3, 1_000_000)),
+            false,
         );
         assert_eq!(
             d,
@@ -881,6 +946,7 @@ mod tests {
             &tl,
             MAX_AGE,
             None,
+            false,
         );
         assert!(matches!(d, DesiredDisplay::Cached(_)));
     }
@@ -896,6 +962,7 @@ mod tests {
             &tl,
             MAX_AGE,
             None,
+            false,
         );
         assert_eq!(d, DesiredDisplay::Blank);
     }
@@ -914,11 +981,99 @@ mod tests {
             &tl,
             MAX_AGE,
             Some((1, 2_000_000)),
+            false,
         );
         match d {
             DesiredDisplay::Cached(id) => assert_eq!(id.elevation_number, 1),
             other => panic!("expected Cached(elev 1), got {:?}", other),
         }
+    }
+
+    // ── Frames mode while live: whole sweeps only ──────────────────────
+
+    /// Previous volume (key 400s) holds elevs 1 and 2; the live volume
+    /// (key 1000s) has completed elev 1 only and is collecting elev 2.
+    fn frames_scenario_timeline() -> RadarTimeline {
+        timeline_with(vec![
+            scan_with(
+                400.0,
+                700.0,
+                400.0,
+                vec![
+                    sweep_with(400.0, 420.0, 0.5, 1, vec!["reflectivity"]),
+                    sweep_with(420.0, 440.0, 1.5, 2, vec!["reflectivity"]),
+                ],
+            ),
+            scan_with(
+                1000.0,
+                1040.0,
+                1000.0,
+                vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
+            ),
+        ])
+    }
+
+    fn frames_live(tl: &RadarTimeline, sel: &ElevationSelection) -> DesiredDisplay {
+        resolve_desired_display(
+            "KDMX",
+            1015.0,
+            sel,
+            RadarProduct::Reflectivity,
+            tl,
+            MAX_AGE,
+            Some((2, 1_000_000)),
+            true,
+        )
+    }
+
+    #[wasm_bindgen_test]
+    fn frames_live_never_shows_the_partial_cut() {
+        // Collecting elev 2 and the user wants elev 2: Frames holds the last
+        // complete elev 2, which lives in the previous volume.
+        let tl = frames_scenario_timeline();
+        match frames_live(&tl, &fixed(2)) {
+            DesiredDisplay::Cached(id) => {
+                assert_eq!(id.elevation_number, 2);
+                assert_eq!(id.scan_key.scan_start.0, 400_000);
+            }
+            other => panic!("expected previous volume's elev 2, got {:?}", other),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn frames_live_latest_is_the_newest_complete_cut() {
+        let tl = frames_scenario_timeline();
+        match frames_live(&tl, &ElevationSelection::Latest) {
+            DesiredDisplay::Cached(id) => {
+                assert_eq!(id.elevation_number, 1);
+                assert_eq!(id.scan_key.scan_start.0, 1_000_000);
+            }
+            other => panic!("expected live volume's elev 1, got {:?}", other),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn frames_live_holds_when_nothing_complete_is_cached() {
+        let tl = timeline_with(vec![scan_with(1000.0, 1040.0, 1000.0, vec![])]);
+        assert_eq!(frames_live(&tl, &fixed(1)), DesiredDisplay::Hold);
+    }
+
+    #[wasm_bindgen_test]
+    fn whole_sweeps_only_is_ignored_when_not_live() {
+        // Archive playback already shows whole sweeps; the flag must not
+        // change which sweep the playhead resolves to.
+        let tl = frames_scenario_timeline();
+        let d = resolve_desired_display(
+            "KDMX",
+            1015.0,
+            &fixed(2),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+            None,
+            true,
+        );
+        assert_eq!(d, DesiredDisplay::Blank);
     }
 }
 

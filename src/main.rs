@@ -875,8 +875,7 @@ impl eframe::App for WorkbenchApp {
         // Archive span boundary depends on it.
         {
             let width = self.playback.state.timeline_width_px;
-            let spacing = self.playback.state.median_frame_spacing();
-            self.playback.state.reconcile_tier(width, spacing);
+            self.playback.state.reconcile_tier(width);
         }
         self.advance_playback();
         // 9.5. REACTIVE ACQUISITION: now that advance_playback has settled the

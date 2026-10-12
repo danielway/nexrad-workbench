@@ -28,7 +28,13 @@ impl super::Overlay for OverlayInfo {
     }
 
     fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
-        draw_overlay_info(ui, &ctx.rect, ctx.state, ctx.live);
+        draw_overlay_info(
+            ui,
+            &ctx.rect,
+            ctx.state,
+            ctx.live,
+            ctx.derived.whole_sweeps_only,
+        );
     }
 }
 
@@ -37,6 +43,7 @@ fn draw_overlay_info(
     rect: &Rect,
     state: &AppState,
     live: &crate::subsystem::Live,
+    whole_sweeps_only: bool,
 ) {
     let has_prev = state.viz_state.previous_displayed.is_some();
     let is_live = live.radar_model.active;
@@ -99,16 +106,12 @@ fn draw_overlay_info(
                     let chunks = active.map(|s| s.chunks.len() as u32).unwrap_or(0);
                     let expected = active.and_then(|s| s.chunks_expected);
                     let is_partial = active.map(|s| s.radials_received < 360).unwrap_or(false);
-                    if is_partial {
-                        Some(format!(
-                            "streaming{}",
-                            expected
-                                .map(|e| format!(" {}/{}", chunks, e))
-                                .unwrap_or_default()
-                        ))
-                    } else {
-                        Some("live".to_string())
-                    }
+                    Some(crate::core::canvas::live_sweep_tag(
+                        whole_sweeps_only,
+                        is_partial,
+                        chunks,
+                        expected,
+                    ))
                 } else {
                     None
                 },

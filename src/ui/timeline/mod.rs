@@ -743,8 +743,7 @@ pub(super) fn render_timeline(
                 let (new_view_start, new_zoom) =
                     crate::state::bucket_tap_target(&cell.bucket, granularity, width);
                 playback.state.timeline_view_start = new_view_start;
-                let spacing = playback.state.median_frame_spacing();
-                playback.state.set_timeline_zoom(new_zoom, width, spacing);
+                playback.state.set_timeline_zoom(new_zoom, width);
                 clicked_day = true;
             }
         }

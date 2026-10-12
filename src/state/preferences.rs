@@ -25,6 +25,7 @@ impl UserPreferences {
     ) -> Self {
         Self {
             speed: playback.speed,
+            play_mode: playback.play_mode,
             elevation_auto: state.viz_state.elevation_selection.is_auto(),
             preferred_elevation_angle: state.viz_state.elevation_selection.angle(),
             layer_states: state.layer_state.geo.states,
@@ -42,7 +43,6 @@ impl UserPreferences {
             preferred_site: state.preferred_site.clone(),
             interpolation: state.render_processing.interpolation,
             opacity: state.render_processing.opacity,
-            sweep_animation: state.render_processing.sweep_animation,
             data_age_desaturation: state.render_processing.data_age_desaturation,
             mobile_override: state.mobile_override,
             advanced_mode: state.advanced_mode,
@@ -61,6 +61,7 @@ impl UserPreferences {
         playback: &mut crate::core::PlaybackState,
     ) -> Option<String> {
         playback.speed = self.speed;
+        playback.restore_play_mode(self.play_mode);
         if self.elevation_auto {
             state.viz_state.elevation_selection = ElevationSelection::Latest;
         } else {
@@ -83,7 +84,6 @@ impl UserPreferences {
         state.preferred_site = self.preferred_site.clone();
         state.render_processing.interpolation = self.interpolation;
         state.render_processing.opacity = self.opacity;
-        state.render_processing.sweep_animation = self.sweep_animation;
         state.render_processing.data_age_desaturation = self.data_age_desaturation;
         state.mobile_override = self.mobile_override;
         state.advanced_mode = self.advanced_mode;
@@ -274,7 +274,6 @@ mod coverage_tests {
         assert!(!prefs.layer_national_mosaic);
         assert!(!prefs.layer_alerts_other);
         assert!(!prefs.layer_mping);
-        assert!(!prefs.sweep_animation);
         assert!(!prefs.advanced_mode);
         assert!(!prefs.pause_stream_while_reviewing);
         // Numeric defaults from explicit default fns:
@@ -325,6 +324,7 @@ mod coverage_tests {
     fn full_struct_round_trips_through_json() {
         let mut prefs = UserPreferences::default();
         prefs.speed = PlaybackSpeed::Double;
+        prefs.play_mode = crate::core::PlaybackMode::Micro;
         prefs.elevation_auto = true;
         prefs.preferred_elevation_angle = 3.25;
         prefs.layer_states = false;
@@ -444,7 +444,6 @@ mod coverage_tests {
         src.preferred_site = Some("KTLX".to_string());
         src.render_processing.interpolation = InterpolationMode::Bilinear;
         src.render_processing.opacity = 0.3;
-        src.render_processing.sweep_animation = true;
         src.render_processing.data_age_desaturation = false;
         src.mobile_override = Some(false);
         src.advanced_mode = true;
@@ -477,7 +476,6 @@ mod coverage_tests {
         assert!(dst.preferred_site == Some("KTLX".to_string()));
         assert!(dst.render_processing.interpolation == InterpolationMode::Bilinear);
         assert!((dst.render_processing.opacity - 0.3).abs() < 1e-6);
-        assert!(dst.render_processing.sweep_animation);
         assert!(!dst.render_processing.data_age_desaturation);
         assert!(dst.mobile_override == Some(false));
         assert!(dst.advanced_mode);

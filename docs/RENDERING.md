@@ -152,10 +152,12 @@ progressively against transparent background.
 
 When `data_age_desaturation` is on, sweep animation is effectively
 active for the current view, and the chunk boundary is known, three
-angular zones get different treatments. Effective animation requires
-the usual live/mode gates **and** — with a fixed elevation filter —
-that the antenna is currently collecting that cut (so age fades stop
-between visits while other tilts collect).
+angular zones get different treatments. Sweep animation is Rays mode
+(`core::canvas::sweep_animation_effective`); while attached to live
+with a fixed elevation filter it also requires that the antenna is
+currently collecting that cut (so age fades stop between visits while
+other tilts collect). In Frames mode the live partial is never
+composited: the last complete sweep stays on the canvas.
 
 ```
    [fresh data] ← received edge ← [gap] ← now line ← [fade 90°] ← [no desat]

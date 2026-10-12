@@ -480,7 +480,7 @@ pub(crate) fn decide_prefetch_and_caption(
 mod tests {
     use super::*;
     use crate::core::canvas::CanvasCaption;
-    use crate::core::{RadarTimeline, Scan, Sweep, TimelineTier};
+    use crate::core::{PlaybackMode, RadarTimeline, Scan, Sweep};
     use crate::data::{ExtractedVcp, ExtractedVcpElevation};
     use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -585,10 +585,10 @@ mod tests {
     }
 
     impl Fx {
-        fn at(pos: f64, tier: TimelineTier) -> Self {
+        fn at(pos: f64, mode: PlaybackMode) -> Self {
             let mut playback = PlaybackState::default();
             playback.set_playback_position(pos);
-            playback.timeline_tier = tier;
+            playback.play_mode = mode;
             // The default view sits at wall-clock now, decades away from these
             // fixtures' epoch-relative timestamps. Center it on the playhead so
             // the macro frame list's visible-window fallback
@@ -631,7 +631,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn macro_rebuild_stores_frames_and_syncs_index() {
         let tl = two_scan_timeline();
-        let mut fx = Fx::at(2005.0, TimelineTier::Macro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Macro);
 
         let a = fx.run(base_env(), &tl);
 
@@ -653,7 +653,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn macro_elevation_change_snaps_playback_to_frame() {
         let tl = two_scan_timeline();
-        let mut fx = Fx::at(2005.0, TimelineTier::Macro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Macro);
         let _ = fx.run(base_env(), &tl); // establish built_from (elev 1)
 
         fx.selection = ElevationSelection::Fixed {
@@ -677,7 +677,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn macro_scan_count_change_rebuilds_without_snap() {
         let tl = two_scan_timeline();
-        let mut fx = Fx::at(2005.0, TimelineTier::Macro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Macro);
         let _ = fx.run(base_env(), &tl);
 
         let mut grown = two_scan_timeline();
@@ -702,7 +702,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn macro_volume_3d_frames_are_per_scan() {
         let tl = two_scan_timeline();
-        let mut fx = Fx::at(2005.0, TimelineTier::Macro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Macro);
         let mut env = base_env();
         env.volume_3d_active = true;
         let _ = fx.run(env, &tl);
@@ -728,7 +728,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn macro_manual_seek_resyncs_index_and_resets_accumulator() {
         let tl = two_scan_timeline();
-        let mut fx = Fx::at(2005.0, TimelineTier::Macro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Macro);
         let _ = fx.run(base_env(), &tl);
         assert_eq!(fx.playback.macro_playback.current_frame_index, 1);
 
@@ -741,11 +741,11 @@ mod tests {
         assert_eq!(fx.playback.macro_playback.last_seen_position, 1010.0);
     }
 
-    // (5) Micro tier skips the macro block entirely.
+    // (5) Rays mode skips the macro block entirely.
     #[wasm_bindgen_test]
-    fn micro_tier_skips_macro_rebuild() {
+    fn micro_mode_skips_macro_rebuild() {
         let tl = two_scan_timeline();
-        let mut fx = Fx::at(2005.0, TimelineTier::Micro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
         let _ = fx.run(base_env(), &tl);
 
         assert!(fx.playback.macro_playback.sweep_frames.is_empty());
@@ -760,7 +760,7 @@ mod tests {
     fn scrub_cache_hit_produces_no_actions() {
         let tl = two_scan_timeline();
         let key = ScanKey::from_secs_f64("KDMX", 2000.0);
-        let mut fx = Fx::at(2005.0, TimelineTier::Micro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
         fx.scrub.last_playback_ts = Some(2005.0);
         fx.scrub.last_scan_count = 2;
         fx.scrub.last_active_scan_ts = Some(2000.0);
@@ -789,7 +789,7 @@ mod tests {
                 ],
             )],
         };
-        let mut fx = Fx::at(2005.0, TimelineTier::Micro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
         fx.selection = ElevationSelection::Latest; // roster resolution no-op
 
         let a = fx.run(base_env(), &tl);
@@ -834,7 +834,7 @@ mod tests {
         });
         let tl = RadarTimeline { scans: vec![s] };
 
-        let mut fx = Fx::at(2005.0, TimelineTier::Micro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
         let stale = ElevationSelection::Fixed {
             elevation_number: 9,
             angle: 1.4,
@@ -862,7 +862,7 @@ mod tests {
         let mut s = scan(2000.0, vec![sweep(1, 2000.0, 2010.0, vec!["reflectivity"])]);
         s.vcp = 0;
         let tl = RadarTimeline { scans: vec![s] };
-        let mut fx = Fx::at(2005.0, TimelineTier::Micro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
         fx.selection = ElevationSelection::Fixed {
             elevation_number: 7,
             angle: 6.4,
@@ -883,7 +883,7 @@ mod tests {
     fn scrub_same_scan_only_requests_render() {
         let tl = two_scan_timeline();
         let key = ScanKey::from_secs_f64("KDMX", 2000.0);
-        let mut fx = Fx::at(2005.0, TimelineTier::Micro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
 
         let mut env = base_env();
         env.coordinator_scan_key = Some(&key);
@@ -901,7 +901,7 @@ mod tests {
         let tl = RadarTimeline {
             scans: vec![scan(2000.0, Vec::new())],
         };
-        let mut fx = Fx::at(2005.0, TimelineTier::Micro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
         fx.selection = ElevationSelection::Latest;
 
         let a = fx.run(base_env(), &tl);
@@ -924,7 +924,7 @@ mod tests {
     fn scrub_live_mode_suppresses_active_scan_and_volume() {
         let tl = two_scan_timeline();
         let key = ScanKey::from_secs_f64("KDMX", 1000.0); // differs from 2000
-        let mut fx = Fx::at(2005.0, TimelineTier::Micro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
 
         let mut env = base_env();
         env.live_active = true;
@@ -946,7 +946,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn scrub_without_worker_decides_nothing() {
         let tl = two_scan_timeline();
-        let mut fx = Fx::at(2005.0, TimelineTier::Micro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
 
         let mut env = base_env();
         env.has_worker = false;
@@ -965,7 +965,7 @@ mod tests {
         let key = ScanKey::from_secs_f64("KDMX", 1000.0);
 
         // Archive with an active key → Clear.
-        let mut fx = Fx::at(2005.0, TimelineTier::Micro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
         let mut env = base_env();
         env.coordinator_scan_key = Some(&key);
         let a = fx.run(env, &empty);
@@ -973,7 +973,7 @@ mod tests {
         assert!(!a.request_render);
 
         // Live keeps its key.
-        let mut fx = Fx::at(2005.0, TimelineTier::Micro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
         let mut env = base_env();
         env.live_active = true;
         env.coordinator_scan_key = Some(&key);
@@ -981,7 +981,7 @@ mod tests {
         assert!(a.active_scan.is_none());
 
         // No key → nothing to clear.
-        let mut fx = Fx::at(2005.0, TimelineTier::Micro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
         let a = fx.run(base_env(), &empty);
         assert!(a.active_scan.is_none());
     }
@@ -992,7 +992,7 @@ mod tests {
     fn scrub_volume_render_mirrors_3d_toggle() {
         let tl = two_scan_timeline();
         let key = ScanKey::from_secs_f64("KDMX", 2000.0);
-        let mut fx = Fx::at(2005.0, TimelineTier::Micro);
+        let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
 
         let mut env = base_env();
         env.volume_3d_active = true;
@@ -1008,7 +1008,7 @@ mod tests {
 
     /// Playing micro-mode fixture parked 0.2s before the elev-1 sweep ends.
     fn playing_fx() -> Fx {
-        let mut fx = Fx::at(1009.8, TimelineTier::Micro);
+        let mut fx = Fx::at(1009.8, PlaybackMode::Micro);
         fx.playback.playing = true;
         fx.playback.speed = crate::core::PlaybackSpeed::Realtime;
         fx
@@ -1063,7 +1063,7 @@ mod tests {
 
         // Macro mode.
         let mut fx = playing_fx();
-        fx.playback.timeline_tier = TimelineTier::Macro;
+        fx.playback.play_mode = PlaybackMode::Macro;
         let mut env = base_followup_env();
         env.coordinator_scan_key = Some(&key);
         env.displayed = Some(&displayed);
@@ -1133,7 +1133,7 @@ mod tests {
     fn caption_discrepancy_with_and_without_fetch() {
         let empty = RadarTimeline { scans: Vec::new() };
         let displayed = displayed_sweep(1, 100.0, 200.0);
-        let fx = Fx::at(700.0, TimelineTier::Micro);
+        let fx = Fx::at(700.0, PlaybackMode::Micro);
 
         let mut env = base_followup_env();
         env.displayed = Some(&displayed);
@@ -1166,7 +1166,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn caption_acquiring_and_covered_cases() {
         let empty = RadarTimeline { scans: Vec::new() };
-        let fx = Fx::at(700.0, TimelineTier::Micro);
+        let fx = Fx::at(700.0, PlaybackMode::Micro);
         let mut env = base_followup_env();
         env.pending_download_ranges = &[(600, 800)];
         let f = fx.followup(env, &empty);
@@ -1175,7 +1175,7 @@ mod tests {
         // A scan covering the playhead → None even with a held frame.
         let tl = two_scan_timeline();
         let displayed = displayed_sweep(1, 2000.0, 2010.0);
-        let fx = Fx::at(2005.0, TimelineTier::Micro);
+        let fx = Fx::at(2005.0, PlaybackMode::Micro);
         let mut env = base_followup_env();
         env.displayed = Some(&displayed);
         let f = fx.followup(env, &tl);
@@ -1188,7 +1188,7 @@ mod tests {
     fn caption_suppressed_while_pinned_live() {
         let empty = RadarTimeline { scans: Vec::new() };
         let displayed = displayed_sweep(1, 100.0, 200.0);
-        let mut fx = Fx::at(700.0, TimelineTier::Micro);
+        let mut fx = Fx::at(700.0, PlaybackMode::Micro);
         fx.playback.enter_pinned_live(700.0);
 
         let mut env = base_followup_env();

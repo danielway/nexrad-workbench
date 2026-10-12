@@ -1478,7 +1478,7 @@ mod coverage_tests {
 #[cfg(test)]
 mod reducer_tests {
     use super::*;
-    use crate::core::{Scan, Sweep, TimelineTier};
+    use crate::core::{PlaybackMode, Scan, Sweep};
     use wasm_bindgen_test::wasm_bindgen_test;
 
     // ── builders ────────────────────────────────────────────────────────────
@@ -2249,7 +2249,7 @@ mod reducer_tests {
     fn reactive_playing_micro_collapses_the_debounce() {
         let mut playback = playback_at(10_000.0);
         playback.playing = true;
-        playback.timeline_tier = TimelineTier::Micro;
+        playback.play_mode = PlaybackMode::Micro;
         let sel = ElevationSelection::default();
         let mut settle = PrefetchSettle::default();
 
@@ -2263,7 +2263,7 @@ mod reducer_tests {
         // tracking) → first sighting skips.
         let mut playback = playback_at(10_000.0);
         playback.playing = true;
-        playback.timeline_tier = TimelineTier::Macro;
+        playback.play_mode = PlaybackMode::Macro;
         let mut settle = PrefetchSettle::default();
         assert_eq!(
             plan_reactive_prefetch(&reactive_env(1000.0), &playback, &sel, &mut settle),

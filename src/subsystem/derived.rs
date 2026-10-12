@@ -41,11 +41,13 @@ pub(crate) struct Derived {
     /// window. Same semantics as
     /// [`crate::state::recency::data_is_live`].
     pub data_is_live: bool,
-    /// Whether sweep animation is effectively enabled this frame
-    /// (`render_processing.sweep_animation && micro mode && advanced
-    /// && streaming && playhead attached to the live edge`, and — when a
-    /// fixed elevation filter is set — the antenna is on that cut).
+    /// Whether sweep animation is effectively enabled this frame: Rays mode,
+    /// and — while attached to live with a fixed elevation filter — the
+    /// antenna is on that cut.
     pub effective_sweep_animation: bool,
+    /// Frames mode: the canvas shows whole sweeps only, never a live
+    /// partial (`playback.effective_playback_mode() == Macro`).
+    pub whole_sweeps_only: bool,
 }
 
 impl Derived {
@@ -69,6 +71,8 @@ impl Derived {
                 streaming,
                 collecting_elevation,
             ),
+            whole_sweeps_only: playback.state.effective_playback_mode()
+                == crate::core::PlaybackMode::Macro,
         }
     }
 }

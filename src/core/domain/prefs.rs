@@ -6,13 +6,17 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::{InterpolationMode, PlaybackSpeed};
+use crate::core::{InterpolationMode, PlaybackMode, PlaybackSpeed};
 
 /// User preferences that persist across page reloads.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct UserPreferences {
     #[serde(default)]
     pub speed: PlaybackSpeed,
+    /// Frames or Rays. Absent in older saved preferences, which default to
+    /// Frames.
+    #[serde(default)]
+    pub play_mode: PlaybackMode,
     #[serde(default)]
     pub elevation_auto: bool,
     #[serde(default = "default_elevation_angle")]
@@ -57,8 +61,6 @@ pub(crate) struct UserPreferences {
     pub interpolation: InterpolationMode,
     #[serde(default = "default_opacity")]
     pub opacity: f32,
-    #[serde(default)]
-    pub sweep_animation: bool,
     #[serde(default = "default_true")]
     pub data_age_desaturation: bool,
 
@@ -108,6 +110,7 @@ impl Default for UserPreferences {
     fn default() -> Self {
         Self {
             speed: PlaybackSpeed::default(),
+            play_mode: PlaybackMode::default(),
             elevation_auto: false,
             preferred_elevation_angle: 0.5,
             layer_states: true,
@@ -125,7 +128,6 @@ impl Default for UserPreferences {
             preferred_site: None,
             interpolation: InterpolationMode::default(),
             opacity: 1.0,
-            sweep_animation: false,
             data_age_desaturation: true,
             mobile_override: None,
             advanced_mode: false,

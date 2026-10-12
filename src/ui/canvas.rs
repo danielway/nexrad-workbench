@@ -262,7 +262,11 @@ pub(crate) fn render_canvas_with_geo(
                     let live_has_moving_line =
                         live.radar_model.active && live.radar_model.estimated_azimuth.is_some();
 
-                    if gpu_sweep.is_some() || between_sweeps || live_has_active_sweep {
+                    // A paused archive reveal is a still image; only a moving
+                    // playhead or the live stream needs the smooth cadence.
+                    let reveal_moving = (gpu_sweep.is_some() || between_sweeps)
+                        && (playback.state.playing || live.radar_model.active);
+                    if reveal_moving || live_has_active_sweep {
                         ui.ctx()
                             .request_repaint_after(std::time::Duration::from_millis(33));
                     } else if live_has_moving_line {
@@ -615,9 +619,11 @@ fn compute_gpu_sweep_state(
     // Live partial compositing only when the in-progress elevation matches
     // the user's filter (Latest accepts any cut). Otherwise other tilts would
     // keep driving the GPU sweep boundary and age desaturation between visits
-    // of a fixed elevation. Archive animation still uses effective_sweep_animation.
+    // of a fixed elevation. Frames mode never composites the partial.
+    // Archive animation still uses effective_sweep_animation.
     let selected_elev = state.viz_state.elevation_selection.elevation_number();
     let live_range = crate::core::canvas::live_compositing_azimuth_range(
+        playback.state.effective_playback_mode() == crate::core::PlaybackMode::Macro,
         selected_elev,
         live.radar_model.collecting_elevation(),
         live.radar_model
