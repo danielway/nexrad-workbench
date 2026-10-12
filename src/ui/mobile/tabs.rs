@@ -66,7 +66,7 @@ fn draw_mobile_chrome(
     let transport = egui::Panel::bottom("mobile_transport_bar")
         .resizable(false)
         .exact_size(TRANSPORT_BAR_HEIGHT + inset_bottom)
-        .show_inside(root_ui, |ui| {
+        .show(root_ui, |ui| {
             render_transport_row(ui, state, timeline, live, playback, chrome);
         });
 
@@ -74,7 +74,7 @@ fn draw_mobile_chrome(
     let scrubber = egui::Panel::bottom("mobile_scrubber")
         .resizable(false)
         .exact_size(SCRUBBER_AREA_HEIGHT)
-        .show_inside(root_ui, |ui| {
+        .show(root_ui, |ui| {
             ui.add_space(2.0);
             super::scrubber::render_scrubber(ui, state, timeline, live, playback, chrome);
         });

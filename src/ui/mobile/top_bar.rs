@@ -103,7 +103,7 @@ fn draw_mobile_top_bar(
         .resizable(false)
         .exact_size(inset_top + TOP_BAR_CONTENT_HEIGHT)
         .frame(frame)
-        .show_inside(root_ui, |ui| {
+        .show(root_ui, |ui| {
             if inset_top > 0.0 {
                 ui.add_space(inset_top);
             }

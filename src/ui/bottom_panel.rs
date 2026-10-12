@@ -111,7 +111,7 @@ fn draw_bottom_panel(
 
     egui::Panel::bottom("bottom_panel")
         .exact_size(total_height)
-        .show_inside(root_ui, |ui| {
+        .show(root_ui, |ui| {
             ui.vertical(|ui| {
                 // Transport/controls row ABOVE the timeline strip (spec §5
                 // bottom cluster: "transport row … above the timeline").

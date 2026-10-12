@@ -65,7 +65,7 @@ use eframe::egui;
 
 /// Distinguishes egui constraints on render order.
 ///
-/// `Chrome` calls `Panel::show_inside` and must
+/// `Chrome` calls `Panel::show` and must
 /// run before any `CentralPanel`. `Modal` calls `egui::Window::show` and
 /// can run anywhere afterward.
 ///
@@ -87,7 +87,7 @@ pub(crate) enum LayerKind {
 /// fields.
 pub(crate) struct LayoutCtx<'a> {
     pub ctx: &'a egui::Context,
-    /// Root frame UI — required by egui 0.34+ `Panel::show_inside`.
+    /// Root frame UI — required by egui 0.34+ panels (`Panel::show`).
     pub root_ui: &'a mut egui::Ui,
     /// Still `&mut`: layers push [`crate::core::Intent`]s onto the command
     /// queue via `state.push_command`, and a few widgets remain two-way

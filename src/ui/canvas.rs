@@ -40,7 +40,7 @@ pub(crate) fn render_canvas_with_geo(
     let globe_radar_renderer = gpu.globe_radar.as_ref();
     let volume_ray_renderer = gpu.volume_ray.as_ref();
     let ctx = root_ui.ctx().clone();
-    egui::CentralPanel::default().show_inside(root_ui, |ui| {
+    egui::CentralPanel::default().show(root_ui, |ui| {
         let available_size = ui.available_size();
 
         let (response, painter) = ui.allocate_painter(available_size, Sense::click_and_drag());

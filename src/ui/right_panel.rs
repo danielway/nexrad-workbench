@@ -47,7 +47,7 @@ fn draw_right_panel(
         .default_size(220.0)
         .min_size(180.0)
         .max_size(350.0)
-        .show_inside(root_ui, |ui| {
+        .show(root_ui, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Controls");
                 ui.separator();
