@@ -37,7 +37,7 @@ fn draw_left_panel(
         .default_size(235.0)
         .min_size(235.0)
         .max_size(400.0)
-        .show_inside(root_ui, |ui| {
+        .show(root_ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 render_radar_operations_section(ui, timeline, live, playback);
             });

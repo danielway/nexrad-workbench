@@ -63,13 +63,13 @@ fn draw_top_bar(
         .resizable(false)
         .exact_size(3.0)
         .frame(Frame::NONE.fill(crate::ui::colors::mode::color(live.app_mode)))
-        .show_inside(root_ui, |ui| {
+        .show(root_ui, |ui| {
             ui.allocate_space(ui.available_size());
         });
 
     egui::Panel::top("top_bar")
         .exact_size(36.0)
-        .show_inside(root_ui, |ui| {
+        .show(root_ui, |ui| {
             ui.horizontal_centered(|ui| {
                 // Left panel toggle — hidden in Basic since the left panel
                 // (radar diagnostics) is itself force-hidden in Basic.
