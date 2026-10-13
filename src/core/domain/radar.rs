@@ -457,8 +457,7 @@ impl RadarTimeline {
     /// each listed volume that isn't cached yet.
     ///
     /// A listed volume's sweeps aren't known until it downloads, so its frames
-    /// are placed by a template: the frame offsets (from the volume start) of
-    /// the newest cached volume that has any, preferring a complete one. With
+    /// are placed by a template (see [`Self::frame_offsets_template`]). With
     /// no template, each listed volume counts as one frame at its end. `tilt`
     /// is the selected elevation number; `None` (Latest/auto) counts every
     /// sweep as a frame.
@@ -479,24 +478,7 @@ impl RadarTimeline {
             .map(|sw| sw.end_time)
             .collect();
 
-        let has_frames = |scan: &&Scan| scan.sweeps.iter().any(is_frame);
-        let template = self
-            .scans
-            .iter()
-            .rev()
-            .filter(has_frames)
-            .find(|s| s.completeness == Some(ScanCompleteness::Complete))
-            .or_else(|| self.scans.iter().rev().find(has_frames));
-        let offsets: Vec<f64> = template
-            .map(|scan| {
-                scan.sweeps
-                    .iter()
-                    .filter(|sw| is_frame(sw))
-                    .map(|sw| (sw.end_time - scan.key_timestamp).max(0.0))
-                    .collect()
-            })
-            .unwrap_or_default();
-
+        let offsets = self.frame_offsets_template(tilt, &is_frame);
         let tolerance = crate::core::timeline_view::SCAN_JOIN_TOLERANCE_SECS as f64;
         let cached = |start: f64| {
             self.scans
@@ -518,6 +500,59 @@ impl RadarTimeline {
         times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         times.dedup_by(|a, b| (*a - *b).abs() < 0.01);
         times
+    }
+
+    /// Where a volume's frames end, in seconds from its start, for placing
+    /// the frames of listed volumes that aren't downloaded. In order of
+    /// preference: the frames of the newest complete cached volume; the VCP
+    /// plan of the newest cached volume that has one (a volume joined
+    /// mid-stream holds only its last few sweeps, but its plan has them all);
+    /// the frames of the newest cached volume. Empty when nothing is cached.
+    fn frame_offsets_template(
+        &self,
+        tilt: Option<u8>,
+        is_frame: &dyn Fn(&Sweep) -> bool,
+    ) -> Vec<f64> {
+        let cached_offsets = |scan: &Scan| -> Vec<f64> {
+            scan.sweeps
+                .iter()
+                .filter(|sw| is_frame(sw))
+                .map(|sw| (sw.end_time - scan.key_timestamp).max(0.0))
+                .collect()
+        };
+        let newest = self.scans.iter().rev();
+        if let Some(scan) = newest
+            .clone()
+            .filter(|s| s.completeness == Some(ScanCompleteness::Complete))
+            .find(|s| s.sweeps.iter().any(is_frame))
+        {
+            return cached_offsets(scan);
+        }
+        if let Some(vcp) = newest.clone().find_map(|s| s.vcp_pattern.as_ref()) {
+            let durations = vcp
+                .estimated_volume_duration()
+                .map(|total| vcp.sweep_durations(total))
+                .unwrap_or_default();
+            let mut elapsed = 0.0;
+            let offsets: Vec<f64> = durations
+                .iter()
+                .enumerate()
+                .filter_map(|(i, d)| {
+                    elapsed += d;
+                    let elevation_number = (i + 1) as u8;
+                    tilt.is_none_or(|t| t == elevation_number)
+                        .then_some(elapsed)
+                })
+                .collect();
+            if !offsets.is_empty() {
+                return offsets;
+            }
+        }
+        newest
+            .clone()
+            .find(|s| s.sweeps.iter().any(is_frame))
+            .map(cached_offsets)
+            .unwrap_or_default()
     }
 
     /// Find the end time of the next sweep matching `elevation_number` after `ts`.
@@ -886,6 +921,37 @@ mod tests {
         assert_eq!(
             tl.known_frame_ends(&shadows, None, "reflectivity"),
             vec![430.0, 460.0, 730.0, 760.0, 1030.0, 1060.0]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn known_frames_use_the_vcp_plan_of_a_volume_joined_mid_stream() {
+        use crate::data::{ExtractedVcp, ExtractedVcpElevation};
+        let cut = |angle: f32| ExtractedVcpElevation {
+            angle,
+            waveform: "CS".to_string(),
+            prf_number: 1,
+            is_sails: false,
+            is_mrle: false,
+            is_base_tilt: false,
+            azimuth_rate: Some(12.0), // 30 s per cut
+        };
+        // Streaming joined at the third cut: only it is cached, but the plan
+        // knows all three.
+        let mut scan = scan_with_sweeps(1000.0, 1090.0, vec![sweep(1060.0, 1090.0, 2.4, 3)]);
+        scan.vcp_pattern = Some(ExtractedVcp {
+            number: 215,
+            elevations: vec![cut(0.5), cut(1.5), cut(2.4)],
+        });
+        let tl = RadarTimeline { scans: vec![scan] };
+        let shadows = [shadow(700, 1000)];
+        assert_eq!(
+            tl.known_frame_ends(&shadows, None, "reflectivity"),
+            vec![730.0, 760.0, 790.0, 1090.0]
+        );
+        assert_eq!(
+            tl.known_frame_ends(&shadows, Some(1), "reflectivity"),
+            vec![730.0]
         );
     }
 
