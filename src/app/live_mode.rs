@@ -81,94 +81,30 @@ impl WorkbenchApp {
         }
     }
 
-    /// Apply a loop preset (spec §8 "presets first"; the creation surface for
-    /// loops, additive to the implicit alt/right/shift-drag paths). Routes every
-    /// mode change through the named playhead transitions — never direct field
-    /// writes — so the `Selection` invariants hold.
-    ///
-    /// - **Pin to live** always enters the pinned sliding loop: re-tether first
-    ///   if detached/Free with a running stream (or start one), then
-    ///   `enter_live_range` from the live point.
-    /// - **Last N frames / duration** enter the pinned sliding loop when
-    ///   streaming-and-near-now (so the loop follows the live edge), else create
-    ///   a *fixed* loop of that extent ending at the current playhead.
+    /// Apply a loop preset (spec §8 "presets first"): the last N frames or a
+    /// duration, attached to now. Re-tethers first (or starts a stream) so the
+    /// range starts from the live point, then `enter_live_range` slides it
+    /// forward with the live edge. Routes every mode change through the named
+    /// playhead transitions so the `Selection` invariants hold.
     pub(crate) fn apply_loop_preset(
         &mut self,
         preset: crate::core::LoopPreset,
         ctx: &egui::Context,
     ) {
-        use crate::core::LoopPreset;
         let basis = preset.basis();
         let now = self.state.frame_now.secs();
-
-        // "Pin to live", or a windowed preset while streaming with the playhead
-        // close to now, becomes the pinned sliding loop.
-        let near_now = self.live.mode_state.is_active()
-            && (now - self.playback.state.playback_position()).abs()
-                < crate::FALLBACK_SCAN_DURATION_SECS as f64;
-        let want_pinned = matches!(preset, LoopPreset::PinToLive) || near_now;
-
-        if want_pinned {
-            // Get to the live point without tripping enter_live_range's assert.
-            if !self.playback.state.is_pinned() {
-                // Re-tether: instant if a stream is already running, otherwise
-                // start one. `return_to_live` lands the playhead on the live point
-                // synchronously (it calls `enter_pinned_live` in both the
-                // active-stream and cold-start paths), even when the cold path
-                // also queued a StartLive command for the channel.
-                self.return_to_live(ctx);
-            }
-            // The live point is guaranteed here, so enter_live_range's
-            // `is_pinned` assert holds.
-            let seed = self.resolve_pinned_window(basis, now).0;
-            self.playback.state.enter_live_range(Some(seed), basis);
-            return;
+        if !self.playback.state.is_pinned() {
+            // Re-tether: instant if a stream is already running, otherwise
+            // start one. `return_to_live` lands the playhead on the live point
+            // synchronously (it calls `enter_pinned_live` in both the
+            // active-stream and cold-start paths), even when the cold path
+            // also queued a StartLive command for the channel.
+            self.return_to_live(ctx);
         }
-
-        // Fixed loop ending at the current playhead. Detach a tether first so the
-        // selection lands as a fixed range (enter_live_range is only for the
-        // live case). The stream, if any, keeps running.
-        if self.live.mode_state.is_active() {
-            self.live.detach_playhead(
-                &mut self.playback.state,
-                now,
-                self.state.pause_stream_while_reviewing,
-            );
-        }
-        let end = self.playback.state.playback_position();
-        let span = match basis {
-            crate::core::LoopBasis::Duration(secs) => secs,
-            crate::core::LoopBasis::FrameCount(_) => self.frame_count_span_ending_at(basis, end),
-        };
-        let start = end - span;
-        self.playback.state.select_range(start, end, false);
-        // A fixed preset loop is created ready to play.
-        if self.playback.state.is_playback_allowed() {
-            self.playback.state.playing = true;
-        }
-        // Arm the bulk fetch for the new range (selection = the fetch).
-        if let Some(range) = self.playback.state.selection_range() {
-            self.state.selection_just_finalized = Some(range);
-        }
-    }
-
-    /// Span (seconds) of the last `n` matching frames ending at/<= `end`, for a
-    /// frame-count basis fixed loop. Falls back to the basis's nominal span when
-    /// too few frames are cached around `end`.
-    fn frame_count_span_ending_at(&self, basis: crate::core::LoopBasis, end: f64) -> f64 {
-        if let crate::core::LoopBasis::FrameCount(n) = basis {
-            if let Some((s, e)) = self.timeline.scans.lookback_window(
-                &self.state.viz_state.elevation_selection,
-                self.state.viz_state.product.to_worker_string(),
-                end,
-                n as usize,
-            ) {
-                if e - s > 1.0 {
-                    return e - s;
-                }
-            }
-        }
-        basis.fallback_span_secs()
+        // The live point is guaranteed here, so enter_live_range's
+        // `is_pinned` assert holds.
+        let seed = self.resolve_pinned_window(basis, now).0;
+        self.playback.state.enter_live_range(Some(seed), basis);
     }
 
     /// Per-frame live tick — drives the playhead while streaming, independent

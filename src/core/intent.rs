@@ -45,11 +45,17 @@ pub(crate) enum Intent {
     /// tethered, or re-pin from a lookback replay). Decided by
     /// [`crate::core::transport::reduce_toggle_play_pause`].
     TogglePlayPause,
-    /// Apply a loop preset (spec §8): pin-to-live, last N frames, or a duration
-    /// window. Resolved into a [`crate::core::Selection`] + the right playhead transition.
+    /// Loop the last N frames or a duration ending now (spec §8): a range
+    /// attached to the live edge, starting a stream if none runs.
     ApplyLoopPreset(LoopPreset),
     /// Clear any active loop (selection bounds / pinned replay).
     ClearLoop,
+    /// Stop looping and stay at the playhead as a fixed point. Decided by
+    /// [`crate::core::transport::reduce_stop_looping`].
+    StopLooping,
+    /// Select a range: attached to the live edge when `to_live` and a stream
+    /// runs, otherwise fixed (see [`crate::core::transport::select_range`]).
+    SelectRange { start: f64, end: f64, to_live: bool },
     /// Choose how playback advances: Frames (whole sweeps at an fps) or Rays
     /// (continuous time at a realtime multiple). Independent of zoom.
     SetPlayMode(PlaybackMode),

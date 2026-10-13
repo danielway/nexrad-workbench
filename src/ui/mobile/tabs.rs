@@ -12,9 +12,9 @@
 //!   2. Scrubber (~44px) — topmost. The coverage strip (faint=available,
 //!      solid=cached, red=now, neutral thumb, REJOIN pill, long-press→inspector).
 
-use crate::core::{LoopPreset, PlaybackMode};
+use crate::core::PlaybackMode;
 use crate::state::{AppState, MobileSettingsTab};
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 
 const TRANSPORT_BAR_HEIGHT: f32 = 48.0;
 const SCRUBBER_AREA_HEIGHT: f32 = super::scrubber::SCRUBBER_HEIGHT + 6.0;
@@ -156,10 +156,24 @@ fn render_transport_row(
         }
 
         ui.add_space(2.0);
-        render_live_button(ui, state, live, btn_h);
+        let view_start = playback.state.timeline_view_start;
+        crate::ui::selection_chip::render_selection_chip(
+            ui,
+            state,
+            live,
+            playback,
+            (view_start, view_start + playback.state.view_width_secs()),
+            &crate::ui::selection_chip::ChipStyle {
+                text_size: 12.0,
+                min_height: btn_h,
+                // Mobile has no now-line cap: stopping leaves the playhead
+                // where it is.
+                stop_placement: crate::core::transport::LiveStopPlacement::InPlace,
+                compact: true,
+            },
+        );
         render_stream_health(ui, live);
         render_speed_button(ui, playback, btn_h);
-        render_loop_button(ui, state, playback, interactive);
 
         // Trailing cluster: geolocate + settings sheet, right-aligned so the
         // transport keeps the leading edge. Kept compact so they never crowd
@@ -213,90 +227,6 @@ fn render_transport_row(
     });
 }
 
-/// Stateful LIVE button (spec §7, mobile twin of the desktop transport's). One
-/// glance/one tap to the live edge wherever the user is:
-/// - **Tethered** (`AppMode::Live`): solid red "● LIVE"; tap stops the stream
-///   in place (mobile has no now-line cap, so the LIVE button owns stop here;
-///   freezing without stopping stays with the play/pause control).
-/// - **Detached** (stream running in background): hollow "● LIVE"; tap rejoins.
-/// - **No stream** (idle): hollow "● GO LIVE"; tap starts a stream.
-fn render_live_button(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    live: &crate::subsystem::Live,
-    btn_h: f32,
-) {
-    use crate::ui::colors::live;
-    let dot = egui_phosphor::regular::BROADCAST;
-    let tethered = live.app_mode == crate::state::AppMode::Live;
-    let streaming = live.mode_state.is_active();
-
-    if tethered {
-        let pulse = live.mode_state.pulse_alpha();
-        let alpha = (200.0 + 55.0 * pulse) as u8;
-        let fill = Color32::from_rgba_unmultiplied(
-            live::STREAMING.r(),
-            live::STREAMING.g(),
-            live::STREAMING.b(),
-            alpha,
-        );
-        let label = RichText::new(format!("{dot} LIVE"))
-            .size(12.0)
-            .strong()
-            .color(Color32::WHITE);
-        if ui
-            .add(
-                egui::Button::new(label)
-                    .fill(fill)
-                    .min_size(egui::vec2(0.0, btn_h)),
-            )
-            .on_hover_text("Streaming live — tap to stop")
-            .clicked()
-        {
-            state.push_command(crate::core::Intent::StopLive(
-                crate::core::transport::LiveStopPlacement::InPlace,
-            ));
-        }
-        return;
-    }
-
-    if streaming {
-        let label = RichText::new(format!("{dot} LIVE"))
-            .size(12.0)
-            .strong()
-            .color(live::STREAMING);
-        if ui
-            .add(
-                egui::Button::new(label)
-                    .fill(Color32::TRANSPARENT)
-                    .min_size(egui::vec2(0.0, btn_h)),
-            )
-            .on_hover_text("Stream running in background — tap to rejoin live")
-            .clicked()
-        {
-            state.push_command(crate::core::Intent::ReturnToLive);
-        }
-        return;
-    }
-
-    // No stream: hollow GO LIVE invitation.
-    let label = RichText::new(format!("{dot} GO LIVE"))
-        .size(12.0)
-        .strong()
-        .color(crate::ui::colors::timeline::NOW_IDLE);
-    if ui
-        .add(
-            egui::Button::new(label)
-                .fill(Color32::TRANSPARENT)
-                .min_size(egui::vec2(0.0, btn_h)),
-        )
-        .on_hover_text("Stream live from now")
-        .clicked()
-    {
-        state.push_command(crate::core::Intent::GoLive);
-    }
-}
-
 /// Compact stream-health readout beside the mobile LIVE button. The ~360 px
 /// transport row has no room for the desktop activity chip, so only the state
 /// that demands attention surfaces here: a stalled stream. Healthy activity
@@ -340,57 +270,6 @@ fn render_speed_button(ui: &mut egui::Ui, playback: &mut crate::subsystem::Playb
     {
         playback.state.speed = playback.state.speed.mobile_cycle(mode);
     }
-}
-
-/// Loop-preset control (spec §13 "loop preset"; §15 cut #2 keeps presets on
-/// mobile). A menu button reusing the same `ApplyLoopPreset` / `ClearLoop`
-/// commands as desktop — moved out of the settings sheet into the transport row.
-fn render_loop_button(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    playback: &crate::subsystem::Playback,
-    interactive: bool,
-) {
-    use crate::ui::colors::{live, ui as ui_colors};
-    let has_loop = playback.state.selection.range().is_some();
-    let tint = if has_loop {
-        live::STREAMING
-    } else {
-        ui_colors::value(state.is_dark)
-    };
-    ui.add_enabled_ui(interactive, |ui| {
-        ui.menu_button(
-            RichText::new(egui_phosphor::regular::REPEAT)
-                .size(16.0)
-                .color(tint),
-            |ui| {
-                let header = match playback.state.selection.range() {
-                    Some(r) => {
-                        let pin = if r.live { " · pinned" } else { "" };
-                        format!("Loop · {}{}", r.basis.label(), pin)
-                    }
-                    None => "Loop".to_string(),
-                };
-                ui.label(RichText::new(header).size(11.0).weak());
-                for preset in LoopPreset::menu() {
-                    if ui.button(preset.label()).clicked() {
-                        state.push_command(crate::core::Intent::ApplyLoopPreset(*preset));
-                        ui.close();
-                    }
-                }
-                if has_loop {
-                    ui.separator();
-                    if ui.button("Clear loop").clicked() {
-                        state.push_command(crate::core::Intent::ClearLoop);
-                        ui.close();
-                    }
-                }
-            },
-        )
-        .response
-        .on_hover_text("Loop presets")
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    });
 }
 
 // ---------------------------------------------------------------------------

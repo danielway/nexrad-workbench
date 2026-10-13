@@ -136,6 +136,23 @@ pub(crate) fn select_range(
     (actions, selected)
 }
 
+/// Stop looping and stay where the playhead is. A live range detaches to a
+/// fixed point at the playhead (see [`detach_playhead`]); a fixed range is
+/// cleared to a fixed point. A point is left alone.
+pub(crate) fn reduce_stop_looping(
+    env: &TransportEnv,
+    slices: TransportSlices<'_>,
+) -> TransportActions {
+    match slices.playback.selection.range() {
+        Some(r) if r.live => detach_playhead(env, slices),
+        Some(_) => {
+            slices.playback.clear_selection();
+            TransportActions::default()
+        }
+        None => TransportActions::default(),
+    }
+}
+
 /// Toggle play/pause according to the current mode (spec §7 pause-while-tethered):
 ///
 /// - **ARCHIVE** (off live: a fixed point or range): ordinary play/pause through the selection
@@ -336,6 +353,50 @@ mod coverage_tests {
         assert!(!f.playback.selection.is_live());
         assert_eq!(f.playback.playback_bounds(), Some((100.0, 400.0)));
         assert_eq!(f.live_mode.detached_since, Some(1000.0));
+    }
+
+    // ---- reduce_stop_looping --------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn stop_looping_a_live_range_stays_at_the_playhead() {
+        let mut f = Fixture::new();
+        f.live_mode.phase = LivePhase::Streaming;
+        f.playback.enter_pinned_live(1000.0);
+        f.playback
+            .enter_live_range(Some(900.0), LoopBasis::default());
+
+        reduce_stop_looping(&env_at(1000.0), f.slices());
+
+        assert_eq!(
+            f.playback.selection,
+            crate::core::Selection::Point { live: false }
+        );
+        assert_eq!(f.playback.playback_position(), 900.0);
+        assert_eq!(f.live_mode.detached_since, Some(1000.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn stop_looping_a_fixed_range_keeps_the_position() {
+        let mut f = Fixture::new();
+        assert!(f.playback.select_range(100.0, 400.0, false));
+        f.playback.time_model.playback_position = 250.0;
+
+        reduce_stop_looping(&env_at(1000.0), f.slices());
+
+        assert_eq!(
+            f.playback.selection,
+            crate::core::Selection::Point { live: false }
+        );
+        assert_eq!(f.playback.playback_position(), 250.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn stop_looping_leaves_the_live_point_alone() {
+        let mut f = Fixture::new();
+        f.live_mode.phase = LivePhase::Streaming;
+        f.playback.enter_pinned_live(1000.0);
+        reduce_stop_looping(&env_at(1000.0), f.slices());
+        assert!(f.playback.is_pinned());
     }
 
     // ---- detach_playhead ----------------------------------------------

@@ -142,8 +142,12 @@ collection time is not yet late if the ingest-lag window hasn't elapsed.
 - **Top readouts** — radar site, product/tilt selector, **displayed-frame
   timestamp** (primary), data age when tethered ("updated 1m ago"), local time
   with UTC on tap.
-- **Bottom cluster** — transport row (play/pause, frame step, speed, loop
-  preset, LIVE button) above the timeline.
+- **Bottom cluster** — transport row (selection chip, play/pause, frame step,
+  speed) above the timeline. The **selection chip** names what plays — `LIVE`,
+  a point ("At 14:02:10 · 2:17 behind"), a fixed range, or a range ending now
+  ("Last 6 frames → now") — and opens one menu grouped by shape: go live, stop
+  looping, stop the stream; the last N frames / minutes → now; loop what's in
+  view.
 - **Timeline** — a thin **minimap** sliver (whole-session coverage, doubles as
   fast navigation) above the **main strip**.
 - **Activity chip** — tiny, near the transport (and in the mobile top bar);
@@ -264,22 +268,22 @@ mode — it is a tether state.
 - **Tethered:** solid LIVE indicator; the playhead rides the live edge. In
   Rays, new chunks draw in on the canvas as they arrive; in Frames, the last
   complete sweep holds until the next one finishes (§8.2).
-- **Detached:** scrubbing backward auto-detaches. The LIVE button hollows out and
-  shows lag ("● LIVE · 2:14 behind"). Streaming **continues in the background**
+- **Detached:** scrubbing backward auto-detaches. The selection chip turns into
+  a point and shows the lag ("At 14:02:10 · 2:14 behind"). Streaming **continues in the background**
   by default, filling the cache at the right edge. One tap re-tethers with a
   brief animated catch-up.
 - **Pause while tethered:** the frame freezes; a "behind live by 0:42" counter
   grows; resuming plays from the pause point (now detached). Detachment is made
-  explicit via the button state change. (Play/pause while tethered does **not**
+  explicit via the chip's change. (Play/pause while tethered does **not**
   enter the pinned loop.)
 - **Session start:** the app opens **tethered to live** for the selected site
   (the dominant use case). The default live experience is **single-frame
-  following**; the pinned loop (§7) is opt-in via the loop preset, one tap away.
+  following**; the pinned loop (§7) is opt-in via the selection chip's menu, one tap away.
   Switching sites while tethered re-tethers on the new site.
 - **Stopping:** stop is explicit and symmetric with go-live. While tethered,
-  the timeline now-cap ("◉ LIVE"), the transport LIVE button, and **Shift+L**
-  all stop the stream at the live edge; on mobile (which has no now-cap) the
-  tethered LIVE button owns stop. Stop ≠ freeze: pause-while-tethered keeps
+  the timeline now-cap ("◉ LIVE"), the selection chip's "Stop the stream", and
+  **Shift+L** all stop the stream at the live edge; on mobile (which has no
+  now-cap) the chip's menu owns stop and leaves the playhead in place. Stop ≠ freeze: pause-while-tethered keeps
   the stream filling the cache, stop tears the channel down. A status line
   confirms the stop.
 - **Streaming visibility:** all live surfaces project one per-frame
@@ -595,7 +599,7 @@ Interactive measurement and analysis affordances on the 2D canvas:
 |---|---|---|
 | Desktop ≥1200px | Minimap + full strip (~56px) + transport row + readouts | Inspector as popover or side panel; hover tooltips |
 | Touch ≥600px | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
-| Phone | Condensed transport (play · LIVE · speed · loop preset) over ~44px strip; minimap collapses to a sliver or is omitted | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; custom loop dragging replaced by presets; 3D view is desktop-only |
+| Phone | Condensed transport (play · selection chip · speed) over ~44px strip; minimap collapses to a sliver or is omitted | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; custom loop dragging replaced by presets; 3D view is desktop-only |
 
 ### 13.4 Deep linking & sharing
 
@@ -647,8 +651,9 @@ not unfinished work:
   option that plays within X time or frames of *now*" while streaming — which is
   exactly what the loop presets already do (Pin to live / Last 4-10 frames /
   Last 30 min / Last 1 h, §7). The capability exists and is one tap away; what is
-  missing is that a user watching live never learns it is there. A presentation
-  question for the transport row, not a feature gap.
+  missing is that a user watching live never learns it is there. Addressed by
+  the selection chip (Oct 2026): the presets sit in the same menu as LIVE, read
+  "Last 6 frames → now", and always attach to the live edge.
 
 ---
 

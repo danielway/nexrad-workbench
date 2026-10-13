@@ -662,14 +662,12 @@ impl Selection {
     }
 }
 
-/// A loop preset the user can pick from the transport row / mobile settings
+/// A range ending now that the user can pick from the selection chip's menu
 /// (spec §8 "creation order: presets first"). The app turns each into a
-/// concrete [`Selection`] + the right playhead transition (alignment #7:
-/// menu offers 4/6/10 frames, 30 min / 1 h, and "pin to live").
+/// range attached to the live edge (alignment #7: 4/6/10 frames,
+/// 30 min / 1 h).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum LoopPreset {
-    /// Enter the pinned sliding loop at the default frame count.
-    PinToLive,
     /// A loop of the last `n` matching frames.
     LastFrames(u32),
     /// A duration-basis loop covering the last `secs` seconds.
@@ -680,7 +678,6 @@ impl LoopPreset {
     /// The presets offered in the menu, in display order.
     pub(crate) fn menu() -> &'static [LoopPreset] {
         &[
-            LoopPreset::PinToLive,
             LoopPreset::LastFrames(4),
             LoopPreset::LastFrames(6),
             LoopPreset::LastFrames(10),
@@ -692,7 +689,6 @@ impl LoopPreset {
     /// Menu label.
     pub(crate) fn label(&self) -> String {
         match self {
-            LoopPreset::PinToLive => "Pin to live".to_string(),
             LoopPreset::LastFrames(n) => format!("Last {n} frames"),
             LoopPreset::LastDuration(secs) => {
                 let mins = secs / 60.0;
@@ -708,7 +704,6 @@ impl LoopPreset {
     /// The loop-window basis this preset resolves to.
     pub(crate) fn basis(&self) -> LoopBasis {
         match self {
-            LoopPreset::PinToLive => LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES),
             LoopPreset::LastFrames(n) => LoopBasis::FrameCount(*n),
             LoopPreset::LastDuration(secs) => LoopBasis::Duration(*secs),
         }
@@ -2426,10 +2421,6 @@ mod tests {
     #[wasm_bindgen_test]
     fn loop_preset_basis_and_menu() {
         assert_eq!(
-            LoopPreset::PinToLive.basis(),
-            LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES)
-        );
-        assert_eq!(
             LoopPreset::LastFrames(10).basis(),
             LoopBasis::FrameCount(10)
         );
@@ -2439,7 +2430,6 @@ mod tests {
         );
         // The menu offers the alignment #7 set.
         let labels: Vec<String> = LoopPreset::menu().iter().map(|p| p.label()).collect();
-        assert!(labels.contains(&"Pin to live".to_string()));
         assert!(labels.contains(&"Last 4 frames".to_string()));
         assert!(labels.contains(&"Last 6 frames".to_string()));
         assert!(labels.contains(&"Last 10 frames".to_string()));
@@ -2795,7 +2785,6 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn loop_preset_label_branches() {
-        assert_eq!(LoopPreset::PinToLive.label(), "Pin to live");
         assert_eq!(LoopPreset::LastFrames(4).label(), "Last 4 frames");
         // Duration under an hour → min; at/above → h.
         assert_eq!(LoopPreset::LastDuration(30.0 * 60.0).label(), "Last 30 min");
