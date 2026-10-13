@@ -82,6 +82,35 @@ impl Sweep {
 /// not-available — matching the render resolver
 /// ([`crate::core::playback_manager::resolve_active_sweep_target`]) so the
 /// macro frame list never lists a frame the canvas would blank.
+/// The volume a live stream is collecting, as the timeline draws it: its
+/// storage-key time and its projection (collected cuts at their real times,
+/// the rest projected from the VCP).
+#[derive(Clone, Copy)]
+pub(crate) struct LiveVolume<'a> {
+    pub key_secs: f64,
+    pub projection: &'a crate::core::projection::ScanProjection,
+}
+
+/// `(elevation_number, end offset from the volume start)` for each cut in a
+/// VCP plan that is a frame at `tilt` (`None` = every cut), estimated from
+/// the plan's azimuth rates.
+fn vcp_cut_ends(
+    vcp: &crate::data::ExtractedVcp,
+    tilt: Option<u8>,
+) -> impl Iterator<Item = (u8, f64)> {
+    let durations = vcp
+        .estimated_volume_duration()
+        .map(|total| vcp.sweep_durations(total))
+        .unwrap_or_default();
+    let mut elapsed = 0.0;
+    durations.into_iter().enumerate().filter_map(move |(i, d)| {
+        elapsed += d;
+        let elevation_number = (i + 1) as u8;
+        tilt.is_none_or(|t| t == elevation_number)
+            .then_some((elevation_number, elapsed))
+    })
+}
+
 fn sweep_has_product(sweep: &Sweep, product: &str) -> bool {
     sweep.cached_products.iter().any(|p| p == product)
 }
@@ -422,39 +451,171 @@ impl RadarTimeline {
         times
     }
 
-    /// The `(start, end)` span covering the last `n` matching frames at or
-    /// before `now`, for the given elevation selection — the "lookback" window
-    /// the live Play button replays. Uses the same frame source as the macro
-    /// frame builder ([`Self::matching_sweep_end_times_by_number`] /
-    /// [`Self::all_sweep_end_times`]), so a frame here means the same thing it
-    /// does for stepping.
+    /// The `(start, end)` span covering the last `n` frames at or before
+    /// `now`, for the given elevation selection: the window a "Last N frames
+    /// → now" range covers. It counts every frame the timeline knows about,
+    /// not just the downloaded ones (see [`Self::known_frame_ends`]), so the
+    /// range's extent is settled before backfill fetches the volumes it needs.
     ///
-    /// Returns `None` when no frames exist at/<= `now`. With fewer than `n`
-    /// frames, spans all available. A single frame yields a zero-width span
-    /// (`start == end`); callers must reject that before using it as loop
-    /// bounds (looping divides by the span width).
+    /// Returns `None` until `n` frames are known at/<= `now` (no listing and
+    /// too little cached), and the caller falls back to the nominal span.
     pub(crate) fn lookback_window(
         &self,
+        shadows: &[ScanBoundary],
+        live: Option<LiveVolume<'_>>,
         elevation_selection: &crate::core::ElevationSelection,
         product: &str,
         now: f64,
         n: usize,
     ) -> Option<(f64, f64)> {
-        let frames = match elevation_selection {
-            crate::core::ElevationSelection::Fixed {
-                elevation_number, ..
-            } => self.matching_sweep_end_times_by_number(*elevation_number, product, None),
-            crate::core::ElevationSelection::Latest => self.all_sweep_end_times(product, None),
-        };
+        let frames = self.known_frame_ends(
+            shadows,
+            live,
+            elevation_selection.elevation_number(),
+            product,
+        );
         // `frames` is sorted ascending; keep those at/<= now (small slack so a
         // just-completed frame whose end_time rounds a hair past `now` counts).
         let cutoff = now + 0.5;
         let usable: Vec<f64> = frames.into_iter().filter(|&t| t <= cutoff).collect();
-        if usable.is_empty() {
+        let n = n.max(1);
+        if usable.len() < n {
             return None;
         }
-        let start_idx = usable.len().saturating_sub(n.max(1));
+        let start_idx = usable.len() - n;
         Some((usable[start_idx], *usable.last().unwrap()))
+    }
+
+    /// End times of every frame the timeline knows about, ascending: the
+    /// cached frames (the same ones stepping uses), plus estimated frames for
+    /// each listed volume that isn't cached yet.
+    ///
+    /// A listed volume's sweeps aren't known until it downloads, so its frames
+    /// are placed by a template (see [`Self::frame_offsets_template`]). With
+    /// no template, each listed volume counts as one frame at its end. `tilt`
+    /// is the selected elevation number; `None` (Latest/auto) counts every
+    /// sweep as a frame.
+    pub(crate) fn known_frame_ends(
+        &self,
+        shadows: &[ScanBoundary],
+        live: Option<LiveVolume<'_>>,
+        tilt: Option<u8>,
+        product: &str,
+    ) -> Vec<f64> {
+        let is_frame = |sweep: &Sweep| {
+            tilt.is_none_or(|t| t == sweep.elevation_number) && sweep_has_product(sweep, product)
+        };
+        let mut times: Vec<f64> = self
+            .scans
+            .iter()
+            .flat_map(|scan| scan.sweeps.iter())
+            .filter(|sw| is_frame(sw))
+            .map(|sw| sw.end_time)
+            .collect();
+
+        let tolerance = crate::core::timeline_view::SCAN_JOIN_TOLERANCE_SECS as f64;
+        let has_cut = |scan: Option<&Scan>, n: u8| {
+            scan.is_some_and(|s| s.sweeps.iter().any(|sw| sw.elevation_number == n))
+        };
+
+        // The volume being streamed: every cut the timeline draws for it
+        // counts, at the time it draws it, including cuts collected before
+        // the stream joined (never received) and ones still to come (past
+        // `now`, so they drop out of a lookback).
+        if let Some(lv) = live {
+            let cached = self
+                .scans
+                .iter()
+                .find(|s| (s.key_timestamp - lv.key_secs).abs() <= tolerance);
+            times.extend(
+                lv.projection
+                    .sweeps
+                    .iter()
+                    .filter(|sp| tilt.is_none_or(|t| t == sp.elevation_number))
+                    .filter(|sp| !has_cut(cached, sp.elevation_number))
+                    .map(|sp| sp.collection_end_secs),
+            );
+        }
+
+        // Any other cached volume can be missing cuts that exist too (a
+        // fixed-tilt download holds only that tilt). Its VCP plan still knows
+        // them, so place each missing cut by the plan.
+        for scan in &self.scans {
+            let is_live =
+                live.is_some_and(|lv| (scan.key_timestamp - lv.key_secs).abs() <= tolerance);
+            if is_live || scan.completeness == Some(ScanCompleteness::Complete) {
+                continue;
+            }
+            let Some(vcp) = scan.vcp_pattern.as_ref() else {
+                continue;
+            };
+            times.extend(
+                vcp_cut_ends(vcp, tilt)
+                    .filter(|(n, _)| !has_cut(Some(scan), *n))
+                    .map(|(_, off)| scan.key_timestamp + off),
+            );
+        }
+
+        let offsets = self.frame_offsets_template(tilt, &is_frame);
+        let cached = |start: f64| {
+            self.scans
+                .iter()
+                .any(|s| (s.key_timestamp - start).abs() <= tolerance)
+        };
+        for b in shadows {
+            let (start, end) = (b.start as f64, b.end as f64);
+            if cached(start) {
+                continue;
+            }
+            if offsets.is_empty() {
+                times.push(end);
+            } else {
+                times.extend(offsets.iter().map(|off| start + off).filter(|&t| t <= end));
+            }
+        }
+
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        times.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+        times
+    }
+
+    /// Where a volume's frames end, in seconds from its start, for placing
+    /// the frames of listed volumes that aren't downloaded. In order of
+    /// preference: the frames of the newest complete cached volume; the VCP
+    /// plan of the newest cached volume that has one (a volume joined
+    /// mid-stream holds only its last few sweeps, but its plan has them all);
+    /// the frames of the newest cached volume. Empty when nothing is cached.
+    fn frame_offsets_template(
+        &self,
+        tilt: Option<u8>,
+        is_frame: &dyn Fn(&Sweep) -> bool,
+    ) -> Vec<f64> {
+        let cached_offsets = |scan: &Scan| -> Vec<f64> {
+            scan.sweeps
+                .iter()
+                .filter(|sw| is_frame(sw))
+                .map(|sw| (sw.end_time - scan.key_timestamp).max(0.0))
+                .collect()
+        };
+        let newest = self.scans.iter().rev();
+        if let Some(scan) = newest
+            .clone()
+            .filter(|s| s.completeness == Some(ScanCompleteness::Complete))
+            .find(|s| s.sweeps.iter().any(is_frame))
+        {
+            return cached_offsets(scan);
+        }
+        if let Some(vcp) = newest.clone().find_map(|s| s.vcp_pattern.as_ref()) {
+            let offsets: Vec<f64> = vcp_cut_ends(vcp, tilt).map(|(_, off)| off).collect();
+            if !offsets.is_empty() {
+                return offsets;
+            }
+        }
+        newest
+            .clone()
+            .find(|s| s.sweeps.iter().any(is_frame))
+            .map(cached_offsets)
+            .unwrap_or_default()
     }
 
     /// Find the end time of the next sweep matching `elevation_number` after `ts`.
@@ -793,11 +954,192 @@ mod tests {
         RadarTimeline { scans }
     }
 
+    fn shadow(start: i64, end: i64) -> ScanBoundary {
+        ScanBoundary { start, end }
+    }
+
+    /// One cached volume at 1000..1300 with a 0.5° sweep ending at +30 and a
+    /// 1.5° sweep ending at +60 (the template for listed volumes).
+    fn one_cached_volume() -> RadarTimeline {
+        let mut scan = scan_with_sweeps(
+            1000.0,
+            1300.0,
+            vec![sweep(1000.0, 1030.0, 0.5, 1), sweep(1030.0, 1060.0, 1.5, 2)],
+        );
+        scan.completeness = Some(ScanCompleteness::Complete);
+        RadarTimeline { scans: vec![scan] }
+    }
+
+    #[wasm_bindgen_test]
+    fn known_frames_place_listed_volumes_by_the_cached_template() {
+        let tl = one_cached_volume();
+        // Two listed volumes before the cached one, plus the cached one's own
+        // listing entry (covered, so not counted twice).
+        let shadows = [shadow(400, 700), shadow(700, 1000), shadow(1000, 1300)];
+        assert_eq!(
+            tl.known_frame_ends(&shadows, None, Some(1), "reflectivity"),
+            vec![430.0, 730.0, 1030.0]
+        );
+        // Latest/auto counts every sweep, listed volumes included.
+        assert_eq!(
+            tl.known_frame_ends(&shadows, None, None, "reflectivity"),
+            vec![430.0, 460.0, 730.0, 760.0, 1030.0, 1060.0]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn known_frames_use_the_vcp_plan_of_a_volume_joined_mid_stream() {
+        use crate::data::{ExtractedVcp, ExtractedVcpElevation};
+        let cut = |angle: f32| ExtractedVcpElevation {
+            angle,
+            waveform: "CS".to_string(),
+            prf_number: 1,
+            is_sails: false,
+            is_mrle: false,
+            is_base_tilt: false,
+            azimuth_rate: Some(12.0), // 30 s per cut
+        };
+        // Streaming joined at the third cut: only it is cached, but the plan
+        // knows all three, both for the listed volume before it and for the
+        // two cuts it missed.
+        let mut scan = scan_with_sweeps(1000.0, 1090.0, vec![sweep(1060.0, 1090.0, 2.4, 3)]);
+        scan.vcp_pattern = Some(ExtractedVcp {
+            number: 215,
+            elevations: vec![cut(0.5), cut(1.5), cut(2.4)],
+        });
+        let tl = RadarTimeline { scans: vec![scan] };
+        let shadows = [shadow(700, 1000)];
+        assert_eq!(
+            tl.known_frame_ends(&shadows, None, None, "reflectivity"),
+            vec![730.0, 760.0, 790.0, 1030.0, 1060.0, 1090.0]
+        );
+        assert_eq!(
+            tl.known_frame_ends(&shadows, None, Some(1), "reflectivity"),
+            vec![730.0, 1030.0]
+        );
+        // The last 3 frames are the live volume's own cuts, not a reach back
+        // across them into the previous volume.
+        assert_eq!(
+            tl.lookback_window(
+                &shadows,
+                None,
+                &ElevationSelection::Latest,
+                "reflectivity",
+                1100.0,
+                3
+            ),
+            Some((1030.0, 1090.0))
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn known_frames_take_the_live_volume_as_the_timeline_draws_it() {
+        use crate::core::projection::{
+            ProjectionScanRole, ScanProjection, SweepProjection, SweepProjectionStatus,
+            SweepTimingProvenance,
+        };
+        let cut = |elevation_number: u8, start: f64, end: f64| SweepProjection {
+            elevation_number,
+            elevation_angle: 0.5,
+            scan_role: ProjectionScanRole::CurrentInProgress,
+            status: SweepProjectionStatus::FutureExpected,
+            timing: SweepTimingProvenance::Estimated,
+            collection_start_secs: start,
+            collection_end_secs: end,
+            chunks_in_sweep: 0,
+            chunks_received: 0,
+            radials_received: 0,
+            azimuth_rate_dps: 12.0,
+            chunks: Vec::new(),
+        };
+        let projection = ScanProjection {
+            vcp_number: 212,
+            vcp_pattern: None,
+            roster: crate::core::VolumeElevationRoster::default(),
+            in_progress_elevation: None,
+            in_progress_radials: None,
+            volume_start: 1000.0,
+            volume_end: 1120.0,
+            sweeps: vec![
+                cut(1, 1000.0, 1025.0),
+                cut(2, 1025.0, 1050.0),
+                cut(3, 1050.0, 1090.0),
+                cut(4, 1090.0, 1120.0),
+            ],
+            extrapolation: None,
+            next_scan_ghost: None,
+        };
+        // Joined at the third cut: only it is cached. The first two were
+        // collected before the stream joined, the fourth is still to come.
+        let tl = RadarTimeline {
+            scans: vec![scan_with_sweeps(
+                1000.0,
+                1090.0,
+                vec![sweep(1050.0, 1090.0, 2.4, 3)],
+            )],
+        };
+        let live = Some(LiveVolume {
+            key_secs: 1000.0,
+            projection: &projection,
+        });
+        assert_eq!(
+            tl.known_frame_ends(&[], live, None, "reflectivity"),
+            vec![1025.0, 1050.0, 1090.0, 1120.0]
+        );
+        // At 1100 the last 3 frames are this volume's first three cuts.
+        assert_eq!(
+            tl.lookback_window(
+                &[],
+                live,
+                &ElevationSelection::Latest,
+                "reflectivity",
+                1100.0,
+                3
+            ),
+            Some((1025.0, 1090.0))
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn known_frames_without_a_template_count_one_per_listed_volume() {
+        let tl = RadarTimeline::default();
+        let shadows = [shadow(400, 700), shadow(700, 1000)];
+        assert_eq!(
+            tl.known_frame_ends(&shadows, None, Some(1), "reflectivity"),
+            vec![700.0, 1000.0]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn lookback_window_spans_listed_frames_before_they_download() {
+        // Only the newest volume is cached, but the listing knows the earlier
+        // ones, so "last 4 frames" in auto mode reaches back 2 volumes by
+        // their sweeps, not 4 whole volumes.
+        let tl = one_cached_volume();
+        let shadows = [shadow(100, 400), shadow(400, 700), shadow(700, 1000)];
+        let w = tl
+            .lookback_window(
+                &shadows,
+                None,
+                &ElevationSelection::Latest,
+                "reflectivity",
+                2000.0,
+                4,
+            )
+            .unwrap();
+        assert_eq!(w, (730.0, 1060.0));
+        // At a fixed tilt, one frame per volume.
+        let w = tl
+            .lookback_window(&shadows, None, &fixed(1), "reflectivity", 2000.0, 3)
+            .unwrap();
+        assert_eq!(w, (430.0, 1030.0));
+    }
+
     #[wasm_bindgen_test]
     fn lookback_window_takes_last_n_before_now() {
         let tl = elev1_timeline(10); // frames at 100..1000
         let w = tl
-            .lookback_window(&fixed(1), "reflectivity", 1000.0, 5)
+            .lookback_window(&[], None, &fixed(1), "reflectivity", 1000.0, 5)
             .unwrap();
         assert_eq!(w, (600.0, 1000.0)); // last 5: 600,700,800,900,1000
     }
@@ -807,34 +1149,39 @@ mod tests {
         let tl = elev1_timeline(10); // frames at 100..1000
                                      // now=550 → only frames <= 550 (100..500) are usable; last 3 = 300..500
         let w = tl
-            .lookback_window(&fixed(1), "reflectivity", 550.0, 3)
+            .lookback_window(&[], None, &fixed(1), "reflectivity", 550.0, 3)
             .unwrap();
         assert_eq!(w, (300.0, 500.0));
     }
 
     #[wasm_bindgen_test]
-    fn lookback_window_spans_all_when_fewer_than_n() {
+    fn lookback_window_is_none_with_fewer_than_n() {
         let tl = elev1_timeline(3); // frames at 100,200,300
+        assert_eq!(
+            tl.lookback_window(&[], None, &fixed(1), "reflectivity", 10_000.0, 5),
+            None
+        );
+        // Exactly n frames is enough.
         let w = tl
-            .lookback_window(&fixed(1), "reflectivity", 10_000.0, 5)
+            .lookback_window(&[], None, &fixed(1), "reflectivity", 10_000.0, 3)
             .unwrap();
         assert_eq!(w, (100.0, 300.0));
     }
 
     #[wasm_bindgen_test]
-    fn lookback_window_single_frame_is_zero_width() {
+    fn lookback_window_single_frame_is_none() {
         let tl = elev1_timeline(1); // single frame at 100
-        let w = tl
-            .lookback_window(&fixed(1), "reflectivity", 10_000.0, 5)
-            .unwrap();
-        assert_eq!(w, (100.0, 100.0)); // caller must reject zero width
+        assert_eq!(
+            tl.lookback_window(&[], None, &fixed(1), "reflectivity", 10_000.0, 5),
+            None
+        );
     }
 
     #[wasm_bindgen_test]
     fn lookback_window_none_when_no_frames_before_now() {
         let tl = elev1_timeline(3); // earliest frame at 100
         assert!(tl
-            .lookback_window(&fixed(1), "reflectivity", 10.0, 5)
+            .lookback_window(&[], None, &fixed(1), "reflectivity", 10.0, 5)
             .is_none());
     }
 
@@ -856,7 +1203,14 @@ mod tests {
         let tl = RadarTimeline { scans };
         // 4 frames: 80,100,180,200 → last 3 = 100..200
         let w = tl
-            .lookback_window(&ElevationSelection::Latest, "reflectivity", 10_000.0, 3)
+            .lookback_window(
+                &[],
+                None,
+                &ElevationSelection::Latest,
+                "reflectivity",
+                10_000.0,
+                3,
+            )
             .unwrap();
         assert_eq!(w, (100.0, 200.0));
     }
@@ -1749,7 +2103,14 @@ mod coverage_tests {
             )],
         };
         assert!(tl
-            .lookback_window(&ElevationSelection::Latest, "reflectivity", 100.0, 5)
+            .lookback_window(
+                &[],
+                None,
+                &ElevationSelection::Latest,
+                "reflectivity",
+                100.0,
+                5
+            )
             .is_none());
     }
 
@@ -1764,7 +2125,7 @@ mod coverage_tests {
             .collect();
         let tl = RadarTimeline { scans };
         let w = tl
-            .lookback_window(&fixed(1), "reflectivity", 10_000.0, 0)
+            .lookback_window(&[], None, &fixed(1), "reflectivity", 10_000.0, 0)
             .unwrap();
         assert_eq!(w, (300.0, 300.0));
     }

@@ -257,13 +257,24 @@ pub(super) fn render_playback_controls(
     // Datetime picker popup
     render_datetime_picker_popup(ui, state, picker, live, playback);
 
-    // Persistent, stateful LIVE button (spec §7). Always present in the
-    // transport row: solid "● LIVE" while tethered (click stops the stream),
-    // hollow "● LIVE · m:ss behind" while a background stream runs detached
-    // (click re-tethers), and hollow "● GO LIVE" with no stream (click starts
-    // one). `L` re-tethers / starts a stream; `Shift+L` stops it; the timeline
-    // now-line cap mirrors all three states.
-    render_live_button(ui, state, live);
+    // The selection chip: names what plays (LIVE, a point, a range, or a
+    // range ending now) and opens the menu that sets it, including going
+    // live and stopping the stream. `L` re-tethers / starts a stream;
+    // `Shift+L` stops it; the timeline now-line cap mirrors the tether.
+    let view_start = playback.state.timeline_view_start;
+    super::selection_chip::render_selection_chip(
+        ui,
+        state,
+        live,
+        playback,
+        (view_start, view_start + playback.state.view_width_secs()),
+        &super::selection_chip::ChipStyle {
+            text_size: 11.0,
+            min_height: 0.0,
+            stop_placement: crate::core::transport::LiveStopPlacement::LiveEdge,
+            compact: false,
+        },
+    );
     // The tether's companion: whether data is actually still arriving. Silent
     // when there is no stream.
     render_stream_activity(ui, state, live);
@@ -380,13 +391,6 @@ pub(super) fn render_playback_controls(
             });
     });
 
-    // Loop preset menu (spec §5 "loop preset" control; §8 "presets first").
-    // The creation surface for loops — available in Basic too (Level-1
-    // disclosure, but core enough to show). One compact menu button, so it
-    // stays inline at every width.
-    ui.separator();
-    render_loop_preset_menu(ui, state, playback, interactive);
-
     // Below the full width tier, the Advanced-only loop combo and UTC toggle
     // are demoted into a ⋯ overflow menu so they don't crowd the transport row.
     let compact = state.width_tier < WidthTier::Full;
@@ -418,7 +422,7 @@ pub(super) fn render_playback_controls(
             .on_hover_text("Clear selection and playback bounds")
             .clicked()
         {
-            playback.state.clear_selection();
+            state.push_command(crate::core::Intent::ClearLoop);
         }
     }
 
@@ -460,56 +464,6 @@ pub(super) fn render_playback_controls(
     // Push session stats to the right
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         render_session_stats(ui, state, activity_vm);
-    });
-}
-
-/// Loop-preset menu button (spec §8 "presets first"). A small ⟳ menu offering
-/// "Pin to live", the frame-count windows, the duration windows, and a "Clear
-/// loop" entry when a loop exists. Each selection pushes an `ApplyLoopPreset` /
-/// `ClearLoop` command — the app routes it through the named playhead
-/// transitions (never direct field writes). Shown in Basic too.
-fn render_loop_preset_menu(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    playback: &crate::subsystem::Playback,
-    interactive: bool,
-) {
-    use crate::core::LoopPreset;
-    let has_loop = playback.state.selection.range().is_some();
-    // Highlight the icon while a loop is active so the control reads as "on".
-    let icon = egui_phosphor::regular::REPEAT;
-    let tint = if has_loop {
-        live::STREAMING
-    } else {
-        ui_colors::value(state.is_dark)
-    };
-    ui.add_enabled_ui(interactive, |ui| {
-        ui.menu_button(RichText::new(icon).size(14.0).color(tint), |ui| {
-            // Header: the active loop window (basis + pinned), or "Loop".
-            let header = match playback.state.selection.range() {
-                Some(r) => {
-                    let pin = if r.live { " · pinned" } else { "" };
-                    format!("Loop · {}{}", r.basis.label(), pin)
-                }
-                None => "Loop".to_string(),
-            };
-            ui.label(RichText::new(header).size(11.0).weak());
-            for preset in LoopPreset::menu() {
-                if ui.button(preset.label()).clicked() {
-                    state.push_command(crate::core::Intent::ApplyLoopPreset(*preset));
-                    ui.close();
-                }
-            }
-            if has_loop {
-                ui.separator();
-                if ui.button("Clear loop").clicked() {
-                    state.push_command(crate::core::Intent::ClearLoop);
-                    ui.close();
-                }
-            }
-        })
-        .response
-        .on_hover_text("Loop presets");
     });
 }
 
@@ -585,93 +539,6 @@ fn render_utc_toggle(ui: &mut egui::Ui, state: &mut AppState) {
         .clicked()
     {
         state.use_local_time = !state.use_local_time;
-    }
-}
-
-/// Persistent, stateful LIVE button (spec §7). Three states, always present so
-/// the live edge — and the stream's off switch — is one glance/one click away
-/// no matter where the user is:
-///
-/// - **Tethered** (playhead attached, `AppMode::Live`): solid red "● LIVE".
-///   Click stops the stream (`StopLive(LiveEdge)`), mirroring the timeline
-///   now-cap: the most prominent live control is also the off switch.
-/// - **Detached** (stream running, playhead browsing): hollow "● LIVE · m:ss
-///   behind" where the lag is wall-now − playhead. Click re-tethers
-///   (`ReturnToLive`).
-/// - **No stream** (idle): hollow "● GO LIVE". Click starts a stream.
-///
-/// If the stream dies underneath a detached state, `mode_state.is_active()`
-/// flips false and the button falls through to GO LIVE (risk 4).
-///
-/// **This button reports the *tether* only.** Whether data is actually still
-/// arriving is a separate, orthogonal fact, and it is carried by the activity
-/// chip [`render_stream_activity`] renders beside it — a single control's fill
-/// cannot honestly encode two independent booleans, which is why "am I
-/// downloading?" used to be indistinguishable from "am I locked to now?".
-fn render_live_button(ui: &mut egui::Ui, state: &mut AppState, live: &crate::subsystem::Live) {
-    let dot = egui_phosphor::regular::BROADCAST;
-    let tethered = live.app_mode == AppMode::Live;
-    let streaming = live.mode_state.is_active();
-
-    if tethered {
-        // Solid red badge — tethered to the live edge. Pulse the fill subtly so
-        // it reads as "live" without being an alarm.
-        let pulse = live.mode_state.pulse_alpha();
-        let alpha = (200.0 + 55.0 * pulse) as u8;
-        let fill = Color32::from_rgba_unmultiplied(
-            live::STREAMING.r(),
-            live::STREAMING.g(),
-            live::STREAMING.b(),
-            alpha,
-        );
-        let label = RichText::new(format!("{dot} LIVE"))
-            .size(11.0)
-            .strong()
-            .color(Color32::WHITE);
-        if ui
-            .add(egui::Button::new(label).fill(fill))
-            .on_hover_text("Streaming live — click to stop")
-            .clicked()
-        {
-            state.push_command(crate::core::Intent::StopLive(
-                crate::core::transport::LiveStopPlacement::LiveEdge,
-            ));
-        }
-        return;
-    }
-
-    if streaming {
-        // Detached background stream: hollow outline + lag readout. One click
-        // snaps back to the live edge.
-        let lag = live.frame_status.lag_secs.unwrap_or(0.0);
-        let label = RichText::new(format!(
-            "{dot} LIVE · {} behind",
-            crate::core::format_lag(lag)
-        ))
-        .size(11.0)
-        .strong()
-        .color(live::STREAMING);
-        if ui
-            .add(egui::Button::new(label).fill(Color32::TRANSPARENT))
-            .on_hover_text("Stream running in background — click to rejoin live")
-            .clicked()
-        {
-            state.push_command(crate::core::Intent::ReturnToLive);
-        }
-        return;
-    }
-
-    // No stream: hollow GO LIVE invitation.
-    let label = RichText::new(format!("{dot} GO LIVE"))
-        .size(11.0)
-        .strong()
-        .color(tl_colors::NOW_IDLE);
-    if ui
-        .add(egui::Button::new(label).fill(Color32::TRANSPARENT))
-        .on_hover_text("Stream live from now")
-        .clicked()
-    {
-        state.push_command(crate::core::Intent::GoLive);
     }
 }
 

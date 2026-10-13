@@ -56,6 +56,17 @@ pub(crate) fn displayed_elevation_is_collecting(
     }
 }
 
+/// Whether the canvas shows a sweep of the volume the stream is collecting,
+/// so the "Current" line carries the live tag. A loop to now also plays
+/// earlier volumes' settled sweeps; those get no tag.
+pub(crate) fn displays_live_volume(
+    stream_active: bool,
+    displayed_scan: Option<&crate::data::ScanKey>,
+    live_volume: Option<&crate::data::ScanKey>,
+) -> bool {
+    stream_active && displayed_scan.is_some() && displayed_scan == live_volume
+}
+
 /// The live tag beside the "Current" sweep in the canvas info overlay.
 ///
 /// Rays shows the partial itself, so the tag counts the chunks drawn so far
@@ -819,6 +830,17 @@ mod coverage_tests {
         assert_eq!(live_sweep_tag(true, true, 1, None), "collecting");
         assert_eq!(live_sweep_tag(true, false, 3, Some(3)), "live");
         assert_eq!(live_sweep_tag(false, false, 0, None), "live");
+    }
+
+    #[wasm_bindgen_test]
+    fn live_tag_only_on_the_live_volume() {
+        let live = crate::data::ScanKey::from_secs("KMTX", 1_000);
+        let earlier = crate::data::ScanKey::from_secs("KMTX", 700);
+        assert!(displays_live_volume(true, Some(&live), Some(&live)));
+        // A settled sweep of an earlier volume, played by a loop to now.
+        assert!(!displays_live_volume(true, Some(&earlier), Some(&live)));
+        assert!(!displays_live_volume(false, Some(&live), Some(&live)));
+        assert!(!displays_live_volume(true, None, None));
     }
 
     // --- data_age_desaturation_effective ---------------------------------------

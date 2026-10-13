@@ -456,11 +456,9 @@ impl WorkbenchApp {
             return;
         }
 
-        // Backfill the window the active pinned loop covers, sized from its
-        // basis (frame-count or duration). The exact frame span is resolved by
-        // `resolve_pinned_window`; the plan widens the *start* by the basis
-        // fallback span so a frame-count loop still backfills enough archive
-        // before its frames are cached.
+        // Backfill exactly the window the range covers. The window is
+        // resolved from every frame the timeline knows about (listed or
+        // cached), so it doesn't depend on what has downloaded so far.
         let now = crate::core::TimeModel::wall_clock_time();
         let basis = self
             .playback
@@ -469,11 +467,10 @@ impl WorkbenchApp {
             .range()
             .map(|r| r.basis)
             .unwrap_or_default();
-        let (resolved_start, _resolved_end) = self.resolve_pinned_window(basis, now);
+        let (window_start, _) = self.resolve_pinned_window(basis, now);
         let plan = acquisition_core::plan_lookback_backfill(
-            resolved_start,
+            window_start,
             now,
-            basis,
             self.state.viz_state.elevation_selection.elevation_number(),
         );
         let actions = self.reduce_window_plan(&plan);

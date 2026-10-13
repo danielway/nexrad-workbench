@@ -97,6 +97,21 @@ pub(crate) fn dispatch_state_only(
             s.playback.state.center_view_on(now);
         }
         Intent::TogglePlayPause => s.transport(crate::core::transport::reduce_toggle_play_pause),
+        Intent::StopLooping => s.transport(crate::core::transport::reduce_stop_looping),
+        Intent::SelectRange {
+            start,
+            end,
+            to_live,
+        } => {
+            let now = s.state.frame_now.secs();
+            let pause = s.state.pause_stream_while_reviewing;
+            if s.live
+                .select_range(&mut s.playback.state, start, end, to_live, now, pause)
+            {
+                // Arm the bulk fetch for the new range (selection = the fetch).
+                s.state.selection_just_finalized = s.playback.state.selection_range();
+            }
+        }
 
         // ---- Loop presets -----------------------------------------
         Intent::ClearLoop => s.playback.state.clear_selection(),
@@ -478,6 +493,8 @@ impl WorkbenchApp {
             | Intent::CenterTimelineOnNow
             | Intent::TogglePlayPause
             | Intent::ClearLoop
+            | Intent::StopLooping
+            | Intent::SelectRange { .. }
             | Intent::SetPlayMode(_)
             | Intent::PauseQueue
             | Intent::ResumeQueue
@@ -835,6 +852,12 @@ mod dispatch_tests {
             Intent::CenterTimelineOnNow,
             Intent::TogglePlayPause,
             Intent::ClearLoop,
+            Intent::StopLooping,
+            Intent::SelectRange {
+                start: 100.0,
+                end: 400.0,
+                to_live: false,
+            },
             Intent::SetPlayMode(crate::core::PlaybackMode::Micro),
             Intent::PauseQueue,
             Intent::ResumeQueue,
@@ -853,7 +876,7 @@ mod dispatch_tests {
             },
             Intent::SetGeoLayer(GeoLayer::Cities, false),
         ];
-        assert_eq!(state_only.len(), 15);
+        assert_eq!(state_only.len(), 17);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -888,7 +911,7 @@ mod dispatch_tests {
             Intent::StartLive,
             Intent::GoLive,
             Intent::ReturnToLive,
-            Intent::ApplyLoopPreset(LoopPreset::PinToLive),
+            Intent::ApplyLoopPreset(LoopPreset::LastFrames(6)),
             Intent::RetryWorker,
             Intent::Diagnostics(crate::core::diagnostics::DiagnosticsIntent::RefreshAlerts),
         ];
@@ -1236,6 +1259,28 @@ mod dispatch_tests {
             crate::core::Selection::Point { live: false }
         );
         assert_eq!(f.playback.state.playback_bounds(), None);
+    }
+
+    /// `SelectRange` loops the span and arms its bulk fetch; `StopLooping`
+    /// then drops back to a fixed point where the playhead is.
+    #[wasm_bindgen_test]
+    fn select_range_then_stop_looping() {
+        let mut f = Fixture::new();
+        f.apply(Intent::SelectRange {
+            start: 400.0,
+            end: 100.0,
+            to_live: false,
+        });
+        assert_eq!(f.playback.state.playback_bounds(), Some((100.0, 400.0)));
+        assert_eq!(f.state.selection_just_finalized, Some((100.0, 400.0)));
+
+        f.apply(Intent::StopLooping);
+
+        assert_eq!(f.playback.state.playback_bounds(), None);
+        assert_eq!(
+            f.playback.state.selection,
+            crate::core::Selection::Point { live: false }
+        );
     }
 
     // ---- canvas / overlays --------------------------------------------

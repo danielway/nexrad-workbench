@@ -38,6 +38,7 @@ mod range_download_modal;
 mod reset_settings_modal;
 mod right_panel;
 mod scan_inspector;
+pub(crate) mod selection_chip;
 mod shortcuts;
 mod site_modal;
 pub(crate) mod time_format;

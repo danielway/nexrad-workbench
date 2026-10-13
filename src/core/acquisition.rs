@@ -18,8 +18,7 @@
 //! fetch/enqueue actions.
 
 use crate::core::{
-    ElevationSelection, LoopBasis, PlaybackDirection, PlaybackMode, PlaybackState, RadarTimeline,
-    ScanBoundary,
+    ElevationSelection, PlaybackDirection, PlaybackMode, PlaybackState, RadarTimeline, ScanBoundary,
 };
 use chrono::NaiveDate;
 use std::hash::{Hash, Hasher};
@@ -1105,19 +1104,18 @@ pub(crate) fn lookback_backfill_due(
     true
 }
 
-/// Plan the backfill window the active pinned loop covers, sized from its
-/// basis (frame-count or duration). `resolved_start` is the loop window's
-/// resolved start; the *start* is widened by the basis fallback span so a
-/// frame-count loop still backfills enough archive before its frames are
-/// cached (its resolved span collapses to near-zero then).
+/// Plan the backfill for a range to now: the archive volumes covering the
+/// range's resolved window. The window is settled first (from every frame the
+/// timeline knows about, listed or cached); this only fetches what fills it.
+/// A volume holding the window's first frame ends after that frame, so it
+/// intersects the window and is fetched.
 pub(crate) fn plan_lookback_backfill(
-    resolved_start: f64,
+    window_start: f64,
     now_secs: f64,
-    basis: LoopBasis,
     elevation_filter: Option<u8>,
 ) -> WindowPlan {
     let win_end_i64 = now_secs as i64;
-    let win_start_i64 = resolved_start.min(now_secs - basis.fallback_span_secs()) as i64;
+    let win_start_i64 = window_start.min(now_secs) as i64;
     WindowPlan {
         dates: dates_spanning(win_start_i64, win_end_i64),
         intersect_start: win_start_i64,
@@ -2809,30 +2807,42 @@ mod reducer_tests {
     }
 
     #[wasm_bindgen_test]
-    fn lookback_plan_widens_a_collapsed_frame_count_window() {
-        // Frame-count loop before its frames are cached: the resolved span
-        // collapses to near-zero, so the start widens by the basis fallback.
+    fn lookback_plan_fetches_exactly_the_resolved_window() {
+        // The window is settled before backfill, so the plan covers it as-is:
+        // no widening by a nominal span.
         let now = (JAN1 + 50_000) as f64;
-        let basis = LoopBasis::FrameCount(6);
-        let plan = plan_lookback_backfill(now - 10.0, now, basis, Some(1));
-        let expected_start = (now - basis.fallback_span_secs()) as i64;
-        assert_eq!(plan.intersect_start, expected_start);
+        let window_start = now - 1000.0;
+        let plan = plan_lookback_backfill(window_start, now, Some(1));
+        assert_eq!(plan.intersect_start, window_start as i64);
         assert_eq!(plan.win_end, now as i64);
         assert_eq!(plan.anchor_at_or_before, None);
         assert_eq!(plan.elevation_filter, Some(1));
         assert_eq!(plan.skip_missing_after, None);
-        assert_eq!(plan.dates, dates_spanning(expected_start, now as i64));
+        assert_eq!(plan.dates, dates_spanning(window_start as i64, now as i64));
     }
 
     #[wasm_bindgen_test]
-    fn lookback_plan_keeps_an_earlier_resolved_start() {
-        // A resolved window already wider than the fallback is kept as-is.
-        let now = (JAN1 + 50_000) as f64;
-        let basis = LoopBasis::Duration(1800.0);
-        let resolved_start = now - 5000.0; // wider than the 1800 s fallback
-        let plan = plan_lookback_backfill(resolved_start, now, basis, None);
-        assert_eq!(plan.intersect_start, resolved_start as i64);
-        assert_eq!(plan.win_end, now as i64);
-        assert_eq!(plan.elevation_filter, None);
+    fn lookback_plan_takes_the_volume_holding_the_first_frame() {
+        // The window opens on a frame's end inside a listed volume; that
+        // volume still intersects, the one before it doesn't.
+        let bounds = [
+            ScanBoundary {
+                start: JAN1,
+                end: JAN1 + 300,
+            },
+            ScanBoundary {
+                start: JAN1 + 300,
+                end: JAN1 + 600,
+            },
+            ScanBoundary {
+                start: JAN1 + 600,
+                end: JAN1 + 900,
+            },
+        ];
+        let plan = plan_lookback_backfill((JAN1 + 330) as f64, (JAN1 + 900) as f64, None);
+        assert_eq!(
+            intersecting_indices(&bounds, plan.intersect_start, plan.win_end),
+            vec![1, 2]
+        );
     }
 }
