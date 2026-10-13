@@ -584,8 +584,9 @@ impl LoopBasis {
         }
     }
 
-    /// Conservative fallback span (seconds) the *pinned* sliding window covers
-    /// before any matching frame is cached — so `tick_live` can seed bounds
+    /// Conservative fallback span (seconds) a range to now covers while too
+    /// few frames are known (no archive listing yet and too little cached), so
+    /// `tick_live` can seed bounds
     /// that bound the macro frame list to recent data rather than all history.
     /// Frame-count bases assume the typical volume interval per frame (plus a
     /// volume of slack); duration bases use their own span.

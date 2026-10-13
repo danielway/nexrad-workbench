@@ -181,9 +181,9 @@ impl WorkbenchApp {
     /// wrap-point deferral ([`PlaybackState::commit_pinned_window`]) decides
     /// whether this target is actually applied this frame.
     ///
-    /// Frame-count: the span of the last `n` matching frames (with a time
-    /// fallback before any frame is cached). Duration: the last `secs` ending
-    /// at now.
+    /// Frame-count: the span of the last `n` frames the timeline knows about,
+    /// listed or cached (with a time fallback when too few are known).
+    /// Duration: the last `secs` ending at now.
     pub(crate) fn resolve_pinned_window(
         &self,
         basis: crate::core::LoopBasis,
@@ -194,6 +194,7 @@ impl WorkbenchApp {
                 .timeline
                 .scans
                 .lookback_window(
+                    &self.timeline.shadow_scan_boundaries,
                     &self.state.viz_state.elevation_selection,
                     self.state.viz_state.product.to_worker_string(),
                     now,
