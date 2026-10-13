@@ -193,7 +193,7 @@ One channel per concern; the strip must read correctly in grayscale.
 |---|---|---|
 | Cache state | Fill | Hollow / solid / segmented partial / dashed ghost |
 | Acquisition activity | Motion | Pulse on in-flight cells; faint hatch on queued |
-| User intent | Overlays | Playhead line + handle; translucent loop band + handles |
+| User intent | Overlays | Playhead line + handle; amber range wash over the frames, with its bar + handles on the selection strip |
 | Data structure | Containers | Scan blocks containing frame cells; tick rail with time labels |
 
 ### 5.3 Frame-cell states
@@ -305,16 +305,17 @@ mode — it is a tether state.
 
 - **Modes:** **Loop** (wrap to start), **Ping-Pong** (reverse at the endpoints),
   and **Once** (stop at the end).
-- **Creation order:** presets first ("last N frames," "last 30 min," "pin to
-  live"); custom range second (alt/right-drag on desktop; I/O keys; draggable
-  handles once a loop exists).
+- **Creation order:** presets first (the selection chip's "last N frames → now"
+  and "last 30 min → now"); custom range second: drag along the **selection
+  strip** between the tick rail and the frames, or press I/O. The frames below
+  only move the playhead, so no modifier turns a scrub into a selection.
 - **Default & presets:** default preset is **last 6 frames**. The preset menu
   offers **4 / 6 / 10 frames**, **30 min / 1 h** durations, and **pin to live** —
   the same defaults on all device classes.
 - **Window basis:** frame-count windows are preferred in Micro (scan spacing
   varies); duration windows are offered as preset alternatives.
-- **Pinned sliding loop:** dragging the right handle to the live edge snaps and
-  pins — the handle visually fuses with the live dot, and the window slides
+- **Pinned sliding loop:** dropping the selection strip's right handle on the
+  live edge snaps and pins it — the handle turns red, and the window slides
   forward as sweeps arrive. This is the core "loop the last N while still
   streaming" experience.
 - **Incorporation rule:** newly arrived frames enter the loop **at the wrap
@@ -553,9 +554,8 @@ only.
 | Press/drag on strip | Seek immediately on press; drag scrubs |
 | Scroll / pinch | Zoom, anchored at cursor/pinch center (with snap hysteresis) |
 | Minimap drag | Pan / fast navigation |
-| Alt- or right-drag | Create loop range (desktop) |
+| Drag on the selection strip | Draw a range; drag a handle to resize; drop the right handle on the live edge to pin it to now; click to clear |
 | Right-click a scan (desktop) / long-press (touch) | Open the scan inspector (includes "loop from here") |
-| Loop handles | Hang below the strip; ≥44pt targets |
 
 **Keyboard:** Space play/pause · ←/→ frame step · Shift+←/→ scan step · I/O loop
 in/out · plain **L** go-live (one-way re-tether) · **Shift+L** stop live (the
@@ -697,8 +697,8 @@ deleted in the June 2026 docs cleanup.)
 ### Scope & interpretation calls
 
 - **Frames-first strip:** done — the design's biggest simplification win.
-- **Custom loop dragging on mobile:** cut; mobile gets presets, handles remain
-  desktop-only.
+- **Custom loop dragging on mobile:** cut; mobile gets the chip's presets, the
+  selection strip is desktop-only.
 - **Year-scale strip zoom:** the deprecated *linear* year-wide strip stays removed (it was label soup). The reach it offered is back, and further: the Archive calendar tier now spans the whole NEXRAD Level II era (1991→now) on the same continuous timeline, coarsening its cells rather than stretching a strip.
 - **Archive calendar layout:** ships a 1-D zoomable UTC-day lane (deliberate
   height-budget tradeoff), not a 2-D week-by-day grid; the grid is a possible

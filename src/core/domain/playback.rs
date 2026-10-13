@@ -607,7 +607,7 @@ impl LoopBasis {
 /// |---|---|
 /// | `Point { live: false }` | archive, free seeking |
 /// | `Point { live: true }` | LIVE-NOW (pinned to now) |
-/// | `Range { live: false }` | a fixed loop / shift-drag selection |
+/// | `Range { live: false }` | a fixed loop / a range drawn on the strip |
 /// | `Range { live: true }` | the lookback replay, or a selection anchored to live |
 ///
 /// The playhead position lives in [`TimeModel::playback_position`]; for a
@@ -762,7 +762,7 @@ pub(crate) struct TimeSelection {
     pub a: f64,
     /// Second endpoint — the one a drag moves.
     pub b: f64,
-    /// True while a shift-drag is still moving `b`.
+    /// True while a strip drag is still moving `b`.
     pub in_progress: bool,
 }
 
@@ -1484,7 +1484,7 @@ impl PlaybackState {
         }
     }
 
-    /// Whether a shift-drag selection is currently being drawn.
+    /// Whether a range is being drawn on the selection strip.
     pub(crate) fn selection_in_progress(&self) -> bool {
         self.drag.is_some_and(|d| d.in_progress)
     }
@@ -1495,7 +1495,8 @@ impl PlaybackState {
             .is_some_and(|(s, e)| ts >= s && ts <= e)
     }
 
-    /// Start a shift-drag selection at `ts` (both endpoints collapsed).
+    /// Start drawing a range anchored at `ts` (both endpoints collapsed). A
+    /// handle drag anchors the opposite edge.
     pub(crate) fn begin_selection_drag(&mut self, ts: f64) {
         self.drag = Some(TimeSelection {
             a: ts,
@@ -1504,7 +1505,7 @@ impl PlaybackState {
         });
     }
 
-    /// Move the dragged endpoint while a shift-drag is in progress.
+    /// Move the dragged endpoint while a range is being drawn.
     pub(crate) fn update_selection_drag(&mut self, ts: f64) {
         if let Some(d) = self.drag.as_mut() {
             if d.in_progress {
@@ -1513,7 +1514,7 @@ impl PlaybackState {
         }
     }
 
-    /// Finish a shift-drag, returning the drawn range when it has meaningful
+    /// Finish drawing a range, returning the drawn range when it has meaningful
     /// width. The caller decides whether it becomes a fixed or live range
     /// ([`Self::select_range`]).
     pub(crate) fn end_selection_drag(&mut self) -> Option<(f64, f64)> {

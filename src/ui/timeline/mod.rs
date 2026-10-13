@@ -5,12 +5,12 @@
 mod calendar;
 mod frame_cells;
 mod interaction;
-mod loop_handles;
 mod minimap;
 mod now_edge;
 mod overlays;
 mod ruler;
 mod scan_track;
+mod selection_strip;
 mod strokes;
 pub(super) mod style;
 mod tooltips;
@@ -330,24 +330,32 @@ pub(super) fn render_timeline(
         minimap::render_minimap(ui, state, timeline, live, playback);
     }
 
-    // The main strip widget covers only the tick rail + main track; the
-    // minimap above and the loop-handle band below are each their own
-    // allocated widget (the 14px `style::LOOP_HANDLE_H` band is allocated and
-    // rendered after the strip, near the bottom of this function).
+    // The main strip widget covers the tick rail, the selection strip and the
+    // main track; the minimap above is its own allocated widget. The
+    // selection strip registers its own interact rect over its band after the
+    // strip's interaction runs, so it owns presses there.
+    let selection_strip_h = style::SELECTION_STRIP_H;
     let (response, painter) = ui.allocate_painter(
-        Vec2::new(available_width as f32, tick_lane_h + main_track_h),
+        Vec2::new(
+            available_width as f32,
+            tick_lane_h + selection_strip_h + main_track_h,
+        ),
         Sense::click_and_drag(),
     );
     let full_rect = response.rect;
 
-    // Sub-rects: tick rail -> main track.
+    // Sub-rects: tick rail -> selection strip -> main track.
     let tick_rect = Rect::from_min_max(
         Pos2::new(full_rect.min.x, full_rect.min.y),
         Pos2::new(full_rect.max.x, full_rect.min.y + tick_lane_h),
     );
-    let scan_rect = Rect::from_min_max(
+    let selection_rect = Rect::from_min_max(
         Pos2::new(full_rect.min.x, tick_rect.max.y),
-        Pos2::new(full_rect.max.x, tick_rect.max.y + main_track_h),
+        Pos2::new(full_rect.max.x, tick_rect.max.y + selection_strip_h),
+    );
+    let scan_rect = Rect::from_min_max(
+        Pos2::new(full_rect.min.x, selection_rect.max.y),
+        Pos2::new(full_rect.max.x, selection_rect.max.y + main_track_h),
     );
 
     let dark = state.is_dark;
@@ -606,7 +614,7 @@ pub(super) fn render_timeline(
         );
     }
 
-    // Draw selection range (if user has selected a range via shift+drag)
+    // Draw the selected range over the frames.
     if let Some((range_start, range_end)) = playback.state.selection_range() {
         let start_x = ts_to_x(range_start);
         let end_x = ts_to_x(range_end);
@@ -760,17 +768,10 @@ pub(super) fn render_timeline(
     // -- Interaction handling --
     // Runs BEFORE the tooltip so a primary-drag scrub can suppress the hover
     // popup. Rects whose presses are owned by another control and must not also
-    // seek: the now-affordance cap/chip, the loop-handle hit rects (which extend
-    // up into the strip), and the failed-cell retry ticks.
+    // seek: the now-affordance cap/chip, the selection strip, and the
+    // failed-cell retry ticks.
     let mut suppress_rects: Vec<Rect> = now_affordance_rect.into_iter().collect();
-    // The loop-handle band sits directly below the strip (item_spacing.y == 0),
-    // so its bottom is the strip bottom plus the band height.
-    let band_bottom = scan_rect.bottom() + style::LOOP_HANDLE_H;
-    let handle_hit =
-        loop_handles::handle_hit_rects(&frame, playback.state.selection_range(), band_bottom);
-    if let Some(rects) = handle_hit {
-        suppress_rects.extend_from_slice(&rects);
-    }
+    suppress_rects.push(selection_rect);
     // Failed ticks suppress the generic seek UNCONDITIONALLY: the retry fires on
     // `clicked()` (release) but the strip's press-seek fires earlier on the
     // primary press, so suppressing only after a release-time click would let a
@@ -817,24 +818,8 @@ pub(super) fn render_timeline(
         }
     }
 
-    // -- Loop-handle band (spec §8/§12) ----------------------------------
-    // Its OWN allocated widget below the strip (distinct response id) so its
-    // drag never shares the strip's hit layer; the strip already suppresses
-    // seeks at the handle hit rects above. Allocated even when no loop exists
-    // (the render is a no-op then) so the panel height stays constant at
-    // TIMELINE_TOTAL_H.
-    let (_band_resp, _band_painter) = ui.allocate_painter(
-        Vec2::new(available_width as f32, style::LOOP_HANDLE_H),
-        Sense::hover(),
-    );
-    let band_rect = Rect::from_min_max(
-        Pos2::new(scan_rect.left(), scan_rect.bottom()),
-        Pos2::new(scan_rect.right(), scan_rect.bottom() + style::LOOP_HANDLE_H),
-    );
-    // Not at Archive: one pixel there can be weeks, so a handle drag adjusts
-    // the loop by an amount the user cannot see or aim. Archive is a navigator
-    // — zoom in to edit the loop.
-    if tier != TimelineTier::Archive {
-        loop_handles::render_loop_handles(ui, state, live, playback, &frame, band_rect);
-    }
+    // -- Selection strip --------------------------------------------------
+    // After the strip's interaction, so its interact rect is on top over its
+    // band (the strip also suppresses seeks there).
+    selection_strip::render_selection_strip(ui, state, live, playback, &frame, selection_rect);
 }

@@ -147,7 +147,7 @@ fn render_menu(ui: &mut egui::Ui, menu: &ChipMenu, use_local: bool) -> Option<Ch
             ChipAction::Preset(*preset),
         );
     }
-    hint(ui, "Or drag a range's right handle onto the live edge.");
+    hint(ui, "Or drop a range's right handle on the live edge.");
 
     ui.add_space(4.0);
     group_heading(ui, "A fixed range");
@@ -162,7 +162,7 @@ fn render_menu(ui: &mut egui::Ui, menu: &ChipMenu, use_local: bool) -> Option<Ch
             ChipAction::LoopView { start, end },
         );
     }
-    hint(ui, "Or shift-drag along the timeline.");
+    hint(ui, "Or drag along the strip above the frames.");
     picked
 }
 

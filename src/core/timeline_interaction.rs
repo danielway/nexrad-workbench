@@ -1,7 +1,6 @@
 //! Pure timeline-strip interaction decisions.
 //!
-//! The strip shares ONE egui response across seek, scrub, range-selection,
-//! inspect and pan, so "which gesture owns the pointer this frame" is a real
+//! The strip shares ONE egui response across seek, scrub, inspect and pan, so "which gesture owns the pointer this frame" is a real
 //! decision with real precedence — and it was previously spread across a dozen
 //! interleaved boolean guards inside the painter, where it could not be tested.
 //! This module owns that decision as a pure function ([`resolve_gesture`]) plus
@@ -26,24 +25,23 @@ pub(crate) const NEXRAD_ARCHIVE_START_SECS: f64 = 676_080_000.0;
 
 /// Which pointer gesture owns the timeline strip this frame.
 ///
-/// Exactly one wins. Precedence is `Pan > Select > Inspect > Seek`, and the
-/// reasons are behavioral, not arbitrary:
+/// Exactly one wins. Precedence is `Pan > Inspect > Seek`, and the reasons
+/// are behavioral, not arbitrary:
 /// - **Pan** is modeless navigation; it must never also move the playhead, or
 ///   the gesture that exists to stop accidental seeks would cause them.
-/// - **Select** outranks Seek because a selection already in progress owns the
-///   drag it started, regardless of which button is still down.
-/// - **Inspect** is a discrete secondary *click*; a secondary *drag* is a
-///   selection, so the two are disjoint by construction.
+/// - **Inspect** is a discrete secondary *click*.
 /// - **Seek** is the fallback for a plain primary press/drag.
+///
+/// Ranges are not made here: the selection strip above the frames owns them
+/// ([`crate::core::selection_strip`]), so no modifier turns a scrub into a
+/// selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StripGesture {
     /// Nothing this frame — or the pointer landed on a control that owns its
-    /// own clicks (loop handle, failed-cell tick, now cap).
+    /// own clicks (failed-cell tick, now cap).
     None,
     /// Pan the view: middle-drag, or ctrl/cmd + primary drag.
     Pan,
-    /// Create or extend the loop/selection range.
-    Select,
     /// Open the scan inspector for the scan under the pointer.
     Inspect,
     /// Move the playhead (press-seek or drag-scrub).
@@ -60,20 +58,12 @@ pub(crate) struct StripInput {
     pub primary_drag_started: bool,
     /// A primary-button drag is ongoing this frame.
     pub primary_dragging: bool,
-    /// The secondary button is down or its drag just began.
-    pub secondary_down: bool,
     /// A clean secondary click (a press that did not become a drag).
     pub secondary_clicked: bool,
     /// A middle-button drag is ongoing this frame.
     pub middle_dragging: bool,
-    /// A primary click completed this frame.
-    pub clicked: bool,
-    /// Shift or alt is held — the range-selection modifier.
-    pub selection_mod: bool,
     /// Ctrl or cmd is held — the pan modifier.
     pub pan_mod: bool,
-    /// A selection drag is already in progress and owns the pointer.
-    pub selection_in_progress: bool,
     /// The press landed inside a rect belonging to another control.
     pub on_suppressed_rect: bool,
     /// This drag *began* inside a suppressed rect, so the other control owns
@@ -94,21 +84,7 @@ pub(crate) fn resolve_gesture(input: &StripInput) -> StripGesture {
         return StripGesture::Pan;
     }
 
-    // A selection already in progress owns the pointer until the drag ends,
-    // whichever button started it.
-    if input.selection_in_progress {
-        return StripGesture::Select;
-    }
-
-    // Fresh selection: modifier + primary (click or drag), or a secondary drag.
-    if (input.selection_mod && (input.clicked || input.primary_drag_started))
-        || input.secondary_down
-    {
-        return StripGesture::Select;
-    }
-
-    // A clean secondary click opens the inspector. Disjoint from Select above:
-    // a secondary *drag* sets `secondary_down` and already returned.
+    // A clean secondary click opens the inspector.
     if input.secondary_clicked {
         return StripGesture::Inspect;
     }
@@ -189,83 +165,28 @@ mod tests {
         assert!(resolve_gesture(&input) == StripGesture::Pan);
     }
 
-    #[wasm_bindgen_test]
-    fn pan_outranks_an_in_progress_selection() {
-        let input = StripInput {
-            middle_dragging: true,
-            selection_in_progress: true,
-            ..Default::default()
-        };
-        assert!(resolve_gesture(&input) == StripGesture::Pan);
-    }
-
-    // ---- resolve_gesture: selection --------------------------------------
+    // ---- resolve_gesture: no range selection on the frames -------------
 
     #[wasm_bindgen_test]
-    fn in_progress_selection_owns_the_pointer() {
-        // Even a plain primary drag resolves to Select while a selection is
-        // live — it started as one and keeps ownership until drag end.
-        let input = StripInput {
-            selection_in_progress: true,
+    fn shift_drag_scrubs_and_secondary_drag_does_nothing() {
+        // Ranges are made on the selection strip; a modifier no longer turns
+        // the frames into a selection surface.
+        let drag = StripInput {
+            primary_drag_started: true,
             primary_dragging: true,
             ..Default::default()
         };
-        assert!(resolve_gesture(&input) == StripGesture::Select);
+        assert!(resolve_gesture(&drag) == StripGesture::Seek);
+        assert!(resolve_gesture(&StripInput::default()) == StripGesture::None);
     }
 
     #[wasm_bindgen_test]
-    fn shift_click_and_shift_drag_both_select() {
-        let click = StripInput {
-            selection_mod: true,
-            clicked: true,
-            ..Default::default()
-        };
-        assert!(resolve_gesture(&click) == StripGesture::Select);
-        let drag = StripInput {
-            selection_mod: true,
-            primary_drag_started: true,
-            ..Default::default()
-        };
-        assert!(resolve_gesture(&drag) == StripGesture::Select);
-    }
-
-    #[wasm_bindgen_test]
-    fn secondary_drag_selects_and_secondary_click_inspects() {
-        // The two secondary gestures are disjoint: down => drag => Select,
-        // clean click => Inspect.
-        let drag = StripInput {
-            secondary_down: true,
-            ..Default::default()
-        };
-        assert!(resolve_gesture(&drag) == StripGesture::Select);
+    fn secondary_click_inspects() {
         let click = StripInput {
             secondary_clicked: true,
             ..Default::default()
         };
         assert!(resolve_gesture(&click) == StripGesture::Inspect);
-    }
-
-    #[wasm_bindgen_test]
-    fn secondary_drag_beats_secondary_click_when_both_set() {
-        // egui can report both on the frame a drag ends; the drag owns it, so
-        // an aborted range-drag never falls through to opening the inspector.
-        let input = StripInput {
-            secondary_down: true,
-            secondary_clicked: true,
-            ..Default::default()
-        };
-        assert!(resolve_gesture(&input) == StripGesture::Select);
-    }
-
-    #[wasm_bindgen_test]
-    fn selection_mod_press_never_seeks() {
-        let input = StripInput {
-            selection_mod: true,
-            primary_pressed: true,
-            primary_drag_started: true,
-            ..Default::default()
-        };
-        assert!(resolve_gesture(&input) == StripGesture::Select);
     }
 
     // ---- resolve_gesture: seek -------------------------------------------
@@ -300,8 +221,8 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn drag_begun_on_a_suppressed_rect_does_not_scrub() {
-        // A loop handle whose 44px hit rect reaches up into the strip owns its
-        // drag for the drag's whole lifetime.
+        // A control under the press (the now cap) owns the drag for its whole
+        // lifetime.
         let input = StripInput {
             primary_dragging: true,
             scrub_suppressed: true,
@@ -328,7 +249,7 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn archive_tier_still_pans_selects_and_inspects() {
+    fn archive_tier_still_pans_and_inspects() {
         // Only seek is suppressed at Archive — navigation and inspection stay.
         let pan = StripInput {
             middle_dragging: true,
