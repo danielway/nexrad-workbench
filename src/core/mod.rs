@@ -77,7 +77,9 @@ pub(crate) use domain::playback::{
     TIMELINE_ZOOM_MAX,
 };
 pub(crate) use domain::prefs::UserPreferences;
-pub(crate) use domain::radar::{RadarTimeline, Scan, ScanBoundary, ScanMetadata, Sweep};
+pub(crate) use domain::radar::{
+    LiveVolume, RadarTimeline, Scan, ScanBoundary, ScanMetadata, Sweep,
+};
 #[allow(unused_imports)]
 pub(crate) use domain::radar::{Radial, TimeRange};
 pub(crate) use domain::telemetry::{

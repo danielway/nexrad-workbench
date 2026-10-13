@@ -195,6 +195,7 @@ impl WorkbenchApp {
                 .scans
                 .lookback_window(
                     &self.timeline.shadow_scan_boundaries,
+                    self.live_volume_frames(),
                     &self.state.viz_state.elevation_selection,
                     self.state.viz_state.product.to_worker_string(),
                     now,
@@ -203,6 +204,20 @@ impl WorkbenchApp {
                 .unwrap_or((now - basis.fallback_span_secs(), now)),
             crate::core::LoopBasis::Duration(secs) => (now - secs, now),
         }
+    }
+
+    /// The volume the stream is collecting, as the timeline draws it, for
+    /// counting its frames (including cuts collected before the stream
+    /// joined). `None` when not streaming or before its plan is known.
+    fn live_volume_frames(&self) -> Option<crate::core::LiveVolume<'_>> {
+        if !self.live.mode_state.is_active() {
+            return None;
+        }
+        let anchor = self.live.mode_state.current_volume.as_ref()?;
+        Some(crate::core::LiveVolume {
+            key_secs: anchor.scan_key.scan_start.0 as f64 / 1000.0,
+            projection: self.live.radar_model.position.as_ref()?,
+        })
     }
 
     /// Nudge the timeline view minimally so "now" stays visible. Pan/zoom is
