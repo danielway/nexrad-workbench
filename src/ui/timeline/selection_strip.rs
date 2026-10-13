@@ -55,6 +55,7 @@ pub(super) fn render_selection_strip(
     let now_x = frame.ts_to_x(now);
     let stream_active = live.mode_state.is_active();
     let range = playback.state.playback_bounds();
+    let pinned = playback.state.is_live_range();
     let edges_px = range.map(|(s, e)| (frame.ts_to_x(s), frame.ts_to_x(e)));
     let point_at = |x: f32| drag_point(frame.x_to_ts(x), now, x - now_x, stream_active);
     let drag_id = response.id.with("drag");
@@ -64,7 +65,7 @@ pub(super) fn render_selection_strip(
             .input(|i| i.pointer.press_origin())
             .map_or(rect.left(), |p| p.x);
         let grab = grab_at(edges_px, press_x);
-        if let Some(anchor) = drag_anchor(grab, range, point_at(press_x)) {
+        if let Some(anchor) = drag_anchor(grab, range, point_at(press_x), pinned, now) {
             playback.state.begin_selection_drag(anchor);
             ui.ctx().memory_mut(|m| {
                 m.data.insert_temp(
@@ -94,7 +95,7 @@ pub(super) fn render_selection_strip(
             let drawn = playback.state.end_selection_drag();
             finish(
                 state,
-                release(d.grab, drawn, d.moved, now, stream_active),
+                release(d.grab, drawn, d.moved, pinned, now, stream_active),
                 range,
             );
         }
@@ -102,7 +103,14 @@ pub(super) fn render_selection_strip(
         let x = response.interact_pointer_pos().map_or(rect.left(), |p| p.x);
         finish(
             state,
-            release(grab_at(edges_px, x), None, false, now, stream_active),
+            release(
+                grab_at(edges_px, x),
+                None,
+                false,
+                pinned,
+                now,
+                stream_active,
+            ),
             range,
         );
     }

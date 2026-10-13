@@ -52,13 +52,19 @@ pub(crate) fn grab_at(edges_px: Option<(f32, f32)>, x: f32) -> StripGrab {
 }
 
 /// The edge that stays put while dragging: the opposite handle, or the press
-/// itself for a new range. `None` when a handle was grabbed with no range.
+/// itself for a new range. A range pinned to now keeps its right edge on now
+/// while its left handle moves (its committed end can trail now while the
+/// loop plays, see `PlaybackState::commit_pinned_window`). `None` when a
+/// handle was grabbed with no range.
 pub(crate) fn drag_anchor(
     grab: StripGrab,
     range: Option<(f64, f64)>,
     press_ts: f64,
+    pinned: bool,
+    now: f64,
 ) -> Option<f64> {
     match grab {
+        StripGrab::Start if pinned => range.map(|_| now),
         StripGrab::Start => range.map(|(_, end)| end),
         StripGrab::End => range.map(|(start, _)| start),
         StripGrab::New => Some(press_ts),
@@ -91,11 +97,14 @@ pub(crate) enum StripRelease {
 }
 
 /// Decide a release. `drawn` is the dragged range (`None` when it collapsed
-/// to under a second); `moved` is whether the pointer moved since the press.
+/// to under a second); `moved` is whether the pointer moved since the press;
+/// `pinned` is whether the range was pinned to now before the drag (moving
+/// its left handle keeps it pinned).
 pub(crate) fn release(
     grab: StripGrab,
     drawn: Option<(f64, f64)>,
     moved: bool,
+    pinned: bool,
     now: f64,
     stream_active: bool,
 ) -> StripRelease {
@@ -111,7 +120,8 @@ pub(crate) fn release(
     StripRelease::Select {
         start,
         end,
-        to_live: stream_active && end >= now - PINNED_END_SLACK_SECS,
+        to_live: stream_active
+            && ((pinned && grab == StripGrab::Start) || end >= now - PINNED_END_SLACK_SECS),
     }
 }
 
@@ -156,10 +166,30 @@ mod tests {
     #[wasm_bindgen_test]
     fn dragging_a_handle_anchors_the_other_edge() {
         let range = Some((1000.0, 2000.0));
-        assert_eq!(drag_anchor(StripGrab::Start, range, 1005.0), Some(2000.0));
-        assert_eq!(drag_anchor(StripGrab::End, range, 1995.0), Some(1000.0));
-        assert_eq!(drag_anchor(StripGrab::New, range, 1500.0), Some(1500.0));
-        assert_eq!(drag_anchor(StripGrab::End, None, 1500.0), None);
+        let now = 3000.0;
+        assert_eq!(
+            drag_anchor(StripGrab::Start, range, 1005.0, false, now),
+            Some(2000.0)
+        );
+        assert_eq!(
+            drag_anchor(StripGrab::End, range, 1995.0, false, now),
+            Some(1000.0)
+        );
+        assert_eq!(
+            drag_anchor(StripGrab::New, range, 1500.0, false, now),
+            Some(1500.0)
+        );
+        assert_eq!(drag_anchor(StripGrab::End, None, 1500.0, false, now), None);
+        // A pinned range's left handle moves against now, not its committed
+        // end (which trails now while the loop plays).
+        assert_eq!(
+            drag_anchor(StripGrab::Start, range, 1005.0, true, now),
+            Some(now)
+        );
+        assert_eq!(
+            drag_anchor(StripGrab::End, range, 1995.0, true, now),
+            Some(1000.0)
+        );
     }
 
     #[wasm_bindgen_test]
@@ -178,7 +208,7 @@ mod tests {
         let now = 10_000.0;
         // A range ending at the live edge while streaming is pinned to now.
         assert_eq!(
-            release(StripGrab::End, Some((9000.0, now)), true, now, true),
+            release(StripGrab::End, Some((9000.0, now)), true, false, now, true),
             StripRelease::Select {
                 start: 9000.0,
                 end: now,
@@ -187,7 +217,7 @@ mod tests {
         );
         // The same range with no stream is fixed.
         assert_eq!(
-            release(StripGrab::New, Some((9000.0, now)), true, now, false),
+            release(StripGrab::New, Some((9000.0, now)), true, false, now, false),
             StripRelease::Select {
                 start: 9000.0,
                 end: now,
@@ -197,7 +227,14 @@ mod tests {
         // A minute and a half short of now is a fixed range: only a drop on
         // the live edge pins.
         assert_eq!(
-            release(StripGrab::New, Some((9000.0, now - 90.0)), true, now, true),
+            release(
+                StripGrab::New,
+                Some((9000.0, now - 90.0)),
+                true,
+                false,
+                now,
+                true
+            ),
             StripRelease::Select {
                 start: 9000.0,
                 end: now - 90.0,
@@ -206,7 +243,14 @@ mod tests {
         );
         // Dragged well off now: fixed.
         assert_eq!(
-            release(StripGrab::End, Some((5000.0, 8000.0)), true, now, true),
+            release(
+                StripGrab::End,
+                Some((5000.0, 8000.0)),
+                true,
+                false,
+                now,
+                true
+            ),
             StripRelease::Select {
                 start: 5000.0,
                 end: 8000.0,
@@ -215,12 +259,36 @@ mod tests {
         );
         // A click on empty strip (nothing drawn) clears.
         assert_eq!(
-            release(StripGrab::New, None, false, now, true),
+            release(StripGrab::New, None, false, false, now, true),
             StripRelease::Clear
+        );
+        // Moving a pinned range's left handle keeps it pinned, wherever its
+        // committed end sits.
+        assert_eq!(
+            release(
+                StripGrab::Start,
+                Some((9500.0, 9900.0)),
+                true,
+                true,
+                now,
+                true
+            ),
+            StripRelease::Select {
+                start: 9500.0,
+                end: 9900.0,
+                to_live: true
+            }
         );
         // A handle pressed and released in place changes nothing.
         assert_eq!(
-            release(StripGrab::Start, Some((9000.0, now)), false, now, true),
+            release(
+                StripGrab::Start,
+                Some((9000.0, now)),
+                false,
+                false,
+                now,
+                true
+            ),
             StripRelease::Nothing
         );
         // Longer than a selection may span.
@@ -230,6 +298,7 @@ mod tests {
                 StripGrab::New,
                 Some((now - too_long, now)),
                 true,
+                false,
                 now,
                 false
             ),
