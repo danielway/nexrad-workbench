@@ -148,21 +148,13 @@ pub(crate) fn select_range(
 ///   separate counter widget. The stream keeps running in the background
 ///   (unless the data-saver policy says otherwise).
 /// - **LIVE RANGE** (a range attached to now, from a loop preset or a range
-///   drawn up to now): Pause snaps back to the live point.
-///   The stream keeps running throughout — the live machine is never touched
-///   on that branch.
+///   drawn up to now): ordinary play/pause looping through the window, which
+///   keeps sliding with now either way. The range stays attached; clearing it
+///   (not pausing) returns to the live point. The stream is never touched.
 pub(crate) fn reduce_toggle_play_pause(
     env: &TransportEnv,
     slices: TransportSlices<'_>,
 ) -> TransportActions {
-    // LIVE RANGE → LIVE-NOW: stop the replay and re-pin to now. The stream
-    // stays active (we never stop the live machine), so streaming continues.
-    if slices.playback.is_live_range() {
-        slices.playback.playing = false;
-        slices.playback.exit_live_range_to_now(env.now_secs);
-        return TransportActions::default();
-    }
-
     // LIVE-NOW → freeze: PAUSE while tethered drops to ARCHIVE at the current
     // position (the live edge), stopped. Routing through `detach_playhead`
     // stamps `detached_since` (so the LIVE button's lag readout and the idle
@@ -413,21 +405,34 @@ mod coverage_tests {
     // ---- reduce_toggle_play_pause: LIVE-LOOKBACK branch ----------------
 
     #[wasm_bindgen_test]
-    fn lookback_repins_to_now_and_pauses() {
+    fn live_range_pauses_and_plays_in_place() {
         let mut f = Fixture::new();
-        // Reach a live range via the legal transition (live point -> range).
+        f.live_mode.phase = LivePhase::Streaming;
+        // A preset loop starts playing; pausing keeps the attached range.
         f.playback.enter_pinned_live(1000.0);
         f.playback.enter_live_range(None, LoopBasis::default());
-        assert!(f.playback.is_live_range());
+        assert!(f.playback.playing);
 
         let actions = reduce_toggle_play_pause(&env_at(4242.0), f.slices());
 
-        // exit_lookback_to_now: back to pinned-now, snapped to now, paused.
         assert_eq!(actions, TransportActions::default());
-        assert!(!f.playback.is_live_range());
-        assert!(f.playback.is_pinned());
+        assert!(f.playback.is_live_range());
         assert!(!f.playback.playing);
-        assert!((f.playback.playback_position() - 4242.0).abs() < 1e-9);
+        assert_eq!(f.live_mode.detached_since, None);
+
+        // A range drawn up to now starts paused; Play loops through it.
+        let mut f = Fixture::new();
+        f.live_mode.phase = LivePhase::Streaming;
+        f.playback.enter_pinned_live(1000.0);
+        let (_, selected) = select_range(&env_at(1000.0), f.slices(), 700.0, 1000.0, true);
+        assert!(selected);
+        assert!(!f.playback.playing);
+
+        reduce_toggle_play_pause(&env_at(1000.0), f.slices());
+
+        assert!(f.playback.playing);
+        assert!(f.playback.is_live_range());
+        assert_eq!(f.playback.playback_bounds(), Some((700.0, 1000.0)));
     }
 
     // ---- reduce_toggle_play_pause: LIVE-NOW freeze branch --------------

@@ -1054,13 +1054,6 @@ impl PlaybackState {
         self.macro_playback.frame_accumulator = 0.0;
     }
 
-    /// Live range → live point (pause during a replay): drop the range and
-    /// re-pin to `now`. The stream is untouched. Restores the live speed the
-    /// same way [`Self::enter_pinned_live`] does.
-    pub(crate) fn exit_live_range_to_now(&mut self, now: f64) {
-        self.enter_pinned_live(now);
-    }
-
     /// Per-frame position pin while on the live point (called from the live
     /// tick, independent of the `playing` flag).
     pub(crate) fn pin_tick(&mut self, now: f64) {
@@ -1907,12 +1900,12 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn exit_lookback_to_now_clears_window_and_repins() {
+    fn enter_pinned_live_from_live_range_clears_window_and_repins() {
         let mut ps = PlaybackState::default();
         ps.enter_pinned_live(1000.0);
         ps.enter_live_range(Some(940.0), LoopBasis::default());
         ps.slide_live_range(940.0, 1000.0); // tick's window
-        ps.exit_live_range_to_now(1010.0);
+        ps.enter_pinned_live(1010.0);
         assert_eq!(ps.playback_bounds(), None);
         assert!(ps.is_pinned());
         assert_eq!(ps.playback_position(), 1010.0);
@@ -2470,7 +2463,7 @@ mod tests {
         let mut ps = PlaybackState::default();
         ps.enter_pinned_live(1000.0);
         ps.enter_live_range(Some(940.0), LoopBasis::FrameCount(4));
-        ps.exit_live_range_to_now(1010.0);
+        ps.enter_pinned_live(1010.0);
         assert!(ps.is_pinned());
         assert!(ps.selection.range().is_none());
         // And the harder exit path.
@@ -3050,7 +3043,7 @@ mod coverage_tests {
         ps.enter_live_range(Some(940.0), LoopBasis::FrameCount(6));
         // Lookback UI may leave a macro fps selection selected.
         ps.speed = PlaybackSpeed::Normal;
-        ps.exit_live_range_to_now(1010.0);
+        ps.enter_pinned_live(1010.0);
         assert!(ps.is_pinned());
         assert_eq!(ps.speed, PlaybackSpeed::Realtime);
     }

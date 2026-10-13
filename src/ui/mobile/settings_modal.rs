@@ -200,23 +200,17 @@ fn render_playback_body(
     // (datetime jump above, the full speed list below, and the UTC/Local
     // toggle).
 
-    // Playback mode: Frames or Rays. Independent of zoom; a lookback replay
-    // always steps frames, so Rays is unavailable during one.
+    // Playback mode: Frames or Rays. Independent of zoom and of the selection.
     ui.horizontal(|ui| {
         ui.add_space(8.0);
         ui.label(RichText::new("Mode:").size(13.0));
         let mode = playback.state.playback_mode();
-        let lookback = playback.state.is_live_range();
         for choice in [PlaybackMode::Macro, PlaybackMode::Micro] {
-            let enabled = !(lookback && choice == PlaybackMode::Micro);
             if ui
-                .add_enabled(
-                    enabled,
-                    egui::Button::selectable(
-                        mode == choice,
-                        RichText::new(choice.label()).size(13.0),
-                    ),
-                )
+                .add(egui::Button::selectable(
+                    mode == choice,
+                    RichText::new(choice.label()).size(13.0),
+                ))
                 .clicked()
                 && mode != choice
             {

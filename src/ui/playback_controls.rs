@@ -286,8 +286,6 @@ pub(super) fn render_playback_controls(
     };
     let play_hover = if tethered {
         "Freeze (pause the live feed)"
-    } else if playback.state.is_live_range() {
-        "Return to live"
     } else if playback.state.playing {
         "Pause"
     } else {
@@ -333,9 +331,7 @@ pub(super) fn render_playback_controls(
     ui.separator();
 
     // Frames / Rays: the user's explicit playback mode, never changed by zoom.
-    // A lookback replay always steps frames, so Rays is unavailable during one.
     let mode = playback.state.playback_mode();
-    let lookback = playback.state.is_live_range();
     ui.add_enabled_ui(interactive, |ui| {
         for (choice, hint) in [
             (
@@ -348,14 +344,9 @@ pub(super) fn render_playback_controls(
                  data as the radar collected it",
             ),
         ] {
-            let enabled = !(lookback && choice == PlaybackMode::Micro);
             let resp = ui
-                .add_enabled(
-                    enabled,
-                    egui::Button::selectable(mode == choice, choice.label()),
-                )
-                .on_hover_text(hint)
-                .on_disabled_hover_text("Live loops play frame by frame");
+                .add(egui::Button::selectable(mode == choice, choice.label()))
+                .on_hover_text(hint);
             if resp.clicked() && mode != choice {
                 state.push_command(crate::core::Intent::SetPlayMode(choice));
             }
