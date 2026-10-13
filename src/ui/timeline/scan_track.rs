@@ -1,4 +1,4 @@
-//! Macro / Archive main-track rendering (spec §6.4 / §9).
+//! Macro main-track rendering (spec §6.4 / §9).
 //!
 //! In the Macro tier each scan is a **block spanning the volume's real time**:
 //! solid across the sweeps we hold, hollow across the remainder of the expected
@@ -48,7 +48,7 @@ fn faded(c: Color32, fade: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * fade) as u8)
 }
 
-/// Render the Macro / Archive main track.
+/// Render the Macro main track.
 pub(super) fn render_macro_track(
     painter: &Painter,
     frame: &TimelineFrame<'_>,

@@ -197,11 +197,7 @@ pub(crate) fn reduce_toggle_play_pause(
     }
 
     // ARCHIVE: ordinary play/pause.
-    if slices.playback.playing {
-        slices.playback.playing = false;
-    } else if slices.playback.is_playback_allowed() {
-        slices.playback.playing = true;
-    }
+    slices.playback.playing = !slices.playback.playing;
     TransportActions::default()
 }
 
@@ -268,7 +264,7 @@ mod coverage_tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     use crate::core::projection::ProjectionEngine;
-    use crate::core::{LivePhase, LoopBasis, TimelineTier};
+    use crate::core::{LivePhase, LoopBasis};
 
     /// A default env with the data-saver policy off.
     fn env_at(now: f64) -> TransportEnv {
@@ -577,29 +573,12 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn archive_paused_resumes_when_playback_allowed() {
-        let mut f = Fixture::new(); // Free, default tier permits playback
+        let mut f = Fixture::new(); // Free
         f.playback.playing = false;
-        assert!(f.playback.is_playback_allowed());
 
         reduce_toggle_play_pause(&env_at(100.0), f.slices());
 
         assert!(f.playback.playing);
-    }
-
-    #[wasm_bindgen_test]
-    fn archive_paused_stays_paused_when_archive_tier() {
-        let mut f = Fixture::new(); // Free
-        f.playback.playing = false;
-        // Archive tier is a navigator only: playback is not allowed.
-        f.playback.timeline_tier = TimelineTier::Archive;
-        assert!(!f.playback.is_playback_allowed());
-
-        reduce_toggle_play_pause(&env_at(100.0), f.slices());
-
-        // No transition into pinned/lookback, and resume is blocked.
-        assert!(!f.playback.is_pinned());
-        assert!(!f.playback.is_live_range());
-        assert!(!f.playback.playing);
     }
 
     // ---- reduce_stop_live ----------------------------------------------

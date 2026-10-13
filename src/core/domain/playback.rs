@@ -19,27 +19,18 @@ pub(crate) const MICRO_ZOOM_THRESHOLD: f64 = 1.0;
 /// only as a backstop against a degenerate `width_px`, and must therefore sit
 /// *below* the width-aware floor on even the narrowest plausible strip —
 /// otherwise it, not [`MAX_VIEW_SPAN_SECS`], silently decides how far the
-/// timeline can zoom out. (At 1200 px the era ceiling needs ~1.06e-6, so the
-/// former `1e-5` would have capped the view at under four years.)
+/// timeline can zoom out.
 pub(crate) const TIMELINE_ZOOM_MIN: f64 = 0.0000001;
 pub(crate) const TIMELINE_ZOOM_MAX: f64 = 1000.0;
 
-/// Widest visible span (seconds) any timeline view may show — the ceiling the
-/// width-aware min-zoom enforces. **36 years: the whole NEXRAD Level II era**
-/// (the archive starts 1991-06-05).
-///
-/// One continuous timeline that reaches from a single sweep to the entire
-/// archive is the point; what changes with the span is the *renderer*, not the
-/// axis. The linear Micro/Macro strip stops past the Archive-enter span
-/// (~60 h), beyond which the Archive **calendar** tier draws over this same
-/// zoom scalar — and its cells coarsen day → week → month → quarter
-/// ([`BucketGranularity`]) so the widest view is a readable band of quarter
-/// cells rather than the "label soup" year-wide linear strip that was cut
-/// (spec §6.4, §15 cut #4).
-pub(crate) const MAX_VIEW_SPAN_SECS: f64 = 36.0 * 365.25 * 86_400.0;
+/// Widest span (seconds) the strip may show: three days, the ceiling the
+/// width-aware min-zoom enforces. Further out is the overview's job: it
+/// zooms out to the whole archive era (see [`crate::core::overview`]), so the
+/// strip only ever draws scans and sweeps (round-4 design).
+pub(crate) const MAX_VIEW_SPAN_SECS: f64 = 3.0 * 86_400.0;
 
-/// Tunable tier thresholds. The timeline's zoom level maps to one of three
-/// behavioral+visual tiers; transitions carry hysteresis (distinct enter/exit
+/// Tunable tier thresholds. The timeline's zoom level maps to one of two
+/// visual tiers; transitions carry hysteresis (distinct enter/exit
 /// thresholds) so a zoom hovering at a boundary never flickers. Values are
 /// the alignment-pass decisions (see docs/PRODUCT.md, Alignment §2);
 /// tune here, in one place.
@@ -48,24 +39,17 @@ pub(crate) mod tier {
     pub(crate) const MICRO_ENTER_ZOOM: f64 = 1.15;
     /// Exit Micro (to Macro) when zoom falls to/below this (px/sec).
     pub(crate) const MICRO_EXIT_ZOOM: f64 = 0.87;
-    /// Enter Archive (from Macro) when the visible span exceeds this (seconds).
-    pub(crate) const ARCHIVE_ENTER_SPAN_SECS: f64 = 60.0 * 3600.0;
-    /// Exit Archive (to Macro) when the visible span falls below this (seconds).
-    pub(crate) const ARCHIVE_EXIT_SPAN_SECS: f64 = 48.0 * 3600.0;
-    /// Nominal Archive boundary used only for hysteresis-free seeding
-    /// (boot / URL restore), midway between the enter/exit spans.
-    pub(crate) const ARCHIVE_NOMINAL_SPAN_SECS: f64 = 54.0 * 3600.0;
 }
 
-/// Bucket sizes the Archive calendar aggregates at, coarsest last.
+/// Bucket sizes the overview aggregates coverage at when it is zoomed out
+/// past single scans, coarsest last.
 ///
-/// One lane of day cells only stays legible for a few hundred days. Reaching
-/// the whole NEXRAD era on the same continuous timeline means the *cells* get
-/// coarser as the span grows, not that the lane gets denser — otherwise the
-/// widest view is a shimmer of sub-pixel ticks.
+/// Reaching the whole NEXRAD era on one lane means the *bars* get coarser as
+/// the span grows, not that the lane gets denser — otherwise the widest view
+/// is a shimmer of sub-pixel ticks.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) enum BucketGranularity {
-    /// UTC days — the original Archive cell.
+    /// UTC days.
     #[default]
     Day,
     /// UTC weeks starting Monday.
@@ -87,26 +71,6 @@ pub(crate) mod bucket_span {
     pub(crate) const QUARTER_SECS: f64 = 3.0 * MONTH_SECS;
 }
 
-/// Cell width (px) below which the calendar drops to the next coarser rung.
-const CELL_EXIT_PX: f64 = 5.0;
-
-/// Zoom (px/sec) at which the *terminal* rung's cells hit [`CELL_EXIT_PX`].
-///
-/// The ladder can always escape an unreadable cell by coarsening — except at
-/// Quarter, where there is nowhere left to go. So this becomes a hard zoom-out
-/// floor, keeping the invariant "a visible calendar cell is always legible"
-/// true at every strip width instead of merely usually true.
-pub(crate) const MIN_LEGIBLE_CELL_ZOOM: f64 = CELL_EXIT_PX / bucket_span::QUARTER_SECS;
-
-// The hard backstop must sit below the legibility floor, or it — not the
-// calendar's readability — would decide the zoom-out limit.
-const _: () = assert!(MIN_LEGIBLE_CELL_ZOOM > TIMELINE_ZOOM_MIN);
-/// Cell width (px) at or above which it climbs back to the finer rung. The gap
-/// against [`CELL_EXIT_PX`] is the hysteresis that stops a pinch hovering on a
-/// boundary from flickering between rungs — the same discipline the tier
-/// machine uses.
-const CELL_ENTER_PX: f64 = 7.0;
-
 impl BucketGranularity {
     /// Nominal span of one bucket, for pixel-width estimates.
     pub(crate) fn nominal_secs(self) -> f64 {
@@ -116,64 +80,6 @@ impl BucketGranularity {
             BucketGranularity::Month => bucket_span::MONTH_SECS,
             BucketGranularity::Quarter => bucket_span::QUARTER_SECS,
         }
-    }
-
-    /// The next coarser rung, or `None` at the terminal rung.
-    fn coarser(self) -> Option<Self> {
-        match self {
-            BucketGranularity::Day => Some(BucketGranularity::Week),
-            BucketGranularity::Week => Some(BucketGranularity::Month),
-            BucketGranularity::Month => Some(BucketGranularity::Quarter),
-            BucketGranularity::Quarter => None,
-        }
-    }
-
-    /// The next finer rung, or `None` at the finest.
-    fn finer(self) -> Option<Self> {
-        match self {
-            BucketGranularity::Day => None,
-            BucketGranularity::Week => Some(BucketGranularity::Day),
-            BucketGranularity::Month => Some(BucketGranularity::Week),
-            BucketGranularity::Quarter => Some(BucketGranularity::Month),
-        }
-    }
-
-    /// Projected on-screen width (px) of one bucket at `zoom` (px/sec).
-    fn cell_px(self, zoom: f64) -> f64 {
-        self.nominal_secs() * zoom
-    }
-
-    /// Hysteretic advance from the current rung for a new zoom.
-    ///
-    /// Driven by projected *cell pixel width* rather than raw span, so the
-    /// ladder behaves identically on a phone and a wide desktop strip, and the
-    /// bucket count stays bounded by `width / CELL_EXIT_PX` by construction.
-    pub(crate) fn advance(self, zoom: f64) -> Self {
-        let mut g = self;
-        // Too small to read → step coarser, possibly more than one rung (a URL
-        // restore can land anywhere).
-        while g.cell_px(zoom) < CELL_EXIT_PX {
-            match g.coarser() {
-                Some(next) => g = next,
-                None => break,
-            }
-        }
-        // Comfortably large → step finer, but only while the finer rung itself
-        // clears the enter threshold.
-        while let Some(finer) = g.finer() {
-            if finer.cell_px(zoom) >= CELL_ENTER_PX {
-                g = finer;
-            } else {
-                break;
-            }
-        }
-        g
-    }
-
-    /// Hysteresis-free seeding for boot / URL restore, where there is no
-    /// previous rung to carry.
-    pub(crate) fn seed(zoom: f64) -> Self {
-        BucketGranularity::Day.advance(zoom)
     }
 }
 
@@ -189,9 +95,6 @@ pub(crate) enum TimelineTier {
     Micro,
     /// Zoomed out (hours–days visible): scan blocks.
     Macro,
-    /// Far out (multi-day span): the calendar navigator. Unbounded play can't
-    /// start here (see [`PlaybackState::must_halt_for_tier`]).
-    Archive,
 }
 
 /// How playback advances: the user's explicit choice, stored on
@@ -881,11 +784,6 @@ pub(crate) struct PlaybackState {
     /// `timeline_zoom`.
     pub timeline_tier: TimelineTier,
 
-    /// The Archive calendar's stored bucket size (see [`BucketGranularity`]).
-    /// Advanced with hysteresis alongside `timeline_tier`; deriving it per
-    /// frame from a bare threshold would flicker mid-pinch.
-    pub calendar_granularity: BucketGranularity,
-
     /// Timeline view position - absolute timestamp of left edge (Unix seconds)
     pub timeline_view_start: f64,
 
@@ -1109,98 +1007,41 @@ impl PlaybackState {
     // hysteresis memory the field carries.
     // ------------------------------------------------------------------
 
-    /// Visible time span for a given zoom + widget width, in seconds. The
-    /// Archive boundary is span-based (a wide window of history) rather than
-    /// pure zoom, so it stays meaningful as the strip widens.
-    fn visible_span_secs(zoom: f64, width_px: f64) -> f64 {
-        if zoom > 0.0 {
-            width_px / zoom
-        } else {
-            f64::INFINITY
-        }
-    }
-
-    /// Deterministically classify zoom+width into a tier with NO hysteresis
-    /// memory, using the nominal boundaries. For boot / URL restore, where
+    /// Deterministically classify a zoom into a tier with NO hysteresis
+    /// memory, using the nominal boundary. For boot / URL restore, where
     /// there is no prior tier to bias the decision.
-    pub(crate) fn seed_tier(zoom: f64, width_px: f64) -> TimelineTier {
-        if Self::visible_span_secs(zoom, width_px) > tier::ARCHIVE_NOMINAL_SPAN_SECS {
-            TimelineTier::Archive
-        } else if zoom >= MICRO_ZOOM_THRESHOLD {
+    pub(crate) fn seed_tier(zoom: f64) -> TimelineTier {
+        if zoom >= MICRO_ZOOM_THRESHOLD {
             TimelineTier::Micro
         } else {
             TimelineTier::Macro
         }
     }
 
-    /// Reseed the tier from the current zoom+width without hysteresis. Used at
+    /// Reseed the tier from the current zoom without hysteresis. Used at
     /// boot / URL restore once `timeline_zoom` is set.
     pub(crate) fn seed_tier_from_state(&mut self) {
-        self.timeline_tier = Self::seed_tier(self.timeline_zoom, self.timeline_width_px);
-        self.calendar_granularity = BucketGranularity::seed(self.timeline_zoom);
+        self.timeline_tier = Self::seed_tier(self.timeline_zoom);
     }
 
-    /// Compute the tier a zoom+width should land in, given the current tier
-    /// (so enter/exit thresholds differ — hysteresis). Pure: does not mutate.
-    fn next_tier(&self, zoom: f64, width_px: f64) -> TimelineTier {
-        let span = Self::visible_span_secs(zoom, width_px);
+    /// Compute the tier a zoom should land in, given the current tier (so
+    /// enter/exit thresholds differ — hysteresis). Pure: does not mutate.
+    fn next_tier(&self, zoom: f64) -> TimelineTier {
         match self.timeline_tier {
-            TimelineTier::Micro => {
-                // Leave Micro only once zoom drops to the (lower) exit floor.
-                if zoom <= tier::MICRO_EXIT_ZOOM {
-                    if span > tier::ARCHIVE_ENTER_SPAN_SECS {
-                        TimelineTier::Archive
-                    } else {
-                        TimelineTier::Macro
-                    }
-                } else {
-                    TimelineTier::Micro
-                }
-            }
-            TimelineTier::Macro => {
-                if zoom >= tier::MICRO_ENTER_ZOOM {
-                    TimelineTier::Micro
-                } else if span > tier::ARCHIVE_ENTER_SPAN_SECS {
-                    TimelineTier::Archive
-                } else {
-                    TimelineTier::Macro
-                }
-            }
-            TimelineTier::Archive => {
-                // Leave Archive only once the span shrinks past the (lower)
-                // exit span; then re-evaluate Micro vs Macro by zoom.
-                if span < tier::ARCHIVE_EXIT_SPAN_SECS {
-                    if zoom >= tier::MICRO_ENTER_ZOOM {
-                        TimelineTier::Micro
-                    } else {
-                        TimelineTier::Macro
-                    }
-                } else {
-                    TimelineTier::Archive
-                }
-            }
+            // Leave Micro only once zoom drops to the (lower) exit floor.
+            TimelineTier::Micro if zoom <= tier::MICRO_EXIT_ZOOM => TimelineTier::Macro,
+            TimelineTier::Macro if zoom >= tier::MICRO_ENTER_ZOOM => TimelineTier::Micro,
+            current => current,
         }
     }
 
-    /// The width-aware minimum zoom (px/sec) — how far out the timeline may go.
-    ///
-    /// Two floors, whichever binds:
-    /// - **the era ceiling**: the visible span never exceeds
-    ///   [`MAX_VIEW_SPAN_SECS`] at `width_px`;
-    /// - **the legibility floor** ([`MIN_LEGIBLE_CELL_ZOOM`]): the Archive
-    ///   calendar's *terminal* rung stays a readable cell. Without this, a
-    ///   narrow strip zoomed fully out shows the whole era as ~2px quarter
-    ///   cells — the ladder has no coarser rung to escape to, so the ceiling
-    ///   has to stop instead. A phone therefore reaches ~16 years rather than
-    ///   36, which is the honest answer: 36 years across 320 px is ~42 days per
-    ///   pixel and there is nothing there to see.
-    ///
-    /// [`TIMELINE_ZOOM_MIN`] sits below both as a degenerate-width backstop.
+    /// The width-aware minimum zoom (px/sec): how far out the strip may go,
+    /// so the visible span never exceeds [`MAX_VIEW_SPAN_SECS`] at
+    /// `width_px`. [`TIMELINE_ZOOM_MIN`] sits below it as a degenerate-width
+    /// backstop.
     pub(crate) fn min_zoom_for_width(width_px: f64) -> f64 {
         let w = width_px.max(1.0);
-        (w / MAX_VIEW_SPAN_SECS)
-            .max(MIN_LEGIBLE_CELL_ZOOM)
-            .max(TIMELINE_ZOOM_MIN)
+        (w / MAX_VIEW_SPAN_SECS).max(TIMELINE_ZOOM_MIN)
     }
 
     /// The single zoom-mutation path. Clamps, stores the zoom, and advances
@@ -1209,44 +1050,24 @@ impl PlaybackState {
     /// `timeline_width_px` when unknown. `median_frame_spacing` feeds cadence
     /// conversion (see [`Self::median_frame_spacing`]).
     ///
-    /// The minimum is width-aware ([`Self::min_zoom_for_width`]) so the widest
-    /// view stays a readable calendar span instead of the deprecated year-wide
-    /// strip.
+    /// The minimum is width-aware ([`Self::min_zoom_for_width`]): the strip
+    /// shows at most three days.
     pub(crate) fn set_timeline_zoom(&mut self, zoom: f64, width_px: f64) {
         let min = Self::min_zoom_for_width(width_px);
         self.timeline_zoom = zoom.clamp(min, TIMELINE_ZOOM_MAX);
-        self.calendar_granularity = self.calendar_granularity.advance(self.timeline_zoom);
-        self.timeline_tier = self.next_tier(self.timeline_zoom, width_px);
+        self.timeline_tier = self.next_tier(self.timeline_zoom);
     }
 
     /// Per-frame reconcile: the strip width can change (responsive layout)
-    /// even when zoom is untouched, which moves the Archive span boundary.
-    /// Re-evaluate the tier against the current width with hysteresis. Cheap
-    /// and idempotent when nothing moved.
+    /// even when zoom is untouched, which moves the zoom floor. Re-clamp the
+    /// zoom and re-evaluate the tier with hysteresis. Cheap and idempotent
+    /// when nothing moved.
     pub(crate) fn reconcile_tier(&mut self, width_px: f64) {
-        // Also re-clamp the zoom itself. `min_zoom_for_width` is width-aware, so
-        // a zoom restored from a URL was only ever clamped against the *seeded*
-        // width — harmless at a 100-day ceiling, a real error now that the
-        // ceiling is decades wide.
+        // `min_zoom_for_width` is width-aware, so a zoom restored from a URL
+        // was only ever clamped against the *seeded* width.
         let min = Self::min_zoom_for_width(width_px);
         self.timeline_zoom = self.timeline_zoom.clamp(min, TIMELINE_ZOOM_MAX);
-        self.calendar_granularity = self.calendar_granularity.advance(self.timeline_zoom);
-        self.timeline_tier = self.next_tier(self.timeline_zoom, width_px);
-    }
-
-    /// Check if playback is allowed at the current tier. The Archive tier is a
-    /// navigator only (spec §6.4); every other tier permits playback.
-    pub(crate) fn is_playback_allowed(&self) -> bool {
-        self.timeline_tier != TimelineTier::Archive
-    }
-
-    /// Whether playback that is already running must halt at the current
-    /// tier. Zoom is view-only, so a loop (a fixed range or a lookback replay)
-    /// keeps playing when the strip zooms out to the Archive calendar. Only
-    /// unbounded play halts there, because its frame list would fall back to
-    /// the whole visible window, which can span years.
-    pub(crate) fn must_halt_for_tier(&self) -> bool {
-        !self.is_playback_allowed() && self.selection.range().is_none()
+        self.timeline_tier = self.next_tier(self.timeline_zoom);
     }
 
     /// The user's chosen playback mode (Frames or Rays).
@@ -1715,186 +1536,36 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn min_zoom_clamp_caps_widest_view_at_the_archive_era() {
-        // The width-aware floor bounds the visible span to MAX_VIEW_SPAN_SECS.
+    fn the_strip_shows_at_most_three_days() {
+        // The width-aware floor bounds the visible span to MAX_VIEW_SPAN_SECS;
+        // further out is the overview's job.
         let width = 1200.0;
         let min = PlaybackState::min_zoom_for_width(width);
-        // At the floor, the span equals the ceiling (within float slop).
-        let span_at_min = width / min;
-        assert!(
-            (span_at_min - MAX_VIEW_SPAN_SECS).abs() < 1.0,
-            "span {span_at_min}"
-        );
-        // The widest view now reaches the whole NEXRAD era. (The old
-        // year-scale *linear* strip is still gone — past ~60h the renderer is
-        // the Archive calendar, not a stretched strip.)
-        assert!(span_at_min > 30.0 * 365.0 * 86_400.0);
+        assert!((width / min - 3.0 * 86_400.0).abs() < 1.0);
 
         // A zoom request below the floor clamps UP to it.
         let mut ps = PlaybackState::default();
         ps.set_timeline_zoom(1e-12, width);
         assert_eq!(ps.timeline_zoom, min);
-        // And the resulting view can't show beyond the ceiling.
-        assert!(width / ps.timeline_zoom <= MAX_VIEW_SPAN_SECS + 1.0);
+        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
     }
 
     #[wasm_bindgen_test]
     fn the_hard_floor_never_becomes_the_binding_constraint() {
         // TIMELINE_ZOOM_MIN is a degenerate-width backstop, not the zoom-out
-        // ceiling. If it ever rises above the width-aware floor it silently
-        // decides how far the timeline can zoom out — which is exactly what
-        // capped the view at under four years before this change. Check the
-        // narrowest plausible strip, where the width-aware floor is smallest.
+        // ceiling: on any plausible strip the width-aware floor binds.
         for width in [320.0_f64, 768.0, 1200.0, 3840.0] {
             let width_aware = width / MAX_VIEW_SPAN_SECS;
-            assert!(
-                width_aware > TIMELINE_ZOOM_MIN,
-                "width {width}: {width_aware} <= {TIMELINE_ZOOM_MIN}"
-            );
-            // The effective floor is always one of the two meaningful ones.
-            assert_eq!(
-                PlaybackState::min_zoom_for_width(width),
-                width_aware.max(MIN_LEGIBLE_CELL_ZOOM)
-            );
+            assert!(width_aware > TIMELINE_ZOOM_MIN);
+            assert_eq!(PlaybackState::min_zoom_for_width(width), width_aware);
         }
-    }
-
-    #[wasm_bindgen_test]
-    fn a_wide_strip_reaches_the_whole_era() {
-        for width in [1200.0_f64, 1920.0, 3840.0] {
-            let min = PlaybackState::min_zoom_for_width(width);
-            assert!(
-                (width / min - MAX_VIEW_SPAN_SECS).abs() < 1.0,
-                "width {width}: {}",
-                width / min
-            );
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn a_narrow_strip_stops_where_cells_stop_being_readable() {
-        // A phone can't usefully show 36 years, so the legibility floor binds
-        // first and the reachable span comes down with it — rather than the
-        // view going wider than the ladder can render.
-        let width = 320.0;
-        let min = PlaybackState::min_zoom_for_width(width);
-        assert_eq!(min, MIN_LEGIBLE_CELL_ZOOM);
-        let span_years = (width / min) / (365.25 * 86_400.0);
-        assert!(span_years > 10.0, "{span_years}");
-        assert!(span_years < 36.0, "{span_years}");
-    }
-
-    // ---- BucketGranularity ladder ----------------------------------------
-
-    /// Zoom (px/sec) at which one bucket of `g` is `px` wide.
-    fn zoom_for_cell(g: BucketGranularity, px: f64) -> f64 {
-        px / g.nominal_secs()
-    }
-
-    #[wasm_bindgen_test]
-    fn the_ladder_coarsens_as_cells_shrink() {
-        // Day cells at 20px are comfortable; at 1px they are not, and the rung
-        // must step coarser rather than shimmer.
-        let g = BucketGranularity::Day;
-        assert_eq!(
-            g.advance(zoom_for_cell(BucketGranularity::Day, 20.0)),
-            BucketGranularity::Day
-        );
-        assert_eq!(
-            g.advance(zoom_for_cell(BucketGranularity::Day, 1.0)),
-            BucketGranularity::Week
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn the_terminal_rung_is_quarter() {
-        // The widest zoom on a wide strip must not fall off the ladder.
-        let widest = PlaybackState::min_zoom_for_width(1200.0);
-        assert_eq!(BucketGranularity::seed(widest), BucketGranularity::Quarter);
-    }
-
-    #[wasm_bindgen_test]
-    fn terminal_cells_stay_legible_at_the_widest_zoom() {
-        // The reason a Quarter rung exists: month cells at full zoom-out are
-        // ~2.8px, which reads as noise. Assert the terminal rung clears the
-        // exit threshold at both a phone and a desktop width.
-        for width in [320.0_f64, 1200.0, 3840.0] {
-            let zoom = PlaybackState::min_zoom_for_width(width);
-            let g = BucketGranularity::seed(zoom);
-            let cell_px = g.nominal_secs() * zoom;
-            assert!(cell_px >= CELL_EXIT_PX, "width {width}: {cell_px}px");
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn the_ladder_has_hysteresis_at_every_boundary() {
-        // In the band between exit and enter the rung depends on which side it
-        // came from — that is what stops a pinch hovering on a boundary from
-        // flickering between two cell sizes every frame.
-        for (fine, coarse) in [
-            (BucketGranularity::Day, BucketGranularity::Week),
-            (BucketGranularity::Week, BucketGranularity::Month),
-            (BucketGranularity::Month, BucketGranularity::Quarter),
-        ] {
-            // A zoom putting the FINE cell inside the hysteresis band.
-            let zoom = zoom_for_cell(fine, (CELL_EXIT_PX + CELL_ENTER_PX) / 2.0);
-            assert_eq!(fine.advance(zoom), fine, "{fine:?} should hold");
-            assert_eq!(coarse.advance(zoom), coarse, "{coarse:?} should hold");
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn sweeping_the_zoom_out_and_back_returns_to_the_starting_rung() {
-        // End-to-end stability: no ratchet, no oscillation.
-        let start = zoom_for_cell(BucketGranularity::Day, 20.0);
-        let mut g = BucketGranularity::seed(start);
-        assert_eq!(g, BucketGranularity::Day);
-        for zoom in [
-            zoom_for_cell(BucketGranularity::Week, 20.0),
-            zoom_for_cell(BucketGranularity::Month, 20.0),
-            PlaybackState::min_zoom_for_width(1200.0),
-            zoom_for_cell(BucketGranularity::Month, 20.0),
-            zoom_for_cell(BucketGranularity::Week, 20.0),
-            start,
-        ] {
-            g = g.advance(zoom);
-        }
-        assert_eq!(g, BucketGranularity::Day);
-    }
-
-    #[wasm_bindgen_test]
-    fn seeding_is_history_free() {
-        // Boot / URL restore has no previous rung, so the same zoom must always
-        // seed the same granularity regardless of what came before.
-        for zoom in [1e-6, 1e-5, 1e-4, 1e-3, 0.15] {
-            let seeded = BucketGranularity::seed(zoom);
-            for from in [
-                BucketGranularity::Day,
-                BucketGranularity::Week,
-                BucketGranularity::Month,
-                BucketGranularity::Quarter,
-            ] {
-                // Advancing from the seeded rung is a fixed point.
-                assert_eq!(seeded.advance(zoom), seeded, "zoom {zoom}");
-                let _ = from;
-            }
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn zooming_stores_the_granularity_on_state() {
-        let mut ps = PlaybackState::default();
-        ps.set_timeline_zoom(PlaybackState::min_zoom_for_width(1200.0), 1200.0);
-        assert_eq!(ps.calendar_granularity, BucketGranularity::Quarter);
-        ps.set_timeline_zoom(0.15, 1200.0);
-        assert_eq!(ps.calendar_granularity, BucketGranularity::Day);
     }
 
     #[wasm_bindgen_test]
     fn reconcile_tier_reclamps_zoom_to_the_current_width_floor() {
         // A URL-restored zoom is clamped against the seeded width; the real
         // strip can be wider. Without a re-clamp the view silently exceeds the
-        // ceiling — invisible at 100 days, a real error at 36 years.
+        // ceiling.
         let mut ps = PlaybackState::default();
         ps.timeline_zoom = 1e-12;
         ps.timeline_width_px = 1200.0;
@@ -1905,9 +1576,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn min_zoom_is_width_aware() {
         // span = width / zoom, so holding the same span ceiling, a WIDER strip
-        // needs a LARGER floor (more pixels per second). Both widths here are
-        // above the point where the legibility floor takes over, so the
-        // width-aware term is the one being exercised.
+        // needs a LARGER floor (more pixels per second).
         let narrow = PlaybackState::min_zoom_for_width(1200.0);
         let wide = PlaybackState::min_zoom_for_width(2400.0);
         assert!(wide > narrow);
@@ -2227,115 +1896,24 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn tier_archive_span_boundaries() {
-        // Width 1000px: span (s) = width / zoom. Archive enter > 60h, exit < 48h.
-        let mut ps = PlaybackState::default();
-        // Start in Macro.
-        ps.set_timeline_zoom(0.15, 1000.0);
-        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
-
-        // Span just under 60h → still Macro. zoom = 1000 / (59*3600).
-        let zoom_59h = 1000.0 / (59.0 * 3600.0);
-        ps.set_timeline_zoom(zoom_59h, 1000.0);
-        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
-
-        // Span just over 60h → Archive. zoom = 1000 / (61*3600).
-        let zoom_61h = 1000.0 / (61.0 * 3600.0);
-        ps.set_timeline_zoom(zoom_61h, 1000.0);
-        assert_eq!(ps.timeline_tier, TimelineTier::Archive);
-
-        // Span between 48h and 60h → hysteresis holds Archive (50h).
-        let zoom_50h = 1000.0 / (50.0 * 3600.0);
-        ps.set_timeline_zoom(zoom_50h, 1000.0);
-        assert_eq!(ps.timeline_tier, TimelineTier::Archive);
-
-        // Span under 48h → exits Archive (back to Macro by zoom). 47h.
-        let zoom_47h = 1000.0 / (47.0 * 3600.0);
-        ps.set_timeline_zoom(zoom_47h, 1000.0);
-        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
-
-        // Archive is a navigator only — no playback there, allowed elsewhere.
-        ps.set_timeline_zoom(zoom_61h, 1000.0);
-        assert!(!ps.is_playback_allowed());
-        ps.set_timeline_zoom(2.0, 1000.0);
-        assert!(ps.is_playback_allowed());
-    }
-
-    #[wasm_bindgen_test]
-    fn tier_seeding_is_deterministic_from_zoom_and_width() {
-        // Seeding uses the nominal boundaries (no hysteresis memory): zoom >=
-        // 1.0 → Micro; span > 54h → Archive; otherwise Macro.
-        assert_eq!(PlaybackState::seed_tier(2.0, 1000.0), TimelineTier::Micro);
-        assert_eq!(PlaybackState::seed_tier(1.0, 1000.0), TimelineTier::Micro);
-        assert_eq!(PlaybackState::seed_tier(0.5, 1000.0), TimelineTier::Macro);
-        // 54h nominal Archive boundary at width 1000.
-        let zoom_55h = 1000.0 / (55.0 * 3600.0);
-        assert_eq!(
-            PlaybackState::seed_tier(zoom_55h, 1000.0),
-            TimelineTier::Archive
-        );
-        let zoom_53h = 1000.0 / (53.0 * 3600.0);
-        assert_eq!(
-            PlaybackState::seed_tier(zoom_53h, 1000.0),
-            TimelineTier::Macro
-        );
-        // Width matters: span = width / zoom, so at a fixed zoom a *wider*
-        // strip shows a *larger* span. A zoom that's Macro (50h) at 1000px
-        // tips into Archive once the strip is wide enough (50h × 1.2 = 60h).
-        let z = 1000.0 / (50.0 * 3600.0);
-        assert_eq!(PlaybackState::seed_tier(z, 1000.0), TimelineTier::Macro);
-        assert_eq!(PlaybackState::seed_tier(z, 1200.0), TimelineTier::Archive);
-    }
-
-    #[wasm_bindgen_test]
-    fn reconcile_tier_reacts_to_width_change() {
-        // A zoom that's Macro at 1000px becomes Archive when the strip narrows
-        // enough that the visible span grows past the enter threshold.
-        let mut ps = PlaybackState::default();
-        // zoom giving exactly 50h span at 1000px (Macro).
-        let zoom = 1000.0 / (50.0 * 3600.0);
-        ps.set_timeline_zoom(zoom, 1000.0);
-        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
-        // Narrow to 1100px? span shrinks — stays Macro. Widen the *time* by
-        // narrowing pixels: at 1300px width the span is 1300/zoom > 60h.
-        ps.timeline_width_px = 1300.0;
-        ps.reconcile_tier(1300.0);
-        assert_eq!(ps.timeline_tier, TimelineTier::Archive);
+    fn tier_seeding_is_deterministic_from_zoom() {
+        // Seeding uses the nominal boundary (no hysteresis memory): zoom >=
+        // 1.0 → Micro; otherwise Macro.
+        assert_eq!(PlaybackState::seed_tier(2.0), TimelineTier::Micro);
+        assert_eq!(PlaybackState::seed_tier(1.0), TimelineTier::Micro);
+        assert_eq!(PlaybackState::seed_tier(0.5), TimelineTier::Macro);
     }
 
     #[wasm_bindgen_test]
     fn zoom_out_keeps_pinned_live() {
-        // Zoom is view-only: zooming all the way out (Micro → Macro → Archive)
-        // and back must leave the playhead pinned to now.
+        // Zoom is view-only: zooming all the way out (Micro → Macro) and back
+        // must leave the playhead pinned to now.
         let mut ps = micro_state();
         ps.enter_pinned_live(5_000.0);
         for z in [0.5, 0.01, PlaybackState::min_zoom_for_width(1000.0), 2.0] {
             ps.set_timeline_zoom(z, 1000.0);
             assert!(ps.is_pinned(), "unpinned at zoom {z}");
         }
-    }
-
-    #[wasm_bindgen_test]
-    fn archive_tier_halts_only_unbounded_play() {
-        let archive = PlaybackState::min_zoom_for_width(1000.0);
-        // Unbounded play halts behind the calendar.
-        let mut ps = micro_state();
-        ps.playing = true;
-        ps.set_timeline_zoom(archive, 1000.0);
-        assert_eq!(ps.timeline_tier, TimelineTier::Archive);
-        assert!(ps.must_halt_for_tier());
-        // A fixed loop keeps playing.
-        let mut ps = micro_state();
-        assert!(ps.select_range(1_000.0, 2_000.0, false));
-        ps.playing = true;
-        ps.set_timeline_zoom(archive, 1000.0);
-        assert!(!ps.must_halt_for_tier());
-        // So does a lookback replay.
-        let mut ps = micro_state();
-        ps.enter_pinned_live(5_000.0);
-        ps.enter_live_range(Some(4_000.0), LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES));
-        ps.set_timeline_zoom(archive, 1000.0);
-        assert!(!ps.must_halt_for_tier());
     }
 
     #[wasm_bindgen_test]

@@ -1,22 +1,29 @@
 //! The overview lane above the strip (round-4 design): 48 hours of context
-//! with a box marking what the strip below shows.
+//! by default, zooming out to the whole archive, with a box marking what the
+//! strip below shows.
 //!
 //!   - faint slate = available on the server; steel blue = on this device
+//!     (per scan, or per day / week / month / quarter bar zoomed out)
 //!   - an amber line along the top = the selected range
 //!   - a red dot = now, while streaming
 //!   - a neutral line = the playhead, when it isn't at now
 //!   - the view box, joined to the strip below by a faint funnel
 //!
 //! Gestures: drag the box to move the view, drag its sides to zoom the view,
-//! drag the rest of the lane to slide the overview, click the lane to look
-//! there, scroll sideways to slide the overview. None of them touch playback.
+//! drag the rest of the lane (or scroll sideways) to slide the overview,
+//! scroll to zoom it, click the lane to look there (zoomed out to bars, to
+//! go to that day). None of them touch playback.
 //! When the box is out of sight, a chip at the lane's edge brings it back.
 //!
 //! A thin projection of [`crate::core::overview`]: the window, the grabs and
 //! the resize are decided there. Desktop only; the mobile scrubber plays this
 //! role on phones.
 
-use crate::core::overview::{resized_view, Overview, OverviewGrab};
+use crate::core::overview::{
+    detail_for, label_step, label_times, resized_view, LabelStep, Overview, OverviewDetail,
+    OverviewGrab,
+};
+use crate::state::TimeBucket;
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
@@ -31,6 +38,9 @@ const CLICK_SLOP_PX: f32 = 3.0;
 /// No tick label within this many px of the lane's right edge (it would be
 /// clipped).
 const LABEL_RIGHT_GUARD_PX: f32 = 34.0;
+
+/// Labels sit at least this far apart.
+const LABEL_MIN_PX: f64 = 64.0;
 
 /// The press that started the current overview drag, kept in egui memory
 /// for the drag's lifetime.
@@ -94,10 +104,30 @@ pub(super) fn render_overview(
     let ov = playback.state.overview;
     let ts_to_x = |ts: f64| lane.left() + ((ts - ov.start) / ov.span) as f32 * lane.width();
     let x_to_ts = |x: f32| ov.start + ((x - lane.left()) / lane.width()) as f64 * ov.span;
+    let px_per_sec = lane.width() as f64 / ov.span;
+    let detail = detail_for(px_per_sec);
 
     painter.rect_filled(lane, 1.5, tl_colors::background(dark));
     let lane_painter = painter.with_clip_rect(lane);
-    paint_coverage(&lane_painter, timeline, lane, dark, &ts_to_x);
+    let bars = match detail {
+        OverviewDetail::Scans => {
+            paint_scans(&lane_painter, timeline, lane, dark, &ts_to_x);
+            Vec::new()
+        }
+        OverviewDetail::Bars(granularity) => {
+            let bars = crate::state::aggregate_buckets(
+                &timeline.scans,
+                &timeline.shadow_scan_boundaries,
+                &state.saved_events,
+                &state.viz_state.site_id,
+                ov.start.max(era),
+                ov.end().min(now),
+                granularity,
+            );
+            paint_bars(&lane_painter, &bars, lane, dark, &ts_to_x);
+            bars
+        }
+    };
     let now_x = ts_to_x(now);
     if now_x < lane.right() {
         lane_painter.rect_filled(
@@ -106,14 +136,17 @@ pub(super) fn render_overview(
             tl_colors::future_wash(dark),
         );
     }
-    paint_ticks(
-        &lane_painter,
-        lane,
-        &ov,
-        state.use_local_time,
-        dark,
-        &ts_to_x,
-    );
+    match label_step(px_per_sec, LABEL_MIN_PX) {
+        LabelStep::Clock => paint_ticks(
+            &lane_painter,
+            lane,
+            &ov,
+            state.use_local_time,
+            dark,
+            &ts_to_x,
+        ),
+        step => paint_calendar_labels(&lane_painter, lane, &ov, step, dark, &ts_to_x),
+    }
 
     // The selected range, in the strip's amber, along the lane's top.
     if let Some((s, e)) = playback.state.selection_range() {
@@ -214,7 +247,7 @@ pub(super) fn render_overview(
             ui.ctx()
                 .memory_mut(|m| m.data.remove::<OverviewDrag>(drag_id));
             if d.grab == OverviewGrab::Lane && !d.moved {
-                look_at(playback, x_to_ts(d.press_x), now);
+                look_at(playback, x_to_ts(d.press_x), now, detail);
             }
         }
     } else if response.clicked() {
@@ -226,18 +259,29 @@ pub(super) fn render_overview(
                 .center_on(view_start + view_span / 2.0, now, era);
         } else if let Some(p) = pos {
             if Overview::grab_at(box_px, p.x) == OverviewGrab::Lane {
-                look_at(playback, x_to_ts(p.x), now);
+                look_at(playback, x_to_ts(p.x), now, detail);
             }
         }
     }
 
-    // Sideways scroll slides the overview (content follows, as on the strip).
+    // Scroll zooms the overview at the pointer; sideways scroll slides it
+    // (content follows, as on the strip).
     if response.hovered() {
-        let scroll_x = ui.input(|i| i.smooth_scroll_delta.x);
-        if scroll_x != 0.0 {
-            let ov = playback.state.overview;
-            let shift = scroll_x as f64 / lane.width() as f64 * ov.span;
+        let scroll = ui.input(|i| i.smooth_scroll_delta);
+        let ov = playback.state.overview;
+        if scroll.x != 0.0 {
+            let shift = scroll.x as f64 / lane.width() as f64 * ov.span;
             playback.state.overview.slide_to(ov.start - shift, now, era);
+        }
+        if scroll.y != 0.0 {
+            let anchor = response
+                .hover_pos()
+                .map_or(ov.start + ov.span / 2.0, |p| x_to_ts(p.x));
+            let factor = (-(scroll.y as f64) * 0.004).exp();
+            playback
+                .state
+                .overview
+                .zoom(anchor, factor, view_span, now, era);
         }
     }
 
@@ -259,23 +303,36 @@ pub(super) fn render_overview(
     }
     if !dragging {
         let tip = match hover_grab {
-            Some(OverviewGrab::View) => {
-                Some("What the timeline below shows. Drag to move it, drag its sides to zoom.")
+            Some(OverviewGrab::View) => Some(
+                "What the timeline below shows. Drag to move it, drag its sides to zoom."
+                    .to_string(),
+            ),
+            Some(OverviewGrab::ViewStart | OverviewGrab::ViewEnd) => {
+                Some("Drag to zoom the view.".to_string())
             }
-            Some(OverviewGrab::ViewStart | OverviewGrab::ViewEnd) => Some("Drag to zoom the view."),
-            Some(OverviewGrab::Lane) => {
-                Some("Click to look here. Drag to slide the overview. Neither moves playback.")
-            }
-            None => Some("Bring the view back into the overview."),
+            Some(OverviewGrab::Lane) => None,
+            None => Some("Bring the view back into the overview.".to_string()),
         };
+        let tip = tip.or_else(|| {
+            let ts = response.hover_pos().map(|p| x_to_ts(p.x))?;
+            Some(lane_tip(&bars, ts))
+        });
         if let Some(tip) = tip {
             response.on_hover_text(tip);
         }
     }
 }
 
-/// Center the strip's view on `ts` (no later than now), keeping its zoom.
-fn look_at(playback: &mut crate::subsystem::Playback, ts: f64, now: f64) {
+/// What a click on the lane does: center the strip's view on `ts` (no later
+/// than now) at its zoom, or, zoomed out to bars, go to that day.
+fn look_at(playback: &mut crate::subsystem::Playback, ts: f64, now: f64, detail: OverviewDetail) {
+    let era = crate::core::NEXRAD_ARCHIVE_START_SECS;
+    if let OverviewDetail::Bars(_) = detail {
+        let day = crate::state::calendar::utc_day_start(ts.clamp(era, now));
+        playback.state.overview.go_to_day(day, now, era);
+        playback.state.show_view(day, day + 86_400.0, false, now);
+        return;
+    }
     let span = playback.state.view_width_secs();
     let start = crate::core::clamp_view_start(
         ts.min(now) - span / 2.0,
@@ -286,10 +343,130 @@ fn look_at(playback: &mut crate::subsystem::Playback, ts: f64, now: f64) {
     playback.state.show_view(start, start + span, false, now);
 }
 
-/// Server-available (faint) and on-device (solid) coverage, full lane
-/// height. Available volumes already covered by cached data are skipped, the
-/// same rule the strip uses.
-fn paint_coverage(
+/// The lane's hover text: the bar's date and coverage, zoomed out; a hint
+/// otherwise.
+fn lane_tip(bars: &[TimeBucket], ts: f64) -> String {
+    let hint = "Click to look here. Drag to slide the overview, scroll to zoom it.";
+    let Some(bar) = bars.iter().find(|b| ts >= b.start && ts < b.end) else {
+        return hint.to_string();
+    };
+    let dt = super::DateTimeComponents::from_timestamp(bar.start as i64, false);
+    let when = if bar.end - bar.start <= 86_400.0 {
+        format!("{} {}, {}", dt.month_abbrev(), dt.day, dt.year)
+    } else if bar.end - bar.start <= 7.0 * 86_400.0 {
+        format!("Week of {} {}, {}", dt.month_abbrev(), dt.day, dt.year)
+    } else {
+        format!("{} {}", dt.month_abbrev(), dt.year)
+    };
+    let hours = |secs: f64| {
+        if secs >= 3600.0 {
+            format!("{:.1} h", secs / 3600.0)
+        } else {
+            format!("{:.0} min", secs / 60.0)
+        }
+    };
+    let held = if bar.cached_secs > 0.0 {
+        format!("{} on this device", hours(bar.cached_secs))
+    } else if bar.available_secs > 0.0 {
+        format!("{} listed, none downloaded", hours(bar.available_secs))
+    } else {
+        "Not downloaded".to_string()
+    };
+    let day = super::DateTimeComponents::from_timestamp(ts as i64, false);
+    format!(
+        "{when} (UTC)\n{held}\nClick to go to {} {}, {}.",
+        day.month_abbrev(),
+        day.day,
+        day.year
+    )
+}
+
+/// Zoomed out: one bar per day / week / month / quarter, steel blue when
+/// anything in it is on this device, faint slate when the server listing
+/// covers it, empty when nothing is known yet.
+fn paint_bars(
+    painter: &egui::Painter,
+    bars: &[TimeBucket],
+    lane: Rect,
+    dark: bool,
+    ts_to_x: &dyn Fn(f64) -> f32,
+) {
+    for b in bars {
+        let color = if b.cached_secs > 0.0 {
+            tl_colors::cached_fill(dark, false)
+        } else if b.available_secs > 0.0 {
+            tl_colors::available_fill(dark)
+        } else {
+            continue;
+        };
+        let (x0, x1) = (ts_to_x(b.start), ts_to_x(b.end));
+        let x1 = if x1 - x0 > 3.0 {
+            x1 - 1.0
+        } else {
+            x1.max(x0 + 1.0)
+        };
+        painter.rect_filled(
+            Rect::from_min_max(Pos2::new(x0, lane.top()), Pos2::new(x1, lane.bottom())),
+            0.0,
+            color,
+        );
+    }
+}
+
+/// Day, month or year labels for a zoomed-out overview (UTC, matching the
+/// bars).
+fn paint_calendar_labels(
+    painter: &egui::Painter,
+    lane: Rect,
+    ov: &Overview,
+    step: LabelStep,
+    dark: bool,
+    ts_to_x: &dyn Fn(f64) -> f32,
+) {
+    for t in label_times(ov.start, ov.end(), step) {
+        let x = ts_to_x(t).round() + 0.5;
+        if x < lane.left() || x > lane.right() {
+            continue;
+        }
+        let dt = super::DateTimeComponents::from_timestamp(t as i64, false);
+        let (label, major) = match step {
+            LabelStep::Years(_) => (dt.year.to_string(), true),
+            LabelStep::Months(_) if dt.month == 1 => (dt.year.to_string(), true),
+            LabelStep::Months(_) => (dt.month_abbrev().to_string(), false),
+            _ if dt.day == 1 && dt.month == 1 => (dt.year.to_string(), true),
+            _ => (format!("{} {}", dt.month_abbrev(), dt.day), dt.day == 1),
+        };
+        painter.line_segment(
+            [Pos2::new(x, lane.top()), Pos2::new(x, lane.bottom())],
+            Stroke::new(
+                1.0_f32,
+                if major {
+                    tl_colors::tick_major(dark)
+                } else {
+                    tl_colors::tick_minor(dark)
+                },
+            ),
+        );
+        if x <= lane.right() - LABEL_RIGHT_GUARD_PX {
+            painter.text(
+                Pos2::new(x + 3.0, lane.top() + 2.0),
+                egui::Align2::LEFT_TOP,
+                label,
+                style::tick_font(),
+                if major {
+                    tl_colors::selection(dark)
+                } else {
+                    tl_colors::tick_label(dark)
+                },
+            );
+        }
+    }
+}
+
+/// Server-available (faint) and on-device (solid) coverage per scan, full
+/// lane height. Available volumes already covered by cached data are
+/// skipped, the same rule the strip uses.
+fn paint_scans(
     painter: &egui::Painter,
     timeline: &crate::subsystem::Timeline,
     lane: Rect,

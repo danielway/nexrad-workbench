@@ -40,7 +40,6 @@ tested core reducer). Work through all of it.
 - [ ] The `L` key re-tethers / starts a stream.
 - [ ] Archive: play button and spacebar both start and stop playback; the
       position advances at the selected speed.
-- [ ] Archive at the widest (Archive tier) zoom: play is refused, button stays PLAY.
 - [ ] While tethered, the button reads PAUSE; pressing it freezes to archive at
       the live edge, the LIVE button hollows and starts counting lag, **and the
       background stream keeps running** (this is detach, not stop).

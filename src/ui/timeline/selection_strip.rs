@@ -30,8 +30,7 @@ struct StripDrag {
     moved: bool,
 }
 
-/// Draw the strip in `rect` and run its gestures. No-op at the Archive tier,
-/// where one pixel can be weeks (zoom in to select).
+/// Draw the strip in `rect` and run its gestures.
 pub(super) fn render_selection_strip(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -42,9 +41,6 @@ pub(super) fn render_selection_strip(
 ) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, tl_colors::selection_strip_bg(frame.dark));
-    if frame.tier == crate::core::TimelineTier::Archive {
-        return;
-    }
 
     let response = ui.interact(
         rect,

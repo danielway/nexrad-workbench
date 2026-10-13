@@ -69,9 +69,6 @@ pub(crate) struct StripInput {
     /// This drag *began* inside a suppressed rect, so the other control owns
     /// it for the drag's whole lifetime.
     pub scrub_suppressed: bool,
-    /// The Archive tier is a navigator only — no playhead movement (the
-    /// calendar's day cells own clicks there, via tap-to-zoom).
-    pub archive_tier: bool,
 }
 
 /// Decide which gesture owns the strip this frame. Pure; see [`StripGesture`]
@@ -90,9 +87,6 @@ pub(crate) fn resolve_gesture(input: &StripInput) -> StripGesture {
     }
 
     // Seek/scrub last, and never from a control's own hit rect.
-    if input.archive_tier {
-        return StripGesture::None;
-    }
     if input.primary_dragging && !input.scrub_suppressed {
         return StripGesture::Seek;
     }
@@ -229,40 +223,6 @@ mod tests {
             ..Default::default()
         };
         assert!(resolve_gesture(&input) == StripGesture::None);
-    }
-
-    #[wasm_bindgen_test]
-    fn archive_tier_is_a_navigator_only() {
-        // No playhead movement at Archive; the calendar's day cells own clicks.
-        let press = StripInput {
-            primary_pressed: true,
-            archive_tier: true,
-            ..Default::default()
-        };
-        assert!(resolve_gesture(&press) == StripGesture::None);
-        let drag = StripInput {
-            primary_dragging: true,
-            archive_tier: true,
-            ..Default::default()
-        };
-        assert!(resolve_gesture(&drag) == StripGesture::None);
-    }
-
-    #[wasm_bindgen_test]
-    fn archive_tier_still_pans_and_inspects() {
-        // Only seek is suppressed at Archive — navigation and inspection stay.
-        let pan = StripInput {
-            middle_dragging: true,
-            archive_tier: true,
-            ..Default::default()
-        };
-        assert!(resolve_gesture(&pan) == StripGesture::Pan);
-        let inspect = StripInput {
-            secondary_clicked: true,
-            archive_tier: true,
-            ..Default::default()
-        };
-        assert!(resolve_gesture(&inspect) == StripGesture::Inspect);
     }
 
     #[wasm_bindgen_test]

@@ -11,7 +11,7 @@
 //! ```
 //!
 //! Total height is `TIMELINE_TOTAL_H = OVERVIEW_H + TICK_LANE_H +
-//! SELECTION_STRIP_H + MAIN_TRACK_H` and is constant across Micro / Macro / Archive
+//! SELECTION_STRIP_H + MAIN_TRACK_H` and is constant across Micro / Macro
 //! so the bottom panel never reflows.
 
 use eframe::egui::FontId;

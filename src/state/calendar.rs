@@ -1,12 +1,9 @@
-//! Coverage aggregation for the Archive zoom tier (spec §6.4).
+//! Coverage aggregation for the overview when it is zoomed out past single
+//! scans: a run of bars, each toned by **how much data exists in that
+//! period** (server availability) and **how much is cached locally**
+//! (downloaded).
 //!
-//! The Archive tier replaces the deprecated year-wide *linear* strip zoom with a
-//! calendar-style coverage heatmap (GitHub-contributions grammar): a run of
-//! cells, each toned by **how much data exists in that period** (server
-//! availability) and **how much is cached locally** (downloaded). Tapping a cell
-//! frames it, one rung finer.
-//!
-//! **Cells coarsen with the span** — day → week → month → quarter
+//! **Bars coarsen with the span** — day → week → month → quarter
 //! ([`BucketGranularity`]) — which is what lets one continuous timeline reach
 //! from a single volume out to the whole NEXRAD era without the lane becoming a
 //! shimmer of sub-pixel ticks. Boundaries are calendar-aligned (real months, not
@@ -15,7 +12,7 @@
 //! bucket's own span, and the renderer maps both edges through the shared
 //! `ts_to_x`.
 //!
-//! This module is the *pure data* behind the heatmap. It derives buckets from
+//! This module is the *pure data* behind those bars. It derives buckets from
 //! the in-memory timeline state the strip already holds — the cached scans
 //! ([`RadarTimeline`]) for the CACHE tone and the archive shadow boundaries
 //! ([`ScanBoundary`], the listing's coverage) for the AVAILABILITY tone. It adds
@@ -367,56 +364,6 @@ fn union_seconds(spans: &mut [(f64, f64)]) -> f64 {
     total + (cur_e - cur_s)
 }
 
-/// Tap-a-day → Macro zoom target (spec §6.4 "tapping a day zooms into Macro
-/// there"). Given the day to land on and the current strip width, returns the
-/// `(view_start, zoom)` that centres `day_start`'s day in a Macro-tier view.
-///
-/// The zoom is chosen so the visible span sits comfortably inside the Macro
-/// band (below the Archive-entry span, above the Micro boundary): we show a
-/// window of [`MACRO_LANDING_SPAN_SECS`] centred on the day's midpoint. Routing
-/// the returned zoom through [`crate::core::PlaybackState::set_timeline_zoom`]
-/// lands the tier machine in Macro.
-pub(crate) fn day_tap_macro_view(day_start: f64, width_px: f64) -> (f64, f64) {
-    let span = MACRO_LANDING_SPAN_SECS;
-    let zoom = (width_px / span).max(f64::MIN_POSITIVE);
-    let day_mid = day_start + DAY_SECS / 2.0;
-    let view_start = day_mid - span / 2.0;
-    (view_start, zoom)
-}
-
-/// Tap-a-bucket → the `(view_start, zoom)` to drill into.
-///
-/// **One rung per tap**, not straight to Macro. A quarter cell holds ~90 days;
-/// jumping from it to a single day is a 90x leap that throws away every scrap
-/// of context the user was navigating by. Quarter → Month → Week → Day → Macro
-/// keeps the tapped cell filling the strip at each step, so the gesture reads
-/// as "look closer" rather than "teleport".
-///
-/// The returned zoom is deliberately routed through
-/// [`crate::core::PlaybackState::set_timeline_zoom`] by the caller, so the tier
-/// and granularity state machines both advance from it.
-pub(crate) fn bucket_tap_target(
-    bucket: &TimeBucket,
-    granularity: BucketGranularity,
-    width_px: f64,
-) -> (f64, f64) {
-    // The finest rung hands off to the linear Macro tier.
-    if granularity == BucketGranularity::Day {
-        return day_tap_macro_view(bucket.start, width_px);
-    }
-    // Otherwise show exactly this bucket, which puts the next rung's cells at a
-    // comfortable size by construction.
-    let span = (bucket.end - bucket.start).max(DAY_SECS);
-    let zoom = (width_px / span).max(f64::MIN_POSITIVE);
-    (bucket.start, zoom)
-}
-
-/// Visible span (seconds) a day-tap lands on in Macro. Half a day on either
-/// side of the tapped day's midpoint (≈1 day visible) sits safely below the
-/// Archive-enter span (60 h) and well above the Micro boundary, so the tier
-/// machine settles in Macro and the tapped day fills the strip.
-pub(crate) const MACRO_LANDING_SPAN_SECS: f64 = DAY_SECS;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,30 +569,6 @@ mod tests {
             DAY0 + 10_000.0 * 365.0 * DAY_SECS,
         );
         assert_eq!(buckets.len(), MAX_BUCKETS);
-    }
-
-    #[wasm_bindgen_test]
-    fn day_tap_centres_day_in_macro_view() {
-        let width = 1000.0;
-        let (view_start, zoom) = day_tap_macro_view(DAY0, width);
-        // The visible span equals the macro landing span.
-        let span = width / zoom;
-        assert!((span - MACRO_LANDING_SPAN_SECS).abs() < 1e-3);
-        // The day's midpoint sits at the centre of the view.
-        let day_mid = DAY0 + DAY_SECS / 2.0;
-        let view_mid = view_start + span / 2.0;
-        assert!((view_mid - day_mid).abs() < 1e-3);
-    }
-
-    /// The tap-target zoom must seed the Macro tier (below Archive-enter span,
-    /// at/above Micro boundary handling) — the gesture's whole point.
-    #[wasm_bindgen_test]
-    fn day_tap_zoom_lands_in_macro_tier() {
-        use crate::core::TimelineTier;
-        let width = 1000.0;
-        let (_view_start, zoom) = day_tap_macro_view(DAY0, width);
-        let tier = crate::core::PlaybackState::seed_tier(zoom, width);
-        assert_eq!(tier, TimelineTier::Macro);
     }
 }
 
@@ -985,30 +908,6 @@ mod coverage_tests {
         assert_eq!(copied.start, DAY0);
     }
 
-    // --- day_tap_macro_view: zoom scales with width; view_start width-independent ---
-
-    #[wasm_bindgen_test]
-    fn day_tap_zoom_scales_linearly_with_width() {
-        let (vs1, z1) = day_tap_macro_view(DAY0, 1000.0);
-        let (vs2, z2) = day_tap_macro_view(DAY0, 2000.0);
-        // zoom = width / span, so doubling width doubles zoom.
-        assert!((z2 - 2.0 * z1).abs() < 1e-9, "{} {}", z1, z2);
-        // view_start depends only on the day, not the pixel width.
-        assert!((vs1 - vs2).abs() < 1e-9, "{} {}", vs1, vs2);
-        // Concrete: span == DAY_SECS, so z1 == 1000 / DAY_SECS.
-        assert!((z1 - 1000.0 / DAY_SECS).abs() < 1e-12, "{}", z1);
-    }
-
-    #[wasm_bindgen_test]
-    fn macro_landing_span_equals_one_day() {
-        // The landing span constant is exactly one UTC day.
-        assert_eq!(MACRO_LANDING_SPAN_SECS, DAY_SECS);
-        // And the view places the day midpoint at the centre: view_start is half
-        // a day before the day midpoint, i.e. at the day start itself.
-        let (view_start, _zoom) = day_tap_macro_view(DAY0, 800.0);
-        assert!((view_start - DAY0).abs() < 1e-6, "{}", view_start);
-    }
-
     // ---- calendar-aligned bucket boundaries ------------------------------
 
     fn ymd(y: i32, m: u32, d: u32) -> f64 {
@@ -1168,73 +1067,5 @@ mod coverage_tests {
         );
         assert!(buckets[0].cache_frac < 0.001);
         assert!((buckets[0].cached_secs - 3600.0).abs() < 1.0);
-    }
-
-    // ---- drill-down ladder ------------------------------------------------
-
-    #[wasm_bindgen_test]
-    fn tapping_drills_one_rung_at_a_time() {
-        // A quarter cell holds ~90 days; jumping straight to a single day is a
-        // 90x leap that discards all context. Each tap should frame exactly
-        // the tapped bucket instead.
-        let width = 1200.0;
-        for (g, start, end) in [
-            (
-                BucketGranularity::Quarter,
-                ymd(2026, 7, 1),
-                ymd(2026, 10, 1),
-            ),
-            (BucketGranularity::Month, ymd(2026, 7, 1), ymd(2026, 8, 1)),
-            (
-                BucketGranularity::Week,
-                ymd(2026, 7, 27),
-                ymd(2026, 7, 27) + 7.0 * DAY_SECS,
-            ),
-        ] {
-            let bucket = TimeBucket::empty(start, end);
-            let (view_start, zoom) = bucket_tap_target(&bucket, g, width);
-            assert!((view_start - start).abs() < 1e-6, "{g:?}");
-            // The landed view shows exactly this bucket.
-            assert!(((width / zoom) - (end - start)).abs() < 1.0, "{g:?}");
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn tapping_the_finest_rung_hands_off_to_macro() {
-        let bucket = TimeBucket::empty(DAY0, DAY0 + DAY_SECS);
-        let (view_start, zoom) = bucket_tap_target(&bucket, BucketGranularity::Day, 800.0);
-        let (macro_start, macro_zoom) = day_tap_macro_view(DAY0, 800.0);
-        assert!((view_start - macro_start).abs() < 1e-6);
-        assert!((zoom - macro_zoom).abs() < 1e-12);
-    }
-
-    #[wasm_bindgen_test]
-    fn a_coarse_tap_stays_in_the_calendar_and_gains_detail() {
-        // Framing the tapped bucket keeps the user inside the Archive tier —
-        // they see what they tapped, rendered at a finer rung — rather than
-        // being thrown straight down to a single day in Macro. From a quarter
-        // that means the quarter as day cells, which is exactly "look closer".
-        let width = 1200.0;
-        for (tapped, start, end) in [
-            (
-                BucketGranularity::Quarter,
-                ymd(2026, 7, 1),
-                ymd(2026, 10, 1),
-            ),
-            (BucketGranularity::Month, ymd(2026, 7, 1), ymd(2026, 8, 1)),
-        ] {
-            let bucket = TimeBucket::empty(start, end);
-            let (_, zoom) = bucket_tap_target(&bucket, tapped, width);
-            let landed = BucketGranularity::seed(zoom);
-            // Strictly finer than what was tapped.
-            assert!(
-                landed.nominal_secs() < tapped.nominal_secs(),
-                "{tapped:?} -> {landed:?}"
-            );
-            // Still a calendar span, not a jump into the linear tiers.
-            assert!(width / zoom > 60.0 * 3600.0, "{tapped:?}");
-            // And the cells it lands on are legible.
-            assert!(landed.nominal_secs() * zoom >= 5.0, "{tapped:?}");
-        }
     }
 }
