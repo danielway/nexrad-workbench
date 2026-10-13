@@ -164,14 +164,24 @@ pub(crate) mod timeline {
     /// Selection range boundary label color — neutral (the loop band is no
     /// longer a saturated-blue accent; it reads as a translucent neutral wash).
     pub(crate) const SELECTION_LABEL: Color32 = Color32::from_rgb(180, 188, 205);
-    /// Selection/loop range (shift+drag) translucent fill — neutral, so it
-    /// doesn't spend one of the three accent slots (spec §6.2).
+    /// A selected range: amber, the color the selection chip and the
+    /// selection strip use for a range that loops (round-4 design).
+    pub(crate) const RANGE: Color32 = Color32::from_rgb(240, 180, 60);
+    /// A selected range's translucent wash over the frames.
     pub(crate) fn selection_fill() -> Color32 {
-        Color32::from_rgba_unmultiplied(180, 188, 210, 34)
+        Color32::from_rgba_unmultiplied(240, 180, 60, 40)
     }
-    /// Selection/loop range boundary lines — neutral.
+    /// A selected range's boundary lines over the frames.
     pub(crate) fn selection_edge() -> Color32 {
-        Color32::from_rgba_unmultiplied(180, 188, 210, 170)
+        Color32::from_rgba_unmultiplied(240, 180, 60, 190)
+    }
+    /// The selection strip's empty background, a step off the track's.
+    pub(crate) fn selection_strip_bg(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(16, 16, 22)
+        } else {
+            Color32::from_rgb(222, 222, 228)
+        }
     }
     /// Text drawn inside scan/sweep blocks. Theme-independent because it
     /// sits on the blocks' own fill colors, not the panel background.
