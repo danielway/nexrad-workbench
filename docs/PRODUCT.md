@@ -148,8 +148,10 @@ collection time is not yet late if the ingest-lag window hasn't elapsed.
   ("Last 6 frames → now") — and opens one menu grouped by shape: go live, stop
   looping, stop the stream; the last N frames / minutes → now; loop what's in
   view.
-- **Timeline** — a thin **minimap** sliver (whole-session coverage, doubles as
-  fast navigation) above the **main strip**.
+- **Timeline** — an **overview** lane above the **main strip**: 48 hours of
+  coverage (wider when the strip shows more) with a box marking what the strip
+  shows. It slides with now while its right edge is on the live edge, and can
+  slide anywhere in the archive. It moves the view, never playback.
 - **Activity chip** — tiny, near the transport (and in the mobile top bar);
   always present so its absence is never ambiguous: a muted "Up to date" when
   idle, "↓ 2 Downloading" with a pulse when acquiring. Tap opens the activity
@@ -553,7 +555,8 @@ only.
 |---|---|
 | Press/drag on strip | Seek immediately on press; drag scrubs |
 | Scroll / pinch | Zoom, anchored at cursor/pinch center (with snap hysteresis) |
-| Minimap drag | Pan / fast navigation |
+| Overview: drag the view box / its sides | Move the strip's view / zoom it |
+| Overview: drag or sideways-scroll the lane; click it | Slide the overview; center the strip's view there |
 | Drag on the selection strip | Draw a range; drag a handle to resize; drop the right handle on the live edge to pin it to now; click to clear |
 | Right-click a scan (desktop) / long-press (touch) | Open the scan inspector (includes "loop from here") |
 
@@ -597,9 +600,9 @@ Interactive measurement and analysis affordances on the 2D canvas:
 
 | Breakpoint | Timeline | Notes |
 |---|---|---|
-| Desktop ≥1200px | Minimap + full strip (~56px) + transport row + readouts | Inspector as popover or side panel; hover tooltips |
+| Desktop ≥1200px | Overview + full strip (~56px) + transport row + readouts | Inspector as popover or side panel; hover tooltips |
 | Touch ≥600px | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
-| Phone | Condensed transport (play · selection chip · speed) over ~44px strip; minimap collapses to a sliver or is omitted | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; custom loop dragging replaced by presets; 3D view is desktop-only |
+| Phone | Condensed transport (play · selection chip · speed) over ~44px strip; no overview (the scrubber plays its role) | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; custom loop dragging replaced by presets; 3D view is desktop-only |
 
 ### 13.4 Deep linking & sharing
 

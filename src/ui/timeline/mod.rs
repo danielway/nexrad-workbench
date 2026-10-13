@@ -5,9 +5,9 @@
 mod calendar;
 mod frame_cells;
 mod interaction;
-mod minimap;
 mod now_edge;
 mod overlays;
+mod overview;
 mod ruler;
 mod scan_track;
 mod selection_strip;
@@ -308,8 +308,8 @@ pub(super) fn render_timeline(
     let available_width = ui.available_width() as f64;
     playback.state.timeline_width_px = available_width;
 
-    // The minimap and the main strip are two stacked widgets; butt them
-    // together (the minimap's own padding gives the visual gap) so the panel
+    // The overview and the main strip are two stacked widgets; butt them
+    // together (the overview's own padding gives the visual gap) so the panel
     // height stays exactly TIMELINE_TOTAL_H with no surprise inter-widget gap.
     ui.spacing_mut().item_spacing.y = 0.0;
 
@@ -321,17 +321,15 @@ pub(super) fn render_timeline(
     let tick_lane_h = style::TICK_LANE_H;
     let main_track_h = style::MAIN_TRACK_H;
 
-    // -- Minimap sliver (spec §5/§13) ------------------------------------
-    // The whole-session navigator renders ABOVE the main strip in its OWN
+    // -- Overview ---------------------------------------------------------
+    // 48 h of context with the view box, ABOVE the main strip in its OWN
     // allocated widget (distinct response id) so its drag/click never shares a
-    // hit-test layer with the main strip's press-seek/scrub. Desktop only this
-    // phase — the mobile scrubber already plays this role on phones.
-    if style::MINIMAP_SLIVER_H > 0.0 {
-        minimap::render_minimap(ui, state, timeline, live, playback);
-    }
+    // hit-test layer with the main strip's press-seek/scrub. Desktop only —
+    // the mobile scrubber plays this role on phones.
+    overview::render_overview(ui, state, timeline, live, playback);
 
     // The main strip widget covers the tick rail, the selection strip and the
-    // main track; the minimap above is its own allocated widget. The
+    // main track; the overview above is its own allocated widget. The
     // selection strip registers its own interact rect over its band after the
     // strip's interaction runs, so it owns presses there.
     let selection_strip_h = style::SELECTION_STRIP_H;

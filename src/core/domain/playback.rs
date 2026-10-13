@@ -896,6 +896,10 @@ pub(crate) struct PlaybackState {
     /// every "take me back to the data" path already routes through.
     pub view_follows_now: bool,
 
+    /// The overview lane's window above the strip (see
+    /// [`crate::core::overview`]).
+    pub overview: crate::core::overview::Overview,
+
     /// A range being drawn by a drag, until it is released.
     pub drag: Option<TimeSelection>,
 
@@ -1079,6 +1083,22 @@ impl PlaybackState {
     pub(crate) fn center_view_on(&mut self, ts: f64) {
         self.timeline_view_start = ts - self.view_width_secs() / 2.0;
         self.view_follows_now = true;
+    }
+
+    /// Show `[start, end]` on the strip: zoom to its width and pan to it (the
+    /// overview's view box). If the zoom clamps, the edge named by
+    /// `keep_end` stays put. The view follows now again when its right edge
+    /// reaches now.
+    pub(crate) fn show_view(&mut self, start: f64, end: f64, keep_end: bool, now: f64) {
+        let wanted = end - start;
+        if wanted.is_nan() || wanted <= 0.0 || self.timeline_width_px <= 0.0 {
+            return;
+        }
+        let width = self.timeline_width_px;
+        self.set_timeline_zoom(width / wanted, width);
+        let span = self.view_width_secs();
+        self.timeline_view_start = if keep_end { end - span } else { start };
+        self.view_follows_now = self.timeline_view_start + span >= now;
     }
 
     // ------------------------------------------------------------------
@@ -2895,6 +2915,32 @@ mod coverage_tests {
     // ---------------------------------------------------------------
     // PlaybackState: view math, macro frame stepping & sync, mode derivation
     // ---------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn show_view_zooms_and_pans_to_a_span() {
+        let mut ps = PlaybackState::default();
+        ps.timeline_width_px = 1000.0;
+        ps.view_follows_now = false;
+        let now = 1_000_000.0;
+        ps.show_view(now - 10_000.0, now - 6_000.0, false, now);
+        assert!((ps.view_width_secs() - 4_000.0).abs() < 1e-6);
+        assert!((ps.timeline_view_start - (now - 10_000.0)).abs() < 1e-6);
+        assert!(!ps.view_follows_now);
+        // Reaching now follows now again.
+        ps.show_view(now - 3_000.0, now, false, now);
+        assert!(ps.view_follows_now);
+        // A span past the zoom limit keeps the named edge: the view is as
+        // narrow as the zoom allows, ending where asked.
+        ps.show_view(now - 0.1, now, true, now);
+        let span = ps.view_width_secs();
+        assert!(span > 0.1);
+        assert!((ps.timeline_view_start + span - now).abs() < 1e-6);
+        // An empty or inverted span changes nothing.
+        let before = (ps.timeline_view_start, ps.timeline_zoom);
+        ps.show_view(now, now, false, now);
+        ps.show_view(now, now - 5.0, false, now);
+        assert_eq!((ps.timeline_view_start, ps.timeline_zoom), before);
+    }
 
     #[wasm_bindgen_test]
     fn view_width_secs_and_center_view_on() {
