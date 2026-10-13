@@ -126,7 +126,7 @@ fn render_transport_row(
         // it's ordinary play/pause. All branching lives in
         // `core::transport::reduce_toggle_play_pause`, reached via
         // `Intent::TogglePlayPause`.
-        let tethered = playback.state.time_model.is_pinned();
+        let tethered = playback.state.is_pinned();
         let play_icon = if tethered || playback.state.playing {
             egui_phosphor::regular::PAUSE
         } else {
@@ -328,7 +328,7 @@ fn render_stream_health(ui: &mut egui::Ui, live: &crate::subsystem::Live) {
 /// ([`PlaybackSpeed::mobile_cycle`]) on each tap. The full speed list stays in
 /// the settings sheet for users who want a specific value.
 fn render_speed_button(ui: &mut egui::Ui, playback: &mut crate::subsystem::Playback, btn_h: f32) {
-    let mode = playback.state.effective_playback_mode();
+    let mode = playback.state.playback_mode();
     let label = match mode {
         PlaybackMode::Macro => playback.state.speed.macro_label(),
         PlaybackMode::Micro => playback.state.speed.label(),
@@ -352,8 +352,7 @@ fn render_loop_button(
     interactive: bool,
 ) {
     use crate::ui::colors::{live, ui as ui_colors};
-    let has_loop =
-        playback.state.loop_window.is_some() || playback.state.time_model.playback_bounds.is_some();
+    let has_loop = playback.state.selection.range().is_some();
     let tint = if has_loop {
         live::STREAMING
     } else {
@@ -365,10 +364,10 @@ fn render_loop_button(
                 .size(16.0)
                 .color(tint),
             |ui| {
-                let header = match playback.state.loop_window {
-                    Some(w) => {
-                        let pin = if w.pinned { " · pinned" } else { "" };
-                        format!("Loop · {}{}", w.basis.label(), pin)
+                let header = match playback.state.selection.range() {
+                    Some(r) => {
+                        let pin = if r.live { " · pinned" } else { "" };
+                        format!("Loop · {}{}", r.basis.label(), pin)
                     }
                     None => "Loop".to_string(),
                 };

@@ -49,8 +49,8 @@ impl WorkbenchApp {
         // and the inspector's tap-to-fetch still fetch — the user asked for
         // those — but seeking/scrubbing does not); and no scrub drag currently
         // holding the playhead (requests wait for the drag to settle).
-        let playhead_attached = self.playback.state.time_model.is_pinned()
-            || self.playback.state.time_model.is_lookback();
+        let playhead_attached =
+            self.playback.state.is_pinned() || self.playback.state.is_live_range();
         if !self.render.coordinator.has_worker()
             || !acquisition_core::reactive_prefetch_allowed(
                 playhead_attached,
@@ -436,14 +436,14 @@ impl WorkbenchApp {
 
     /// Backward backfill for the live lookback replay: while replaying, ensure
     /// the volumes the active pinned loop covers (matching elevation, sized from
-    /// the loop window's basis) ending at "now" are fetched from the archive, so
+    /// the live range's basis) ending at "now" are fetched from the archive, so
     /// the loop has frames. Lazy — it
-    /// runs only in `LookbackLoop` mode — and idempotent via the same dedup as
+    /// runs only on a live range — and idempotent via the same dedup as
     /// the forward pump. The live stream itself only fetches the in-progress
     /// volume, so previous volumes must come from the archive.
     pub(crate) fn pump_lookback_backfill(&mut self, ctx: &egui::Context) {
         if !acquisition_core::lookback_backfill_due(
-            self.playback.state.time_model.is_lookback(),
+            self.playback.state.is_live_range(),
             self.render.coordinator.has_worker(),
             self.acquisition.state.is_paused(),
             self.acquisition
@@ -465,8 +465,9 @@ impl WorkbenchApp {
         let basis = self
             .playback
             .state
-            .loop_window
-            .map(|w| w.basis)
+            .selection
+            .range()
+            .map(|r| r.basis)
             .unwrap_or_default();
         let (resolved_start, _resolved_end) = self.resolve_pinned_window(basis, now);
         let plan = acquisition_core::plan_lookback_backfill(

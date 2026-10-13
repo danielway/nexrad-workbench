@@ -77,7 +77,7 @@ fn draw_bottom_panel(
     if playback.state.playing {
         // Effective mode: a lookback replay frame-steps (Macro) regardless of
         // tier, so it dispatches to advance_macro and gets the macro fps speeds.
-        match playback.state.effective_playback_mode() {
+        match playback.state.playback_mode() {
             PlaybackMode::Micro => playback.state.advance(dt as f64),
             PlaybackMode::Macro => playback.state.advance_macro(dt as f64),
         }

@@ -1082,8 +1082,8 @@ pub(crate) fn plan_selection_fetch(env: &SelectionFetchEnv) -> SelectionFetchPla
 // Lookback backfill pump
 // ───────────────────────────────────────────────────────────────────────────
 
-/// Gate + light 1 Hz throttle for the lookback backfill pump. Runs only in
-/// `LookbackLoop` mode with a worker, an unpaused queue, and headroom under
+/// Gate + light 1 Hz throttle for the lookback backfill pump. Runs only on
+/// a live range with a worker, an unpaused queue, and headroom under
 /// the volume cap; on a passing frame the throttle deadline advances (the
 /// enqueue is idempotent — this just avoids recomputing the window every
 /// frame for the whole replay).

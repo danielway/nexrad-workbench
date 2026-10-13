@@ -597,27 +597,74 @@ impl LoopBasis {
     }
 }
 
-/// First-class loop-window model (spec §8). Lives on [`PlaybackState`], NOT
-/// inside [`TimeSelection`] (which `tick_live` overwrites wholesale every frame
-/// while replaying) — the per-frame slide reads this to size the sliding
-/// window, so it must survive that clobber.
+/// The user's selection on the timeline (spec §8): a **point** or a
+/// **range**, each either at a fixed time or attached to the live edge. One
+/// value replaces the old playhead mode + playback bounds + loop window +
+/// live-anchored selection, which had to be kept in step by hand.
 ///
-/// `pinned` distinguishes the two loop flavors the presets create:
-/// - **pinned** (sliding): the window's later edge tracks the live edge as new
-///   sweeps arrive (the "loop the last N while still streaming" gesture).
-/// - **fixed** (custom range): a static range that does not follow now.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub(crate) struct LoopWindow {
-    /// How the window's extent is measured (frame-count or duration).
+/// | Selection | Was |
+/// |---|---|
+/// | `Point { live: false }` | archive, free seeking |
+/// | `Point { live: true }` | LIVE-NOW (pinned to now) |
+/// | `Range { live: false }` | a fixed loop / shift-drag selection |
+/// | `Range { live: true }` | the lookback replay, or a selection anchored to live |
+///
+/// The playhead position lives in [`TimeModel::playback_position`]; for a
+/// live point the per-frame live tick keeps it on now, and for a live range
+/// the tick slides the window (sized by its [`LoopBasis`]) forward as new
+/// sweeps arrive. Change it only through the named transitions on
+/// [`PlaybackState`], which own the invariants.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Selection {
+    /// A single moment: the playhead.
+    Point {
+        /// Pinned to the live edge.
+        live: bool,
+    },
+    /// A span the playhead plays through, looping.
+    Range(RangeSelection),
+}
+
+impl Default for Selection {
+    fn default() -> Self {
+        Selection::Point { live: false }
+    }
+}
+
+/// The range half of [`Selection`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct RangeSelection {
+    /// Ordered playback bounds. `None` only for a live range before the live
+    /// tick has resolved its first window.
+    pub bounds: Option<(f64, f64)>,
+    /// The later edge follows the live edge (a "last 6 frames" loop).
+    pub live: bool,
+    /// How the window is sized when it slides: last N frames or a duration.
+    /// For a range drawn by hand this is its span.
     pub basis: LoopBasis,
-    /// Whether the window slides forward with the live edge (`true`) or is a
-    /// fixed range (`false`).
-    pub pinned: bool,
+}
+
+impl Selection {
+    /// Attached to the live edge (a live point or a live range).
+    pub(crate) fn is_live(&self) -> bool {
+        match self {
+            Selection::Point { live } => *live,
+            Selection::Range(r) => r.live,
+        }
+    }
+
+    /// The range, if this is one.
+    pub(crate) fn range(&self) -> Option<&RangeSelection> {
+        match self {
+            Selection::Range(r) => Some(r),
+            Selection::Point { .. } => None,
+        }
+    }
 }
 
 /// A loop preset the user can pick from the transport row / mobile settings
 /// (spec §8 "creation order: presets first"). The app turns each into a
-/// concrete [`LoopWindow`] + the right playhead transition (alignment #7:
+/// concrete [`Selection`] + the right playhead transition (alignment #7:
 /// menu offers 4/6/10 frames, 30 min / 1 h, and "pin to live").
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum LoopPreset {
@@ -702,28 +749,6 @@ pub(crate) enum PlaybackDirection {
     Backward,
 }
 
-/// Playhead position semantics. Replaces the old `locked_to_realtime` +
-/// `lookback_active` flag pair with one explicit mode; all transitions go
-/// through the named methods on [`PlaybackState`], which own the
-/// invariants (bounds ownership, position snapping, macro-cursor resets).
-///
-/// The live *stream session* is a separate bit (`live.mode_state`): the
-/// stream keeps running across `PinnedToNow` ↔ `LookbackLoop`, and the
-/// `playing` flag keeps its ordinary meaning in `Free`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub(crate) enum PlayheadMode {
-    /// Archive: free seeking; `playing` drives `advance()`.
-    #[default]
-    Free,
-    /// Live: the per-frame tick pins the position to wall-clock via
-    /// [`PlaybackState::pin_tick`]. Position writes require a transition
-    /// out of this mode first.
-    PinnedToNow,
-    /// Live replay: bounds are owned by the tick's sliding lookback
-    /// window; always macro frame-stepping; `playing` is true.
-    LookbackLoop,
-}
-
 /// Where the playhead lands when leaving live ([`PlaybackState::exit_live`]).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum FreezeAt {
@@ -733,9 +758,8 @@ pub(crate) enum FreezeAt {
     Keep,
 }
 
-/// A user time selection on the timeline — ONE concept serving loop/playback
-/// bounds, the live replay window, and event ranges. Replaces the old
-/// `selection_start`/`selection_end`/`selection_in_progress` field triple.
+/// A range selection being drawn by a drag on the timeline. It becomes a
+/// [`Selection::Range`] when the drag ends.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct TimeSelection {
     /// First-placed endpoint (drag origin). Unordered relative to `b`.
@@ -744,44 +768,14 @@ pub(crate) struct TimeSelection {
     pub b: f64,
     /// True while a shift-drag is still moving `b`.
     pub in_progress: bool,
-    /// The selection's later edge tracks the live edge: while streaming, the
-    /// per-frame live tick slides it forward as time passes, so a loop over
-    /// "the recent past up to now" keeps following now. The lookback replay
-    /// is exactly an anchored selection being played.
-    pub anchored_to_live: bool,
 }
 
 impl TimeSelection {
-    /// A plain static selection between two timestamps.
-    pub(crate) fn between(a: f64, b: f64) -> Self {
-        Self {
-            a,
-            b,
-            in_progress: false,
-            anchored_to_live: false,
-        }
-    }
-
     /// Normalized `(start, end)`, or `None` until the selection has
     /// meaningful width (> 1 second).
     pub(crate) fn range(&self) -> Option<(f64, f64)> {
         let (start, end) = (self.a.min(self.b), self.a.max(self.b));
         ((end - start).abs() > 1.0).then_some((start, end))
-    }
-
-    /// Whether a timestamp falls inside the (normalized) selection.
-    pub(crate) fn contains(&self, ts: f64) -> bool {
-        self.range().is_some_and(|(s, e)| ts >= s && ts <= e)
-    }
-
-    /// Slide the later edge to `end` (live-anchored follow). The earlier
-    /// edge keeps its place so the window's extent grows/slides naturally.
-    pub(crate) fn slide_end_to(&mut self, end: f64) {
-        if self.a <= self.b {
-            self.b = end;
-        } else {
-            self.a = end;
-        }
     }
 }
 
@@ -796,13 +790,6 @@ pub(crate) struct TimeModel {
     /// Unix seconds with sub-second precision.
     pub playback_position: f64,
 
-    /// Playhead mode (archive / pinned-live / lookback replay).
-    pub mode: PlayheadMode,
-
-    /// Playback range constraints (from selection or real-time window).
-    /// When set, playback position is constrained to (start, end).
-    pub playback_bounds: Option<(f64, f64)>,
-
     /// Loop behavior when bounds are set.
     pub loop_mode: LoopMode,
 
@@ -811,24 +798,15 @@ pub(crate) struct TimeModel {
 }
 
 impl TimeModel {
-    /// Whether the playhead is pinned to "now" (LIVE-NOW).
-    pub(crate) fn is_pinned(&self) -> bool {
-        self.mode == PlayheadMode::PinnedToNow
-    }
-
-    /// Whether the playhead is replaying the lookback window (LIVE-LOOKBACK).
-    pub(crate) fn is_lookback(&self) -> bool {
-        self.mode == PlayheadMode::LookbackLoop
-    }
-
-    /// Advance playback position by delta time, respecting bounds and loop mode.
-    pub(crate) fn advance(&mut self, delta_secs: f64, speed: PlaybackSpeed) {
-        if self.is_pinned() {
-            // LIVE-NOW: the position is owned by the per-frame pin_tick;
-            // nothing to advance.
-            return;
-        }
-
+    /// Advance playback position by delta time within `bounds` (if any),
+    /// respecting the loop mode. Returns true when a forward loop wrapped
+    /// back to the start.
+    pub(crate) fn advance(
+        &mut self,
+        delta_secs: f64,
+        speed: PlaybackSpeed,
+        bounds: Option<(f64, f64)>,
+    ) -> bool {
         let advance_amount = delta_secs * speed.timeline_seconds_per_real_second();
 
         let effective_advance = match self.direction {
@@ -838,11 +816,16 @@ impl TimeModel {
 
         let new_position = self.playback_position + effective_advance;
 
-        // Apply bounds if set
-        if let Some((start, end)) = self.playback_bounds {
-            self.playback_position = self.apply_bounds(new_position, start, end);
-        } else {
-            self.playback_position = new_position;
+        match bounds {
+            Some((start, end)) => {
+                let wrapped = self.loop_mode == LoopMode::Loop && new_position >= end;
+                self.playback_position = self.apply_bounds(new_position, start, end);
+                wrapped
+            }
+            None => {
+                self.playback_position = new_position;
+                false
+            }
         }
     }
 
@@ -870,41 +853,6 @@ impl TimeModel {
             position
         }
     }
-
-    /// Set bounds from a selection range.
-    pub(crate) fn set_bounds_from_selection(&mut self, start: f64, end: f64) {
-        let (s, e) = if start <= end {
-            (start, end)
-        } else {
-            (end, start)
-        };
-        self.playback_bounds = Some((s, e));
-        // Reset direction when bounds change
-        self.direction = PlaybackDirection::Forward;
-        // Ensure playback position is within bounds
-        self.playback_position = self.playback_position.clamp(s, e);
-    }
-
-    /// Clear playback bounds.
-    pub(crate) fn clear_bounds(&mut self) {
-        self.playback_bounds = None;
-        self.direction = PlaybackDirection::Forward;
-    }
-
-    /// Update playback bounds *without* resetting direction or clamping the
-    /// position. Used by the sliding lookback window: as new frames complete,
-    /// the window end follows the latest frame while the loop keeps its
-    /// progression — `apply_bounds` re-contains the position on the next
-    /// advance. Contrast [`set_bounds_from_selection`], which resets a fresh
-    /// selection.
-    pub(crate) fn set_bounds_preserving(&mut self, start: f64, end: f64) {
-        let (s, e) = if start <= end {
-            (start, end)
-        } else {
-            (end, start)
-        };
-        self.playback_bounds = Some((s, e));
-    }
 }
 
 /// State for playback controls.
@@ -912,8 +860,12 @@ pub(crate) struct PlaybackState {
     /// Whether playback is currently active
     pub playing: bool,
 
-    /// Time model (playback position, bounds, loop mode)
+    /// Time model (playback position, loop mode, direction)
     pub time_model: TimeModel,
+
+    /// What is selected: a point or range, fixed or live (see
+    /// [`Selection`]). Owns the playhead mode and the playback bounds.
+    pub selection: Selection,
 
     /// Current playback speed
     pub speed: PlaybackSpeed,
@@ -948,16 +900,8 @@ pub(crate) struct PlaybackState {
     /// every "take me back to the data" path already routes through.
     pub view_follows_now: bool,
 
-    /// The user's timeline selection, if any (see [`TimeSelection`]).
-    pub selection: Option<TimeSelection>,
-
-    /// The active loop window's basis + pinned-ness (see [`LoopWindow`]), if a
-    /// loop exists. `Some` whenever a loop is active — a fixed range (alongside
-    /// `playback_bounds`) or a pinned replay (whose bounds `tick_live` owns).
-    /// Kept in step with the selection/bounds by the selection/preset/handle
-    /// APIs. Sized state that `tick_live` reads to slide the pinned window — it
-    /// must NOT live in the selection, which the live tick rewrites every frame.
-    pub loop_window: Option<LoopWindow>,
+    /// A range being drawn by a drag, until it is released.
+    pub drag: Option<TimeSelection>,
 
     /// Wrap-point incorporation buffer (spec §8): while *playing* a pinned
     /// loop, the freshly resolved target window is parked here instead of being
@@ -966,8 +910,8 @@ pub(crate) struct PlaybackState {
     /// stay fixed between wraps and newly arrived frames "enter at the wrap,
     /// never mid-cycle". Cleared (and bypassed) while not playing — a
     /// paused/idle pinned window may track now continuously. See
-    /// [`Self::commit_pinned_window`] and the wrap branch of
-    /// [`Self::step_macro_frame_internal`].
+    /// [`Self::commit_pinned_window`] and the wrap branches of
+    /// [`Self::step_macro_frame_internal`] and [`Self::advance`].
     pub pending_loop_window: Option<(f64, f64)>,
 
     /// Actual pixel width of the timeline widget (set by render_timeline each frame).
@@ -985,16 +929,68 @@ impl PlaybackState {
     }
 
     /// Seek: write the playback position. Position writes while live must
-    /// go through a transition out of `PinnedToNow`/`LookbackLoop` first
-    /// (`exit_live`) — every UI seek path does, and this assert keeps it
-    /// that way.
+    /// go through a transition off the live edge first (`exit_live`) — every
+    /// UI seek path does, and this assert keeps it that way.
     pub(crate) fn set_playback_position(&mut self, position: f64) {
         debug_assert!(
-            self.time_model.mode == PlayheadMode::Free,
+            !self.selection.is_live(),
             "seek while {:?} — exit live first",
-            self.time_model.mode
+            self.selection
         );
         self.time_model.playback_position = position;
+    }
+
+    /// Pinned to the live edge (LIVE-NOW).
+    pub(crate) fn is_pinned(&self) -> bool {
+        self.selection == Selection::Point { live: true }
+    }
+
+    /// Playing a range attached to the live edge (the "last N frames" loop).
+    pub(crate) fn is_live_range(&self) -> bool {
+        matches!(self.selection, Selection::Range(r) if r.live)
+    }
+
+    /// The playback bounds the playhead is confined to, if a range is selected.
+    pub(crate) fn playback_bounds(&self) -> Option<(f64, f64)> {
+        self.selection.range().and_then(|r| r.bounds)
+    }
+
+    /// Select a fixed or live range between two timestamps and confine the
+    /// playhead to it. A live range keeps its span as its sliding basis.
+    /// Ignored (returns false) when the span is under a second.
+    pub(crate) fn select_range(&mut self, a: f64, b: f64, live: bool) -> bool {
+        let (start, end) = order_pair(a, b);
+        if end - start <= 1.0 {
+            return false;
+        }
+        self.drag = None;
+        self.pending_loop_window = None;
+        self.selection = Selection::Range(RangeSelection {
+            bounds: Some((start, end)),
+            live,
+            basis: LoopBasis::Duration(end - start),
+        });
+        self.time_model.direction = PlaybackDirection::Forward;
+        self.time_model.playback_position = self.time_model.playback_position.clamp(start, end);
+        true
+    }
+
+    /// Place the playhead inside the selected range (clamped to its bounds).
+    /// Unlike [`Self::set_playback_position`] this is allowed on a live
+    /// range: the playhead loops within it rather than sitting on now.
+    /// A no-op without range bounds.
+    pub(crate) fn seek_within_range(&mut self, ts: f64) {
+        if let Some((start, end)) = self.playback_bounds() {
+            self.time_model.playback_position = ts.clamp(start, end);
+        }
+    }
+
+    /// Move a range's bounds without resetting the loop's direction or
+    /// clamping the position (the live window sliding, or a wrap flush).
+    fn set_range_bounds_preserving(&mut self, start: f64, end: f64) {
+        if let Selection::Range(r) = &mut self.selection {
+            r.bounds = Some(order_pair(start, end));
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1003,61 +999,53 @@ impl PlaybackState {
     // half-apply a mode switch.
     // ------------------------------------------------------------------
 
-    /// → LIVE-NOW. Pins the playhead to `now`; the per-frame live tick
-    /// keeps it there via [`Self::pin_tick`]. Drops any bounds (live owns
-    /// its own constraints). In Rays, Realtime lock is the only meaningful
-    /// speed while tethered to the live edge (spec §8.2) — force it so a prior
-    /// large × multiple cannot remain selected in the transport readout. In
-    /// Frames the fps is kept (see [`Self::live_speed`]).
+    /// → live point (LIVE-NOW). Pins the playhead to `now`; the per-frame
+    /// live tick keeps it there via [`Self::pin_tick`]. Drops any range (live
+    /// owns its own constraints). In Rays, Realtime lock is the only
+    /// meaningful speed while tethered to the live edge (spec §8.2) — force
+    /// it so a prior large × multiple cannot remain selected in the transport
+    /// readout. In Frames the fps is kept (see [`Self::live_speed`]).
     pub(crate) fn enter_pinned_live(&mut self, now: f64) {
-        self.time_model.playback_bounds = None;
-        self.loop_window = None;
+        self.selection = Selection::Point { live: true };
+        self.drag = None;
         self.pending_loop_window = None;
-        self.time_model.mode = PlayheadMode::PinnedToNow;
+        self.time_model.direction = PlaybackDirection::Forward;
         self.time_model.playback_position = now;
         self.speed = self.live_speed();
     }
 
-    /// LIVE-* → ARCHIVE (`Free`). Clears the lookback replay's anchored
-    /// selection + window if one was active; a user's static shift-drag
-    /// selection (only settable in `Free`) is untouched. `freeze` picks the
-    /// landing position. Idempotent when already `Free`.
+    /// Leave the live edge for the archive. A live point becomes a fixed
+    /// point; a live range is dropped (it only means something attached to
+    /// now). A fixed range is untouched. `freeze` picks the landing position.
+    /// Idempotent when already off live.
     pub(crate) fn exit_live(&mut self, freeze: FreezeAt) {
-        if self.time_model.mode == PlayheadMode::LookbackLoop {
-            self.clear_anchored_selection();
-            self.loop_window = None;
+        if self.selection.is_live() {
+            self.selection = Selection::Point { live: false };
             self.pending_loop_window = None;
-            self.time_model.clear_bounds();
+            self.time_model.direction = PlaybackDirection::Forward;
         }
-        self.time_model.mode = PlayheadMode::Free;
         if let FreezeAt::Now(now) = freeze {
             self.time_model.playback_position = now;
         }
     }
 
-    /// LIVE-NOW → LIVE-LOOKBACK: discretely step + loop the recent matching
-    /// frames. The window (`playback_bounds`) is owned by `tick_live`, which
-    /// `render_loop` turns into the macro `sweep_frames` list that
-    /// `advance_macro` steps over — lookback is macro frame-stepping forced
-    /// on regardless of zoom (see [`Self::effective_playback_mode`]).
-    /// `seed` places the playhead (oldest cached frame) so the first pass
-    /// runs oldest→newest.
-    ///
-    /// `basis` records the pinned window's measure (frame-count / duration) so
-    /// `tick_live` and the backfill pump can size the sliding window; it is
-    /// stored as a pinned [`LoopWindow`].
-    pub(crate) fn enter_lookback(&mut self, seed: Option<f64>, basis: LoopBasis) {
+    /// Live point → live range: loop the recent frames, sliding with now.
+    /// The window is resolved each frame by the live tick from `basis` (see
+    /// [`Self::commit_pinned_window`]); `render_loop` turns it into the frame
+    /// list in Frames, and Rays plays it continuously. `seed` places the
+    /// playhead (oldest cached frame) so the first pass runs oldest→newest.
+    pub(crate) fn enter_live_range(&mut self, seed: Option<f64>, basis: LoopBasis) {
         debug_assert!(
-            self.time_model.mode == PlayheadMode::PinnedToNow,
-            "lookback starts from pinned live, not {:?}",
-            self.time_model.mode
+            self.is_pinned(),
+            "a live range starts from the live point, not {:?}",
+            self.selection
         );
-        self.time_model.mode = PlayheadMode::LookbackLoop;
-        self.time_model.loop_mode = LoopMode::Loop;
-        self.loop_window = Some(LoopWindow {
+        self.selection = Selection::Range(RangeSelection {
+            bounds: None,
+            live: true,
             basis,
-            pinned: true,
         });
+        self.time_model.loop_mode = LoopMode::Loop;
         if let Some(ts) = seed {
             self.time_model.playback_position = ts;
         }
@@ -1066,27 +1054,13 @@ impl PlaybackState {
         self.macro_playback.frame_accumulator = 0.0;
     }
 
-    /// LIVE-LOOKBACK → LIVE-NOW (pause during replay): drop the loop window
-    /// (its anchored selection included) and re-pin to `now`. The stream is
-    /// untouched. Restores the live speed the same way
-    /// [`Self::enter_pinned_live`] does.
-    pub(crate) fn exit_lookback_to_now(&mut self, now: f64) {
-        self.clear_anchored_selection();
-        self.loop_window = None;
-        self.pending_loop_window = None;
-        self.time_model.clear_bounds();
-        self.time_model.mode = PlayheadMode::PinnedToNow;
-        self.time_model.playback_position = now;
-        self.speed = self.live_speed();
-    }
-
-    /// Per-frame position pin while LIVE-NOW (called from the live tick,
-    /// independent of the `playing` flag).
+    /// Per-frame position pin while on the live point (called from the live
+    /// tick, independent of the `playing` flag).
     pub(crate) fn pin_tick(&mut self, now: f64) {
         debug_assert!(
-            self.time_model.mode == PlayheadMode::PinnedToNow,
-            "pin_tick outside PinnedToNow ({:?})",
-            self.time_model.mode
+            self.is_pinned(),
+            "pin_tick off the live point ({:?})",
+            self.selection
         );
         self.time_model.playback_position = now;
     }
@@ -1256,25 +1230,12 @@ impl PlaybackState {
     /// unbounded play halts there, because its frame list would fall back to
     /// the whole visible window, which can span years.
     pub(crate) fn must_halt_for_tier(&self) -> bool {
-        !self.is_playback_allowed()
-            && self.time_model.playback_bounds.is_none()
-            && !self.time_model.is_lookback()
+        !self.is_playback_allowed() && self.selection.range().is_none()
     }
 
     /// The user's chosen playback mode (Frames or Rays).
     pub(crate) fn playback_mode(&self) -> PlaybackMode {
         self.play_mode
-    }
-
-    /// Playback mode for advance dispatch + speed UI. A lookback replay always
-    /// frame-steps (Macro) so it snaps between the recent sweeps as frames;
-    /// otherwise this is the chosen [`Self::playback_mode`].
-    pub(crate) fn effective_playback_mode(&self) -> PlaybackMode {
-        if self.time_model.is_lookback() {
-            PlaybackMode::Macro
-        } else {
-            self.play_mode
-        }
     }
 
     /// Switch between Frames and Rays. Converts the speed to the nearest one
@@ -1288,7 +1249,7 @@ impl PlaybackState {
             return;
         }
         self.play_mode = mode;
-        if self.time_model.is_pinned() {
+        if self.is_pinned() {
             self.speed = match mode {
                 PlaybackMode::Micro => PlaybackSpeed::Realtime,
                 PlaybackMode::Macro => PlaybackSpeed::default(),
@@ -1377,10 +1338,17 @@ impl PlaybackState {
         }
     }
 
-    /// Advance playback by delta time (micro/continuous mode).
+    /// Advance playback by delta time (Rays / continuous). A live point's
+    /// position is owned by the live tick, so nothing advances there. A
+    /// forward wrap flushes a parked live-range window, the same as a frame
+    /// wrap in Frames.
     pub(crate) fn advance(&mut self, delta_secs: f64) {
-        if self.playing {
-            self.time_model.advance(delta_secs, self.speed);
+        if !self.playing || self.is_pinned() {
+            return;
+        }
+        let bounds = self.playback_bounds();
+        if self.time_model.advance(delta_secs, self.speed, bounds) {
+            self.apply_pending_window_at_wrap();
         }
     }
 
@@ -1511,129 +1479,74 @@ impl PlaybackState {
         self.macro_playback.current_frame_index = best;
     }
 
-    /// Get the normalized selection range (start <= end), if any.
+    /// The selected range (start <= end): a drag in progress, else the
+    /// range selection's bounds.
     pub(crate) fn selection_range(&self) -> Option<(f64, f64)> {
-        self.selection.as_ref().and_then(|s| s.range())
+        match self.drag {
+            Some(d) if d.in_progress => d.range(),
+            _ => self.playback_bounds(),
+        }
     }
 
     /// Whether a shift-drag selection is currently being drawn.
     pub(crate) fn selection_in_progress(&self) -> bool {
-        self.selection.as_ref().is_some_and(|s| s.in_progress)
+        self.drag.is_some_and(|d| d.in_progress)
     }
 
     /// Whether a timestamp falls inside the current selection.
     pub(crate) fn selection_contains(&self, ts: f64) -> bool {
-        self.selection.as_ref().is_some_and(|s| s.contains(ts))
-    }
-
-    /// Replace the selection with a static range (event jump, shift+click).
-    pub(crate) fn set_selection(&mut self, a: f64, b: f64) {
-        self.selection = Some(TimeSelection::between(a, b));
+        self.selection_range()
+            .is_some_and(|(s, e)| ts >= s && ts <= e)
     }
 
     /// Start a shift-drag selection at `ts` (both endpoints collapsed).
     pub(crate) fn begin_selection_drag(&mut self, ts: f64) {
-        self.selection = Some(TimeSelection {
+        self.drag = Some(TimeSelection {
             a: ts,
             b: ts,
             in_progress: true,
-            anchored_to_live: false,
         });
     }
 
     /// Move the dragged endpoint while a shift-drag is in progress.
     pub(crate) fn update_selection_drag(&mut self, ts: f64) {
-        if let Some(sel) = self.selection.as_mut() {
-            if sel.in_progress {
-                sel.b = ts;
+        if let Some(d) = self.drag.as_mut() {
+            if d.in_progress {
+                d.b = ts;
             }
         }
     }
 
-    /// Finish a shift-drag. Returns true when the settled selection has a
-    /// meaningful range (callers then apply it as bounds / anchor it).
-    pub(crate) fn end_selection_drag(&mut self) -> bool {
-        match self.selection.as_mut() {
-            Some(sel) if sel.in_progress => {
-                sel.in_progress = false;
-                sel.range().is_some()
-            }
-            _ => false,
-        }
+    /// Finish a shift-drag, returning the drawn range when it has meaningful
+    /// width. The caller decides whether it becomes a fixed or live range
+    /// ([`Self::select_range`]).
+    pub(crate) fn end_selection_drag(&mut self) -> Option<(f64, f64)> {
+        let drawn = self.drag.take().filter(|d| d.in_progress)?;
+        drawn.range()
     }
 
-    /// Anchor the selection's later edge to the live edge (it slides
-    /// forward with now while streaming). Mirrors the pin into the loop window
-    /// so the band reads as pinned.
-    pub(crate) fn anchor_selection_to_live(&mut self) {
-        if let Some(sel) = self.selection.as_mut() {
-            sel.anchored_to_live = true;
-        }
-        if let Some(w) = self.loop_window.as_mut() {
-            w.pinned = true;
-        }
-    }
-
-    /// Un-anchor the selection (a dragged right handle moved off the live
-    /// edge): the loop becomes a fixed range. Mirrors the un-pin into the loop
-    /// window. The selection keeps its current bounds.
-    pub(crate) fn unanchor_selection_from_live(&mut self) {
-        if let Some(sel) = self.selection.as_mut() {
-            sel.anchored_to_live = false;
-        }
-        if let Some(w) = self.loop_window.as_mut() {
-            w.pinned = false;
-        }
-    }
-
-    /// Per-frame follow for a live-anchored selection: slide its later edge
-    /// to `end` and keep playback bounds in step (without resetting the
-    /// loop's direction or clamping the position).
-    pub(crate) fn slide_anchored_selection(&mut self, end: f64) {
-        let Some(sel) = self.selection.as_mut() else {
-            return;
-        };
-        if !sel.anchored_to_live || sel.in_progress {
+    /// Per-frame slide for a live range: the live tick resolves the target
+    /// window and this commits it (see [`Self::commit_pinned_window`]).
+    pub(crate) fn slide_live_range(&mut self, target_start: f64, target_end: f64) {
+        if !self.is_live_range() {
             return;
         }
-        sel.slide_end_to(end);
-        if self.time_model.playback_bounds.is_some() {
-            if let Some((s, e)) = sel.range() {
-                self.time_model.set_bounds_preserving(s, e);
-            }
-        }
+        let (s, e) = self.commit_pinned_window(target_start, target_end);
+        self.set_range_bounds_preserving(s, e);
+        // Keep the playhead inside the window as it slides past it (a paused
+        // range would otherwise leave the playhead behind).
+        self.time_model.playback_position = self.time_model.playback_position.clamp(s, e);
     }
 
-    /// Drop a live-anchored selection (stream stopped / re-pinned to now).
-    /// A static user selection is left untouched.
-    pub(crate) fn clear_anchored_selection(&mut self) {
-        if self.selection.is_some_and(|s| s.anchored_to_live) {
-            self.clear_selection();
-        }
-    }
-
-    /// Clear the current selection.
+    /// Clear the range selection. A live range falls back to the live point
+    /// (the loop ends, the playhead stays on now); a fixed range to a fixed
+    /// point at the current position.
     pub(crate) fn clear_selection(&mut self) {
-        self.selection = None;
-        self.loop_window = None;
+        self.drag = None;
         self.pending_loop_window = None;
-        self.time_model.clear_bounds();
-    }
-
-    /// Apply selection as playback bounds. Records a matching [`LoopWindow`]: a
-    /// `Duration` basis equal to the selection's span, `pinned` mirroring the
-    /// selection's live-anchoring (so a selection ending near now while
-    /// streaming reads as a pinned loop). The anchored-selection slide path
-    /// owns its own bounds tracking — the basis here is descriptive, not a
-    /// re-derivation source for these selection-driven loops.
-    pub(crate) fn apply_selection_as_bounds(&mut self) {
-        if let Some((start, end)) = self.selection_range() {
-            self.time_model.set_bounds_from_selection(start, end);
-            let pinned = self.selection.is_some_and(|s| s.anchored_to_live);
-            self.loop_window = Some(LoopWindow {
-                basis: LoopBasis::Duration(end - start),
-                pinned,
-            });
+        self.time_model.direction = PlaybackDirection::Forward;
+        if let Selection::Range(r) = self.selection {
+            self.selection = Selection::Point { live: r.live };
         }
     }
 
@@ -1666,7 +1579,7 @@ impl PlaybackState {
             self.pending_loop_window = None;
             return target;
         }
-        match self.time_model.playback_bounds {
+        match self.playback_bounds() {
             None => {
                 self.pending_loop_window = None;
                 target
@@ -1688,7 +1601,7 @@ impl PlaybackState {
     /// to the nearest frame without teleporting the cursor).
     fn apply_pending_window_at_wrap(&mut self) {
         if let Some((s, e)) = self.pending_loop_window.take() {
-            self.time_model.set_bounds_preserving(s, e);
+            self.set_range_bounds_preserving(s, e);
         }
     }
 }
@@ -1735,25 +1648,26 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn enter_lookback_sets_loop_seed_and_resets_macro_cursor() {
+    fn enter_live_range_sets_loop_seed_and_resets_macro_cursor() {
         let mut ps = PlaybackState::default();
         ps.enter_pinned_live(1000.0);
         // Pretend a prior macro session left a non-zero cursor.
         ps.macro_playback.current_frame_index = 7;
         ps.macro_playback.frame_accumulator = 0.4;
-        ps.enter_lookback(Some(940.0), LoopBasis::FrameCount(10));
+        ps.enter_live_range(Some(940.0), LoopBasis::FrameCount(10));
         assert!(ps.time_model.loop_mode == LoopMode::Loop);
-        assert!(ps.time_model.is_lookback());
+        assert!(ps.is_live_range());
         assert!(ps.playing);
         assert_eq!(ps.playback_position(), 940.0);
         assert_eq!(ps.macro_playback.current_frame_index, 0);
         assert_eq!(ps.macro_playback.frame_accumulator, 0.0);
-        // The basis is recorded as a pinned loop window for tick_live to read.
+        // The basis is recorded on the live range for tick_live to read.
         assert_eq!(
-            ps.loop_window,
-            Some(LoopWindow {
+            ps.selection,
+            Selection::Range(RangeSelection {
+                bounds: None,
+                live: true,
                 basis: LoopBasis::FrameCount(10),
-                pinned: true,
             })
         );
     }
@@ -1774,14 +1688,12 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn effective_mode_is_macro_iff_lookback() {
+    fn live_range_keeps_the_chosen_mode() {
+        // Rays is allowed on a live range: it plays the window continuously.
         let mut ps = PlaybackState::default();
         ps.set_play_mode(PlaybackMode::Micro);
-        assert!(ps.effective_playback_mode() == PlaybackMode::Micro);
         ps.enter_pinned_live(1000.0);
-        ps.enter_lookback(None, LoopBasis::default());
-        assert!(ps.effective_playback_mode() == PlaybackMode::Macro);
-        // The chosen mode itself is untouched by the replay.
+        ps.enter_live_range(None, LoopBasis::default());
         assert_eq!(ps.playback_mode(), PlaybackMode::Micro);
     }
 
@@ -1988,14 +1900,14 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn exit_lookback_to_now_clears_window_and_repins() {
+    fn enter_pinned_live_from_live_range_clears_window_and_repins() {
         let mut ps = PlaybackState::default();
         ps.enter_pinned_live(1000.0);
-        ps.enter_lookback(Some(940.0), LoopBasis::default());
-        ps.time_model.set_bounds_preserving(940.0, 1000.0); // tick's window
-        ps.exit_lookback_to_now(1010.0);
-        assert_eq!(ps.time_model.playback_bounds, None);
-        assert!(ps.time_model.is_pinned());
+        ps.enter_live_range(Some(940.0), LoopBasis::default());
+        ps.slide_live_range(940.0, 1000.0); // tick's window
+        ps.enter_pinned_live(1010.0);
+        assert_eq!(ps.playback_bounds(), None);
+        assert!(ps.is_pinned());
         assert_eq!(ps.playback_position(), 1010.0);
         assert!(ps.playing); // caller owns `playing`
     }
@@ -2004,11 +1916,11 @@ mod tests {
     fn exit_live_keep_preserves_position_and_clears_lookback_window() {
         let mut ps = PlaybackState::default();
         ps.enter_pinned_live(1000.0);
-        ps.enter_lookback(Some(940.0), LoopBasis::default());
-        ps.time_model.set_bounds_preserving(940.0, 1000.0);
+        ps.enter_live_range(Some(940.0), LoopBasis::default());
+        ps.slide_live_range(940.0, 1000.0);
         ps.exit_live(FreezeAt::Keep);
-        assert_eq!(ps.time_model.mode, PlayheadMode::Free);
-        assert_eq!(ps.time_model.playback_bounds, None);
+        assert_eq!(ps.selection, Selection::Point { live: false });
+        assert_eq!(ps.playback_bounds(), None);
         assert_eq!(ps.playback_position(), 940.0); // untouched
     }
 
@@ -2018,19 +1930,18 @@ mod tests {
         ps.enter_pinned_live(1000.0);
         ps.pin_tick(1005.0);
         ps.exit_live(FreezeAt::Now(1006.0));
-        assert_eq!(ps.time_model.mode, PlayheadMode::Free);
+        assert_eq!(ps.selection, Selection::Point { live: false });
         assert_eq!(ps.playback_position(), 1006.0);
     }
 
     #[wasm_bindgen_test]
     fn exit_live_is_idempotent_and_keeps_user_selection_bounds() {
         let mut ps = PlaybackState::default();
-        // A user selection's bounds (set in Free mode) must survive an
-        // exit_live no-op.
-        ps.time_model.set_bounds_from_selection(10.0, 20.0);
+        // A fixed range must survive an exit_live no-op.
+        assert!(ps.select_range(10.0, 20.0, false));
         ps.exit_live(FreezeAt::Keep);
-        assert_eq!(ps.time_model.playback_bounds, Some((10.0, 20.0)));
-        assert_eq!(ps.time_model.mode, PlayheadMode::Free);
+        assert_eq!(ps.playback_bounds(), Some((10.0, 20.0)));
+        assert!(!ps.selection.is_live());
     }
 
     #[wasm_bindgen_test]
@@ -2147,69 +2058,104 @@ mod tests {
         assert!(ps.selection_in_progress());
         // Sub-second drag: no meaningful range yet.
         ps.update_selection_drag(100.5);
-        assert!(!ps.end_selection_drag());
+        assert_eq!(ps.end_selection_drag(), None);
+        assert!(!ps.selection_in_progress());
         // A real drag yields a range; endpoints normalize either direction.
         ps.begin_selection_drag(500.0);
         ps.update_selection_drag(200.0);
-        assert!(ps.end_selection_drag());
+        // While drawing, the selection shown is the drag's.
         assert_eq!(ps.selection_range(), Some((200.0, 500.0)));
         assert!(ps.selection_contains(300.0));
         assert!(!ps.selection_contains(600.0));
+        // Ending the drag hands the range back; the caller selects it.
+        assert_eq!(ps.end_selection_drag(), Some((200.0, 500.0)));
+        assert_eq!(ps.selection_range(), None);
+        assert!(ps.select_range(200.0, 500.0, false));
+        assert_eq!(ps.selection_range(), Some((200.0, 500.0)));
     }
 
     #[wasm_bindgen_test]
-    fn anchored_selection_slides_and_clears_separately_from_static() {
+    fn live_range_slides_and_fixed_range_does_not() {
         let mut ps = PlaybackState::default();
-        ps.set_selection(100.0, 400.0);
-        ps.apply_selection_as_bounds();
-        // Not anchored: slide is a no-op.
-        ps.slide_anchored_selection(500.0);
+        assert!(ps.select_range(100.0, 400.0, false));
+        // A fixed range ignores the live slide.
+        ps.slide_live_range(200.0, 500.0);
         assert_eq!(ps.selection_range(), Some((100.0, 400.0)));
-        // clear_anchored_selection leaves a static selection alone.
-        ps.clear_anchored_selection();
-        assert!(ps.selection.is_some());
 
-        // Anchored: the later edge follows, bounds slide without resetting
-        // direction, and clear_anchored_selection removes it.
-        ps.anchor_selection_to_live();
+        // A live range follows now; while paused the window is taken at once
+        // and the loop's direction is left alone.
+        assert!(ps.select_range(100.0, 400.0, true));
+        assert!(ps.is_live_range());
         ps.time_model.direction = PlaybackDirection::Backward;
-        ps.slide_anchored_selection(550.0);
-        assert_eq!(ps.selection_range(), Some((100.0, 550.0)));
-        assert_eq!(ps.time_model.playback_bounds, Some((100.0, 550.0)));
+        ps.time_model.playback_position = 120.0;
+        ps.slide_live_range(250.0, 550.0);
+        assert_eq!(ps.playback_bounds(), Some((250.0, 550.0)));
+        // The playhead is carried along when the window slides past it.
+        assert_eq!(ps.playback_position(), 250.0);
         assert!(ps.time_model.direction == PlaybackDirection::Backward);
-        ps.clear_anchored_selection();
-        assert!(ps.selection.is_none());
-        assert_eq!(ps.time_model.playback_bounds, None);
     }
 
     #[wasm_bindgen_test]
-    fn exit_live_from_lookback_drops_anchored_selection() {
+    fn select_range_records_span_basis_and_clamps_position() {
+        let mut ps = PlaybackState::default();
+        ps.time_model.playback_position = 50.0;
+        ps.time_model.direction = PlaybackDirection::Backward;
+        assert!(ps.select_range(460.0, 100.0, false));
+        assert_eq!(
+            ps.selection,
+            Selection::Range(RangeSelection {
+                bounds: Some((100.0, 460.0)),
+                live: false,
+                basis: LoopBasis::Duration(360.0),
+            })
+        );
+        assert_eq!(ps.playback_position(), 100.0);
+        assert!(ps.time_model.direction == PlaybackDirection::Forward);
+        // A sub-second span is refused and leaves the range alone.
+        assert!(!ps.select_range(200.0, 200.5, true));
+        assert_eq!(ps.playback_bounds(), Some((100.0, 460.0)));
+    }
+
+    #[wasm_bindgen_test]
+    fn clearing_a_range_returns_to_its_point() {
+        // A fixed range falls back to a fixed point at the current position.
+        let mut ps = PlaybackState::default();
+        assert!(ps.select_range(100.0, 400.0, false));
+        ps.clear_selection();
+        assert_eq!(ps.selection, Selection::Point { live: false });
+        assert_eq!(ps.playback_bounds(), None);
+        // A live range falls back to the live point.
         let mut ps = PlaybackState::default();
         ps.enter_pinned_live(1000.0);
-        ps.enter_lookback(Some(940.0), LoopBasis::default());
-        ps.selection = Some(TimeSelection {
-            a: 940.0,
-            b: 1000.0,
-            in_progress: false,
-            anchored_to_live: true,
-        });
-        ps.time_model.set_bounds_preserving(940.0, 1000.0);
-        ps.exit_live(FreezeAt::Keep);
-        assert!(ps.selection.is_none());
-        assert_eq!(ps.time_model.playback_bounds, None);
+        ps.enter_live_range(Some(940.0), LoopBasis::FrameCount(4));
+        ps.clear_selection();
+        assert!(ps.is_pinned());
     }
 
     #[wasm_bindgen_test]
-    fn set_bounds_preserving_keeps_direction_and_position() {
-        let mut tm = TimeModel::at_position(130.0);
-        tm.set_bounds_from_selection(100.0, 160.0);
-        tm.direction = PlaybackDirection::Backward;
-        tm.playback_position = 130.0;
-        // Sliding window update should not reset direction or clamp position.
-        tm.set_bounds_preserving(120.0, 180.0);
-        assert_eq!(tm.playback_bounds, Some((120.0, 180.0)));
-        assert!(tm.direction == PlaybackDirection::Backward);
-        assert_eq!(tm.playback_position, 130.0);
+    fn exit_live_from_live_range_drops_the_range() {
+        let mut ps = PlaybackState::default();
+        ps.enter_pinned_live(1000.0);
+        assert!(ps.select_range(940.0, 1000.0, true));
+        ps.exit_live(FreezeAt::Keep);
+        assert_eq!(ps.selection, Selection::Point { live: false });
+        assert_eq!(ps.playback_bounds(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn seek_within_range_clamps_to_bounds() {
+        let mut ps = PlaybackState::default();
+        ps.enter_pinned_live(1000.0);
+        assert!(ps.select_range(900.0, 1000.0, true));
+        ps.seek_within_range(950.0);
+        assert_eq!(ps.playback_position(), 950.0);
+        ps.seek_within_range(10.0);
+        assert_eq!(ps.playback_position(), 900.0);
+        // Without bounds it is a no-op.
+        let mut ps = PlaybackState::default();
+        ps.time_model.playback_position = 5.0;
+        ps.seek_within_range(50.0);
+        assert_eq!(ps.playback_position(), 5.0);
     }
 
     // ---------------------------------------------------------------
@@ -2348,7 +2294,7 @@ mod tests {
         ps.enter_pinned_live(5_000.0);
         for z in [0.5, 0.01, PlaybackState::min_zoom_for_width(1000.0), 2.0] {
             ps.set_timeline_zoom(z, 1000.0);
-            assert!(ps.time_model.is_pinned(), "unpinned at zoom {z}");
+            assert!(ps.is_pinned(), "unpinned at zoom {z}");
         }
     }
 
@@ -2363,15 +2309,14 @@ mod tests {
         assert!(ps.must_halt_for_tier());
         // A fixed loop keeps playing.
         let mut ps = micro_state();
-        ps.set_selection(1_000.0, 2_000.0);
-        ps.apply_selection_as_bounds();
+        assert!(ps.select_range(1_000.0, 2_000.0, false));
         ps.playing = true;
         ps.set_timeline_zoom(archive, 1000.0);
         assert!(!ps.must_halt_for_tier());
         // So does a lookback replay.
         let mut ps = micro_state();
         ps.enter_pinned_live(5_000.0);
-        ps.enter_lookback(Some(4_000.0), LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES));
+        ps.enter_live_range(Some(4_000.0), LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES));
         ps.set_timeline_zoom(archive, 1000.0);
         assert!(!ps.must_halt_for_tier());
     }
@@ -2381,12 +2326,12 @@ mod tests {
         // A lookback replay survives the same zoom sweep with its window intact.
         let mut ps = micro_state();
         ps.enter_pinned_live(5_000.0);
-        ps.enter_lookback(Some(4_000.0), LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES));
-        let window = ps.loop_window;
+        ps.enter_live_range(Some(4_000.0), LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES));
+        let window = ps.selection;
         for z in [0.5, 0.01, PlaybackState::min_zoom_for_width(1000.0), 2.0] {
             ps.set_timeline_zoom(z, 1000.0);
-            assert!(ps.time_model.is_lookback(), "left lookback at zoom {z}");
-            assert_eq!(ps.loop_window, window);
+            assert!(ps.is_live_range(), "left lookback at zoom {z}");
+            assert_eq!(ps.selection, window);
         }
     }
 
@@ -2476,8 +2421,6 @@ mod tests {
             LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES)
         );
         assert_eq!(DEFAULT_LOOP_FRAMES, 6);
-        assert_eq!(LoopWindow::default().basis, LoopBasis::FrameCount(6));
-        assert!(!LoopWindow::default().pinned);
     }
 
     #[wasm_bindgen_test]
@@ -2516,60 +2459,39 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn apply_selection_records_fixed_loop_window() {
-        let mut ps = PlaybackState::default();
-        ps.set_selection(100.0, 460.0);
-        ps.apply_selection_as_bounds();
-        // A plain selection → a fixed (un-pinned) duration-basis loop window.
-        let w = ps.loop_window.expect("loop window set");
-        assert_eq!(w.basis, LoopBasis::Duration(360.0));
-        assert!(!w.pinned);
-        // Anchoring it mirrors into the window as pinned.
-        ps.anchor_selection_to_live();
-        assert!(ps.loop_window.unwrap().pinned);
-        // Un-anchoring (handle dragged off live) reverts to fixed.
-        ps.unanchor_selection_from_live();
-        assert!(!ps.loop_window.unwrap().pinned);
-    }
-
-    #[wasm_bindgen_test]
-    fn clearing_a_loop_drops_the_window() {
-        let mut ps = PlaybackState::default();
-        ps.set_selection(100.0, 400.0);
-        ps.apply_selection_as_bounds();
-        assert!(ps.loop_window.is_some());
-        ps.clear_selection();
-        assert!(ps.loop_window.is_none());
-        assert_eq!(ps.time_model.playback_bounds, None);
-    }
-
-    #[wasm_bindgen_test]
-    fn exiting_live_clears_pinned_loop_window() {
+    fn exiting_live_drops_the_live_range() {
         let mut ps = PlaybackState::default();
         ps.enter_pinned_live(1000.0);
-        ps.enter_lookback(Some(940.0), LoopBasis::FrameCount(4));
-        assert!(ps.loop_window.is_some());
-        ps.exit_lookback_to_now(1010.0);
-        assert!(ps.loop_window.is_none());
+        ps.enter_live_range(Some(940.0), LoopBasis::FrameCount(4));
+        ps.enter_pinned_live(1010.0);
+        assert!(ps.is_pinned());
+        assert!(ps.selection.range().is_none());
         // And the harder exit path.
-        ps.enter_lookback(Some(940.0), LoopBasis::FrameCount(4));
-        assert!(ps.loop_window.is_some());
+        ps.enter_live_range(Some(940.0), LoopBasis::FrameCount(4));
         ps.exit_live(FreezeAt::Keep);
-        assert!(ps.loop_window.is_none());
+        assert_eq!(ps.selection, Selection::Point { live: false });
     }
 
     // ---------------------------------------------------------------
     // Wrap-point incorporation (spec §8)
     // ---------------------------------------------------------------
 
+    /// A playing live range with no bounds resolved yet.
+    fn live_range_state() -> PlaybackState {
+        let mut ps = PlaybackState::default();
+        ps.enter_pinned_live(1000.0);
+        ps.enter_live_range(None, LoopBasis::default());
+        ps
+    }
+
     #[wasm_bindgen_test]
     fn commit_pinned_window_tracks_now_continuously_while_paused() {
         // Not playing: the window follows now every call, nothing is parked.
-        let mut ps = PlaybackState::default();
-        assert!(!ps.playing);
+        let mut ps = live_range_state();
+        ps.playing = false;
         let w = ps.commit_pinned_window(100.0, 200.0);
         assert_eq!(w, (100.0, 200.0));
-        ps.time_model.set_bounds_preserving(100.0, 200.0);
+        ps.set_range_bounds_preserving(100.0, 200.0);
         // A later target is taken immediately (continuous tracking).
         let w = ps.commit_pinned_window(150.0, 260.0);
         assert_eq!(w, (150.0, 260.0));
@@ -2578,12 +2500,11 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn commit_pinned_window_defers_new_frames_until_wrap_while_playing() {
-        let mut ps = PlaybackState::default();
-        ps.playing = true;
+        let mut ps = live_range_state();
         // First commit while playing takes effect immediately (no prior bounds).
         let w = ps.commit_pinned_window(100.0, 400.0);
         assert_eq!(w, (100.0, 400.0));
-        ps.time_model.set_bounds_preserving(w.0, w.1);
+        ps.set_range_bounds_preserving(w.0, w.1);
 
         // A frame arrives mid-cycle (window would slide to 160..460): it is
         // parked, NOT applied — the committed window stays fixed.
@@ -2600,7 +2521,7 @@ mod tests {
         ps.step_macro_frame(1);
         assert_eq!(ps.macro_playback.current_frame_index, 0);
         assert_eq!(
-            ps.time_model.playback_bounds,
+            ps.playback_bounds(),
             Some((160.0, 460.0)),
             "parked window committed at the wrap"
         );
@@ -2609,9 +2530,8 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn commit_pinned_window_no_park_when_target_unchanged() {
-        let mut ps = PlaybackState::default();
-        ps.playing = true;
-        ps.time_model.set_bounds_preserving(100.0, 400.0);
+        let mut ps = live_range_state();
+        ps.set_range_bounds_preserving(100.0, 400.0);
         // Same target as committed → nothing parked.
         let held = ps.commit_pinned_window(100.0, 400.0);
         assert_eq!(held, (100.0, 400.0));
@@ -2884,62 +2804,43 @@ mod coverage_tests {
     }
 
     // ---------------------------------------------------------------
-    // TimeSelection: range None width gate, between, slide_end_to a>b branch
+    // TimeSelection (the drag being drawn): range None width gate
     // ---------------------------------------------------------------
+
+    fn drag(a: f64, b: f64) -> TimeSelection {
+        TimeSelection {
+            a,
+            b,
+            in_progress: true,
+        }
+    }
 
     #[wasm_bindgen_test]
     fn time_selection_range_requires_meaningful_width() {
         // Sub-second / zero width → None (the > 1.0 gate).
-        let tiny = TimeSelection::between(100.0, 100.5);
-        assert_eq!(tiny.range(), None);
-        assert!(!tiny.contains(100.2));
+        assert_eq!(drag(100.0, 100.5).range(), None);
         // Exactly at the 1.0 boundary is NOT meaningful ( > 1.0, not >= ).
-        let edge = TimeSelection::between(100.0, 101.0);
-        assert_eq!(edge.range(), None);
+        assert_eq!(drag(100.0, 101.0).range(), None);
         // Just over 1.0 is meaningful, and normalizes regardless of order.
-        let ok = TimeSelection::between(500.0, 200.0);
-        assert_eq!(ok.range(), Some((200.0, 500.0)));
-        assert!(ok.contains(200.0)); // inclusive endpoints
-        assert!(ok.contains(500.0));
-        assert!(!ok.contains(199.0));
-        // `between` is a static (unanchored, not-in-progress) selection.
-        assert!(!ok.in_progress);
-        assert!(!ok.anchored_to_live);
-    }
-
-    #[wasm_bindgen_test]
-    fn time_selection_slide_end_to_moves_the_later_logical_edge() {
-        // a <= b: b is the moved edge.
-        let mut s = TimeSelection::between(100.0, 200.0);
-        s.slide_end_to(350.0);
-        assert_eq!(s.b, 350.0);
-        assert_eq!(s.a, 100.0);
-        assert_eq!(s.range(), Some((100.0, 350.0)));
-        // a > b: a is the moved edge (drag started past the eventual end).
-        let mut r = TimeSelection {
-            a: 500.0,
-            b: 100.0,
-            in_progress: false,
-            anchored_to_live: true,
-        };
-        r.slide_end_to(700.0);
-        assert_eq!(r.a, 700.0);
-        assert_eq!(r.b, 100.0);
-        assert_eq!(r.range(), Some((100.0, 700.0)));
+        assert_eq!(drag(500.0, 200.0).range(), Some((200.0, 500.0)));
     }
 
     // ---------------------------------------------------------------
     // TimeModel::advance + apply_bounds: Loop / PingPong / Once at both ends
     // ---------------------------------------------------------------
 
+    const B: Option<(f64, f64)> = Some((0.0, 100.0));
+
     #[wasm_bindgen_test]
     fn advance_loop_wraps_at_upper_bound() {
         let mut tm = TimeModel::at_position(90.0);
-        tm.set_bounds_from_selection(0.0, 100.0); // resets direction Forward
         tm.loop_mode = LoopMode::Loop;
         tm.playback_position = 90.0;
         // Realtime = 1 timeline-sec per real-sec; advance 20 → 110 wraps to 10.
-        tm.advance(20.0, PlaybackSpeed::Realtime);
+        assert!(
+            tm.advance(20.0, PlaybackSpeed::Realtime, B),
+            "reports the wrap"
+        );
         assert!((tm.playback_position - 10.0).abs() < 1e-9);
         assert!(tm.direction == PlaybackDirection::Forward);
     }
@@ -2947,30 +2848,28 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn advance_loop_wraps_at_lower_bound_going_backward() {
         let mut tm = TimeModel::at_position(10.0);
-        tm.set_bounds_from_selection(0.0, 100.0);
         tm.loop_mode = LoopMode::Loop;
         tm.direction = PlaybackDirection::Backward;
         tm.playback_position = 10.0;
         // Backward 20 → -10 ≤ start; Loop wraps to end - 10 = 90.
-        tm.advance(20.0, PlaybackSpeed::Realtime);
+        tm.advance(20.0, PlaybackSpeed::Realtime, B);
         assert!((tm.playback_position - 90.0).abs() < 1e-9);
     }
 
     #[wasm_bindgen_test]
     fn advance_pingpong_reflects_at_both_bounds() {
         let mut tm = TimeModel::at_position(90.0);
-        tm.set_bounds_from_selection(0.0, 100.0);
         tm.loop_mode = LoopMode::PingPong;
         tm.direction = PlaybackDirection::Forward;
         tm.playback_position = 90.0;
         // Forward overshoot by 10 → reflect to 90, flip to Backward.
-        tm.advance(20.0, PlaybackSpeed::Realtime);
+        tm.advance(20.0, PlaybackSpeed::Realtime, B);
         assert!((tm.playback_position - 90.0).abs() < 1e-9);
         assert!(tm.direction == PlaybackDirection::Backward);
         // Now backward from 90 by 100 → undershoot start by 10 → reflect to 10,
         // flip to Forward.
         tm.playback_position = 90.0;
-        tm.advance(100.0, PlaybackSpeed::Realtime);
+        tm.advance(100.0, PlaybackSpeed::Realtime, B);
         assert!((tm.playback_position - 10.0).abs() < 1e-9);
         assert!(tm.direction == PlaybackDirection::Forward);
     }
@@ -2979,45 +2878,27 @@ mod coverage_tests {
     fn advance_once_clamps_at_each_bound() {
         // Once forward: clamp at end.
         let mut tm = TimeModel::at_position(90.0);
-        tm.set_bounds_from_selection(0.0, 100.0);
         tm.loop_mode = LoopMode::Once;
         tm.playback_position = 90.0;
-        tm.advance(20.0, PlaybackSpeed::Realtime);
+        tm.advance(20.0, PlaybackSpeed::Realtime, B);
         assert!((tm.playback_position - 100.0).abs() < 1e-9);
         // Once backward: clamp at start.
         tm.direction = PlaybackDirection::Backward;
         tm.playback_position = 10.0;
-        tm.advance(20.0, PlaybackSpeed::Realtime);
+        tm.advance(20.0, PlaybackSpeed::Realtime, B);
         assert!((tm.playback_position - 0.0).abs() < 1e-9);
     }
 
     #[wasm_bindgen_test]
     fn advance_unbounded_moves_freely_and_speed_scales() {
         let mut tm = TimeModel::at_position(1000.0);
-        assert_eq!(tm.playback_bounds, None);
         // 10 real seconds at Double (600×) = 6000 timeline seconds forward.
-        tm.advance(10.0, PlaybackSpeed::Double);
+        tm.advance(10.0, PlaybackSpeed::Double, None);
         assert!((tm.playback_position - 7000.0).abs() < 1e-6);
         // Backward direction negates the advance.
         tm.direction = PlaybackDirection::Backward;
-        tm.advance(10.0, PlaybackSpeed::Double);
+        tm.advance(10.0, PlaybackSpeed::Double, None);
         assert!((tm.playback_position - 1000.0).abs() < 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn set_bounds_from_selection_orders_clamps_and_resets_direction() {
-        let mut tm = TimeModel::at_position(300.0);
-        tm.direction = PlaybackDirection::Backward;
-        // Reversed args are ordered; position outside is clamped into range.
-        tm.set_bounds_from_selection(200.0, 50.0);
-        assert_eq!(tm.playback_bounds, Some((50.0, 200.0)));
-        assert!(tm.direction == PlaybackDirection::Forward);
-        assert!((tm.playback_position - 200.0).abs() < 1e-9); // clamped down
-                                                              // clear_bounds drops them and re-resets direction.
-        tm.direction = PlaybackDirection::Backward;
-        tm.clear_bounds();
-        assert_eq!(tm.playback_bounds, None);
-        assert!(tm.direction == PlaybackDirection::Forward);
     }
 
     // ---------------------------------------------------------------
@@ -3112,15 +2993,19 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn enter_pinned_live_drops_bounds_window_and_pending() {
         let mut ps = PlaybackState::default();
-        ps.time_model.set_bounds_from_selection(100.0, 200.0);
-        ps.loop_window = Some(LoopWindow::default());
+        assert!(ps.select_range(100.0, 200.0, false));
+        ps.drag = Some(TimeSelection {
+            a: 1.0,
+            b: 50.0,
+            in_progress: true,
+        });
         ps.pending_loop_window = Some((1.0, 2.0));
         ps.enter_pinned_live(1234.0);
-        assert_eq!(ps.time_model.mode, PlayheadMode::PinnedToNow);
-        assert!(ps.time_model.is_pinned());
-        assert!(!ps.time_model.is_lookback());
-        assert_eq!(ps.time_model.playback_bounds, None);
-        assert!(ps.loop_window.is_none());
+        assert_eq!(ps.selection, Selection::Point { live: true });
+        assert!(ps.is_pinned());
+        assert!(!ps.is_live_range());
+        assert_eq!(ps.playback_bounds(), None);
+        assert!(ps.drag.is_none());
         assert!(ps.pending_loop_window.is_none());
         assert_eq!(ps.playback_position(), 1234.0);
     }
@@ -3155,11 +3040,11 @@ mod coverage_tests {
         let mut ps = PlaybackState::default();
         ps.set_play_mode(PlaybackMode::Micro);
         ps.enter_pinned_live(1000.0);
-        ps.enter_lookback(Some(940.0), LoopBasis::FrameCount(6));
+        ps.enter_live_range(Some(940.0), LoopBasis::FrameCount(6));
         // Lookback UI may leave a macro fps selection selected.
         ps.speed = PlaybackSpeed::Normal;
-        ps.exit_lookback_to_now(1010.0);
-        assert!(ps.time_model.is_pinned());
+        ps.enter_pinned_live(1010.0);
+        assert!(ps.is_pinned());
         assert_eq!(ps.speed, PlaybackSpeed::Realtime);
     }
 
@@ -3190,7 +3075,7 @@ mod coverage_tests {
         // While playing with no prior bounds the reversed target is taken
         // immediately, still ordered.
         ps.playing = true;
-        ps.time_model.playback_bounds = None;
+        assert_eq!(ps.playback_bounds(), None);
         let w2 = ps.commit_pinned_window(260.0, 150.0);
         assert_eq!(w2, (150.0, 260.0));
         assert!(ps.pending_loop_window.is_none());

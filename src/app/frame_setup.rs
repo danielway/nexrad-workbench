@@ -115,8 +115,8 @@ impl WorkbenchApp {
         // was actively live (playhead attached), restart on the new site
         // so a site switch doesn't silently drop them out of live.
         if self.live.mode_state.is_active() {
-            let was_attached = self.playback.state.time_model.is_pinned()
-                || self.playback.state.time_model.is_lookback();
+            let was_attached =
+                self.playback.state.is_pinned() || self.playback.state.is_live_range();
             self.stop_live_mode(crate::core::LiveExitReason::UserStopped);
             if was_attached {
                 self.state.push_command(crate::core::Intent::StartLive);

@@ -93,41 +93,75 @@ pub(crate) fn detach_playhead(env: &TransportEnv, slices: TransportSlices<'_>) -
     TransportActions::default()
 }
 
+/// How close (seconds) a range's end must be to now to attach to the live
+/// edge when it is drawn — one scan, so "up to the latest sweep" counts.
+pub(crate) const LIVE_EDGE_SNAP_SECS: f64 = 300.0;
+
+/// Whether a range ending at `end` reads as "up to now".
+pub(crate) fn ends_at_live_edge(end: f64, now: f64) -> bool {
+    (now - end).abs() < LIVE_EDGE_SNAP_SECS
+}
+
+/// Select a range from a timeline gesture. With `to_live` and a running
+/// stream it becomes a live range: the playhead stays attached and the live
+/// tick slides the window forward with now. Otherwise the playhead detaches
+/// (see [`detach_playhead`]) and the range is fixed. Returns the detach's
+/// actions and whether a range was selected (it must span over a second).
+pub(crate) fn select_range(
+    env: &TransportEnv,
+    slices: TransportSlices<'_>,
+    a: f64,
+    b: f64,
+    to_live: bool,
+) -> (TransportActions, bool) {
+    if to_live && slices.live_mode.is_active() {
+        slices.live_mode.detached_since = None;
+        let selected = slices.playback.select_range(a, b, true);
+        return (TransportActions::default(), selected);
+    }
+    let TransportSlices {
+        live_mode,
+        engine,
+        playback,
+    } = slices;
+    let actions = detach_playhead(
+        env,
+        TransportSlices {
+            live_mode,
+            engine,
+            playback: &mut *playback,
+        },
+    );
+    let selected = playback.select_range(a, b, false);
+    (actions, selected)
+}
+
 /// Toggle play/pause according to the current mode (spec §7 pause-while-tethered):
 ///
-/// - **ARCHIVE** (not live, `Free`): ordinary play/pause through the selection
+/// - **ARCHIVE** (off live: a fixed point or range): ordinary play/pause through the selection
 ///   / from the current position. After a tethered freeze, this is how the user
 ///   resumes — ordinary archive playback from the pause point.
-/// - **LIVE-NOW** (`PinnedToNow`): the live feed is conceptually *playing*, so
-///   the button reads PAUSE. Pressing it FREEZES — the detach drops to `Free`
-///   at the current position with `playing = false`. Detachment is made
+/// - **LIVE-NOW** (the live point): the live feed is conceptually *playing*, so
+///   the button reads PAUSE. Pressing it FREEZES — the detach drops to a fixed
+///   point at the current position with `playing = false`. Detachment is made
 ///   explicit by the LIVE button hollowing out + showing the growing lag; no
 ///   separate counter widget. The stream keeps running in the background
 ///   (unless the data-saver policy says otherwise).
-/// - **LIVE-LOOKBACK** (`LookbackLoop`): only reachable once loop presets land
-///   (nothing enters it this phase). Kept working: Pause snaps back to "now".
-///   The stream keeps running throughout — the live machine is never touched
-///   on that branch.
+/// - **LIVE RANGE** (a range attached to now, from a loop preset or a range
+///   drawn up to now): ordinary play/pause looping through the window, which
+///   keeps sliding with now either way. The range stays attached; clearing it
+///   (not pausing) returns to the live point. The stream is never touched.
 pub(crate) fn reduce_toggle_play_pause(
     env: &TransportEnv,
     slices: TransportSlices<'_>,
 ) -> TransportActions {
-    // LIVE-LOOKBACK → LIVE-NOW: stop the replay and re-pin to now. The stream
-    // stays active (we never stop the live machine), so streaming continues.
-    // Unreachable until loop presets re-enter lookback, but kept correct.
-    if slices.playback.time_model.is_lookback() {
-        slices.playback.playing = false;
-        slices.playback.exit_lookback_to_now(env.now_secs);
-        return TransportActions::default();
-    }
-
     // LIVE-NOW → freeze: PAUSE while tethered drops to ARCHIVE at the current
     // position (the live edge), stopped. Routing through `detach_playhead`
     // stamps `detached_since` (so the LIVE button's lag readout and the idle
     // stop both work) and applies the data-saver policy in the one place that
     // owns it. Play (below, in `Free`) resumes from here as ordinary archive
     // playback.
-    if slices.playback.time_model.is_pinned() {
+    if slices.playback.is_pinned() {
         let TransportSlices {
             live_mode,
             engine,
@@ -252,6 +286,58 @@ mod coverage_tests {
         }
     }
 
+    // ---- select_range -------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn ends_at_live_edge_is_within_one_scan_of_now() {
+        assert!(ends_at_live_edge(1000.0, 1000.0));
+        assert!(ends_at_live_edge(
+            1000.0 - LIVE_EDGE_SNAP_SECS + 1.0,
+            1000.0
+        ));
+        assert!(!ends_at_live_edge(1000.0 - LIVE_EDGE_SNAP_SECS, 1000.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn select_to_live_while_streaming_stays_attached() {
+        let mut f = Fixture::new();
+        f.live_mode.phase = LivePhase::Streaming;
+        f.live_mode.detached_since = Some(400.0);
+        f.playback.time_model.playback_position = 500.0;
+
+        let (actions, selected) = select_range(&env_at(1000.0), f.slices(), 700.0, 1000.0, true);
+
+        assert!(selected);
+        assert_eq!(actions, TransportActions::default());
+        assert!(f.playback.is_live_range());
+        assert_eq!(f.playback.playback_bounds(), Some((700.0, 1000.0)));
+        // Re-tethered: the detach stamp is cleared.
+        assert_eq!(f.live_mode.detached_since, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn select_to_live_without_a_stream_is_a_fixed_range() {
+        let mut f = Fixture::new();
+        let (_, selected) = select_range(&env_at(1000.0), f.slices(), 700.0, 1000.0, true);
+        assert!(selected);
+        assert!(!f.playback.is_live_range());
+        assert_eq!(f.playback.playback_bounds(), Some((700.0, 1000.0)));
+    }
+
+    #[wasm_bindgen_test]
+    fn select_fixed_range_detaches_the_playhead() {
+        let mut f = Fixture::new();
+        f.live_mode.phase = LivePhase::Streaming;
+        f.playback.enter_pinned_live(1000.0);
+
+        let (_, selected) = select_range(&env_at(1000.0), f.slices(), 100.0, 400.0, false);
+
+        assert!(selected);
+        assert!(!f.playback.selection.is_live());
+        assert_eq!(f.playback.playback_bounds(), Some((100.0, 400.0)));
+        assert_eq!(f.live_mode.detached_since, Some(1000.0));
+    }
+
     // ---- detach_playhead ----------------------------------------------
 
     #[wasm_bindgen_test]
@@ -262,7 +348,7 @@ mod coverage_tests {
         let actions = detach_playhead(&env_at(500.0), f.slices());
 
         assert_eq!(actions, TransportActions::default());
-        assert!(!f.playback.time_model.is_pinned());
+        assert!(!f.playback.is_pinned());
         // Inactive stream untouched — no detach stamp.
         assert_eq!(f.live_mode.phase, LivePhase::Idle);
         assert_eq!(f.live_mode.detached_since, None);
@@ -319,21 +405,34 @@ mod coverage_tests {
     // ---- reduce_toggle_play_pause: LIVE-LOOKBACK branch ----------------
 
     #[wasm_bindgen_test]
-    fn lookback_repins_to_now_and_pauses() {
+    fn live_range_pauses_and_plays_in_place() {
         let mut f = Fixture::new();
-        // Reach LookbackLoop via the legal transition (pinned -> lookback).
+        f.live_mode.phase = LivePhase::Streaming;
+        // A preset loop starts playing; pausing keeps the attached range.
         f.playback.enter_pinned_live(1000.0);
-        f.playback.enter_lookback(None, LoopBasis::default());
-        assert!(f.playback.time_model.is_lookback());
+        f.playback.enter_live_range(None, LoopBasis::default());
+        assert!(f.playback.playing);
 
         let actions = reduce_toggle_play_pause(&env_at(4242.0), f.slices());
 
-        // exit_lookback_to_now: back to pinned-now, snapped to now, paused.
         assert_eq!(actions, TransportActions::default());
-        assert!(!f.playback.time_model.is_lookback());
-        assert!(f.playback.time_model.is_pinned());
+        assert!(f.playback.is_live_range());
         assert!(!f.playback.playing);
-        assert!((f.playback.playback_position() - 4242.0).abs() < 1e-9);
+        assert_eq!(f.live_mode.detached_since, None);
+
+        // A range drawn up to now starts paused; Play loops through it.
+        let mut f = Fixture::new();
+        f.live_mode.phase = LivePhase::Streaming;
+        f.playback.enter_pinned_live(1000.0);
+        let (_, selected) = select_range(&env_at(1000.0), f.slices(), 700.0, 1000.0, true);
+        assert!(selected);
+        assert!(!f.playback.playing);
+
+        reduce_toggle_play_pause(&env_at(1000.0), f.slices());
+
+        assert!(f.playback.playing);
+        assert!(f.playback.is_live_range());
+        assert_eq!(f.playback.playback_bounds(), Some((700.0, 1000.0)));
     }
 
     // ---- reduce_toggle_play_pause: LIVE-NOW freeze branch --------------
@@ -342,14 +441,14 @@ mod coverage_tests {
     fn pinned_freezes_to_archive_inactive_stream() {
         let mut f = Fixture::new(); // live machine Idle => inactive
         f.playback.enter_pinned_live(1000.0);
-        assert!(f.playback.time_model.is_pinned());
+        assert!(f.playback.is_pinned());
 
         let actions = reduce_toggle_play_pause(&env_at(500.0), f.slices());
 
         // Pinned -> Free (archive), paused; position kept (exit_live Keep).
         assert_eq!(actions, TransportActions::default());
-        assert!(!f.playback.time_model.is_pinned());
-        assert!(!f.playback.time_model.is_lookback());
+        assert!(!f.playback.is_pinned());
+        assert!(!f.playback.is_live_range());
         assert!(!f.playback.playing);
         assert!((f.playback.playback_position() - 1000.0).abs() < 1e-9);
         // Inactive stream untouched.
@@ -365,7 +464,7 @@ mod coverage_tests {
 
         let actions = reduce_toggle_play_pause(&env_at(321.0), f.slices());
 
-        assert!(!f.playback.time_model.is_pinned());
+        assert!(!f.playback.is_pinned());
         assert!(!f.playback.playing);
         // Non-data-saver: stream keeps running, detached_since latches now.
         assert!(!actions.stop_channel);
@@ -387,7 +486,7 @@ mod coverage_tests {
             f.slices(),
         );
 
-        assert!(!f.playback.time_model.is_pinned());
+        assert!(!f.playback.is_pinned());
         assert!(!f.playback.playing);
         // Data-saver path stops the stream immediately and never latches.
         assert!(actions.stop_channel);
@@ -406,8 +505,8 @@ mod coverage_tests {
     fn archive_playing_pauses() {
         let mut f = Fixture::new(); // mode Free
         f.playback.playing = true;
-        assert!(!f.playback.time_model.is_pinned());
-        assert!(!f.playback.time_model.is_lookback());
+        assert!(!f.playback.is_pinned());
+        assert!(!f.playback.is_live_range());
 
         let actions = reduce_toggle_play_pause(&env_at(100.0), f.slices());
 
@@ -437,8 +536,8 @@ mod coverage_tests {
         reduce_toggle_play_pause(&env_at(100.0), f.slices());
 
         // No transition into pinned/lookback, and resume is blocked.
-        assert!(!f.playback.time_model.is_pinned());
-        assert!(!f.playback.time_model.is_lookback());
+        assert!(!f.playback.is_pinned());
+        assert!(!f.playback.is_live_range());
         assert!(!f.playback.playing);
     }
 
@@ -459,7 +558,7 @@ mod coverage_tests {
             Some(LiveExitReason::UserStopped)
         );
         assert!(!f.playback.playing);
-        assert!(!f.playback.time_model.is_pinned());
+        assert!(!f.playback.is_pinned());
         // FreezeAt::Now snaps the cursor to the live edge.
         assert!((f.playback.playback_position() - 2500.0).abs() < 1e-9);
         // An explicit stop tears down the stream (unlike a detach).
@@ -475,12 +574,12 @@ mod coverage_tests {
         let mut f = Fixture::new();
         f.live_mode.phase = LivePhase::Streaming;
         f.playback.enter_pinned_live(1000.0);
-        f.playback.enter_lookback(None, LoopBasis::default());
+        f.playback.enter_live_range(None, LoopBasis::default());
 
         reduce_stop_live(&env_at(1234.0), f.slices(), LiveStopPlacement::LiveEdge);
 
-        assert!(!f.playback.time_model.is_lookback());
-        assert!(!f.playback.time_model.is_pinned());
+        assert!(!f.playback.is_live_range());
+        assert!(!f.playback.is_pinned());
         assert!((f.playback.playback_position() - 1234.0).abs() < 1e-9);
     }
 
@@ -495,7 +594,7 @@ mod coverage_tests {
 
         assert_eq!(f.live_mode.phase, LivePhase::Idle);
         assert!(!f.playback.playing);
-        assert!(!f.playback.time_model.is_pinned());
+        assert!(!f.playback.is_pinned());
         // FreezeAt::Keep: the playhead stays where the pin left it.
         assert!((f.playback.playback_position() - 1400.0).abs() < 1e-9);
         assert_eq!(actions.status_message, None);

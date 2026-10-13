@@ -6,7 +6,7 @@
 //! browser clock: the wall-clock accessor and the constructors seeded from it.
 
 use crate::core::{
-    LoopMode, MacroPlaybackState, PlaybackDirection, PlaybackSpeed, PlaybackState, PlayheadMode,
+    LoopMode, MacroPlaybackState, PlaybackDirection, PlaybackSpeed, PlaybackState, Selection,
     TimeModel,
 };
 
@@ -14,8 +14,6 @@ impl Default for TimeModel {
     fn default() -> Self {
         Self {
             playback_position: Self::wall_clock_time(),
-            mode: PlayheadMode::Free,
-            playback_bounds: None,
             loop_mode: LoopMode::Loop,
             direction: PlaybackDirection::Forward,
         }
@@ -53,8 +51,8 @@ impl Default for PlaybackState {
             calendar_granularity: crate::core::BucketGranularity::seed(zoom),
             timeline_view_start: now - view_width_secs / 2.0,
             view_follows_now: true,
-            selection: None,
-            loop_window: None,
+            selection: Selection::default(),
+            drag: None,
             pending_loop_window: None,
             timeline_width_px: 1000.0,
             macro_playback: MacroPlaybackState::default(),

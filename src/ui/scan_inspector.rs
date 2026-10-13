@@ -376,10 +376,9 @@ fn cell_state_display(state: FrameCellState) -> (&'static str, Color32) {
     }
 }
 
-/// "Loop from here" (spec §12): a loop spanning this scan up to now. Reuses the
-/// selection→bounds path (the same one shift/right-drag uses), detaching the
-/// playhead first so the Free-mode seek invariant holds, and anchoring the
-/// selection to the live edge if streaming so the loop follows new data.
+/// "Loop from here" (spec §12): a loop spanning this scan up to now. While
+/// streaming it is a live range that slides forward with new data; otherwise
+/// a fixed range. The playhead starts at the scan.
 fn apply_loop_from_here(
     live: &mut Live,
     playback: &mut Playback,
@@ -387,17 +386,18 @@ fn apply_loop_from_here(
     scan_start: f64,
     now_secs: f64,
 ) {
-    live.detach_playhead(
+    let selected = live.select_range(
         &mut playback.state,
+        scan_start,
+        now_secs,
+        true,
         state.frame_now.secs(),
         state.pause_stream_while_reviewing,
     );
-    playback.state.set_playback_position(scan_start);
-    playback.state.set_selection(scan_start, now_secs);
-    if live.mode_state.is_active() {
-        playback.state.anchor_selection_to_live();
+    if !selected {
+        return;
     }
-    playback.state.apply_selection_as_bounds();
+    playback.state.seek_within_range(scan_start);
     // Arm the bulk fetch for the selected span (selection = the fetch), the
     // same one-shot the strip's selection gesture uses.
     if let Some(range) = playback.state.selection_range() {

@@ -839,8 +839,8 @@ impl eframe::App for WorkbenchApp {
         let diagnostics_inputs = subsystem::diagnostics::DiagnosticsInputs {
             is_live: early_derived.data_is_live,
             mping_layer_visible: self.state.layer_state.geo.mping,
-            mping_pinned_to_now: self.playback.state.time_model.is_pinned()
-                || self.playback.state.time_model.is_lookback(),
+            mping_pinned_to_now: self.playback.state.is_pinned()
+                || self.playback.state.is_live_range(),
             site_id: &self.state.viz_state.site_id,
             playback_secs: self.playback.state.playback_position(),
         };
@@ -861,7 +861,7 @@ impl eframe::App for WorkbenchApp {
             // Pinned: the live edge moves every frame — repaint fast. Detached
             // (background stream while browsing): the now-line and in-progress
             // overlay still advance, just at a relaxed cadence.
-            let cadence_ms = if self.playback.state.time_model.is_pinned() {
+            let cadence_ms = if self.playback.state.is_pinned() {
                 100
             } else {
                 1000

@@ -466,10 +466,9 @@ impl AppState {
         streaming: bool,
         collecting_elevation: Option<u8>,
     ) -> bool {
-        let live_attached =
-            streaming && (playback.time_model.is_pinned() || playback.time_model.is_lookback());
+        let live_attached = streaming && (playback.is_pinned() || playback.is_live_range());
         crate::core::canvas::sweep_animation_effective(
-            playback.effective_playback_mode(),
+            playback.playback_mode(),
             live_attached,
             self.viz_state.elevation_selection.elevation_number(),
             collecting_elevation,

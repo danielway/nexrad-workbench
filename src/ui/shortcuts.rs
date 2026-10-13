@@ -527,7 +527,7 @@ fn handle_scan_step(
 /// (e.g. just snapped modes), the nearest index is found by position in the
 /// fallback `all()` ordering.
 fn active_mode_speeds(playback: &crate::subsystem::Playback) -> &'static [PlaybackSpeed] {
-    match playback.state.effective_playback_mode() {
+    match playback.state.playback_mode() {
         crate::core::PlaybackMode::Macro => PlaybackSpeed::macro_speeds(),
         crate::core::PlaybackMode::Micro => PlaybackSpeed::all(),
     }
@@ -617,14 +617,12 @@ fn handle_zoom_step(
     ps.set_timeline_zoom(new_zoom, width);
 }
 
-/// Set a loop in/out point at the playhead (spec §8/§12 I/O keys). Editing a
-/// loop range is a Free-mode gesture: detach the tether first (so the loop is a
-/// static range, not a clobbered pinned window) then move the relevant
-/// selection endpoint to the playhead and apply it as bounds — reusing the same
-/// live-anchoring rule the drag/click selection paths use (a range ending near
-/// now while streaming reads as pinned). When no selection exists yet, the
-/// other endpoint seeds at the playhead so the first key makes a zero-width
-/// point and the second gives the range.
+/// Set a loop in/out point at the playhead (spec §8/§12 I/O keys): move the
+/// relevant edge of the current range to the playhead and select it — with
+/// the same live rule the drag/click selection paths use (a range ending near
+/// now while streaming is a live range; anything else detaches and is fixed).
+/// When no range exists yet, the other edge seeds at the playhead, so the
+/// first key parks a half-set range and the second completes it.
 fn set_loop_point(
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
@@ -632,33 +630,34 @@ fn set_loop_point(
     is_in: bool,
 ) {
     let now = state.frame_now.secs();
-    // Detach so set_selection/apply land in Free mode (no tick_live clobber).
-    live.detach_playhead(&mut playback.state, now, state.pause_stream_while_reviewing);
     let pos = playback.state.playback_position();
     let (mut a, mut b) = playback
         .state
-        .selection
-        .map(|s| (s.a, s.b))
+        .playback_bounds()
+        .or(playback.state.drag.map(|d| (d.a, d.b)))
         .unwrap_or((pos, pos));
     if is_in {
         a = pos;
     } else {
         b = pos;
     }
-    playback.state.set_selection(a, b);
-    // Anchor to live when the out edge lands near now while streaming.
-    if live.mode_state.is_active() {
-        let near_now = playback
-            .state
-            .selection_range()
-            .is_some_and(|(_, end)| (now - end).abs() < crate::FALLBACK_SCAN_DURATION_SECS as f64);
-        if near_now {
-            playback.state.anchor_selection_to_live();
-        }
-    }
-    playback.state.apply_selection_as_bounds();
-    if let Some(range) = playback.state.selection_range() {
-        state.selection_just_finalized = Some(range);
+    let to_live = crate::core::transport::ends_at_live_edge(a.max(b), now);
+    if live.select_range(
+        &mut playback.state,
+        a,
+        b,
+        to_live,
+        now,
+        state.pause_stream_while_reviewing,
+    ) {
+        state.selection_just_finalized = playback.state.selection_range();
+    } else {
+        // Park the half-set range until the other edge is placed.
+        playback.state.drag = Some(crate::core::TimeSelection {
+            a,
+            b,
+            in_progress: false,
+        });
     }
 }
 
