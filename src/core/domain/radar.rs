@@ -429,10 +429,9 @@ impl RadarTimeline {
     /// [`Self::all_sweep_end_times`]), so a frame here means the same thing it
     /// does for stepping.
     ///
-    /// Returns `None` when no frames exist at/<= `now`. With fewer than `n`
-    /// frames, spans all available. A single frame yields a zero-width span
-    /// (`start == end`); callers must reject that before using it as loop
-    /// bounds (looping divides by the span width).
+    /// Returns `None` until `n` frames exist at/<= `now`, so a loop that is
+    /// still backfilling falls back to its nominal span instead of collapsing
+    /// onto the one or two frames cached so far.
     pub(crate) fn lookback_window(
         &self,
         elevation_selection: &crate::core::ElevationSelection,
@@ -450,10 +449,11 @@ impl RadarTimeline {
         // just-completed frame whose end_time rounds a hair past `now` counts).
         let cutoff = now + 0.5;
         let usable: Vec<f64> = frames.into_iter().filter(|&t| t <= cutoff).collect();
-        if usable.is_empty() {
+        let n = n.max(1);
+        if usable.len() < n {
             return None;
         }
-        let start_idx = usable.len().saturating_sub(n.max(1));
+        let start_idx = usable.len() - n;
         Some((usable[start_idx], *usable.last().unwrap()))
     }
 
@@ -813,21 +813,26 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn lookback_window_spans_all_when_fewer_than_n() {
+    fn lookback_window_is_none_with_fewer_than_n() {
         let tl = elev1_timeline(3); // frames at 100,200,300
+        assert_eq!(
+            tl.lookback_window(&fixed(1), "reflectivity", 10_000.0, 5),
+            None
+        );
+        // Exactly n frames is enough.
         let w = tl
-            .lookback_window(&fixed(1), "reflectivity", 10_000.0, 5)
+            .lookback_window(&fixed(1), "reflectivity", 10_000.0, 3)
             .unwrap();
         assert_eq!(w, (100.0, 300.0));
     }
 
     #[wasm_bindgen_test]
-    fn lookback_window_single_frame_is_zero_width() {
+    fn lookback_window_single_frame_is_none() {
         let tl = elev1_timeline(1); // single frame at 100
-        let w = tl
-            .lookback_window(&fixed(1), "reflectivity", 10_000.0, 5)
-            .unwrap();
-        assert_eq!(w, (100.0, 100.0)); // caller must reject zero width
+        assert_eq!(
+            tl.lookback_window(&fixed(1), "reflectivity", 10_000.0, 5),
+            None
+        );
     }
 
     #[wasm_bindgen_test]
