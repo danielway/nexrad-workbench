@@ -46,7 +46,15 @@ fn draw_overlay_info(
     whole_sweeps_only: bool,
 ) {
     let has_prev = state.viz_state.previous_displayed.is_some();
-    let is_live = live.radar_model.active;
+    let is_live = crate::core::canvas::displays_live_volume(
+        live.radar_model.active,
+        state
+            .viz_state
+            .displayed
+            .as_ref()
+            .map(|d| &d.identity.scan_key),
+        live.mode_state.current_volume.as_ref().map(|v| &v.scan_key),
+    );
     let overlay_pos = rect.left_top() + Vec2::new(10.0, 10.0);
     let overlay_height = if has_prev { 170.0 } else { 105.0 };
     let overlay_rect = Rect::from_min_size(overlay_pos, Vec2::new(310.0, overlay_height));

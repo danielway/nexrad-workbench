@@ -82,6 +82,26 @@ impl Sweep {
 /// not-available — matching the render resolver
 /// ([`crate::core::playback_manager::resolve_active_sweep_target`]) so the
 /// macro frame list never lists a frame the canvas would blank.
+/// `(elevation_number, end offset from the volume start)` for each cut in a
+/// VCP plan that is a frame at `tilt` (`None` = every cut), estimated from
+/// the plan's azimuth rates.
+fn vcp_cut_ends(
+    vcp: &crate::data::ExtractedVcp,
+    tilt: Option<u8>,
+) -> impl Iterator<Item = (u8, f64)> {
+    let durations = vcp
+        .estimated_volume_duration()
+        .map(|total| vcp.sweep_durations(total))
+        .unwrap_or_default();
+    let mut elapsed = 0.0;
+    durations.into_iter().enumerate().filter_map(move |(i, d)| {
+        elapsed += d;
+        let elevation_number = (i + 1) as u8;
+        tilt.is_none_or(|t| t == elevation_number)
+            .then_some((elevation_number, elapsed))
+    })
+}
+
 fn sweep_has_product(sweep: &Sweep, product: &str) -> bool {
     sweep.cached_products.iter().any(|p| p == product)
 }
@@ -478,6 +498,25 @@ impl RadarTimeline {
             .map(|sw| sw.end_time)
             .collect();
 
+        // A cached volume can be missing sweeps that exist: a stream that
+        // joined mid-volume never saw the earlier cuts, and a fixed-tilt
+        // download holds only that tilt. Its VCP plan still knows them, so
+        // place each missing cut by the plan (later cuts fall past `now` and
+        // drop out of a lookback).
+        for scan in &self.scans {
+            if scan.completeness == Some(ScanCompleteness::Complete) {
+                continue;
+            }
+            let Some(vcp) = scan.vcp_pattern.as_ref() else {
+                continue;
+            };
+            times.extend(
+                vcp_cut_ends(vcp, tilt)
+                    .filter(|(n, _)| !scan.sweeps.iter().any(|sw| sw.elevation_number == *n))
+                    .map(|(_, off)| scan.key_timestamp + off),
+            );
+        }
+
         let offsets = self.frame_offsets_template(tilt, &is_frame);
         let tolerance = crate::core::timeline_view::SCAN_JOIN_TOLERANCE_SECS as f64;
         let cached = |start: f64| {
@@ -529,21 +568,7 @@ impl RadarTimeline {
             return cached_offsets(scan);
         }
         if let Some(vcp) = newest.clone().find_map(|s| s.vcp_pattern.as_ref()) {
-            let durations = vcp
-                .estimated_volume_duration()
-                .map(|total| vcp.sweep_durations(total))
-                .unwrap_or_default();
-            let mut elapsed = 0.0;
-            let offsets: Vec<f64> = durations
-                .iter()
-                .enumerate()
-                .filter_map(|(i, d)| {
-                    elapsed += d;
-                    let elevation_number = (i + 1) as u8;
-                    tilt.is_none_or(|t| t == elevation_number)
-                        .then_some(elapsed)
-                })
-                .collect();
+            let offsets: Vec<f64> = vcp_cut_ends(vcp, tilt).map(|(_, off)| off).collect();
             if !offsets.is_empty() {
                 return offsets;
             }
@@ -937,7 +962,8 @@ mod tests {
             azimuth_rate: Some(12.0), // 30 s per cut
         };
         // Streaming joined at the third cut: only it is cached, but the plan
-        // knows all three.
+        // knows all three, both for the listed volume before it and for the
+        // two cuts it missed.
         let mut scan = scan_with_sweeps(1000.0, 1090.0, vec![sweep(1060.0, 1090.0, 2.4, 3)]);
         scan.vcp_pattern = Some(ExtractedVcp {
             number: 215,
@@ -947,11 +973,23 @@ mod tests {
         let shadows = [shadow(700, 1000)];
         assert_eq!(
             tl.known_frame_ends(&shadows, None, "reflectivity"),
-            vec![730.0, 760.0, 790.0, 1090.0]
+            vec![730.0, 760.0, 790.0, 1030.0, 1060.0, 1090.0]
         );
         assert_eq!(
             tl.known_frame_ends(&shadows, Some(1), "reflectivity"),
-            vec![730.0]
+            vec![730.0, 1030.0]
+        );
+        // The last 3 frames are the live volume's own cuts, not a reach back
+        // across them into the previous volume.
+        assert_eq!(
+            tl.lookback_window(
+                &shadows,
+                &ElevationSelection::Latest,
+                "reflectivity",
+                1100.0,
+                3
+            ),
+            Some((1030.0, 1090.0))
         );
     }
 
