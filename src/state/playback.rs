@@ -51,6 +51,7 @@ impl Default for PlaybackState {
             calendar_granularity: crate::core::BucketGranularity::seed(zoom),
             timeline_view_start: now - view_width_secs / 2.0,
             view_follows_now: true,
+            overview: crate::core::overview::Overview::default(),
             selection: Selection::default(),
             drag: None,
             pending_loop_window: None,

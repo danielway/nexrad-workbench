@@ -3,7 +3,8 @@
 //! Gesture grammar:
 //!   - **Middle-drag** or **ctrl/cmd-drag** pans the view. This is the modeless
 //!     pan: it never moves the playhead and never touches the selection. The
-//!     minimap thumb and horizontal scroll are the other two pan surfaces.
+//!     overview's view box and horizontal scroll are the other two pan
+//!     surfaces.
 //!   - **Primary press** seeks the playhead immediately (on press, not
 //!     release); **primary drag** scrubs it continuously, following the
 //!     pointer. Starting a scrub pauses playback and detaches the tether.

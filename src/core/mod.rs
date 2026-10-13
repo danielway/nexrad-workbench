@@ -36,6 +36,7 @@ pub(crate) mod live_coverage;
 pub(crate) mod live_mode;
 pub(crate) mod live_radar_model;
 pub(crate) mod live_status;
+pub(crate) mod overview;
 pub(crate) mod panels;
 pub(crate) mod persist;
 pub(crate) mod playback_manager;

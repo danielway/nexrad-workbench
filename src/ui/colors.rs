@@ -183,6 +183,19 @@ pub(crate) mod timeline {
             Color32::from_rgb(222, 222, 228)
         }
     }
+    /// The overview's view box outline: the playhead's neutral tone, so the
+    /// box reads as "what the strip below shows", not as an accent.
+    pub(crate) fn view_box_edge(dark: bool) -> Color32 {
+        selection(dark).gamma_multiply(0.85)
+    }
+    /// The overview's view box wash, and the funnel joining it to the strip.
+    pub(crate) fn view_box_fill(dark: bool) -> Color32 {
+        selection(dark).gamma_multiply(0.10)
+    }
+    /// The part of the overview past now, where nothing can be yet.
+    pub(crate) fn future_wash(dark: bool) -> Color32 {
+        selection(dark).gamma_multiply(0.03)
+    }
     /// Text drawn inside scan/sweep blocks. Theme-independent because it
     /// sits on the blocks' own fill colors, not the panel background.
     pub(crate) fn block_label() -> Color32 {

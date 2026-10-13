@@ -4,13 +4,13 @@
 //! reflow). Its vertical budget is split into named bands:
 //!
 //! ```text
-//!   [ minimap sliver  ]   MINIMAP_SLIVER_H     ← whole-session navigator
+//!   [ overview        ]   OVERVIEW_H           ← 48 h context + view box
 //!   [ tick rail       ]   TICK_LANE_H
 //!   [ selection strip ]   SELECTION_STRIP_H    ← where ranges are made
 //!   [ main track      ]   MAIN_TRACK_H         ← scan containers + frame cells
 //! ```
 //!
-//! Total height is `TIMELINE_TOTAL_H = MINIMAP_SLIVER_H + TICK_LANE_H +
+//! Total height is `TIMELINE_TOTAL_H = OVERVIEW_H + TICK_LANE_H +
 //! SELECTION_STRIP_H + MAIN_TRACK_H` and is constant across Micro / Macro / Archive
 //! so the bottom panel never reflows.
 
@@ -23,15 +23,16 @@ pub(crate) const TICK_LANE_H: f32 = 14.0;
 /// frame cells (spec §6 "full strip ~56px" = 14 tick + 42 main).
 pub(crate) const MAIN_TRACK_H: f32 = 42.0;
 
-/// Whole-session minimap sliver above the tick rail (spec §5/§13): a thin
-/// navigator that doubles as the Level-0 "where am I" anchor. ~6px of painted
-/// content plus [`MINIMAP_PAD_Y`] above and below for a comfortable drag
-/// target.
-pub(crate) const MINIMAP_SLIVER_H: f32 = 10.0;
+/// The overview above the tick rail: [`OVERVIEW_PAD_TOP`], the lane itself
+/// ([`OVERVIEW_LANE_H`]), and below it the funnel joining the view box to
+/// the strip.
+pub(crate) const OVERVIEW_H: f32 = 30.0;
 
-/// Vertical padding inside the minimap sliver between the hit area and the
-/// painted coverage bar (so the bar reads slim while the target stays easy).
-pub(crate) const MINIMAP_PAD_Y: f32 = 2.0;
+/// Gap above the overview lane.
+pub(crate) const OVERVIEW_PAD_TOP: f32 = 2.0;
+
+/// Height of the overview lane (coverage, time labels and the view box).
+pub(crate) const OVERVIEW_LANE_H: f32 = 20.0;
 
 /// The selection strip between the tick rail and the main track: drag along
 /// it to make a range, drag its handles to resize it.
@@ -39,7 +40,7 @@ pub(crate) const SELECTION_STRIP_H: f32 = 14.0;
 
 /// Total timeline height, constant across detail levels.
 pub(crate) const TIMELINE_TOTAL_H: f32 =
-    MINIMAP_SLIVER_H + TICK_LANE_H + SELECTION_STRIP_H + MAIN_TRACK_H;
+    OVERVIEW_H + TICK_LANE_H + SELECTION_STRIP_H + MAIN_TRACK_H;
 
 /// Vertical inset of frame cells / sub-texture inside their scan container, so
 /// the container's bounding box reads as a frame around its contents.
@@ -93,14 +94,14 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn timeline_total_h_equals_sum_of_bands() {
-        // Documented invariant: total = minimap + tick + selection + main.
-        let expected = MINIMAP_SLIVER_H + TICK_LANE_H + SELECTION_STRIP_H + MAIN_TRACK_H;
+        // Documented invariant: total = overview + tick + selection + main.
+        let expected = OVERVIEW_H + TICK_LANE_H + SELECTION_STRIP_H + MAIN_TRACK_H;
         assert!((TIMELINE_TOTAL_H - expected).abs() < 1e-6);
     }
 
     #[wasm_bindgen_test]
-    fn timeline_total_h_is_eighty_px() {
-        // Hand-computed: 10 + 14 + 42 + 14 = 80.
-        assert!((TIMELINE_TOTAL_H - 80.0).abs() < 1e-6);
+    fn timeline_total_h_is_one_hundred_px() {
+        // Hand-computed: 30 + 14 + 14 + 42 = 100.
+        assert!((TIMELINE_TOTAL_H - 100.0).abs() < 1e-6);
     }
 }
