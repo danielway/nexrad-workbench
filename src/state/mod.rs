@@ -31,7 +31,7 @@ pub(crate) use acquisition::AcquisitionState;
 // existing `crate::state::OperationKind`-style paths keep resolving.
 pub(crate) use crate::core::{DownloadPhase, OperationKind};
 pub(crate) use app_mode::{derive_app_mode, AppMode};
-pub(crate) use calendar::{aggregate_buckets, bucket_tap_target, TimeBucket};
+pub(crate) use calendar::{aggregate_buckets, TimeBucket};
 pub(crate) use layer::LayerState;
 pub(crate) use render_cache::{PrevSweepCacheKey, RenderCache};
 pub(crate) use saved_events::{SavedEvent, SavedEvents};

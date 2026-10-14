@@ -92,7 +92,6 @@ pub(super) fn handle_timeline_interaction(
         on_suppressed_rect: pointer_pos
             .is_some_and(|p| suppress_rects.iter().any(|r| r.contains(p))),
         scrub_suppressed,
-        archive_tier: frame.tier == crate::core::TimelineTier::Archive,
     };
     let gesture = resolve_gesture(&input);
 
@@ -248,9 +247,8 @@ fn apply_zoom(
     let old_zoom = playback.state.timeline_zoom;
     let width = playback.state.timeline_width_px;
     // Clamp with the WIDTH-AWARE floor (not the loose hard min) so the anchor
-    // math below agrees with the floor `set_timeline_zoom` will apply — the
-    // widest view stays the readable calendar span, never the deprecated
-    // year-wide strip.
+    // math below agrees with the floor `set_timeline_zoom` will apply (the
+    // strip shows at most three days).
     let new_zoom = (old_zoom * zoom_factor).clamp(
         crate::core::PlaybackState::min_zoom_for_width(width),
         crate::core::TIMELINE_ZOOM_MAX,

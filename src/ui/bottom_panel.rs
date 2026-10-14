@@ -68,12 +68,6 @@ fn draw_bottom_panel(
 
     // Advance playback position when playing, dispatching on the Frames/Rays
     // mode the user chose (cadence carries over in `set_play_mode`).
-    if playback.state.playing && playback.state.must_halt_for_tier() {
-        // The Archive tier is a navigator only (spec §6.4): unbounded play
-        // halts there instead of stepping through years of cached frames
-        // behind a calendar. A loop keeps playing, since zoom is view-only.
-        playback.state.playing = false;
-    }
     if playback.state.playing {
         // Effective mode: a lookback replay frame-steps (Macro) regardless of
         // tier, so it dispatches to advance_macro and gets the macro fps speeds.

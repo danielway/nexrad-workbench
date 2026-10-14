@@ -150,8 +150,9 @@ collection time is not yet late if the ingest-lag window hasn't elapsed.
   view.
 - **Timeline** — an **overview** lane above the **main strip**: 48 hours of
   coverage (wider when the strip shows more) with a box marking what the strip
-  shows. It slides with now while its right edge is on the live edge, and can
-  slide anywhere in the archive. It moves the view, never playback.
+  shows. It slides with now while its right edge is on the live edge, can
+  slide anywhere in the archive, and zooms out to the whole NEXRAD era. It
+  moves the view, never playback.
 - **Activity chip** — tiny, near the transport (and in the mobile top bar);
   always present so its absence is never ambiguous: a muted "Up to date" when
   idle, "↓ 2 Downloading" with a pulse when acquiring. Tap opens the activity
@@ -236,23 +237,20 @@ cached scans.
 |---|---|---|---|
 | **Micro** | minutes → ~1–2 hr visible | Scan containers with frame cells, chunk segments, ghosts + countdown | Either mode (§8.2) |
 | **Macro** | hours → a few days | Each scan is a block spanning the volume's real duration — solid across downloaded sweeps, hollow across the rest; per-sweep hairlines once wide enough; gap glyphs where real spacing exceeds threshold. Blocks merge into a coverage fill once denser than ~1 per 3px | Either mode (§8.2) |
-| **Archive** | beyond ~2–3 days, out to the whole NEXRAD era | A zoomable **1-D coverage lane** whose cells coarsen with the span (day → week → month → quarter) so they stay legible at every zoom, with per-bucket availability + cache tone, period separators and bookmarks, over a keyline marking the addressable archive range | None started here — navigator only; tapping a cell frames that cell, one rung finer. A loop or live replay already running keeps playing |
+| **Overview** | above the strip: 48 h by default, zooming out to the whole NEXRAD era | Per-scan coverage, then day → week → month → quarter bars as it zooms out, with a box marking the strip's view. The strip itself shows at most 3 days | Never changes playback. Clicking a bar goes to that day |
 
 - **Zoom is view-only.** Changing tier never detaches the playhead from live,
-  ends a loop, pauses one, or switches between Frames and Rays. Only unbounded
-  play halts on entering Archive.
+  ends a loop, pauses one, or switches between Frames and Rays.
 - **One tier state machine** owns the boundary, stored on playback state; all
   zoom writes go through it (the tier is never re-derived from raw zoom). Tuning
   constants are co-located in one place.
 - **Snap with hysteresis** so pinch gestures never flicker at a boundary:
   Micro↔Macro nominal **1.0 px/s** (enter Micro ≥ **1.15**, exit Micro ≤ **0.87**
-  px/s); Archive is span-based (enter when the visible span exceeds **60 h**,
-  exit below **48 h**).
+  px/s).
 - **Morph animation:** frame cells visibly collapse into scan ticks (and expand
   back). Playhead and live edge stay spatially stable through the transition.
-- The Archive tier replaces a year-wide strip zoom (which produced label soup);
-  the linear day-lane is the deliberate height-budget tradeoff for the ~56px
-  strip. A 2-D weekday grid is a possible future enhancement (§16).
+- The strip stops at 3 days; reaching further back is the overview's job, so
+  the strip never needs a calendar renderer or year-wide label soup.
 
 ### 5.6 Saved events (bookmarks)
 
@@ -557,6 +555,7 @@ only.
 | Scroll / pinch | Zoom, anchored at cursor/pinch center (with snap hysteresis) |
 | Overview: drag the view box / its sides | Move the strip's view / zoom it |
 | Overview: drag or sideways-scroll the lane; click it | Slide the overview; center the strip's view there |
+| Overview: scroll | Zoom the overview, from hours out to the whole archive; zoomed out to bars, a click goes to that day |
 | Drag on the selection strip | Draw a range; drag a handle to resize; drop the right handle on the live edge to pin it to now; click to clear |
 | Right-click a scan (desktop) / long-press (touch) | Open the scan inspector (includes "loop from here") |
 
@@ -644,8 +643,6 @@ not unfinished work:
   Ship drag-anywhere-scrubs first; A/B the tape later.
 - **Tablet tier:** a layout distinct from desktop/phone. For now touch devices
   ≥600px get the desktop layout.
-- **Archive 2-D weekday grid:** a GitHub-contributions-style week-by-day grid,
-  independent of the linear zoom scalar, over the shipped 1-D day lane (§5.5).
 - **Offline / stale ghosts:** today ghosts vanish when the stream dies; richer
   handling of stale projections is a post-v1 revisit.
 - **Wi-Fi-only acquisition toggle:** not implementable in a browser today; revisit
@@ -674,8 +671,7 @@ deleted in the June 2026 docs cleanup.)
    entry.
 2. **Zoom tier thresholds + hysteresis:** one stored tier state machine owns the
    boundary. Micro↔Macro nominal 1.0 px/s with ~±15% hysteresis (enter Micro ≥
-   1.15 px/s, exit Micro ≤ 0.87 px/s). Archive is span-based: enter above 60 h
-   visible span, exit below 48 h. Values are tunable constants in one place.
+   1.15 px/s, exit Micro ≤ 0.87 px/s). Values are tunable constants in one place.
 3. **Canvas treatment while fetching:** **caption only** ("showing 2:41 ·
    fetching 2:51…"), no canvas shimmer. Cheapest, honest, reads in grayscale and
    to screen readers.
@@ -702,10 +698,9 @@ deleted in the June 2026 docs cleanup.)
 - **Frames-first strip:** done — the design's biggest simplification win.
 - **Custom loop dragging on mobile:** cut; mobile gets the chip's presets, the
   selection strip is desktop-only.
-- **Year-scale strip zoom:** the deprecated *linear* year-wide strip stays removed (it was label soup). The reach it offered is back, and further: the Archive calendar tier now spans the whole NEXRAD Level II era (1991→now) on the same continuous timeline, coarsening its cells rather than stretching a strip.
-- **Archive calendar layout:** ships a 1-D zoomable UTC-day lane (deliberate
-  height-budget tradeoff), not a 2-D week-by-day grid; the grid is a possible
-  future enhancement (§16).
+- **Year-scale reach:** the strip stops at 3 days; the overview above it
+  zooms out to the whole NEXRAD Level II era (1991→now), coarsening its bars
+  from scans to quarters rather than stretching a strip.
 - **Manual download management:** stays demoted; the activity sheet shows what the
   system did, plus cancel/retry and policy toggles.
 - **Tablet tier:** out of scope this pass; touch devices ≥600px get the desktop
