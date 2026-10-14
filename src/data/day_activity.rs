@@ -1,10 +1,12 @@
 //! The stored storm-activity summary of one radar site's UTC day.
 //!
 //! Built from that day's archive listing: how many volume files the radar
-//! produced and their mean compressed size. Bigger volumes hold more echo, so
-//! the mean tracks how stormy the day was (see `core::storm_activity` for how
-//! it becomes a bar height). One small record per site-day, kept in its own
-//! IndexedDB store so a day is listed once, not on every visit.
+//! produced, their mean compressed size, and each volume's own size. Bigger
+//! volumes hold more echo, so the mean tracks how stormy the day was and the
+//! per-volume sizes show when in the day it happened (see
+//! `core::storm_activity` for how they become heights). One small record per
+//! site-day (~2 KB), kept in its own IndexedDB store so a day is listed once,
+//! not on every visit.
 
 use crate::data::keys::SiteId;
 use serde::{Deserialize, Serialize};
@@ -28,6 +30,17 @@ pub struct DayActivity {
     /// When the listing was fetched (Unix ms), to tell a finished day from
     /// one that was still filling in.
     pub fetched_at_ms: i64,
+    /// Whether the per-volume sizes below were collected. Records stored
+    /// before they were read back without them, and get listed again.
+    #[serde(default)]
+    pub has_scans: bool,
+    /// Each `format` volume's start, in seconds after `day_start`, in time
+    /// order.
+    #[serde(default)]
+    pub scan_secs: Vec<u32>,
+    /// Those volumes' compressed sizes in bytes, matching `scan_secs`.
+    #[serde(default)]
+    pub scan_bytes: Vec<u32>,
 }
 
 impl DayActivity {
@@ -53,6 +66,9 @@ mod tests {
             mean_bytes: 21_900_000,
             format: "V06".into(),
             fetched_at_ms: 0,
+            has_scans: false,
+            scan_secs: Vec::new(),
+            scan_bytes: Vec::new(),
         };
         let key = day.storage_key();
         assert_eq!(key, "KTBW|1728432000");

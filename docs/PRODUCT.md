@@ -263,10 +263,16 @@ cached scans.
   baseline was tried and dropped: summer's quiet days are larger, but so
   are its rain days, and scaling by season ranked KDMX days against rain
   worse (0.58 vs 0.82).
-  The overview lists the days it shows, a few at a time once it stops
-  moving, when it spans at most ~400 days; wider views show the days
-  already known. Each day is stored, so it's listed once. Days the radar
-  recorded nothing show as a red line.
+  Heights are stretched to the view: its typical day sits near the floor
+  and its biggest at the top (a spread of at least 0.3 levels, so a quiet
+  view stays low), so the days that stand out in what's on screen are the
+  tall ones. Zoomed in to scans, each volume is drawn by its own size from
+  the same listing, so a tall day keeps showing which hours held the echo,
+  and hovering a volume names its time and size.
+  The overview lists the days it shows (the 48 h default included), a few
+  at a time once it stops moving, when it spans at most ~400 days; wider
+  views show the days already known. Each day is stored, so it's listed
+  once. Days the radar recorded nothing show as a red line.
 
 ### 5.6 Saved events (bookmarks)
 
@@ -718,8 +724,8 @@ deleted in the June 2026 docs cleanup.)
   zooms out to the whole NEXRAD Level II era (1991→now), coarsening its bars
   from scans to quarters rather than stretching a strip.
 - **Storm-activity bars:** the overview's bars are as tall as their stormiest
-  day, using archive file sizes as the activity signal (no backend, no
-  downloads).
+  day, and zoomed in each volume is as tall as its own size, using archive
+  file sizes as the activity signal (no backend, no downloads).
 - **Manual download management:** stays demoted; the activity sheet shows what the
   system did, plus cancel/retry and policy toggles.
 - **Tablet tier:** out of scope this pass; touch devices ≥600px get the desktop

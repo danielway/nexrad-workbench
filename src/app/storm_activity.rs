@@ -1,10 +1,9 @@
-//! Shell for the overview's storm-activity bars: reads a site's stored day
-//! summaries once, lists the days the zoomed-out overview shows (nearest
+//! Shell for the overview's storm activity: reads a site's stored day
+//! summaries once, lists the days the overview shows (nearest
 //! the middle first, a few at a time, once the overview stops moving), and
 //! stores what comes back. Every decision is in
 //! [`crate::core::storm_activity`]; this only runs it.
 
-use crate::core::overview::{detail_for, OverviewDetail};
 use crate::core::storm_activity::{day_start_of, ActivityWindow};
 use crate::data::SiteId;
 use crate::nexrad::acquisition::activity_listing::ActivityMessage;
@@ -31,10 +30,9 @@ impl crate::WorkbenchApp {
             return;
         }
 
-        // Only the zoomed-out overview draws activity.
+        // Zoomed out the days size the bars; zoomed in their volumes do.
         let ov = self.playback.state.overview;
-        let width = self.playback.state.timeline_width_px;
-        if width <= 0.0 || !matches!(detail_for(width / ov.span), OverviewDetail::Bars(_)) {
+        if self.playback.state.timeline_width_px <= 0.0 {
             return;
         }
         let mut hasher = std::collections::hash_map::DefaultHasher::new();

@@ -1,16 +1,22 @@
-//! Storm activity for the overview's zoomed-out bars.
+//! Storm activity for the overview: bar heights zoomed out, and each
+//! volume's height zoomed in to scans.
 //!
 //! The signal is the archive's own file sizes: a volume full of echo
 //! compresses worse than a clear-air one, so a day's mean volume size tracks
 //! how stormy it was (rank correlation 0.88 per day against decoded
 //! reflectivity coverage on KTBW). It costs one S3 listing per site-day and
-//! no downloads.
+//! no downloads. The same listing carries every volume's own size, kept so
+//! that zooming into a tall day still shows which hours held the echo.
 //!
 //! Sizes aren't comparable across sites or across the radar upgrades
 //! (super-resolution in 2008, dual-pol from 2011), so heights are scaled
 //! against a per-site, per-format baseline: roughly the site's quiet-day
 //! size. A storm day runs about 7x that on KTBW, which sets the top of the
 //! scale.
+//!
+//! Heights are stretched to the view ([`ViewScale`]): the view's typical
+//! day (or volume) sits near the floor and its biggest near the top, so the
+//! days that stand out in what's on screen are the tall ones.
 //!
 //! Everything here is pure: parsing the listing, summarizing a day, the
 //! [`ActivityBook`] of known days and its heights, and the fetch plan
@@ -114,8 +120,21 @@ fn is_volume(name: &str, size: u64) -> bool {
     size > 0 && !name.contains("_MDM")
 }
 
+/// When a volume started, in seconds after its UTC midnight, from its file
+/// name (`KTBW20241009_000313_V06` → 193).
+pub(crate) fn volume_start_secs(name: &str) -> Option<u32> {
+    let time = name.get(13..19).filter(|_| name.get(12..13) == Some("_"))?;
+    if !time.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let field = |i: usize| time[i..i + 2].parse::<u32>().ok();
+    let (h, m, s) = (field(0)?, field(2)?, field(4)?);
+    (h < 24 && m < 60 && s < 60).then_some(h * 3600 + m * 60 + s)
+}
+
 /// Reduce one day's listing to its activity summary. The format is the most
-/// common one that day (a day can straddle an upgrade).
+/// common one that day (a day can straddle an upgrade); the per-volume sizes
+/// keep only that format's volumes, so they stay comparable.
 pub(crate) fn summarize_day(
     site: &SiteId,
     day_start: i64,
@@ -133,6 +152,17 @@ pub(crate) fn summarize_day(
         .map(|(f, _)| f.to_string())
         .unwrap_or_default();
     let total: u64 = volumes.iter().map(|(_, s)| *s).sum();
+    let mut scans: Vec<(u32, u32)> = volumes
+        .iter()
+        .filter(|(name, _)| volume_format(name) == format)
+        .filter_map(|(name, size)| {
+            Some((
+                volume_start_secs(name)?,
+                (*size).min(u32::MAX as u64) as u32,
+            ))
+        })
+        .collect();
+    scans.sort_unstable();
     DayActivity {
         site: site.clone(),
         day_start,
@@ -140,16 +170,20 @@ pub(crate) fn summarize_day(
         mean_bytes: total.checked_div(volumes.len() as u64).unwrap_or(0),
         format,
         fetched_at_ms,
+        has_scans: true,
+        scan_secs: scans.iter().map(|(t, _)| *t).collect(),
+        scan_bytes: scans.iter().map(|(_, b)| *b).collect(),
     }
 }
 
 /// Whether a stored summary can stand for its day, or the day should be
 /// listed again (it was fetched before the day finished arriving, and that
-/// was a while ago).
+/// was a while ago, or it was stored without per-volume sizes).
 pub(crate) fn is_fresh(day: &DayActivity, now_ms: i64) -> bool {
     let day_end_ms = (day.day_start + DAY_SECS) * 1000;
-    day.fetched_at_ms >= day_end_ms + FINAL_AFTER_DAY_END_MS
-        || now_ms - day.fetched_at_ms < OPEN_DAY_TTL_MS
+    day.has_scans
+        && (day.fetched_at_ms >= day_end_ms + FINAL_AFTER_DAY_END_MS
+            || now_ms - day.fetched_at_ms < OPEN_DAY_TTL_MS)
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +269,12 @@ pub(crate) enum BarActivity {
 
 /// The shortest bar a day with data draws, as a fraction of the lane, so a
 /// quiet day still reads as "data here".
-pub(crate) const MIN_BAR_FRAC: f32 = 0.15;
+pub(crate) const MIN_BAR_FRAC: f32 = 0.1;
+
+/// The least spread of levels a view stretches across its full height, so
+/// a view of uniformly quiet days stays short instead of blowing small
+/// differences up into peaks.
+const MIN_VIEW_SPREAD: f32 = 0.3;
 
 impl SpanActivity {
     /// How the bar covering this span draws.
@@ -254,9 +293,82 @@ impl SpanActivity {
     }
 }
 
-/// A bar's height as a fraction of the lane for a level.
-pub(crate) fn bar_height_frac(level: f32) -> f32 {
-    MIN_BAR_FRAC + (1.0 - MIN_BAR_FRAC) * level.clamp(0.0, 1.0)
+/// How the levels in view map to heights. The view's median level sits at
+/// the floor and its highest at the top (or the median plus
+/// [`MIN_VIEW_SPREAD`], whichever is higher), so a run of ordinary days
+/// reads as low and the ones that stand out in this view are tall. Words in
+/// hover text still come from the absolute level.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ViewScale {
+    floor: f32,
+    top: f32,
+}
+
+impl Default for ViewScale {
+    /// Absolute levels, for a view with nothing known.
+    fn default() -> Self {
+        Self {
+            floor: 0.0,
+            top: 1.0,
+        }
+    }
+}
+
+impl ViewScale {
+    /// The scale for the levels in view.
+    pub(crate) fn from_levels(levels: impl IntoIterator<Item = f32>) -> Self {
+        let mut levels: Vec<f32> = levels.into_iter().filter(|l| l.is_finite()).collect();
+        if levels.is_empty() {
+            return Self::default();
+        }
+        levels.sort_unstable_by(f32::total_cmp);
+        let floor = levels[(levels.len() - 1) / 2];
+        let top = levels[levels.len() - 1].max(floor + MIN_VIEW_SPREAD);
+        Self { floor, top }
+    }
+
+    /// A height as a fraction of the lane for a level.
+    pub(crate) fn height_frac(&self, level: f32) -> f32 {
+        let t = ((level - self.floor) / (self.top - self.floor)).clamp(0.0, 1.0);
+        MIN_BAR_FRAC + (1.0 - MIN_BAR_FRAC) * t
+    }
+}
+
+/// The longest a volume is drawn when the next one is missing or far off.
+const MAX_SCAN_SECS: f64 = 15.0 * 60.0;
+
+/// One volume's size, for the zoomed-in overview.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ScanActivity {
+    /// When the volume started (Unix seconds).
+    pub start: f64,
+    /// When the next one started, at most [`MAX_SCAN_SECS`] later.
+    pub end: f64,
+    pub bytes: u32,
+    pub level: f32,
+}
+
+/// The volumes of the known days overlapping a window.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct ScanSizes {
+    /// Every volume of those days, in time order.
+    pub scans: Vec<ScanActivity>,
+    /// The known days' starts (Unix seconds), outages included; coverage
+    /// inside them is drawn from `scans`.
+    pub known_days: Vec<i64>,
+}
+
+impl ScanSizes {
+    /// Whether the day holding `ts` is known.
+    pub(crate) fn knows(&self, ts: f64) -> bool {
+        self.known_days.binary_search(&day_start_of(ts)).is_ok()
+    }
+
+    /// The volume drawn at `ts`, if any.
+    pub(crate) fn at(&self, ts: f64) -> Option<&ScanActivity> {
+        let i = self.scans.partition_point(|s| s.start <= ts);
+        self.scans[..i].last().filter(|s| ts < s.end)
+    }
 }
 
 /// The overview's time window, for deciding which days to list (Unix
@@ -329,12 +441,48 @@ impl ActivityBook {
         if day.volumes == 0 {
             return None;
         }
-        let baseline = self
-            .baselines
+        Some(activity_level(day.mean_bytes, self.baseline(day)))
+    }
+
+    /// The quiet-day baseline for a day's site and format.
+    fn baseline(&self, day: &DayActivity) -> f64 {
+        self.baselines
             .get(&(day.site.clone(), day.format.clone()))
             .copied()
-            .unwrap_or_else(|| default_baseline_bytes(&day.format));
-        Some(activity_level(day.mean_bytes, baseline))
+            .unwrap_or_else(|| default_baseline_bytes(&day.format))
+    }
+
+    /// Every volume of the known days overlapping `[start, end)` (Unix
+    /// seconds), with levels against the site's day baseline.
+    pub(crate) fn scans(&self, site: &SiteId, start: f64, end: f64) -> ScanSizes {
+        let mut out = ScanSizes::default();
+        let Some(days) = self.days.get(site) else {
+            return out;
+        };
+        let first = day_start_of(start);
+        let last = end.ceil() as i64;
+        if last <= first {
+            return out;
+        }
+        for (day_start, day) in days.range(first..last) {
+            out.known_days.push(*day_start);
+            let baseline = self.baseline(day);
+            for (secs, bytes) in day.scan_secs.iter().zip(&day.scan_bytes) {
+                let start = (*day_start + *secs as i64) as f64;
+                out.scans.push(ScanActivity {
+                    start,
+                    end: start + MAX_SCAN_SECS,
+                    bytes: *bytes,
+                    level: activity_level(*bytes as u64, baseline),
+                });
+            }
+        }
+        for i in 1..out.scans.len() {
+            let next = out.scans[i].start;
+            let prev = &mut out.scans[i - 1];
+            prev.end = prev.end.min(next).max(prev.start);
+        }
+        out
     }
 
     /// What's known about the days starting in `[start, end)` (Unix
@@ -491,6 +639,9 @@ mod tests {
             mean_bytes,
             format: format.into(),
             fetched_at_ms: (day_start + 2 * DAY_SECS) * 1000,
+            has_scans: true,
+            scan_secs: Vec::new(),
+            scan_bytes: Vec::new(),
         }
     }
 
@@ -731,10 +882,88 @@ mod tests {
         };
         assert_eq!(stormy.bar(), BarActivity::Level(0.9));
         assert_eq!(stormy.go_to_day(OCT_9_2024 + DAY_SECS), OCT_9_2024);
+    }
 
-        assert_eq!(bar_height_frac(0.0), MIN_BAR_FRAC);
-        assert_eq!(bar_height_frac(1.0), 1.0);
-        assert_eq!(bar_height_frac(7.0), 1.0);
+    #[wasm_bindgen_test]
+    fn the_view_scale_puts_typical_days_low_and_standouts_high() {
+        // A wet-season run on KTBW: most days ~0.45, two big ones.
+        let levels = [0.40, 0.42, 0.44, 0.45, 0.46, 0.48, 0.60, 0.80];
+        let scale = ViewScale::from_levels(levels);
+        assert_eq!(scale.height_frac(0.40), MIN_BAR_FRAC);
+        assert_eq!(scale.height_frac(0.45), MIN_BAR_FRAC);
+        assert_eq!(scale.height_frac(0.80), 1.0);
+        let mid = scale.height_frac(0.60);
+        assert!(mid > 0.4 && mid < 0.7, "{mid}");
+
+        // A uniformly quiet view stays low.
+        let quiet = ViewScale::from_levels([0.0, 0.02, 0.05, 0.08]);
+        assert!(quiet.height_frac(0.08) < 0.35);
+
+        // Nothing known: absolute levels.
+        let none = ViewScale::from_levels([]);
+        assert_eq!(none.height_frac(0.0), MIN_BAR_FRAC);
+        assert_eq!(none.height_frac(1.0), 1.0);
+        assert_eq!(none.height_frac(7.0), 1.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn reads_volume_start_times() {
+        assert_eq!(volume_start_secs("KTBW20241009_000313_V06"), Some(193));
+        assert_eq!(volume_start_secs("KTBW19950615_235956.gz"), Some(86_396));
+        assert_eq!(volume_start_secs("KTBW20241009_250000_V06"), None);
+        assert_eq!(volume_start_secs("bad"), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn keeps_each_volumes_size_in_time_order() {
+        let files = vec![
+            ("KTBW20241009_000830_V06".to_string(), 24_000_000),
+            ("KTBW20241009_000313_V06".to_string(), 20_000_000),
+            ("KTBW20241009_000830_V06_MDM".to_string(), 4096),
+            ("KTBW20241009_001200_V03".to_string(), 9_000_000),
+        ];
+        let d = summarize_day(&site(), OCT_9_2024, &files, 5);
+        assert!(d.has_scans);
+        assert_eq!(d.scan_secs, vec![193, 510]);
+        assert_eq!(d.scan_bytes, vec![20_000_000, 24_000_000]);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_day_stored_without_volume_sizes_is_listed_again() {
+        let mut d = day(OCT_9_2024, 5_000_000, "V06");
+        assert!(is_fresh(&d, 2e12 as i64));
+        d.has_scans = false;
+        assert!(!is_fresh(&d, 2e12 as i64));
+    }
+
+    #[wasm_bindgen_test]
+    fn scans_span_the_known_days_with_levels_and_ends() {
+        let mut quiet = day(OCT_9_2024, 4_000_000, "V06");
+        quiet.scan_secs = vec![0, 300, 86_000];
+        quiet.scan_bytes = vec![3_500_000, 3_500_000, 28_000_000];
+        let mut next = day(OCT_9_2024 + DAY_SECS, 4_000_000, "V06");
+        next.scan_secs = vec![100];
+        next.scan_bytes = vec![4_000_000];
+        let mut book = ActivityBook::default();
+        book.insert_many([quiet, next]);
+
+        let t0 = OCT_9_2024 as f64;
+        let sizes = book.scans(&site(), t0 + 3600.0, t0 + DAY_SECS as f64 + 60.0);
+        assert_eq!(sizes.known_days, vec![OCT_9_2024, OCT_9_2024 + DAY_SECS]);
+        assert_eq!(sizes.scans.len(), 4);
+        assert_eq!(sizes.scans[0].end, t0 + 300.0);
+        // A gap longer than a volume: drawn at most MAX_SCAN_SECS.
+        assert_eq!(sizes.scans[1].end, t0 + 300.0 + MAX_SCAN_SECS);
+        // The day's last volume runs to the next day's first.
+        assert_eq!(sizes.scans[2].end, t0 + 86_400.0 + 100.0);
+        assert_eq!(sizes.scans[0].level, 0.0);
+        assert_eq!(sizes.scans[2].level, 1.0);
+
+        assert!(sizes.knows(t0 + 10.0));
+        assert!(!sizes.knows(t0 + 2.0 * DAY_SECS as f64));
+        assert_eq!(sizes.at(t0 + 400.0).map(|s| s.start), Some(t0 + 300.0));
+        assert_eq!(sizes.at(t0 + 300.0 + MAX_SCAN_SECS + 1.0), None);
+        assert_eq!(sizes.at(t0 - 1.0), None);
     }
 
     #[wasm_bindgen_test]

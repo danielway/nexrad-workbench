@@ -889,6 +889,9 @@ fn day_activity(site: &str, day_start: i64, mean_bytes: u64) -> DayActivity {
         mean_bytes,
         format: "V06".into(),
         fetched_at_ms: 1,
+        has_scans: true,
+        scan_secs: vec![193, 551, 86_100],
+        scan_bytes: vec![15_194_370, 16_000_000, 4_000_000_000],
     }
 }
 
