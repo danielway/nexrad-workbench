@@ -34,6 +34,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
+use nexrad_workbench::data::day_activity::DayActivity;
 use nexrad_workbench::data::indexeddb::IndexedDbStore;
 use nexrad_workbench::data::keys::{
     ElevationUpload, ProductBlob, ScanHeader, ScanKey, SiteId, SweepDataKey, SweepTiming,
@@ -874,4 +875,139 @@ async fn wait_for_touch_bump(store: &IndexedDbStore, scan: &ScanKey, baseline: U
         }
     }
     false
+}
+
+// ---------------------------------------------------------------------------
+// Day activity (storm-activity summaries)
+// ---------------------------------------------------------------------------
+
+fn day_activity(site: &str, day_start: i64, mean_bytes: u64) -> DayActivity {
+    DayActivity {
+        site: SiteId::new(site),
+        day_start,
+        volumes: 200,
+        mean_bytes,
+        format: "V06".into(),
+        fetched_at_ms: 1,
+    }
+}
+
+#[wasm_bindgen_test]
+async fn day_activity_round_trips_per_site_and_clears() {
+    let store = fresh_store();
+    store.open().await.unwrap();
+    store
+        .put_day_activity(&[
+            day_activity("KTBW", 1_728_432_000, 21_900_000),
+            day_activity("KTBW", 1_728_518_400, 8_000_000),
+            day_activity("KTB", 1_728_432_000, 1),
+        ])
+        .await
+        .unwrap();
+    // A re-listing replaces the day.
+    store
+        .put_day_activity(&[day_activity("KTBW", 1_728_518_400, 9_000_000)])
+        .await
+        .unwrap();
+
+    let mut days = store
+        .day_activity_for_site(&SiteId::new("KTBW"))
+        .await
+        .unwrap();
+    days.sort_by_key(|d| d.day_start);
+    assert_eq!(
+        days,
+        vec![
+            day_activity("KTBW", 1_728_432_000, 21_900_000),
+            day_activity("KTBW", 1_728_518_400, 9_000_000),
+        ]
+    );
+
+    store.clear_all().await.unwrap();
+    assert!(store
+        .day_activity_for_site(&SiteId::new("KTBW"))
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// Wait for a raw IDB request to succeed and return its result.
+async fn raw_request(request: &web_sys::IdbRequest) -> wasm_bindgen::JsValue {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use wasm_bindgen::prelude::*;
+    let (tx, rx) = futures_channel::oneshot::channel::<bool>();
+    let tx = Rc::new(RefCell::new(Some(tx)));
+    let (on_ok, on_err) = (tx.clone(), tx);
+    let ok = Closure::once(move |_: web_sys::Event| {
+        if let Some(t) = on_ok.borrow_mut().take() {
+            let _ = t.send(true);
+        }
+    });
+    let err = Closure::once(move |_: web_sys::Event| {
+        if let Some(t) = on_err.borrow_mut().take() {
+            let _ = t.send(false);
+        }
+    });
+    request.set_onsuccess(Some(ok.as_ref().unchecked_ref()));
+    request.set_onerror(Some(err.as_ref().unchecked_ref()));
+    assert!(rx.await.unwrap(), "IDB request failed");
+    request.result().unwrap()
+}
+
+fn idb_factory() -> web_sys::IdbFactory {
+    use wasm_bindgen::JsCast;
+    js_sys::Reflect::get(&js_sys::global(), &"indexedDB".into())
+        .unwrap()
+        .dyn_into()
+        .unwrap()
+}
+
+#[wasm_bindgen_test]
+async fn upgrading_from_v6_keeps_cached_scans_and_adds_day_activity() {
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen::JsCast;
+    let name = fresh_db_name();
+
+    // A v6 database, as the previous release left it.
+    let open = idb_factory().open_with_u32(&name, 6).unwrap();
+    let upgrade = Closure::once(move |event: web_sys::IdbVersionChangeEvent| {
+        let request: web_sys::IdbRequest = event.target().unwrap().dyn_into().unwrap();
+        let db: web_sys::IdbDatabase = request.result().unwrap().dyn_into().unwrap();
+        for store in ["sweeps", "scan_index", "scan_touches"] {
+            db.create_object_store(store).unwrap();
+        }
+    });
+    open.set_onupgradeneeded(Some(upgrade.as_ref().unchecked_ref()));
+    let db: web_sys::IdbDatabase = raw_request(&open).await.dyn_into().unwrap();
+    let tx = db
+        .transaction_with_str_and_mode("scan_index", web_sys::IdbTransactionMode::Readwrite)
+        .unwrap();
+    let put = tx
+        .object_store("scan_index")
+        .unwrap()
+        .put_with_key(&"kept".into(), &"KTBW|1".into())
+        .unwrap();
+    raw_request(&put).await;
+    db.close();
+
+    // The current schema opens it.
+    let store = IndexedDbStore::with_database_name(name.clone());
+    store.open().await.unwrap();
+    assert!(store
+        .day_activity_for_site(&SiteId::new("KTBW"))
+        .await
+        .unwrap()
+        .is_empty());
+
+    let reopen = idb_factory().open(&name).unwrap();
+    let db: web_sys::IdbDatabase = raw_request(&reopen).await.dyn_into().unwrap();
+    let tx = db.transaction_with_str("scan_index").unwrap();
+    let get = tx
+        .object_store("scan_index")
+        .unwrap()
+        .get(&"KTBW|1".into())
+        .unwrap();
+    assert_eq!(raw_request(&get).await.as_string().as_deref(), Some("kept"));
+    db.close();
 }

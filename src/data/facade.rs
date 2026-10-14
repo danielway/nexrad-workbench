@@ -6,7 +6,9 @@
 //! 1. **[`MainThreadStore`] (this module)** — the main thread's read + cache
 //!    -management surface: availability lookups, timeline listings, size
 //!    accounting, wipe, and quota-driven eviction (the policy itself is the
-//!    pure [`decide_eviction`]). It owns no write path by design.
+//!    pure [`decide_eviction`]). It owns no radar-data write path by design.
+//!    Its one write is the storm-activity day summaries, which live in their
+//!    own store that the worker never touches, so they can't race ingest.
 //! 2. **`WORKER_IDB`** (a thread-local `IndexedDbStore` in
 //!    `nexrad::decode::worker_api`) — the worker's own handle. Ingest writes
 //!    (`upsert_scan`) and sweep-blob reads happen there, against a connection
@@ -19,6 +21,7 @@
 //! was previously named `DataFacade`, which implied it fronted all database
 //! traffic; it never did.
 
+use crate::data::day_activity::DayActivity;
 use crate::data::indexeddb::{DataError, IndexedDbStore};
 use crate::data::keys::*;
 use crate::data::quota::{decide_eviction, QuotaPolicy};
@@ -84,6 +87,16 @@ impl MainThreadStore {
         end: UnixMillis,
     ) -> CacheResult<Vec<ScanIndexEntry>> {
         self.store.list_scans(site, start, end).await
+    }
+
+    /// Every stored storm-activity day summary for `site`.
+    pub async fn day_activity_for_site(&self, site: &SiteId) -> CacheResult<Vec<DayActivity>> {
+        self.store.day_activity_for_site(site).await
+    }
+
+    /// Stores storm-activity day summaries, replacing any for the same days.
+    pub async fn put_day_activity(&self, days: &[DayActivity]) -> CacheResult<()> {
+        self.store.put_day_activity(days).await
     }
 
     /// Gets total cache size.

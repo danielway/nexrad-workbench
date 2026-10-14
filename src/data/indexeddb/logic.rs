@@ -7,6 +7,18 @@ use super::{DataError, StorageQuotaEstimate};
 use crate::data::keys::{ElevationUpload, ScanHeader, ScanIndexEntry, ScanKey, UnixMillis};
 use std::collections::{BTreeSet, HashMap};
 
+/// The oldest schema version whose stores the current one keeps as they
+/// are. v7 only added `day_activity`, so upgrading from v6 keeps the cached
+/// radar data; anything older is wiped and rebuilt.
+pub(super) const OLDEST_KEPT_VERSION: u32 = 6;
+
+/// Whether an upgrade from `old_version` keeps the existing stores (and only
+/// creates the missing ones) rather than wiping them. A fresh database
+/// (`old_version` 0) has nothing to keep.
+pub(super) fn upgrade_keeps_stores(old_version: u32) -> bool {
+    old_version >= OLDEST_KEPT_VERSION
+}
+
 /// Decides whether a `touch_scan` call should be deduplicated against
 /// an in-memory record of the previous touch.
 ///
@@ -158,6 +170,14 @@ mod tests {
     use crate::data::quota::QuotaPolicy;
     use crate::data::vcp_timing::ExtractedVcp;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn upgrade_keeps_v6_stores_and_wipes_older_ones() {
+        assert!(upgrade_keeps_stores(6));
+        assert!(upgrade_keeps_stores(super::super::DATABASE_VERSION));
+        assert!(!upgrade_keeps_stores(5));
+        assert!(!upgrade_keeps_stores(0));
+    }
 
     // --- helpers ---
     fn key(site: &str, ms: i64) -> ScanKey {

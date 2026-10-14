@@ -26,6 +26,7 @@
 //!   IDB request callbacks, so IndexedDB serializes same-scan mutations across
 //!   workers and tabs without awaiting inside the readwrite transaction.
 
+use crate::data::day_activity::DayActivity;
 use crate::data::keys::*;
 use js_sys::{Array, ArrayBuffer, Uint8Array};
 use std::cell::RefCell;
@@ -151,7 +152,7 @@ impl StorageQuotaEstimate {
 }
 
 /// Current database schema version.
-pub(super) const DATABASE_VERSION: u32 = 6;
+pub(super) const DATABASE_VERSION: u32 = 7;
 
 /// Database name.
 const DATABASE_NAME: &str = "nexrad-workbench";
@@ -163,6 +164,17 @@ pub(super) const STORE_SCAN_INDEX: &str = "scan_index";
 /// store so that fire-and-forget access bumps from `get_sweep` don't
 /// race with chunk-ingest's read-modify-write of the scan-index entry.
 pub(super) const STORE_SCAN_TOUCHES: &str = "scan_touches";
+/// Per-site-day archive listing summaries for the overview's storm-activity
+/// bars ([`crate::data::DayActivity`]). Added in v7; only the main thread
+/// reads or writes it, and nothing else in a transaction touches it.
+pub(super) const STORE_DAY_ACTIVITY: &str = "day_activity";
+/// Every store the current schema has.
+pub(super) const ALL_STORES: [&str; 4] = [
+    STORE_SWEEPS,
+    STORE_SCAN_INDEX,
+    STORE_SCAN_TOUCHES,
+    STORE_DAY_ACTIVITY,
+];
 
 /// Minimum interval between in-memory touch deduplications. Limits how often
 /// a single scan's `last_accessed_at` is rewritten to IDB during fast scrub.
@@ -1087,6 +1099,48 @@ impl IndexedDbStore {
         estimate_browser_quota().await
     }
 
+    // ========================================================================
+    // Day activity (storm-activity summaries)
+    // ========================================================================
+
+    /// Stores (or replaces) day-activity summaries in one readwrite
+    /// transaction.
+    pub async fn put_day_activity(&self, days: &[DayActivity]) -> Result<(), DataError> {
+        if days.is_empty() {
+            return Ok(());
+        }
+        self.ensure_open().await?;
+        let values = days
+            .iter()
+            .map(|day| Ok((day.storage_key(), to_js_value(day)?)))
+            .collect::<Result<Vec<_>, DataError>>()?;
+        self.write_tx(&[STORE_DAY_ACTIVITY], |wtx| {
+            let store = wtx.object_store(STORE_DAY_ACTIVITY)?;
+            for (key, value) in &values {
+                store
+                    .put_with_key(value, &JsValue::from_str(key))
+                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Every stored day-activity summary for `site`.
+    pub async fn day_activity_for_site(
+        &self,
+        site: &SiteId,
+    ) -> Result<Vec<DayActivity>, DataError> {
+        self.ensure_open().await?;
+        let range = site_prefix_range(site)?;
+        let result = self
+            .read(STORE_DAY_ACTIVITY, |store| {
+                store.get_all_with_key(&range.into())
+            })
+            .await?;
+        Ok(deserialize_js_array(&Array::from(&result)))
+    }
+
     /// Clears all data from all stores.
     ///
     /// Preserves schema and version — does not call `deleteDatabase`, which
@@ -1094,21 +1148,21 @@ impl IndexedDbStore {
     pub async fn clear_all(&self) -> Result<(), DataError> {
         self.ensure_open().await?;
 
-        self.write_tx(
-            &[STORE_SWEEPS, STORE_SCAN_INDEX, STORE_SCAN_TOUCHES],
-            |wtx| {
-                wtx.object_store(STORE_SWEEPS)?
-                    .clear()
-                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-                wtx.object_store(STORE_SCAN_INDEX)?
-                    .clear()
-                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-                wtx.object_store(STORE_SCAN_TOUCHES)?
-                    .clear()
-                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-                Ok(())
-            },
-        )
+        self.write_tx(&ALL_STORES, |wtx| {
+            wtx.object_store(STORE_SWEEPS)?
+                .clear()
+                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+            wtx.object_store(STORE_SCAN_INDEX)?
+                .clear()
+                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+            wtx.object_store(STORE_SCAN_TOUCHES)?
+                .clear()
+                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+            wtx.object_store(STORE_DAY_ACTIVITY)?
+                .clear()
+                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+            Ok(())
+        })
         .await?;
 
         self.recent_touches.borrow_mut().clear();

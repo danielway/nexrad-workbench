@@ -13,6 +13,7 @@
 //! single handle and gives a place for future timeline-derivation
 //! helpers (e.g. matching-completion lookups, sweep accessors) to land.
 
+use crate::core::storm_activity::ActivityBook;
 use crate::core::RadarTimeline;
 use crate::core::ScanBoundary;
 
@@ -28,4 +29,8 @@ pub(crate) struct Timeline {
     /// users see where scans exist before they're downloaded; cleared on
     /// site change.
     pub shadow_scan_boundaries: Vec<ScanBoundary>,
+    /// Per-site-day storm activity (from archive listing sizes) for the
+    /// overview's zoomed-out bars. Kept across site changes; it's keyed by
+    /// site.
+    pub activity: ActivityBook,
 }

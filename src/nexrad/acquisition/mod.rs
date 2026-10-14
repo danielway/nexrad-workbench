@@ -6,6 +6,7 @@
 //! [`acquisition_coordinator::AcquisitionCoordinator`].
 
 pub(crate) mod acquisition_coordinator;
+pub(crate) mod activity_listing;
 pub(crate) mod archive_index;
 pub(crate) mod cache_channel;
 pub(crate) mod download;

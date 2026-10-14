@@ -892,6 +892,9 @@ impl eframe::App for WorkbenchApp {
         // populated for whatever date range the user is looking at, so the
         // timeline itself is the browsing surface.
         self.pump_visible_listings(ctx);
+        // Storm activity for the zoomed-out overview's bars: one listing
+        // per day it shows, stored so each day is listed once.
+        self.pump_storm_activity(ctx);
         // Selection = the fetch: resolve any range the user just selected
         // (arm the bulk fetch directly, or open the confirm modal if the span
         // is large), then pump the armed target's scans into the queue.

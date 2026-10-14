@@ -16,7 +16,7 @@ so the same code compiles and runs in both contexts.
 
 ## 1. Schema
 
-Database `nexrad-workbench`, version `6`. Three object stores; all keyed
+Database `nexrad-workbench`, version `7`. Four object stores; all keyed
 by string.
 
 | Store          | Key format                          | Value                                                            |
@@ -24,11 +24,16 @@ by string.
 | `sweeps`       | `SITE\|SCAN_MS\|ELEV_NUM\|PRODUCT`  | `ArrayBuffer` (raw gate values + 72-byte header — see §2a)       |
 | `scan_index`   | `SITE\|SCAN_MS`                     | `ScanIndexEntry` (structured-cloned via `serde-wasm-bindgen`)    |
 | `scan_touches` | `SITE\|SCAN_MS`                     | Unix-millisecond timestamp (stored as a JS number); seeded by a scan's first `upsert_scan` and bumped on each render |
+| `day_activity` | `SITE\|DAY_START_SECS`              | `DayActivity` (one site-day's volume count and mean file size, for the overview's storm-activity bars; see §2d) |
 
-Schema upgrades are **destructive**: `onupgradeneeded` deletes every
-existing object store and recreates them. The cache is treated as
-ephemeral — losing it on a version bump is acceptable, and that simpler
-upgrade path is what lets us evolve the binary blob layout freely.
+Schema upgrades are **destructive** unless they only add stores:
+`onupgradeneeded` deletes every existing object store and recreates them
+when upgrading from a version older than `logic::OLDEST_KEPT_VERSION`
+(6), and otherwise only creates the stores that are missing. The cache is
+treated as ephemeral, so a breaking change can still wipe it (raise
+`OLDEST_KEPT_VERSION` to the new version), which is what lets us evolve the
+binary blob layout freely. v7 only added `day_activity`, so upgrading from
+v6 keeps every cached scan.
 
 ## 2. Payload contents
 
@@ -141,6 +146,18 @@ freshly-cached scans have a place in the order, and bumped by
 with `scan_index` and sorts by the touch value. See §11 for why access
 tracking lives in its own store rather than as a field on
 `ScanIndexEntry`.
+
+### 2d. `day_activity` value: `DayActivity`
+
+Defined in [`src/data/day_activity.rs`](../src/data/day_activity.rs): one
+site-day's archive listing reduced to its volume count, mean compressed
+size, the volumes' format suffix (`V06`, `V03`, or empty before 2008) and
+when it was listed. `core::storm_activity` turns it into a bar height.
+
+Only the main thread reads and writes it (`MainThreadStore::
+day_activity_for_site` / `put_day_activity`). No transaction touches it
+together with another store, so it can't race ingest. `clear_all` empties
+it with the rest; eviction ignores it (a record is ~100 bytes).
 
 ## 3. Why three stores
 
