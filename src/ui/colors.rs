@@ -245,6 +245,14 @@ pub(crate) mod timeline {
         Color32::from_rgba_unmultiplied(r, g, b, 36)
     }
 
+    /// A zoomed-out overview bar's storm-activity height, for days not on
+    /// this device: the available slate, solid enough that the heights
+    /// read at a glance.
+    pub(crate) fn activity_fill(dark: bool) -> Color32 {
+        let (r, g, b) = if dark { AVAILABLE_RGB } else { (90, 110, 150) };
+        Color32::from_rgba_unmultiplied(r, g, b, 120)
+    }
+
     /// Dashed border for an available-but-not-downloaded block.
     pub(crate) fn available_border(dark: bool) -> Color32 {
         let (r, g, b) = if dark { AVAILABLE_RGB } else { (90, 110, 150) };

@@ -457,7 +457,7 @@ fn lane_tip(
 
 /// Zoomed out: one bar per day / week / month / quarter, as tall as its
 /// stormiest known day; steel blue when anything in it is on this device,
-/// faint slate otherwise. Unknown activity draws a stub where data is
+/// slate otherwise. Unknown activity draws a stub where data is
 /// listed or cached, and an outage a red line along the bottom.
 fn paint_bars(
     painter: &egui::Painter,
@@ -475,7 +475,14 @@ fn paint_bars(
             tl_colors::available_fill(dark)
         };
         let (height, color) = match act.bar() {
-            BarActivity::Level(level) => (lane.height() * bar_height_frac(level), color),
+            BarActivity::Level(level) => {
+                let color = if b.cached_secs > 0.0 {
+                    color
+                } else {
+                    tl_colors::activity_fill(dark)
+                };
+                (lane.height() * bar_height_frac(level), color)
+            }
             BarActivity::Outage => (2.0, tl_colors::NOW_IDLE),
             BarActivity::Unknown if known_data => (3.0, color),
             BarActivity::Unknown => continue,
