@@ -254,8 +254,15 @@ cached scans.
 - **Storm activity** comes from file sizes in the archive listing: a volume
   full of echo compresses worse, so a day's mean volume size tracks how
   stormy it was (rank correlation 0.88 per day against reflectivity
-  coverage on KTBW). Heights are scaled per site and per volume format
-  (pre-2008, super-resolution, dual-pol), against the site's quiet-day size.
+  coverage on KTBW, 0.83 on KDMX). What it measures is how much of the
+  scan holds echo, so hover text names an amount ("Lots of echo", "Some
+  echo", "Little echo", "Clear") rather than a kind of weather: a dry
+  summer day full of insect echo reads "Some echo". Heights are scaled per
+  site and per volume format (pre-2008, super-resolution, dual-pol),
+  against the site's quiet-day size across all seasons. A same-season
+  baseline was tried and dropped: summer's quiet days are larger, but so
+  are its rain days, and scaling by season ranked KDMX days against rain
+  worse (0.58 vs 0.82).
   The overview lists the days it shows, a few at a time once it stops
   moving, when it spans at most ~400 days; wider views show the days
   already known. Each day is stored, so it's listed once. Days the radar

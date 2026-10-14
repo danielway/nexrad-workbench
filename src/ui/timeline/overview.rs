@@ -431,11 +431,11 @@ fn lane_tip(
             } else {
                 String::new()
             };
-            format!("Stormiest: {} ({}){}", peak, activity_word(level), known)
+            format!("Most echo: {} ({}){}", peak, activity_word(level), known)
         }
         BarActivity::Outage => "No radar data recorded".to_string(),
-        BarActivity::Unknown if listing => "Checking storm activity\u{2026}".to_string(),
-        BarActivity::Unknown => "Zoom in to see storm activity".to_string(),
+        BarActivity::Unknown if listing => "Checking echo amounts\u{2026}".to_string(),
+        BarActivity::Unknown => "Zoom in to see how much echo".to_string(),
     };
     let hours = |secs: f64| {
         if secs >= 3600.0 {

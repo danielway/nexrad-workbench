@@ -193,16 +193,19 @@ pub(crate) fn activity_level(mean_bytes: u64, baseline: f64) -> f32 {
     level.clamp(0.0, 1.0) as f32
 }
 
-/// A word for a level, for hover text.
+/// A word for a level, for hover text. It names an amount of echo, not a
+/// kind of weather: file size tracks how much of the scan holds echo, and
+/// in summer clear-air echo (insects, birds) fills a scan on a dry day
+/// about as much as light rain does.
 pub(crate) fn activity_word(level: f32) -> &'static str {
     if level >= 0.66 {
-        "Stormy"
+        "Lots of echo"
     } else if level >= 0.4 {
-        "Active"
+        "Some echo"
     } else if level >= 0.15 {
-        "Some weather"
+        "Little echo"
     } else {
-        "Quiet"
+        "Clear"
     }
 }
 
@@ -571,6 +574,22 @@ mod tests {
         assert!(mid > 0.3 && mid < 0.6, "{mid}");
         assert_eq!(activity_level(0, b), 0.0);
         assert_eq!(activity_level(200_000_000, b), 1.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn words_name_amounts_of_echo_on_the_kdmx_study() {
+        // KDMX's quiet-day size over three years is ~2.07 MB.
+        let b = 2_070_000.0;
+        let word = |mb: f64| activity_word(activity_level((mb * 1e6) as u64, b));
+        // Greenfield EF4 day and the 2020 derecho: rain over much of the scan.
+        assert_eq!(word(15.30), "Lots of echo");
+        assert_eq!(word(10.36), "Lots of echo");
+        // A dry July day: a quarter of the scan holds insects, under 1% rain.
+        assert_eq!(word(6.69), "Some echo");
+        // A mid-March day with a few light showers.
+        assert_eq!(word(3.27), "Little echo");
+        // Clear January air.
+        assert_eq!(word(1.61), "Clear");
     }
 
     #[wasm_bindgen_test]
