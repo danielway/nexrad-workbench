@@ -4,7 +4,8 @@
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::state::AppState;
-use eframe::egui::{self, Color32, RichText, Vec2};
+use crate::ui::theme;
+use eframe::egui::{self, RichText, Vec2};
 
 pub(super) struct ResetSettingsModalLayer;
 
@@ -71,8 +72,8 @@ fn draw_reset_settings_modal(
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let reset_btn = ui.add(
-                        egui::Button::new(RichText::new("Reset Settings").color(Color32::WHITE))
-                            .fill(Color32::from_rgb(200, 60, 60)),
+                        egui::Button::new(RichText::new("Reset Settings").color(theme::TEXT))
+                            .fill(theme::legacy::DESTRUCTIVE),
                     );
                     if reset_btn.clicked() {
                         chrome.reset_settings_modal_open = false;

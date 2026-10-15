@@ -387,10 +387,8 @@ fn apply_url_params(
 impl WorkbenchApp {
     /// Creates a new WorkbenchApp instance.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Initialize Phosphor icon font
-        let mut fonts = egui::FontDefinitions::default();
-        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-        cc.egui_ctx.set_fonts(fonts);
+        // Fonts (IBM Plex + Phosphor icons) and the five text sizes.
+        ui::theme::install(&cc.egui_ctx);
 
         let mut geo_layers = geo::GeoLayerSet::new();
 
@@ -760,7 +758,7 @@ impl WorkbenchApp {
         if self.last_favicon_mode == Some(mode) {
             return;
         }
-        let c = ui::colors::mode::color(mode);
+        let c = ui::theme::mode_color(mode);
         let hex = format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
         let _ = js_set_favicon_color(&hex);
 

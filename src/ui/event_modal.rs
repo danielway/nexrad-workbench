@@ -3,8 +3,9 @@
 //! Follows the same backdrop + centered window pattern as site_modal and reset_settings_modal.
 
 use crate::state::AppState;
+use crate::ui::theme;
 use chrono::{TimeZone, Utc};
-use eframe::egui::{self, Color32, RichText, Vec2};
+use eframe::egui::{self, RichText, Vec2};
 
 /// Transient form state for the event modal. Stored on WorkbenchApp.
 #[derive(Default)]
@@ -381,7 +382,7 @@ fn draw_event_modal(
                 ui.label(
                     RichText::new("Start time must be before end time")
                         .small()
-                        .color(Color32::from_rgb(255, 120, 120)),
+                        .color(theme::legacy::ERROR),
                 );
             }
 
@@ -397,8 +398,8 @@ fn draw_event_modal(
                 // Delete button (only when editing)
                 if is_editing {
                     let delete_btn = ui.add(
-                        egui::Button::new(RichText::new("Delete").color(Color32::WHITE))
-                            .fill(Color32::from_rgb(200, 60, 60)),
+                        egui::Button::new(RichText::new("Delete").color(theme::TEXT))
+                            .fill(theme::legacy::DESTRUCTIVE),
                     );
                     if delete_btn.clicked() {
                         if let Some(id) = chrome.event_modal_editing_id {

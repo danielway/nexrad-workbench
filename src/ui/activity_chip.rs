@@ -17,10 +17,10 @@
 //! - **L0 restraint.** A casual viewer with nothing happening sees the glyph
 //!   alone; the words appear on hover or once Advanced is on.
 
-use super::colors::{acquisition as acq_colors, ui as ui_colors};
 use crate::core::activity::{ActivityGlyph, ActivityState, ActivityVm};
 use crate::core::Intent;
 use crate::state::AppState;
+use crate::ui::theme;
 use eframe::egui::{self, Color32, RichText};
 use egui_phosphor::regular as icons;
 
@@ -96,7 +96,7 @@ pub(super) fn render_activity_chip(
                     RichText::new(label)
                         .size(font_size)
                         .strong()
-                        .color(acq_colors::FAILED),
+                        .color(theme::acquisition::FAILED),
                 )
                 .frame(false),
             );
@@ -127,9 +127,9 @@ pub(super) fn render_activity_chip(
 /// mid-alpha, so the state still reads without any movement.
 fn chip_tint(ui: &egui::Ui, idle: bool, animate: bool) -> Color32 {
     if idle {
-        return ui_colors::label(true);
+        return theme::TEXT_FAINT;
     }
-    let base = ui_colors::ACTIVE;
+    let base = theme::legacy::ACTIVE_BLUE;
     let alpha = if animate {
         let t = ui.ctx().input(|i| i.time);
         let pulse = (0.5 + 0.5 * (t * PULSE_RATE).sin()) as f32;

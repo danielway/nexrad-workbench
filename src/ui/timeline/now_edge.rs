@@ -20,7 +20,8 @@
 use crate::core::session::{NowCap, SessionVm};
 use crate::core::Intent;
 use crate::state::AppState;
-use crate::ui::colors::timeline::{LIVE_ACTIVE, NOW_IDLE};
+use crate::ui::theme;
+use crate::ui::theme::timeline::{LIVE_ACTIVE, NOW_IDLE};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Sense, Stroke, StrokeKind};
 
 /// Render the now affordance and handle its interaction.
@@ -187,8 +188,8 @@ fn render_edge_chip(
         Stroke::new(1.0_f32, edge_color(fill)),
         StrokeKind::Inside,
     );
-    let galley = painter.layout_no_wrap(label, font, Color32::WHITE);
-    painter.galley(chip_rect.min + pad, galley, Color32::WHITE);
+    let galley = painter.layout_no_wrap(label, font, theme::TEXT);
+    painter.galley(chip_rect.min + pad, galley, theme::TEXT);
 
     if resp.clicked() {
         // Scroll the view to now, then attach — one action from anywhere in
@@ -229,8 +230,8 @@ fn draw_cap(painter: &Painter, rect: Rect, label: &str, fill: Color32) {
         StrokeKind::Inside,
     );
     let pad = egui::vec2(6.0, 2.5);
-    let galley = painter.layout_no_wrap(label.to_string(), font, Color32::WHITE);
-    painter.galley(rect.min + pad, galley, Color32::WHITE);
+    let galley = painter.layout_no_wrap(label.to_string(), font, theme::TEXT);
+    painter.galley(rect.min + pad, galley, theme::TEXT);
 }
 
 /// Fill color for a cap/chip: muted red when idle, brightening on hover, and
@@ -260,7 +261,7 @@ fn edge_color(fill: Color32) -> Color32 {
 /// so geometry and painting agree).
 fn label_size(painter: &Painter, label: &str) -> (egui::Vec2, egui::FontId) {
     let font = egui::FontId::proportional(10.0);
-    let galley = painter.layout_no_wrap(label.to_string(), font.clone(), Color32::WHITE);
+    let galley = painter.layout_no_wrap(label.to_string(), font.clone(), theme::TEXT);
     (galley.size(), font)
 }
 
@@ -278,18 +279,18 @@ mod coverage_tests {
     fn cap_fill_idle_unhovered_returns_base() {
         // Not live, not hovered → returns `base` unchanged.
         let out = cap_fill(NOW_IDLE, false, false, 0.5);
-        assert!(out.to_array() == [200, 95, 95, 255]);
+        assert!(out.to_array() == NOW_IDLE.to_array());
 
         // base is whatever was passed in — confirm with LIVE_ACTIVE too.
         let out2 = cap_fill(LIVE_ACTIVE, false, false, 0.0);
-        assert!(out2.to_array() == [255, 80, 80, 255]);
+        assert!(out2.to_array() == LIVE_ACTIVE.to_array());
     }
 
     #[wasm_bindgen_test]
     fn cap_fill_idle_hovered_brightens_to_live_active() {
         // Not live but hovered → LIVE_ACTIVE regardless of `base`/`pulse`.
         let out = cap_fill(NOW_IDLE, false, true, 0.5);
-        assert!(out.to_array() == [255, 80, 80, 255]);
+        assert!(out.to_array() == LIVE_ACTIVE.to_array());
     }
 
     #[wasm_bindgen_test]
@@ -298,7 +299,7 @@ mod coverage_tests {
         // LIVE_ACTIVE (no premultiplication on the 255 fast-path).
         // hovered is ignored once is_live.
         let out = cap_fill(NOW_IDLE, true, false, 1.0);
-        assert!(out.to_array() == [255, 80, 80, 255]);
+        assert!(out.to_array() == LIVE_ACTIVE.to_array());
     }
 
     #[wasm_bindgen_test]

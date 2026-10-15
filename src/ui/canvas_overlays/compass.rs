@@ -5,7 +5,8 @@
 //! the user orbits.
 
 use crate::geo::Camera;
-use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
+use crate::ui::theme;
+use eframe::egui::{self, Pos2, Rect, Stroke, Vec2};
 
 /// Trait wrapper for the registry. Compass is 3D-only — `visible`
 /// gates on view mode.
@@ -35,15 +36,11 @@ fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &Camera) {
     );
 
     // Background circle
-    painter.circle_filled(
-        center,
-        radius + 4.0,
-        Color32::from_rgba_unmultiplied(15, 15, 25, 180),
-    );
+    painter.circle_filled(center, radius + 4.0, theme::alpha(theme::RAISED, 180));
     painter.circle_stroke(
         center,
         radius + 4.0,
-        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(80, 80, 100, 160)),
+        Stroke::new(1.0_f32, theme::alpha(theme::TEXT_FAINT, 160)),
     );
 
     // Compute compass rotation to match the camera's on-screen orientation.
@@ -65,9 +62,9 @@ fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &Camera) {
         let label_pos = center + dir * (radius - 2.0);
 
         let (color, size) = if label == "N" {
-            (Color32::from_rgb(255, 80, 80), 13.0)
+            (theme::map::NORTH, 13.0)
         } else {
-            (Color32::from_rgba_unmultiplied(180, 180, 200, 200), 11.0)
+            (theme::alpha(theme::TEXT_DIM, 200), 11.0)
         };
 
         painter.text(
@@ -90,14 +87,10 @@ fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &Camera) {
         let outer = center + dir * (radius - 2.0);
         painter.line_segment(
             [inner, outer],
-            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(120, 120, 140, 140)),
+            Stroke::new(1.0_f32, theme::alpha(theme::TEXT_FAINT, 140)),
         );
     }
 
     // Center dot
-    painter.circle_filled(
-        center,
-        2.0,
-        Color32::from_rgba_unmultiplied(150, 150, 170, 160),
-    );
+    painter.circle_filled(center, 2.0, theme::alpha(theme::TEXT_DIM, 160));
 }

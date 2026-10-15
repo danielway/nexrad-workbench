@@ -13,7 +13,7 @@ use crate::core::selection_strip::{
     drag_anchor, drag_point, grab_at, intent_for, release, StripGrab, StripRelease,
 };
 use crate::state::AppState;
-use crate::ui::colors::timeline::{self as tl_colors, LIVE_ACTIVE};
+use crate::ui::theme::timeline::{self as tl_colors, LIVE_ACTIVE};
 use eframe::egui::{self, Pos2, Rect, Sense, Stroke};
 
 /// Painted handle size: a small tab at each end of the range bar.
@@ -40,7 +40,7 @@ pub(super) fn render_selection_strip(
     rect: Rect,
 ) {
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, tl_colors::selection_strip_bg(frame.dark));
+    painter.rect_filled(rect, 0.0, tl_colors::SELECTION_STRIP_BG);
 
     let response = ui.interact(
         rect,

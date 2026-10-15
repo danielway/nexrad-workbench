@@ -14,10 +14,10 @@ mod strokes;
 pub(super) mod style;
 mod tooltips;
 
-use super::colors::timeline as tl_colors;
 use crate::core::TimelineTier;
 use crate::core::{FrameJoinInputs, LivePhase};
 use crate::state::{AppState, WidthTier};
+use crate::ui::theme::timeline as tl_colors;
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
@@ -71,7 +71,6 @@ pub(super) struct TimelineFrame<'a> {
     /// The stored timeline tier (single source of truth, with hysteresis) this
     /// frame renders at. Renderers branch on it directly.
     pub tier: TimelineTier,
-    pub dark: bool,
     pub use_local: bool,
 }
 
@@ -352,14 +351,12 @@ pub(super) fn render_timeline(
         Pos2::new(full_rect.max.x, selection_rect.max.y + main_track_h),
     );
 
-    let dark = state.is_dark;
-
     // Background for the main track.
-    painter.rect_filled(scan_rect, 2.0, tl_colors::background(dark));
+    painter.rect_filled(scan_rect, 2.0, tl_colors::BACKGROUND);
     painter.rect_stroke(
         scan_rect,
         2.0,
-        Stroke::new(1.0_f32, tl_colors::border(dark)),
+        Stroke::new(1.0_f32, tl_colors::BORDER),
         StrokeKind::Outside,
     );
 
@@ -425,7 +422,6 @@ pub(super) fn render_timeline(
             overlay: overlay_rect,
         },
         tier,
-        dark,
         use_local,
     };
     let ts_to_x = |ts: f64| frame.ts_to_x(ts);

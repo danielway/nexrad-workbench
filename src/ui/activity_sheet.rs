@@ -16,13 +16,13 @@
 //! identically on desktop and mobile via the shared modal set — mobile has no
 //! bottom panel, so a side drawer wouldn't reach it.
 
-use super::colors::{acquisition as acq_colors, ui as ui_colors};
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::activity::{
     ActivityDetailVm, ActivityRow, ActivityStage, ActivityState, ActivityVm, NetworkRow, RowStatus,
 };
 use crate::core::Intent;
 use crate::state::{format_bytes, AppState};
+use crate::ui::theme;
 use eframe::egui::{self, RichText, ScrollArea, Vec2};
 use egui_phosphor::regular as icons;
 
@@ -73,8 +73,6 @@ fn draw_activity_sheet(
         return;
     }
 
-    let dark = state.is_dark;
-
     egui::Window::new(format!("{} Activity", icons::DOWNLOAD_SIMPLE))
         .collapsible(false)
         .resizable(false)
@@ -85,21 +83,21 @@ fn draw_activity_sheet(
         .show(ctx, |ui| {
             ui.set_min_width(380.0);
 
-            render_header(ui, state, vm, dark);
+            render_header(ui, state, vm);
             ui.add_space(4.0);
-            render_stage_strip(ui, vm, dark);
+            render_stage_strip(ui, vm);
 
             ui.separator();
-            render_operation_list(ui, state, vm, dark);
+            render_operation_list(ui, state, vm);
 
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(4.0);
-            render_policy_section(ui, state, dark);
+            render_policy_section(ui, state);
 
             ui.add_space(6.0);
             ui.separator();
-            render_details(ui, state, vm, chrome, dark);
+            render_details(ui, state, vm, chrome);
 
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -113,7 +111,7 @@ fn draw_activity_sheet(
 }
 
 /// Headline + throughput + queue controls.
-fn render_header(ui: &mut egui::Ui, state: &mut AppState, vm: &ActivityVm, dark: bool) {
+fn render_header(ui: &mut egui::Ui, state: &mut AppState, vm: &ActivityVm) {
     ui.horizontal(|ui| {
         let mut headline = vm.headline.label.to_string();
         if let Some(count) = vm.headline.count {
@@ -126,14 +124,14 @@ fn render_header(ui: &mut egui::Ui, state: &mut AppState, vm: &ActivityVm, dark:
             RichText::new(headline)
                 .size(13.0)
                 .strong()
-                .color(ui_colors::value(dark)),
+                .color(theme::TEXT_DIM),
         );
 
         if vm.failed.count > 0 {
             ui.label(
                 RichText::new(format!("\u{00b7} {} failed", vm.failed.count))
                     .size(12.0)
-                    .color(acq_colors::FAILED),
+                    .color(theme::acquisition::FAILED),
             );
         }
 
@@ -164,7 +162,7 @@ fn render_header(ui: &mut egui::Ui, state: &mut AppState, vm: &ActivityVm, dark:
                 RichText::new(text)
                     .size(11.0)
                     .monospace()
-                    .color(ui_colors::label(dark)),
+                    .color(theme::TEXT_FAINT),
             )
             .on_hover_text("Transfer rate over the last 10 seconds");
         });
@@ -175,7 +173,7 @@ fn render_header(ui: &mut egui::Ui, state: &mut AppState, vm: &ActivityVm, dark:
 ///
 /// This is what replaced the dev-only DL/PROC/GPU lamps — same idea, real
 /// counts instead of booleans, and visible to everyone.
-fn render_stage_strip(ui: &mut egui::Ui, vm: &ActivityVm, dark: bool) {
+fn render_stage_strip(ui: &mut egui::Ui, vm: &ActivityVm) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         for (i, stage) in vm.stages.iter().enumerate() {
@@ -183,19 +181,19 @@ fn render_stage_strip(ui: &mut egui::Ui, vm: &ActivityVm, dark: bool) {
                 ui.label(
                     RichText::new("\u{203A}")
                         .size(10.0)
-                        .color(ui_colors::label(dark)),
+                        .color(theme::TEXT_FAINT),
                 );
             }
-            render_stage(ui, stage, dark);
+            render_stage(ui, stage);
         }
     });
 }
 
-fn render_stage(ui: &mut egui::Ui, stage: &ActivityStage, dark: bool) {
+fn render_stage(ui: &mut egui::Ui, stage: &ActivityStage) {
     let color = if stage.active {
-        ui_colors::ACTIVE
+        theme::legacy::ACTIVE_BLUE
     } else {
-        ui_colors::label(dark)
+        theme::TEXT_FAINT
     };
     // Count first, label second: the number is the information, the word is
     // the key to reading it.
@@ -215,9 +213,9 @@ fn stage_hint(stage: &ActivityStage) -> &'static str {
 }
 
 /// The scrollable list of archive downloads, newest first.
-fn render_operation_list(ui: &mut egui::Ui, state: &mut AppState, vm: &ActivityVm, dark: bool) {
-    let label_color = ui_colors::label(dark);
-    let value_color = ui_colors::value(dark);
+fn render_operation_list(ui: &mut egui::Ui, state: &mut AppState, vm: &ActivityVm) {
+    let label_color = theme::TEXT_FAINT;
+    let value_color = theme::TEXT_DIM;
 
     if vm.failed.count > 1 {
         ui.horizontal(|ui| {
@@ -272,11 +270,11 @@ fn render_operation_list(ui: &mut egui::Ui, state: &mut AppState, vm: &ActivityV
 
 fn row_icon(status: &RowStatus) -> (&'static str, egui::Color32) {
     match status {
-        RowStatus::Downloading => (icons::SPINNER, acq_colors::ACTIVE),
-        RowStatus::Queued { .. } => (icons::CLOCK, acq_colors::QUEUED),
-        RowStatus::Completed { .. } => (icons::CHECK_CIRCLE, acq_colors::COMPLETED),
-        RowStatus::Failed { .. } => (icons::WARNING, acq_colors::FAILED),
-        RowStatus::Cancelled => (icons::MINUS_CIRCLE, acq_colors::CANCELLED),
+        RowStatus::Downloading => (icons::SPINNER, theme::acquisition::ACTIVE),
+        RowStatus::Queued { .. } => (icons::CLOCK, theme::acquisition::QUEUED),
+        RowStatus::Completed { .. } => (icons::CHECK_CIRCLE, theme::acquisition::COMPLETED),
+        RowStatus::Failed { .. } => (icons::WARNING, theme::acquisition::FAILED),
+        RowStatus::Cancelled => (icons::MINUS_CIRCLE, theme::acquisition::CANCELLED),
     }
 }
 
@@ -292,7 +290,7 @@ fn render_row_actions(
                 RichText::new("downloading")
                     .size(10.0)
                     .italics()
-                    .color(acq_colors::ACTIVE),
+                    .color(theme::acquisition::ACTIVE),
             );
         }
         RowStatus::Queued { position } => {
@@ -333,8 +331,12 @@ fn render_row_actions(
             if ui.small_button("Skip").clicked() {
                 state.push_command(Intent::SkipFailed(row.id));
             }
-            ui.label(RichText::new("failed").size(10.0).color(acq_colors::FAILED))
-                .on_hover_text(error);
+            ui.label(
+                RichText::new("failed")
+                    .size(10.0)
+                    .color(theme::acquisition::FAILED),
+            )
+            .on_hover_text(error);
         }
         RowStatus::Completed { duration_ms } => {
             ui.label(
@@ -347,7 +349,7 @@ fn render_row_actions(
             ui.label(
                 RichText::new("cancelled")
                     .size(10.0)
-                    .color(acq_colors::CANCELLED),
+                    .color(theme::acquisition::CANCELLED),
             );
         }
     }
@@ -355,12 +357,12 @@ fn render_row_actions(
 
 /// The acquisition policy toggles (spec §10 / alignment §5). Both persist via
 /// `UserPreferences` on the next throttled save.
-fn render_policy_section(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
+fn render_policy_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.label(
         RichText::new("Data saving")
             .size(11.0)
             .strong()
-            .color(ui_colors::label(dark)),
+            .color(theme::TEXT_FAINT),
     );
     ui.add_space(2.0);
 
@@ -396,10 +398,9 @@ fn render_details(
     state: &mut AppState,
     vm: &ActivityVm,
     chrome: &mut crate::subsystem::Chrome,
-    dark: bool,
 ) {
-    let label_color = ui_colors::label(dark);
-    let value_color = ui_colors::value(dark);
+    let label_color = theme::TEXT_FAINT;
+    let value_color = theme::TEXT_DIM;
     let mut open_vcp_forecast = false;
 
     let header = egui::CollapsingHeader::new(RichText::new("Details").size(11.0).strong())
@@ -422,7 +423,7 @@ fn render_details(
                             "Failed",
                             vm.session.failed_requests.to_string(),
                             label_color,
-                            acq_colors::FAILED,
+                            theme::acquisition::FAILED,
                         );
                     }
                     detail_row(
@@ -671,11 +672,11 @@ fn render_network_list(
 /// Hue for an HTTP status. Red is reserved for failure, per the accent rule.
 fn status_color(row: &NetworkRow) -> egui::Color32 {
     if !row.ok || row.status == 0 || row.status >= 400 {
-        acq_colors::FAILED
+        theme::acquisition::FAILED
     } else if row.status >= 300 {
-        egui::Color32::from_rgb(220, 180, 80)
+        theme::legacy::CAUTION
     } else {
-        ui_colors::SUCCESS
+        theme::legacy::SUCCESS
     }
 }
 
@@ -718,13 +719,13 @@ mod coverage_tests {
     /// response all take the failure tone; a healthy 2xx does not.
     #[wasm_bindgen_test]
     fn status_color_reserves_red_for_failures() {
-        assert_eq!(status_color(&net(404, false)), acq_colors::FAILED);
-        assert_eq!(status_color(&net(500, false)), acq_colors::FAILED);
-        assert_eq!(status_color(&net(0, false)), acq_colors::FAILED);
+        assert_eq!(status_color(&net(404, false)), theme::acquisition::FAILED);
+        assert_eq!(status_color(&net(500, false)), theme::acquisition::FAILED);
+        assert_eq!(status_color(&net(0, false)), theme::acquisition::FAILED);
         // A 2xx the worker still flagged as not-ok is a failure too.
-        assert_eq!(status_color(&net(200, false)), acq_colors::FAILED);
-        assert_eq!(status_color(&net(200, true)), ui_colors::SUCCESS);
-        assert_ne!(status_color(&net(302, true)), acq_colors::FAILED);
+        assert_eq!(status_color(&net(200, false)), theme::acquisition::FAILED);
+        assert_eq!(status_color(&net(200, true)), theme::legacy::SUCCESS);
+        assert_ne!(status_color(&net(302, true)), theme::acquisition::FAILED);
     }
 
     /// Every row status maps to a distinct icon, so the list reads without

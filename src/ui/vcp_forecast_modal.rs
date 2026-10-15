@@ -13,7 +13,6 @@
 //! model are deliberately omitted — they can be reconstructed from the
 //! deltas if needed and would otherwise bloat the clipboard payload.
 
-use super::colors::ui as ui_colors;
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::timing::{AnchorSource, IntervalCase, PhysicsBreakdown, SchedulerPath};
 use crate::core::{
@@ -21,6 +20,7 @@ use crate::core::{
     VolumeForecastSnapshot,
 };
 use crate::state::AppState;
+use crate::ui::theme;
 use eframe::egui::{self, RichText, Vec2};
 use std::collections::BTreeMap;
 
@@ -52,7 +52,6 @@ fn draw_vcp_forecast_modal(
         return;
     }
 
-    let dark = state.is_dark;
     let site_id = state.viz_state.site_id.clone();
     let (snap_opt, arrivals) = {
         let eng = live.engine.borrow();
@@ -89,7 +88,7 @@ fn draw_vcp_forecast_modal(
                 ui.label(
                     RichText::new("No live volume yet.")
                         .size(13.0)
-                        .color(ui_colors::label(dark)),
+                        .color(theme::TEXT_FAINT),
                 );
                 ui.add_space(4.0);
                 ui.label(
@@ -98,7 +97,7 @@ fn draw_vcp_forecast_modal(
                          this modal will then show predicted vs. observed per-elevation stats.",
                     )
                     .size(11.0)
-                    .color(ui_colors::label(dark)),
+                    .color(theme::TEXT_FAINT),
                 );
                 ui.add_space(8.0);
                 if ui.button("Close").clicked() {
@@ -106,7 +105,7 @@ fn draw_vcp_forecast_modal(
                 }
             }
             Some(snap) => {
-                render_snapshot(ui, ctx, &snap, &arrivals, &site_id, dark, state, chrome);
+                render_snapshot(ui, ctx, &snap, &arrivals, &site_id, state, chrome);
             }
         });
 }
@@ -118,13 +117,12 @@ fn render_snapshot(
     snap: &VolumeForecastSnapshot,
     arrivals: &[ChunkArrivalStat],
     site_id: &str,
-    dark: bool,
     state: &mut AppState,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    let label_color = ui_colors::label(dark);
-    let value_color = ui_colors::value(dark);
-    let heading_color = ui_colors::ACTIVE;
+    let label_color = theme::TEXT_FAINT;
+    let value_color = theme::TEXT_DIM;
+    let heading_color = theme::legacy::ACTIVE_BLUE;
 
     egui::ScrollArea::vertical()
         .max_height(500.0)
@@ -630,7 +628,7 @@ fn arrival_row(
     mono_label(ui, a.chunk_type, label_color);
     mono_label(ui, &fmt_elev(a), label_color);
     let empty_color = if a.empty_polls > 0 {
-        egui::Color32::from_rgb(220, 140, 60)
+        theme::legacy::WARN
     } else {
         value_color
     };
@@ -686,7 +684,7 @@ fn arrival_row(
     );
     let int_err = prev.and_then(|p| a.interval_error_ms(p));
     let int_err_color = match int_err {
-        Some(e) if e.abs() > 1000.0 => egui::Color32::from_rgb(220, 140, 60),
+        Some(e) if e.abs() > 1000.0 => theme::legacy::WARN,
         _ => value_color,
     };
     mono_label_color(

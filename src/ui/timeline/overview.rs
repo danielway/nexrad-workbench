@@ -34,7 +34,7 @@ use crate::core::storm_activity::{
 };
 use crate::data::SiteId;
 use crate::state::TimeBucket;
-use crate::ui::colors::timeline as tl_colors;
+use crate::ui::theme::timeline as tl_colors;
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 use super::style;
@@ -93,7 +93,6 @@ pub(super) fn render_overview(
     if lane.width() <= 0.0 {
         return;
     }
-    let dark = state.is_dark;
     let now = state.frame_now.secs();
     let era = crate::core::NEXRAD_ARCHIVE_START_SECS;
     let streaming = live.mode_state.is_active();
@@ -117,14 +116,14 @@ pub(super) fn render_overview(
     let px_per_sec = lane.width() as f64 / ov.span;
     let detail = detail_for(px_per_sec);
 
-    painter.rect_filled(lane, 1.5, tl_colors::background(dark));
+    painter.rect_filled(lane, 1.5, tl_colors::BACKGROUND);
     let lane_painter = painter.with_clip_rect(lane);
     let site = SiteId::new(state.viz_state.site_id.clone());
     let mut sizes = ScanSizes::default();
     let (bars, activity) = match detail {
         OverviewDetail::Scans => {
             sizes = timeline.activity.scans(&site, ov.start, ov.end());
-            paint_scans(&lane_painter, timeline, &sizes, lane, dark, &ts_to_x);
+            paint_scans(&lane_painter, timeline, &sizes, lane, &ts_to_x);
             (Vec::new(), Vec::new())
         }
         OverviewDetail::Bars(granularity) => {
@@ -142,15 +141,7 @@ pub(super) fn render_overview(
                 .map(|b| timeline.activity.span(&site, b.start, b.end))
                 .collect();
             let scale = ViewScale::from_levels(activity.iter().filter_map(|a| a.peak));
-            paint_bars(
-                &lane_painter,
-                &bars,
-                &activity,
-                &scale,
-                lane,
-                dark,
-                &ts_to_x,
-            );
+            paint_bars(&lane_painter, &bars, &activity, &scale, lane, &ts_to_x);
             (bars, activity)
         }
     };
@@ -165,19 +156,12 @@ pub(super) fn render_overview(
         lane_painter.rect_filled(
             Rect::from_min_max(Pos2::new(now_x.max(lane.left()), lane.top()), lane.max),
             0.0,
-            tl_colors::future_wash(dark),
+            tl_colors::future_wash(),
         );
     }
     match label_step(px_per_sec, LABEL_MIN_PX) {
-        LabelStep::Clock => paint_ticks(
-            &lane_painter,
-            lane,
-            &ov,
-            state.use_local_time,
-            dark,
-            &ts_to_x,
-        ),
-        step => paint_calendar_labels(&lane_painter, lane, &ov, step, dark, &ts_to_x),
+        LabelStep::Clock => paint_ticks(&lane_painter, lane, &ov, state.use_local_time, &ts_to_x),
+        step => paint_calendar_labels(&lane_painter, lane, &ov, step, &ts_to_x),
     }
 
     // The selected range, in the strip's amber, along the lane's top.
@@ -205,7 +189,7 @@ pub(super) fn render_overview(
     // The view box, or a chip pointing at it when it's out of sight.
     let view_end = view_start + view_span;
     let box_px = (ts_to_x(view_start), ts_to_x(view_end));
-    let chip = paint_view_box(&painter, full_rect, lane, box_px, dark);
+    let chip = paint_view_box(&painter, full_rect, lane, box_px);
 
     let playhead = playback.state.playback_position();
     let following_live = streaming && playback.state.is_pinned();
@@ -213,7 +197,7 @@ pub(super) fn render_overview(
     if !following_live && px >= lane.left() && px <= lane.right() {
         painter.line_segment(
             [Pos2::new(px, lane.top()), Pos2::new(px, lane.bottom())],
-            Stroke::new(1.5_f32, tl_colors::selection(dark)),
+            Stroke::new(1.5_f32, tl_colors::PLAYHEAD),
         );
     }
 
@@ -498,22 +482,21 @@ fn paint_bars(
     activity: &[SpanActivity],
     scale: &ViewScale,
     lane: Rect,
-    dark: bool,
     ts_to_x: &dyn Fn(f64) -> f32,
 ) {
     for (b, act) in bars.iter().zip(activity) {
         let known_data = b.cached_secs > 0.0 || b.available_secs > 0.0;
         let color = if b.cached_secs > 0.0 {
-            tl_colors::cached_fill(dark, false)
+            tl_colors::cached_fill(false)
         } else {
-            tl_colors::available_fill(dark)
+            tl_colors::available_fill()
         };
         let (height, color) = match act.bar() {
             BarActivity::Level(level) => {
                 let color = if b.cached_secs > 0.0 {
                     color
                 } else {
-                    tl_colors::activity_fill(dark)
+                    tl_colors::activity_fill()
                 };
                 (lane.height() * scale.height_frac(level), color)
             }
@@ -545,7 +528,6 @@ fn paint_calendar_labels(
     lane: Rect,
     ov: &Overview,
     step: LabelStep,
-    dark: bool,
     ts_to_x: &dyn Fn(f64) -> f32,
 ) {
     for t in label_times(ov.start, ov.end(), step) {
@@ -566,9 +548,9 @@ fn paint_calendar_labels(
             Stroke::new(
                 1.0_f32,
                 if major {
-                    tl_colors::tick_major(dark)
+                    tl_colors::TICK_MAJOR
                 } else {
-                    tl_colors::tick_minor(dark)
+                    tl_colors::TICK_MINOR
                 },
             ),
         );
@@ -579,9 +561,9 @@ fn paint_calendar_labels(
                 label,
                 style::tick_font(),
                 if major {
-                    tl_colors::selection(dark)
+                    tl_colors::PLAYHEAD
                 } else {
-                    tl_colors::tick_label(dark)
+                    tl_colors::TICK_LABEL
                 },
             );
         }
@@ -598,7 +580,6 @@ fn paint_scans(
     timeline: &crate::subsystem::Timeline,
     sizes: &ScanSizes,
     lane: Rect,
-    dark: bool,
     ts_to_x: &dyn Fn(f64) -> f32,
 ) {
     let column = |start: f64, end: f64, height: f32, color: Color32| {
@@ -635,15 +616,11 @@ fn paint_scans(
     );
     for b in view.shadow_boundaries() {
         if !view.is_covered_by_cached(b.start) {
-            segment(
-                b.start as f64,
-                b.end as f64,
-                tl_colors::available_fill(dark),
-            );
+            segment(b.start as f64, b.end as f64, tl_colors::available_fill());
         }
     }
     for r in timeline.scans.time_ranges() {
-        segment(r.start, r.end, tl_colors::cached_fill(dark, false));
+        segment(r.start, r.end, tl_colors::cached_fill(false));
     }
 
     let (lo, hi) = (
@@ -658,9 +635,9 @@ fn paint_scans(
     let scale = ViewScale::from_levels(visible.iter().map(|s| s.level));
     for scan in visible {
         let color = if view.is_covered_by_cached(scan.start as i64) {
-            tl_colors::cached_fill(dark, false)
+            tl_colors::cached_fill(false)
         } else {
-            tl_colors::activity_fill(dark)
+            tl_colors::activity_fill()
         };
         column(
             scan.start,
@@ -679,7 +656,6 @@ fn paint_ticks(
     lane: Rect,
     ov: &Overview,
     use_local: bool,
-    dark: bool,
     ts_to_x: &dyn Fn(f64) -> f32,
 ) {
     let config = super::select_tick_config(lane.width() as f64 / ov.span);
@@ -702,12 +678,12 @@ fn paint_ticks(
             let (line, label) = if midnight {
                 let dt = super::DateTimeComponents::from_timestamp(tick, use_local);
                 (
-                    tl_colors::tick_major(dark),
+                    tl_colors::TICK_MAJOR,
                     format!("{} {}", dt.month_abbrev(), dt.day),
                 )
             } else {
                 (
-                    tl_colors::tick_minor(dark),
+                    tl_colors::TICK_MINOR,
                     super::format_timestamp(tick, config, use_local),
                 )
             };
@@ -722,9 +698,9 @@ fn paint_ticks(
                     label,
                     style::tick_font(),
                     if midnight {
-                        tl_colors::selection(dark)
+                        tl_colors::PLAYHEAD
                     } else {
-                        tl_colors::tick_label(dark)
+                        tl_colors::TICK_LABEL
                     },
                 );
             }
@@ -741,10 +717,9 @@ fn paint_view_box(
     full_rect: Rect,
     lane: Rect,
     (x0, x1): (f32, f32),
-    dark: bool,
 ) -> Option<Rect> {
-    let edge = tl_colors::view_box_edge(dark);
-    let fill = tl_colors::view_box_fill(dark);
+    let edge = tl_colors::view_box_edge();
+    let fill = tl_colors::view_box_fill();
     if x1 < lane.left() || x0 > lane.right() {
         let left = x1 < lane.left();
         let label = if left {
@@ -760,7 +735,7 @@ fn paint_view_box(
             lane.right() - 2.0 - size.x
         };
         let chip = Rect::from_min_size(Pos2::new(min_x, lane.center().y - size.y / 2.0), size);
-        painter.rect_filled(chip, 3.0, tl_colors::background(dark));
+        painter.rect_filled(chip, 3.0, tl_colors::BACKGROUND);
         painter.rect_stroke(chip, 3.0, Stroke::new(1.0, edge), StrokeKind::Inside);
         painter.galley(chip.min + Vec2::new(5.0, 1.0), galley, edge);
         return Some(chip);
@@ -794,10 +769,10 @@ fn paint_view_box(
             Pos2::new(r, bottom),
             Pos2::new(l, bottom),
         ],
-        tl_colors::view_box_fill(dark).gamma_multiply(0.5),
+        tl_colors::view_box_fill().gamma_multiply(0.5),
         Stroke::NONE,
     ));
-    let line = Stroke::new(1.0, tl_colors::tick_minor(dark));
+    let line = Stroke::new(1.0, tl_colors::TICK_MINOR);
     painter.line_segment([Pos2::new(a, top), Pos2::new(l, bottom)], line);
     painter.line_segment([Pos2::new(b, top), Pos2::new(r, bottom)], line);
     None

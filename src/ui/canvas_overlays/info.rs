@@ -12,6 +12,7 @@
 //! overlay is the secondary/Advanced detail (full date, age range, prev sweep).
 
 use crate::state::AppState;
+use crate::ui::theme;
 use eframe::egui::{self, Color32, Rect, RichText, Vec2};
 
 use super::super::canvas::{
@@ -71,12 +72,12 @@ fn draw_overlay_info(
                         .monospace()
                         .size(14.0)
                         .strong()
-                        .color(Color32::from_rgb(255, 160, 40)),
+                        .color(theme::legacy::WARN),
                 );
             }
 
-            let info_color = Color32::from_rgb(200, 200, 220);
-            let header_color = Color32::from_rgb(220, 220, 240);
+            let info_color = theme::TEXT;
+            let header_color = theme::TEXT;
 
             // ── Site + Product header ────────────────────────────────
             ui.label(
@@ -156,7 +157,7 @@ fn draw_overlay_info(
                         None
                     },
                     None,
-                    Color32::from_rgb(170, 170, 190),
+                    theme::TEXT_DIM,
                 );
             }
         });
