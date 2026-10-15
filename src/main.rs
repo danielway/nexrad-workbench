@@ -718,6 +718,49 @@ impl WorkbenchApp {
         )
     }
 
+    /// Assemble this frame's tilt ladder. Pure gathering: which volume and
+    /// clock, and every row, bar, move and word, are decided in
+    /// [`core::ladder`].
+    fn build_ladder_vm(&self) -> core::ladder::VolumeLadder {
+        let now = self.state.frame_now.secs();
+        let playhead = self.playback.state.playback_position();
+        let live_vcp = self
+            .live
+            .radar_model
+            .volume
+            .as_ref()
+            .and_then(|v| v.vcp_pattern.as_ref());
+        let entries =
+            self.state
+                .current_elevation_list(&self.playback.state, &self.timeline.scans, live_vcp);
+        let view = core::TimelineView::build(
+            &self.timeline.scans,
+            &self.timeline.shadow_scan_boundaries,
+            Some(&self.live.mode_state),
+            self.live.radar_model.position.as_ref(),
+        );
+        let pinned = self.live.session.playhead == core::session::Playhead::PinnedToNow;
+        let (volume, clock) = core::ladder::ladder_volume(&view, pinned, now, playhead);
+        let viz = &self.state.viz_state;
+        core::ladder::VolumeLadder::build(
+            core::ladder::LadderInputs {
+                entries: &entries,
+                selection: &viz.elevation_selection,
+                product: viz.product,
+                volume: volume.as_ref(),
+                clock,
+                antenna_azimuth: self.live.radar_model.estimated_azimuth,
+                on_screen: viz.displayed.as_ref().map(|d| core::ladder::OnScreenCut {
+                    elevation_number: d.identity.elevation_number,
+                    start_secs: d.start_time,
+                }),
+            },
+            &ui::time_format::ZoneClock {
+                use_local: self.state.use_local_time,
+            },
+        )
+    }
+
     /// Refresh every per-frame acquisition telemetry input.
     ///
     /// All of it feeds the activity surface, so none of it is dev-gated. The
@@ -1061,6 +1104,7 @@ impl eframe::App for WorkbenchApp {
 
         // Top-bar view-model: what is on screen, in the bar's words.
         let top_bar_vm = self.build_top_bar_vm(&diagnostics_vm, &derived);
+        let ladder_vm = self.build_ladder_vm();
 
         let is_mobile = self.state.is_mobile;
         let mut layout_ctx = ui::LayoutCtx {
@@ -1077,6 +1121,7 @@ impl eframe::App for WorkbenchApp {
             diagnostics_vm: &diagnostics_vm,
             activity_vm: &activity_vm,
             top_bar_vm: &top_bar_vm,
+            ladder_vm: &ladder_vm,
             modals: &mut self.modals,
         };
         ui::render_layout(is_mobile, &mut layout_ctx);

@@ -496,6 +496,7 @@ pub(crate) fn render_canvas_with_geo(
                 );
 
                 render_canvas_caption(ui, &rect, state, live);
+                render_map_toolbar(ui, &rect, state);
 
                 // Mobile chrome reveal tap (spec §13): when the chrome was
                 // hidden, the resolver latched this frame's press as a reveal.
@@ -515,6 +516,59 @@ pub(crate) fn render_canvas_with_geo(
             }
         }
     });
+}
+
+/// The map toolbar (one-instrument §8): the data probe and the distance
+/// tool as two buttons in the map's corner, where the cursor is. A click is
+/// [`crate::core::Intent::ToggleMapTool`]; the active tool is the selected
+/// color.
+fn render_map_toolbar(ui: &egui::Ui, rect: &egui::Rect, state: &mut AppState) {
+    use crate::core::panels::MapTool;
+    use egui_phosphor::regular as icons;
+    let tools = [
+        (
+            MapTool::Probe,
+            icons::CROSSHAIR,
+            state.viz_state.data_probe_enabled,
+            "Data probe: hover the radar for the value under the cursor",
+        ),
+        (
+            MapTool::Distance,
+            icons::RULER,
+            state.viz_state.distance_tool_active,
+            "Measure: click two points for the distance between them",
+        ),
+    ];
+    egui::Area::new(egui::Id::new("map_toolbar"))
+        .fixed_pos(rect.left_top() + egui::vec2(10.0, 10.0))
+        .order(egui::Order::Foreground)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(theme::map::scrim())
+                .stroke(egui::Stroke::new(1.0, theme::map::scrim_edge()))
+                .corner_radius(4.0)
+                .inner_margin(2.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for (tool, glyph, on, hover) in tools {
+                            let color = if on { theme::SELECTED } else { theme::TEXT_DIM };
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(glyph).size(theme::BODY).color(color),
+                                    )
+                                    .frame(on),
+                                )
+                                .on_hover_text(hover)
+                                .clicked()
+                            {
+                                state.push_command(crate::core::Intent::ToggleMapTool(tool));
+                            }
+                        }
+                    });
+                });
+        });
 }
 
 #[allow(clippy::too_many_arguments)]

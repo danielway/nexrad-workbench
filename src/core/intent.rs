@@ -147,6 +147,9 @@ pub(crate) enum Intent {
     /// endpoint it lands on is decided by
     /// [`crate::core::canvas::decide_distance_click`].
     PlaceDistancePoint { lat: f64, lon: f64 },
+    /// A button of the map's corner toolbar (data probe, distance). Decided
+    /// by [`crate::core::panels::toggle_map_tool`].
+    ToggleMapTool(crate::core::panels::MapTool),
     /// Switch one map overlay on or off. Carries the new value (not a flip) so
     /// a repeated intent is idempotent.
     SetGeoLayer(GeoLayer, bool),

@@ -86,13 +86,6 @@ pub(crate) fn compute_alert_focus(alert: &Alert) -> AlertFocus {
     }
 }
 
-/// Whether the mPING layer toggle should be interactable: only when live data is
-/// showing *and* an API key is configured. (Was an inline `live && has_key` in
-/// the right panel.)
-pub(crate) fn mping_layer_available(is_live: bool, has_api_key: bool) -> bool {
-    is_live && has_api_key
-}
-
 // ---------------------------------------------------------------------------
 // Intents + reducer
 // ---------------------------------------------------------------------------
@@ -401,14 +394,6 @@ mod tests {
         // Zone-only alert (no polygons → no bbox) → no center.
         let z = advisory("z", AlertSeverity::Minor, vec![]);
         assert_eq!(compute_alert_focus(&z).center, None);
-    }
-
-    #[wasm_bindgen_test]
-    fn mping_toggle_gating() {
-        assert!(mping_layer_available(true, true));
-        assert!(!mping_layer_available(false, true)); // not live
-        assert!(!mping_layer_available(true, false)); // no key
-        assert!(!mping_layer_available(false, false));
     }
 
     // ── reducer ──

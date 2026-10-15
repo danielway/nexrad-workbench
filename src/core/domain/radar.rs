@@ -208,18 +208,6 @@ impl Scan {
             .enumerate()
             .find(|(_, sweep)| ts >= sweep.start_time && ts <= sweep.end_time)
     }
-
-    /// Calculate scan progress as a percentage (0.0 to 1.0)
-    pub(crate) fn progress_at_timestamp(&self, ts: f64) -> Option<f32> {
-        if ts < self.start_time || ts > self.end_time {
-            return None;
-        }
-        let duration = self.end_time - self.start_time;
-        if duration <= 0.0 {
-            return Some(0.0);
-        }
-        Some(((ts - self.start_time) / duration) as f32)
-    }
 }
 
 /// Lightweight metadata for timeline display (avoids loading full scan data).
@@ -1234,22 +1222,6 @@ mod tests {
     }
 
     // --- Scan tests ---
-
-    #[wasm_bindgen_test]
-    fn scan_progress_at_timestamp() {
-        let s = scan(1000.0, 1100.0);
-        assert_eq!(s.progress_at_timestamp(1000.0), Some(0.0));
-        assert_eq!(s.progress_at_timestamp(1050.0), Some(0.5));
-        assert_eq!(s.progress_at_timestamp(1100.0), Some(1.0));
-        assert_eq!(s.progress_at_timestamp(999.0), None);
-        assert_eq!(s.progress_at_timestamp(1101.0), None);
-    }
-
-    #[wasm_bindgen_test]
-    fn scan_progress_zero_duration() {
-        let s = scan(1000.0, 1000.0);
-        assert_eq!(s.progress_at_timestamp(1000.0), Some(0.0));
-    }
 
     #[wasm_bindgen_test]
     fn scan_find_sweep_at_timestamp() {

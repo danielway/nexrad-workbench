@@ -1,11 +1,11 @@
 //! UI modules for the NEXRAD Workbench application.
 //!
 //! The UI is split into distinct panels:
-//! - Top bar: Site context, status, and mode indicators
-//! - Left panel: Radar operations (read-only state)
-//! - Central canvas: Radar visualization
-//! - Bottom panel: Timeline, playback controls, and session stats
-//! - Right panel: Product selection, layers, and rendering controls
+//! - Top bar: site, product and tilt pickers and the frame readout
+//! - Central canvas: radar visualization, with the map toolbar in its corner
+//! - Bottom panel: timeline and transport
+//! - Right panel on a rail: View (product row and tilt ladder), Layers,
+//!   Events, Settings
 //!
 //! Chrome panels + modals dispatch through a typed [`Layer`](layout::Layer)
 //! registry (see [`layout`]). Each panel and modal is a zero-sized marker
@@ -25,8 +25,8 @@ mod canvas_interaction;
 mod canvas_overlays;
 mod data_colors;
 mod event_modal;
+mod ladder;
 mod layout;
-mod left_panel;
 pub(crate) mod long_press;
 mod mobile;
 mod modal_helper;

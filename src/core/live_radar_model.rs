@@ -32,7 +32,7 @@ pub(crate) struct LiveRadarModel {
     pub active_sweep: Option<LiveSweepModel>,
 
     /// Frame-snapshotted derivations from `position` at the same `now_secs`
-    /// the model was built with. UI surfaces (e.g. the left panel) should
+    /// the model was built with. UI surfaces (e.g. the tilt ladder) should
     /// read these instead of calling `position.estimated_azimuth_at(now)`
     /// with a fresh wall-clock read — that would drift by frame-render
     /// duration and break the per-frame consistency `compute_model` exists
@@ -53,12 +53,8 @@ impl LiveRadarModel {
 /// are `None`.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FrameDerivedPosition {
-    /// 0-based index of the sweep currently being received.
-    pub sweep_index: Option<usize>,
     /// Elevation angle (degrees) of the sweep currently being received.
     pub elevation_angle: Option<f32>,
-    /// Volume-scan progress at frame `now` (0.0 to 1.0).
-    pub progress: Option<f32>,
 }
 
 /// Volume-level state for the in-progress scan.
@@ -203,14 +199,10 @@ impl LiveModeState {
         });
 
         let frame_now = FrameDerivedPosition {
-            sweep_index: position
-                .as_ref()
-                .and_then(|p| p.elevation_index_at(now_secs)),
             elevation_angle: position.as_ref().and_then(|p| {
                 p.elevation_index_at(now_secs)
                     .and_then(|idx| p.sweeps.get(idx).map(|s| s.elevation_angle))
             }),
-            progress: position.as_ref().map(|p| p.progress_at(now_secs)),
         };
 
         LiveRadarModel {
@@ -310,9 +302,7 @@ mod coverage_tests {
         assert!(model.volume.is_none());
         assert!(model.active_sweep.is_none());
         assert!(model.estimated_azimuth.is_none());
-        assert!(model.frame_now.sweep_index.is_none());
         assert!(model.frame_now.elevation_angle.is_none());
-        assert!(model.frame_now.progress.is_none());
     }
 
     #[wasm_bindgen_test]
@@ -342,9 +332,7 @@ mod coverage_tests {
         // No active sweep without a position.
         assert!(model.active_sweep.is_none());
         // frame_now all None without a position.
-        assert!(model.frame_now.sweep_index.is_none());
         assert!(model.frame_now.elevation_angle.is_none());
-        assert!(model.frame_now.progress.is_none());
     }
 
     // ── compute_model: frame_now derivations from position ──
@@ -361,14 +349,9 @@ mod coverage_tests {
         let model = s.compute_model(1025.0, Some(sp));
         assert!(model.active);
         assert!(model.position.is_some());
-        // elevation_index_at(1025) → containment in sweep index 1.
-        assert_eq!(model.frame_now.sweep_index, Some(1));
         // elevation_angle for sweep(2) is 0.5*2 = 1.0.
         let angle = model.frame_now.elevation_angle.expect("angle");
         assert!((angle - 1.0).abs() < 1e-4, "got {angle}");
-        // progress_at(1025) over [1000,1030] = 25/30.
-        let progress = model.frame_now.progress.expect("progress");
-        assert!((progress - (25.0 / 30.0)).abs() < 1e-4, "got {progress}");
     }
 
     // ── compute_model: extrapolation filled from last radial, estimated azimuth ──
