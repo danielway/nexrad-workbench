@@ -236,6 +236,7 @@ impl VizState {
     /// seconds, or `None` when the canvas holds no frame. This is the raw time
     /// the primary readout and overlay format live each frame — never the
     /// playhead (the canvas-honesty invariant).
+    #[cfg(test)]
     pub(crate) fn displayed_midpoint_secs(&self) -> Option<f64> {
         self.displayed
             .as_ref()
