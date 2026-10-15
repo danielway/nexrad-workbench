@@ -97,6 +97,26 @@ impl crate::core::session::Clock for ZoneClock {
     }
 }
 
+impl crate::core::time_field::ZoneCalendar for ZoneClock {
+    fn to_unix(&self, date: chrono::NaiveDate, time: chrono::NaiveTime) -> Option<f64> {
+        use chrono::{Datelike, Timelike};
+        if !self.use_local {
+            return crate::core::time_field::UtcCalendar.to_unix(date, time);
+        }
+        // The browser owns the local zone and its DST rules.
+        let d = js_sys::Date::new_with_year_month_day_hr_min_sec(
+            date.year() as u32,
+            date.month0() as i32,
+            date.day() as i32,
+            time.hour() as i32,
+            time.minute() as i32,
+            time.second() as i32,
+        );
+        let ms = d.get_time();
+        (!ms.is_nan()).then_some(ms / 1000.0)
+    }
+}
+
 /// How aggressively to compact a primary clock readout. Higher tiers shed
 /// detail (seconds, then the zone suffix) so the time survives at narrow widths
 /// instead of being demoted out of the bar.

@@ -42,6 +42,7 @@ pub(crate) mod selection_chip;
 mod shortcuts;
 mod site_modal;
 pub(crate) mod theme;
+pub(crate) mod time_field;
 pub(crate) mod time_format;
 mod timeline;
 mod top_bar;

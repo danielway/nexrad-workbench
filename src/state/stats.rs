@@ -166,6 +166,7 @@ impl SessionStats {
     }
 
     /// Format cache size for display (e.g., "150.2 MB").
+    #[allow(dead_code)] // The transport's readout is gone; Settings › Storage (the rail) shows it next.
     pub(crate) fn format_cache_size(&self) -> String {
         format_bytes(self.cache_size_bytes)
     }
