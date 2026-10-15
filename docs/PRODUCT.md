@@ -237,7 +237,7 @@ cached scans.
 |---|---|---|---|
 | **Micro** | minutes → ~1–2 hr visible | Scan containers with frame cells, chunk segments, ghosts + countdown | Either mode (§8.2) |
 | **Macro** | hours → a few days | Each scan is a block spanning the volume's real duration — solid across downloaded sweeps, hollow across the rest; per-sweep hairlines once wide enough; gap glyphs where real spacing exceeds threshold. Blocks merge into a coverage fill once denser than ~1 per 3px | Either mode (§8.2) |
-| **Overview** | above the strip: 48 h by default, zooming out to the whole NEXRAD era | Per-scan coverage, then day → week → month → quarter bars as it zooms out, with a box marking the strip's view. The strip itself shows at most 3 days | Never changes playback. Clicking a bar goes to that day |
+| **Overview** | above the strip: 48 h by default, zooming out to the whole NEXRAD era | Per-scan coverage, then day → week → month → quarter bars as it zooms out, with a box marking the strip's view. A bar's height is storm activity: its stormiest day, from the archive's file sizes. The strip itself shows at most 3 days | Never changes playback. Clicking a bar goes to its stormiest known day |
 
 - **Zoom is view-only.** Changing tier never detaches the playhead from live,
   ends a loop, pauses one, or switches between Frames and Rays.
@@ -251,6 +251,28 @@ cached scans.
   back). Playhead and live edge stay spatially stable through the transition.
 - The strip stops at 3 days; reaching further back is the overview's job, so
   the strip never needs a calendar renderer or year-wide label soup.
+- **Storm activity** comes from file sizes in the archive listing: a volume
+  full of echo compresses worse, so a day's mean volume size tracks how
+  stormy it was (rank correlation 0.88 per day against reflectivity
+  coverage on KTBW, 0.83 on KDMX). What it measures is how much of the
+  scan holds echo, so hover text names an amount ("Lots of echo", "Some
+  echo", "Little echo", "Clear") rather than a kind of weather: a dry
+  summer day full of insect echo reads "Some echo". Heights are scaled per
+  site and per volume format (pre-2008, super-resolution, dual-pol),
+  against the site's quiet-day size across all seasons. A same-season
+  baseline was tried and dropped: summer's quiet days are larger, but so
+  are its rain days, and scaling by season ranked KDMX days against rain
+  worse (0.58 vs 0.82).
+  Heights are stretched to the view: its typical day sits near the floor
+  and its biggest at the top (a spread of at least 0.3 levels, so a quiet
+  view stays low), so the days that stand out in what's on screen are the
+  tall ones. Zoomed in to scans, each volume is drawn by its own size from
+  the same listing, so a tall day keeps showing which hours held the echo,
+  and hovering a volume names its time and size.
+  The overview lists the days it shows (the 48 h default included), a few
+  at a time once it stops moving, when it spans at most ~400 days; wider
+  views show the days already known. Each day is stored, so it's listed
+  once. Days the radar recorded nothing show as a red line.
 
 ### 5.6 Saved events (bookmarks)
 
@@ -701,6 +723,9 @@ deleted in the June 2026 docs cleanup.)
 - **Year-scale reach:** the strip stops at 3 days; the overview above it
   zooms out to the whole NEXRAD Level II era (1991→now), coarsening its bars
   from scans to quarters rather than stretching a strip.
+- **Storm-activity bars:** the overview's bars are as tall as their stormiest
+  day, and zoomed in each volume is as tall as its own size, using archive
+  file sizes as the activity signal (no backend, no downloads).
 - **Manual download management:** stays demoted; the activity sheet shows what the
   system did, plus cancel/retry and policy toggles.
 - **Tablet tier:** out of scope this pass; touch devices ≥600px get the desktop

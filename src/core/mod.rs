@@ -45,6 +45,7 @@ pub(crate) mod render;
 pub(crate) mod render_loop;
 pub(crate) mod selection_chip;
 pub(crate) mod selection_strip;
+pub(crate) mod storm_activity;
 pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;
 pub(crate) mod timeline_geometry;

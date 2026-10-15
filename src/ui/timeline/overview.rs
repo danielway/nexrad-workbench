@@ -4,6 +4,12 @@
 //!
 //!   - faint slate = available on the server; steel blue = on this device
 //!     (per scan, or per day / week / month / quarter bar zoomed out)
+//!   - height = how much echo, from the archive's file sizes
+//!     ([`crate::core::storm_activity`]), stretched so the view's typical
+//!     day sits low and its standouts reach the top: zoomed out, a bar's
+//!     biggest day (a stub while unknown, a red line for days the radar
+//!     recorded nothing); zoomed in, each volume (full height until its
+//!     day's sizes are known)
 //!   - an amber line along the top = the selected range
 //!   - a red dot = now, while streaming
 //!   - a neutral line = the playhead, when it isn't at now
@@ -12,7 +18,7 @@
 //! Gestures: drag the box to move the view, drag its sides to zoom the view,
 //! drag the rest of the lane (or scroll sideways) to slide the overview,
 //! scroll to zoom it, click the lane to look there (zoomed out to bars, to
-//! go to that day). None of them touch playback.
+//! go to that bar's stormiest day). None of them touch playback.
 //! When the box is out of sight, a chip at the lane's edge brings it back.
 //!
 //! A thin projection of [`crate::core::overview`]: the window, the grabs and
@@ -23,6 +29,10 @@ use crate::core::overview::{
     detail_for, label_step, label_times, resized_view, LabelStep, Overview, OverviewDetail,
     OverviewGrab,
 };
+use crate::core::storm_activity::{
+    activity_word, ActivityWindow, BarActivity, ScanSizes, SpanActivity, ViewScale,
+};
+use crate::data::SiteId;
 use crate::state::TimeBucket;
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
@@ -109,10 +119,13 @@ pub(super) fn render_overview(
 
     painter.rect_filled(lane, 1.5, tl_colors::background(dark));
     let lane_painter = painter.with_clip_rect(lane);
-    let bars = match detail {
+    let site = SiteId::new(state.viz_state.site_id.clone());
+    let mut sizes = ScanSizes::default();
+    let (bars, activity) = match detail {
         OverviewDetail::Scans => {
-            paint_scans(&lane_painter, timeline, lane, dark, &ts_to_x);
-            Vec::new()
+            sizes = timeline.activity.scans(&site, ov.start, ov.end());
+            paint_scans(&lane_painter, timeline, &sizes, lane, dark, &ts_to_x);
+            (Vec::new(), Vec::new())
         }
         OverviewDetail::Bars(granularity) => {
             let bars = crate::state::aggregate_buckets(
@@ -124,9 +137,28 @@ pub(super) fn render_overview(
                 ov.end().min(now),
                 granularity,
             );
-            paint_bars(&lane_painter, &bars, lane, dark, &ts_to_x);
-            bars
+            let activity: Vec<SpanActivity> = bars
+                .iter()
+                .map(|b| timeline.activity.span(&site, b.start, b.end))
+                .collect();
+            let scale = ViewScale::from_levels(activity.iter().filter_map(|a| a.peak));
+            paint_bars(
+                &lane_painter,
+                &bars,
+                &activity,
+                &scale,
+                lane,
+                dark,
+                &ts_to_x,
+            );
+            (bars, activity)
         }
+    };
+    // Zoomed out, a click goes to the clicked bar's stormiest known day.
+    let bar_day = |ts: f64| -> Option<f64> {
+        let i = bars.iter().position(|b| ts >= b.start && ts < b.end)?;
+        let clicked = crate::state::calendar::utc_day_start(ts.clamp(era, now)) as i64;
+        Some(activity[i].go_to_day(clicked) as f64)
     };
     let now_x = ts_to_x(now);
     if now_x < lane.right() {
@@ -247,7 +279,8 @@ pub(super) fn render_overview(
             ui.ctx()
                 .memory_mut(|m| m.data.remove::<OverviewDrag>(drag_id));
             if d.grab == OverviewGrab::Lane && !d.moved {
-                look_at(playback, x_to_ts(d.press_x), now, detail);
+                let ts = x_to_ts(d.press_x);
+                look_at(playback, ts, bar_day(ts), now, detail);
             }
         }
     } else if response.clicked() {
@@ -259,7 +292,8 @@ pub(super) fn render_overview(
                 .center_on(view_start + view_span / 2.0, now, era);
         } else if let Some(p) = pos {
             if Overview::grab_at(box_px, p.x) == OverviewGrab::Lane {
-                look_at(playback, x_to_ts(p.x), now, detail);
+                let ts = x_to_ts(p.x);
+                look_at(playback, ts, bar_day(ts), now, detail);
             }
         }
     }
@@ -315,7 +349,32 @@ pub(super) fn render_overview(
         };
         let tip = tip.or_else(|| {
             let ts = response.hover_pos().map(|p| x_to_ts(p.x))?;
-            Some(lane_tip(&bars, ts))
+            let i = bars.iter().position(|b| ts >= b.start && ts < b.end);
+            let Some(i) = i else {
+                return Some(match sizes.at(ts) {
+                    Some(scan) => scan_tip(scan),
+                    None => LANE_HINT.to_string(),
+                });
+            };
+            let day_mean_mb = timeline
+                .activity
+                .day(&site, bars[i].start as i64)
+                .filter(|_| bars[i].end - bars[i].start <= 86_400.0)
+                .map(|d| d.mean_bytes as f64 / 1e6);
+            let listing = ActivityWindow {
+                start: ov.start,
+                end: ov.end(),
+                era_start: era,
+                now_secs: now,
+            }
+            .is_listed();
+            Some(lane_tip(
+                &bars[i],
+                &activity[i],
+                day_mean_mb,
+                listing,
+                bar_day(ts).unwrap_or(ts),
+            ))
         });
         if let Some(tip) = tip {
             response.on_hover_text(tip);
@@ -324,11 +383,19 @@ pub(super) fn render_overview(
 }
 
 /// What a click on the lane does: center the strip's view on `ts` (no later
-/// than now) at its zoom, or, zoomed out to bars, go to that day.
-fn look_at(playback: &mut crate::subsystem::Playback, ts: f64, now: f64, detail: OverviewDetail) {
+/// than now) at its zoom, or, zoomed out to bars, go to `bar_day` (the bar's
+/// stormiest known day, else the day clicked).
+fn look_at(
+    playback: &mut crate::subsystem::Playback,
+    ts: f64,
+    bar_day: Option<f64>,
+    now: f64,
+    detail: OverviewDetail,
+) {
     let era = crate::core::NEXRAD_ARCHIVE_START_SECS;
     if let OverviewDetail::Bars(_) = detail {
-        let day = crate::state::calendar::utc_day_start(ts.clamp(era, now));
+        let day =
+            bar_day.unwrap_or_else(|| crate::state::calendar::utc_day_start(ts.clamp(era, now)));
         playback.state.overview.go_to_day(day, now, era);
         playback.state.show_view(day, day + 86_400.0, false, now);
         return;
@@ -343,20 +410,64 @@ fn look_at(playback: &mut crate::subsystem::Playback, ts: f64, now: f64, detail:
     playback.state.show_view(start, start + span, false, now);
 }
 
-/// The lane's hover text: the bar's date and coverage, zoomed out; a hint
-/// otherwise.
-fn lane_tip(bars: &[TimeBucket], ts: f64) -> String {
-    let hint = "Click to look here. Drag to slide the overview, scroll to zoom it.";
-    let Some(bar) = bars.iter().find(|b| ts >= b.start && ts < b.end) else {
-        return hint.to_string();
+/// The lane's hover text when it isn't over a bar.
+const LANE_HINT: &str = "Click to look here. Drag to slide the overview, scroll to zoom it.";
+
+/// A volume's hover text, zoomed in: when it started and how much echo.
+fn scan_tip(scan: &crate::core::storm_activity::ScanActivity) -> String {
+    let d = super::DateTimeComponents::from_timestamp(scan.start as i64, false);
+    format!(
+        "{} {}, {:02}:{:02} UTC\n{} (volume {:.1} MB)\n{}",
+        d.month_abbrev(),
+        d.day,
+        d.hour,
+        d.minute,
+        activity_word(scan.level),
+        scan.bytes as f64 / 1e6,
+        LANE_HINT
+    )
+}
+
+/// A bar's hover text: its date, storm activity, what's downloaded, and the
+/// day a click goes to (`go_to`).
+fn lane_tip(
+    bar: &TimeBucket,
+    activity: &SpanActivity,
+    day_mean_mb: Option<f64>,
+    listing: bool,
+    go_to: f64,
+) -> String {
+    let date = |ts: f64| {
+        let d = super::DateTimeComponents::from_timestamp(ts as i64, false);
+        format!("{} {}, {}", d.month_abbrev(), d.day, d.year)
     };
+    let one_day = bar.end - bar.start <= 86_400.0;
     let dt = super::DateTimeComponents::from_timestamp(bar.start as i64, false);
-    let when = if bar.end - bar.start <= 86_400.0 {
-        format!("{} {}, {}", dt.month_abbrev(), dt.day, dt.year)
+    let when = if one_day {
+        date(bar.start)
     } else if bar.end - bar.start <= 7.0 * 86_400.0 {
-        format!("Week of {} {}, {}", dt.month_abbrev(), dt.day, dt.year)
+        format!("Week of {}", date(bar.start))
     } else {
         format!("{} {}", dt.month_abbrev(), dt.year)
+    };
+    let weather = match activity.bar() {
+        BarActivity::Level(level) if one_day => match day_mean_mb {
+            Some(mb) => format!("{} (volumes average {:.1} MB)", activity_word(level), mb),
+            None => activity_word(level).to_string(),
+        },
+        BarActivity::Level(level) => {
+            let peak = activity.peak_day.map_or(String::new(), |d| date(d as f64));
+            let days = ((bar.end - bar.start) / 86_400.0).round() as u32;
+            let known = if activity.known_days < days {
+                format!(", {} of {} days checked", activity.known_days, days)
+            } else {
+                String::new()
+            };
+            format!("Most echo: {} ({}){}", peak, activity_word(level), known)
+        }
+        BarActivity::Outage => "No radar data recorded".to_string(),
+        BarActivity::Unknown if listing => "Checking echo amounts\u{2026}".to_string(),
+        BarActivity::Unknown => "Zoom in to see how much echo".to_string(),
     };
     let hours = |secs: f64| {
         if secs >= 3600.0 {
@@ -367,37 +478,48 @@ fn lane_tip(bars: &[TimeBucket], ts: f64) -> String {
     };
     let held = if bar.cached_secs > 0.0 {
         format!("{} on this device", hours(bar.cached_secs))
-    } else if bar.available_secs > 0.0 {
-        format!("{} listed, none downloaded", hours(bar.available_secs))
     } else {
-        "Not downloaded".to_string()
+        "None downloaded".to_string()
     };
-    let day = super::DateTimeComponents::from_timestamp(ts as i64, false);
     format!(
-        "{when} (UTC)\n{held}\nClick to go to {} {}, {}.",
-        day.month_abbrev(),
-        day.day,
-        day.year
+        "{when} (UTC)\n{weather}\n{held}\nClick to go to {}.",
+        date(go_to)
     )
 }
 
-/// Zoomed out: one bar per day / week / month / quarter, steel blue when
-/// anything in it is on this device, faint slate when the server listing
-/// covers it, empty when nothing is known yet.
+/// Zoomed out: one bar per day / week / month / quarter, as tall as its
+/// stormiest known day on the view's `scale`; steel blue when anything in
+/// it is on this device, slate otherwise. Unknown activity draws a stub
+/// where data is listed or cached, and an outage a red line along the
+/// bottom.
 fn paint_bars(
     painter: &egui::Painter,
     bars: &[TimeBucket],
+    activity: &[SpanActivity],
+    scale: &ViewScale,
     lane: Rect,
     dark: bool,
     ts_to_x: &dyn Fn(f64) -> f32,
 ) {
-    for b in bars {
+    for (b, act) in bars.iter().zip(activity) {
+        let known_data = b.cached_secs > 0.0 || b.available_secs > 0.0;
         let color = if b.cached_secs > 0.0 {
             tl_colors::cached_fill(dark, false)
-        } else if b.available_secs > 0.0 {
-            tl_colors::available_fill(dark)
         } else {
-            continue;
+            tl_colors::available_fill(dark)
+        };
+        let (height, color) = match act.bar() {
+            BarActivity::Level(level) => {
+                let color = if b.cached_secs > 0.0 {
+                    color
+                } else {
+                    tl_colors::activity_fill(dark)
+                };
+                (lane.height() * scale.height_frac(level), color)
+            }
+            BarActivity::Outage => (2.0, tl_colors::NOW_IDLE),
+            BarActivity::Unknown if known_data => (3.0, color),
+            BarActivity::Unknown => continue,
         };
         let (x0, x1) = (ts_to_x(b.start), ts_to_x(b.end));
         let x1 = if x1 - x0 > 3.0 {
@@ -406,7 +528,10 @@ fn paint_bars(
             x1.max(x0 + 1.0)
         };
         painter.rect_filled(
-            Rect::from_min_max(Pos2::new(x0, lane.top()), Pos2::new(x1, lane.bottom())),
+            Rect::from_min_max(
+                Pos2::new(x0, lane.bottom() - height),
+                Pos2::new(x1, lane.bottom()),
+            ),
             0.0,
             color,
         );
@@ -463,27 +588,44 @@ fn paint_calendar_labels(
     }
 }
 
-/// Server-available (faint) and on-device (solid) coverage per scan, full
-/// lane height. Available volumes already covered by cached data are
-/// skipped, the same rule the strip uses.
+/// Zoomed in: each volume of a day whose sizes are known, as tall as its
+/// size on the view's scale (steel blue when on this device, slate
+/// otherwise). Days not known yet show server-available (faint) and
+/// on-device (solid) coverage at full lane height, skipping available
+/// volumes already covered by cached data, the same rule the strip uses.
 fn paint_scans(
     painter: &egui::Painter,
     timeline: &crate::subsystem::Timeline,
+    sizes: &ScanSizes,
     lane: Rect,
     dark: bool,
     ts_to_x: &dyn Fn(f64) -> f32,
 ) {
-    let segment = |start: f64, end: f64, color: Color32| {
+    let column = |start: f64, end: f64, height: f32, color: Color32| {
         let x0 = ts_to_x(start);
         let x1 = ts_to_x(end).max(x0 + 1.0);
         if x1 < lane.left() || x0 > lane.right() {
             return;
         }
         painter.rect_filled(
-            Rect::from_min_max(Pos2::new(x0, lane.top()), Pos2::new(x1, lane.bottom())),
+            Rect::from_min_max(
+                Pos2::new(x0, lane.bottom() - height),
+                Pos2::new(x1, lane.bottom()),
+            ),
             0.0,
             color,
         );
+    };
+    // Full-height coverage, only across days whose sizes aren't known.
+    let segment = |start: f64, end: f64, color: Color32| {
+        let mut t = start;
+        while t < end {
+            let piece_end = end.min((crate::core::storm_activity::day_start_of(t) + 86_400) as f64);
+            if !sizes.knows(t) {
+                column(t, piece_end, lane.height(), color);
+            }
+            t = piece_end;
+        }
     };
     let view = crate::core::TimelineView::build(
         &timeline.scans,
@@ -502,6 +644,30 @@ fn paint_scans(
     }
     for r in timeline.scans.time_ranges() {
         segment(r.start, r.end, tl_colors::cached_fill(dark, false));
+    }
+
+    let (lo, hi) = (
+        sizes
+            .scans
+            .partition_point(|s| ts_to_x(s.end) < lane.left()),
+        sizes
+            .scans
+            .partition_point(|s| ts_to_x(s.start) <= lane.right()),
+    );
+    let visible = &sizes.scans[lo..hi.max(lo)];
+    let scale = ViewScale::from_levels(visible.iter().map(|s| s.level));
+    for scan in visible {
+        let color = if view.is_covered_by_cached(scan.start as i64) {
+            tl_colors::cached_fill(dark, false)
+        } else {
+            tl_colors::activity_fill(dark)
+        };
+        column(
+            scan.start,
+            scan.end,
+            lane.height() * scale.height_frac(scan.level),
+            color,
+        );
     }
 }
 

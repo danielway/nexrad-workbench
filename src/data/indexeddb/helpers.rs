@@ -6,8 +6,7 @@
 //! checks, key construction) without low-level promise/cursor plumbing.
 
 use super::{
-    js_err, DataError, ScanKey, SiteId, StorageQuotaEstimate, DATABASE_VERSION, STORE_SCAN_INDEX,
-    STORE_SCAN_TOUCHES, STORE_SWEEPS,
+    js_err, logic, DataError, ScanKey, SiteId, StorageQuotaEstimate, ALL_STORES, DATABASE_VERSION,
 };
 use js_sys::Array;
 use serde::de::DeserializeOwned;
@@ -113,18 +112,24 @@ pub(super) async fn open_database(database_name: &str) -> Result<IdbDatabase, Da
             .expect("Expected IdbRequest");
         let db: IdbDatabase = request.result().unwrap().dyn_into().unwrap();
 
-        // Delete all existing stores and recreate — breaking schema change
-        let store_names = db.object_store_names();
-        for i in 0..store_names.length() {
-            if let Some(name) = store_names.get(i) {
-                db.delete_object_store(&name)
-                    .expect("Failed to delete object store");
-                log::info!("Deleted IndexedDB store: {}", name);
+        // From a version whose stores are still valid, only add the new
+        // ones; from anything older, wipe and recreate (breaking change).
+        let old_version = event.old_version() as u32;
+        if !logic::upgrade_keeps_stores(old_version) {
+            let store_names = db.object_store_names();
+            for i in 0..store_names.length() {
+                if let Some(name) = store_names.get(i) {
+                    db.delete_object_store(&name)
+                        .expect("Failed to delete object store");
+                    log::info!("Deleted IndexedDB store: {}", name);
+                }
             }
         }
 
-        // Create fresh stores
-        for store_name in [STORE_SWEEPS, STORE_SCAN_INDEX, STORE_SCAN_TOUCHES] {
+        for store_name in ALL_STORES {
+            if db.object_store_names().contains(store_name) {
+                continue;
+            }
             db.create_object_store(store_name)
                 .expect("Failed to create object store");
             log::info!("Created IndexedDB store: {}", store_name);
