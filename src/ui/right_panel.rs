@@ -3,6 +3,7 @@
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::{ElevationSelection, InterpolationMode, RadarProduct};
 use crate::state::{format_bytes, AppState, StorageSettings};
+use crate::ui::theme;
 use eframe::egui::{self, RichText, ScrollArea};
 
 pub(super) struct RightPanelLayer;
@@ -216,8 +217,8 @@ pub(super) fn render_product_section(
                                     // Waveform badge
                                     if !entry.waveform.is_empty() {
                                         let wf_color = match entry.waveform.as_str() {
-                                            "CS" => egui::Color32::from_rgb(100, 200, 100),
-                                            _ => egui::Color32::from_rgb(100, 150, 255),
+                                            "CS" => theme::legacy::SUCCESS,
+                                            _ => theme::legacy::ACTIVE_BLUE,
                                         };
                                         ui.label(
                                             RichText::new(&entry.waveform).small().color(wf_color),
@@ -229,7 +230,7 @@ pub(super) fn render_product_section(
                                         ui.label(
                                             RichText::new("SAILS")
                                                 .small()
-                                                .color(egui::Color32::from_rgb(220, 180, 60)),
+                                                .color(theme::LOOP),
                                         )
                                         .on_hover_text(
                                             "Supplemental Adaptive Intra-Volume Low-Level Scan — \
@@ -237,12 +238,10 @@ pub(super) fn render_product_section(
                                         );
                                     }
                                     if entry.is_mrle {
-                                        ui.label(
-                                            RichText::new("MRLE")
-                                                .small()
-                                                .color(egui::Color32::from_rgb(220, 180, 60)),
-                                        )
-                                        .on_hover_text("Mid-Volume Rescan of Low-Level Elevations");
+                                        ui.label(RichText::new("MRLE").small().color(theme::LOOP))
+                                            .on_hover_text(
+                                                "Mid-Volume Rescan of Low-Level Elevations",
+                                            );
                                     }
 
                                     if resp.clicked() {
@@ -347,7 +346,7 @@ pub(super) fn render_layers_section(
                 }));
             }
             if let Some(err) = diagnostics.gps.error.clone() {
-                ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
+                ui.colored_label(theme::legacy::ERROR, err);
             }
 
             if advanced {
@@ -562,7 +561,7 @@ pub(super) fn render_events_section(
                         ui.label(
                             RichText::new(&event.name)
                                 .strong()
-                                .color(event_color(event.id)),
+                                .color(crate::ui::data_colors::event_swatch(event.id)),
                         );
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -693,19 +692,6 @@ fn format_event_time(ts: f64, use_local: bool) -> String {
     )
 }
 
-/// Get a distinguishing color for an event based on its ID.
-fn event_color(id: u64) -> egui::Color32 {
-    const PALETTE: &[egui::Color32] = &[
-        egui::Color32::from_rgb(255, 200, 80),
-        egui::Color32::from_rgb(120, 220, 160),
-        egui::Color32::from_rgb(160, 180, 255),
-        egui::Color32::from_rgb(255, 150, 150),
-        egui::Color32::from_rgb(200, 160, 255),
-        egui::Color32::from_rgb(255, 180, 120),
-    ];
-    PALETTE[(id % PALETTE.len() as u64) as usize]
-}
-
 pub(super) fn render_storage_section(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -740,15 +726,15 @@ pub(super) fn render_storage_section(
                 ui.allocate_painter(egui::Vec2::new(bar_width, 8.0), egui::Sense::hover());
             let rect = response.rect;
 
-            painter.rect_filled(rect, 2.0, egui::Color32::from_gray(40));
+            painter.rect_filled(rect, 2.0, theme::LINE);
 
             let fill_width = (rect.width() * usage_pct as f32 / 100.0).max(0.0);
             let fill_color = if usage_pct > 90.0 {
-                egui::Color32::from_rgb(220, 80, 80)
+                theme::legacy::ERROR
             } else if usage_pct > 70.0 {
-                egui::Color32::from_rgb(220, 180, 80)
+                theme::legacy::CAUTION
             } else {
-                egui::Color32::from_rgb(80, 160, 80)
+                theme::legacy::SUCCESS
             };
             let fill_rect =
                 egui::Rect::from_min_size(rect.min, egui::Vec2::new(fill_width, rect.height()));

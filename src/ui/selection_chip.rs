@@ -8,13 +8,9 @@ use crate::core::selection_chip::{
 };
 use crate::core::transport::LiveStopPlacement;
 use crate::state::AppState;
-use crate::ui::colors::live;
+use crate::ui::theme;
 use crate::ui::time_format::parts;
 use eframe::egui::{self, Color32, RichText, Stroke};
-
-/// Amber: a range that loops (the chip's color language, round-4 design).
-const LOOP_TEXT: Color32 = Color32::from_rgb(243, 207, 134);
-const LOOP_BORDER: Color32 = Color32::from_rgb(122, 90, 28);
 
 // Icon-font glyphs (the text font has no arrows).
 const ARROW: &str = egui_phosphor::regular::ARROW_RIGHT;
@@ -54,26 +50,26 @@ pub(crate) fn render_selection_chip(
         ChipLabel::Live => {
             let pulse = live.mode_state.pulse_alpha();
             let alpha = (200.0 + 55.0 * pulse) as u8;
-            let c = live::STREAMING;
+            let c = theme::NOW;
             (
                 Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha),
-                Color32::WHITE,
+                theme::TEXT,
                 Stroke::NONE,
             )
         }
         ChipLabel::RangeToNow { .. } => (
             Color32::TRANSPARENT,
-            LOOP_TEXT,
-            Stroke::new(1.0, live::STREAMING),
+            theme::LOOP_TEXT,
+            Stroke::new(1.0, theme::NOW),
         ),
         ChipLabel::Range { .. } => (
             Color32::TRANSPARENT,
-            LOOP_TEXT,
-            Stroke::new(1.0, LOOP_BORDER),
+            theme::LOOP_TEXT,
+            Stroke::new(1.0, theme::LOOP_DEEP),
         ),
         ChipLabel::At { .. } => (
             Color32::TRANSPARENT,
-            crate::ui::colors::ui::value(state.is_dark),
+            theme::TEXT_DIM,
             ui.visuals().widgets.inactive.bg_stroke,
         ),
     };

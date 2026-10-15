@@ -17,6 +17,7 @@ use crate::alerts::{event_color, Alert};
 use crate::core::diagnostics::{DiagnosticsIntent, DiagnosticsVm};
 use crate::core::Intent;
 use crate::state::AppState;
+use crate::ui::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, ScrollArea, Vec2};
 
 const LIST_SIZE: Vec2 = Vec2::new(520.0, 560.0);
@@ -78,7 +79,7 @@ fn render_list_modal(
                         if visible.len() == 1 { "" } else { "s" }
                     ))
                     .size(13.0)
-                    .color(Color32::from_rgb(180, 180, 180)),
+                    .color(theme::TEXT_DIM),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("Close").clicked() {
@@ -102,7 +103,8 @@ fn render_list_modal(
                 ui.add_space(24.0);
                 ui.vertical_centered(|ui| {
                     ui.label(
-                        RichText::new("No active alerts in the current view.").color(Color32::GRAY),
+                        RichText::new("No active alerts in the current view.")
+                            .color(theme::TEXT_DIM),
                     );
                 });
                 ui.add_space(12.0);
@@ -173,14 +175,14 @@ fn render_detail_modal(
                             chip_badge(
                                 ui,
                                 &format!("Urgency: {}", alert.urgency),
-                                Color32::from_rgb(90, 110, 140),
+                                theme::TEXT_FAINT,
                             );
                         }
                         if !alert.certainty.is_empty() {
                             chip_badge(
                                 ui,
                                 &format!("Certainty: {}", alert.certainty),
-                                Color32::from_rgb(90, 110, 140),
+                                theme::TEXT_FAINT,
                             );
                         }
                     });
@@ -203,7 +205,7 @@ fn render_detail_modal(
                         ui.label(
                             RichText::new(&alert.area_desc)
                                 .size(12.0)
-                                .color(Color32::from_rgb(200, 200, 200)),
+                                .color(theme::TEXT),
                         );
                         ui.add_space(8.0);
                     }
@@ -217,12 +219,12 @@ fn render_detail_modal(
                             RichText::new("Instructions")
                                 .strong()
                                 .size(12.0)
-                                .color(Color32::from_rgb(250, 220, 120)),
+                                .color(theme::legacy::CAUTION),
                         );
                         ui.label(
                             RichText::new(&alert.instruction)
                                 .size(12.0)
-                                .color(Color32::from_rgb(240, 220, 160)),
+                                .color(theme::TEXT),
                         );
                     }
                 });
@@ -271,7 +273,7 @@ fn render_alert_row(
         ui.painter().rect_filled(
             card_rect,
             egui::CornerRadius::same(4),
-            Color32::from_rgba_unmultiplied(255, 255, 255, 8),
+            theme::alpha(theme::TEXT, 8),
         );
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -301,7 +303,7 @@ fn render_alert_row(
                             egui::Label::new(
                                 RichText::new(&alert.area_desc)
                                     .size(11.0)
-                                    .color(Color32::from_rgb(170, 170, 170)),
+                                    .color(theme::TEXT_DIM),
                             )
                             .truncate(),
                         );
@@ -313,7 +315,7 @@ fn render_alert_row(
                                 format_relative(derived.frame_now_secs, exp)
                             ))
                             .size(10.0)
-                            .color(Color32::from_rgb(140, 140, 140)),
+                            .color(theme::TEXT_DIM),
                         );
                     }
                 });
@@ -461,7 +463,7 @@ fn meta_row(ui: &mut egui::Ui, label: &str, value: &str) {
         ui.label(
             RichText::new(format!("{}:", label))
                 .size(11.0)
-                .color(Color32::from_rgb(150, 150, 150)),
+                .color(theme::TEXT_DIM),
         );
         ui.label(RichText::new(value).size(11.0));
     });

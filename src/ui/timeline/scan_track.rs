@@ -27,8 +27,8 @@ use crate::core::{
 };
 use crate::data::ScanCompleteness;
 use crate::state::DownloadProgress;
-use crate::ui::colors::acquisition as acq_colors;
-use crate::ui::colors::timeline as tl_colors;
+use crate::ui::theme;
+use crate::ui::theme::timeline as tl_colors;
 use eframe::egui::{Color32, Painter, Pos2, Rect, Stroke};
 
 /// Below this center-to-center spacing (px) scans are too dense to read
@@ -60,7 +60,7 @@ pub(super) fn render_macro_track(
     }
     let rect = &frame.rects.scan;
     let view = &frame.view;
-    let (view_start, view_end, dark) = (frame.view_start, frame.view_end, frame.dark);
+    let (view_start, view_end) = (frame.view_start, frame.view_end);
     let ts_to_x = |ts: f64| frame.ts_to_x(ts);
 
     // Collect the cached scans in range. The borrowed `&Scan` is what lets a
@@ -99,7 +99,7 @@ pub(super) fn render_macro_track(
                         Pos2::new(x1, rect.bottom() - 4.0),
                     ),
                     2.0,
-                    faded(tl_colors::cached_fill(dark, false), fade),
+                    faded(tl_colors::cached_fill(false), fade),
                 );
             }
         }
@@ -144,7 +144,6 @@ fn draw_scan_block(
     fade: f32,
 ) {
     let rect = &frame.rects.scan;
-    let dark = frame.dark;
 
     let extent = block_extent(
         scan.start_time,
@@ -170,16 +169,12 @@ fn draw_scan_block(
 
     // Not downloaded at all — hollow, no interior structure to show.
     if available {
-        painter.rect_filled(
-            block,
-            1.0,
-            faded(tl_colors::cell_available_fill(dark), fade),
-        );
+        painter.rect_filled(block, 1.0, faded(tl_colors::cell_available_fill(), fade));
         stroke_dashed_rect(
             painter,
             block,
             DashedBorder::uniform(
-                Stroke::new(1.0_f32, faded(tl_colors::cell_available_border(dark), fade)),
+                Stroke::new(1.0_f32, faded(tl_colors::cell_available_border(), fade)),
                 4.0,
                 7.0,
             ),
@@ -193,7 +188,7 @@ fn draw_scan_block(
     painter.rect_filled(
         Rect::from_min_max(Pos2::new(x0, y0), Pos2::new(data_x1, y1)),
         1.0,
-        faded(tl_colors::cell_cached(dark), fade),
+        faded(tl_colors::cell_cached(), fade),
     );
 
     // Hollow tail across the part of the volume we don't have. This is the
@@ -201,12 +196,12 @@ fn draw_scan_block(
     // width is the volume, the solid part is what landed.
     if extent.is_partial() && x1 - data_x1 > 1.0 {
         let tail = Rect::from_min_max(Pos2::new(data_x1, y0), Pos2::new(x1, y1));
-        painter.rect_filled(tail, 1.0, faded(tl_colors::cell_available_fill(dark), fade));
+        painter.rect_filled(tail, 1.0, faded(tl_colors::cell_available_fill(), fade));
         stroke_dashed_rect(
             painter,
             tail,
             DashedBorder::uniform(
-                Stroke::new(1.0_f32, faded(tl_colors::cell_available_border(dark), fade)),
+                Stroke::new(1.0_f32, faded(tl_colors::cell_available_border(), fade)),
                 3.0,
                 6.0,
             ),
@@ -218,7 +213,7 @@ fn draw_scan_block(
     // Micro tier's sub-texture.
     let solid_w = data_x1 - x0;
     if should_draw_sweep_texture(solid_w, scan.sweeps.len()) {
-        let tex = faded(tl_colors::sub_texture(dark), fade);
+        let tex = faded(tl_colors::sub_texture(), fade);
         for sweep in &scan.sweeps {
             let x = frame.ts_to_x(sweep.start_time);
             if x > x0 + 0.5 && x < data_x1 - 0.5 {
@@ -275,7 +270,7 @@ fn draw_gap_glyphs(
     let threshold = (median * GAP_MEDIAN_MULT).max(GAP_MIN_SECS);
     let rect = &frame.rects.scan;
     let cy = rect.center().y;
-    let color = faded(tl_colors::sub_texture(frame.dark), fade);
+    let color = faded(tl_colors::sub_texture(), fade);
     let glyph =
         Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), (color.a()).max(90));
 
@@ -308,7 +303,6 @@ fn draw_gap_glyphs(
 fn render_shadow_regions(painter: &Painter, frame: &TimelineFrame<'_>, fade: f32) {
     let rect = &frame.rects.scan;
     let view = &frame.view;
-    let dark = frame.dark;
     let ts_to_x = |ts: f64| frame.ts_to_x(ts);
     let view_start_i64 = frame.view_start as i64;
     let view_end_i64 = frame.view_end as i64;
@@ -347,16 +341,12 @@ fn render_shadow_regions(painter: &Painter, frame: &TimelineFrame<'_>, fade: f32
                 Pos2::new(x0, rect.top() + 4.0),
                 Pos2::new(x1, rect.bottom() - 4.0),
             );
-            painter.rect_filled(
-                block,
-                2.0,
-                faded(tl_colors::cell_available_fill(dark), fade),
-            );
+            painter.rect_filled(block, 2.0, faded(tl_colors::cell_available_fill(), fade));
             stroke_dashed_rect(
                 painter,
                 block,
                 DashedBorder::uniform(
-                    Stroke::new(1.0_f32, faded(tl_colors::cell_available_border(dark), fade)),
+                    Stroke::new(1.0_f32, faded(tl_colors::cell_available_border(), fade)),
                     4.0,
                     7.0,
                 ),
@@ -389,7 +379,7 @@ fn render_macro_acquisition(
     let x0 = ts_to_x(min_ts).max(rect.left());
     let x1 = ts_to_x(max_ts).min(rect.right());
     if x1 > x0 {
-        let base = tl_colors::cell_inflight(frame.dark);
+        let base = tl_colors::cell_inflight();
         painter.rect_filled(
             Rect::from_min_max(
                 Pos2::new(x0, rect.top() + 4.0),
@@ -402,7 +392,7 @@ fn render_macro_acquisition(
             ),
         );
     }
-    let _ = acq_colors::ACTIVE; // palette intentionally neutral now.
+    let _ = theme::acquisition::ACTIVE; // palette intentionally neutral now.
 }
 
 #[cfg(test)]

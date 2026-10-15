@@ -18,6 +18,7 @@ use crate::core::Intent;
 use crate::core::{FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView};
 use crate::state::{format_bytes, AppState};
 use crate::subsystem::{Acquisition, Chrome, Live, Playback, Timeline};
+use crate::ui::theme;
 use eframe::egui::{self, Color32, RichText, ScrollArea, Vec2};
 use egui_phosphor::regular as icons;
 
@@ -128,7 +129,6 @@ fn draw_scan_inspector(
         .cloned();
 
     let use_local = state.use_local_time;
-    let dark = state.is_dark;
     let now_secs = state.frame_now.secs();
     let mut close = false;
     let mut loop_from_here = false;
@@ -148,7 +148,7 @@ fn draw_scan_inspector(
                     RichText::new("That scan is no longer in view.")
                         .size(12.0)
                         .italics()
-                        .color(super::colors::ui::label(dark)),
+                        .color(super::theme::TEXT_FAINT),
                 );
                 ui.add_space(8.0);
                 if ui.button("Close").clicked() {
@@ -157,9 +157,9 @@ fn draw_scan_inspector(
                 return;
             };
 
-            render_header(ui, container, use_local, dark);
+            render_header(ui, container, use_local);
             ui.separator();
-            render_sweep_table(ui, state, container, dark, scan_start);
+            render_sweep_table(ui, state, container, scan_start);
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(4.0);
@@ -210,7 +210,7 @@ fn draw_scan_inspector(
 
 /// Scan-level header: time span, VCP, and the cached/total tilt count (spec
 /// §6.3 "carries the complete breakdown").
-fn render_header(ui: &mut egui::Ui, container: &ScanContainer, use_local: bool, dark: bool) {
+fn render_header(ui: &mut egui::Ui, container: &ScanContainer, use_local: bool) {
     let title = format_timestamp_full(container.key_secs, use_local);
     ui.label(RichText::new(title).strong().size(13.0));
 
@@ -231,7 +231,7 @@ fn render_header(ui: &mut egui::Ui, container: &ScanContainer, use_local: bool, 
             "{vcp} · {cached}/{total} tilts on device{live_tag}"
         ))
         .size(11.0)
-        .color(super::colors::ui::label(dark)),
+        .color(super::theme::TEXT_FAINT),
     );
 }
 
@@ -242,11 +242,10 @@ fn render_sweep_table(
     ui: &mut egui::Ui,
     state: &mut AppState,
     container: &ScanContainer,
-    dark: bool,
     scan_start: f64,
 ) {
-    let value_color = super::colors::ui::value(dark);
-    let label_color = super::colors::ui::label(dark);
+    let value_color = super::theme::TEXT_DIM;
+    let label_color = super::theme::TEXT_FAINT;
 
     let mut cells: Vec<&FrameCell> = container.cells.iter().collect();
     cells.sort_by(|a, b| {
@@ -293,7 +292,7 @@ fn render_sweep_table(
                         ui.label(
                             RichText::new("\u{25c9}")
                                 .size(11.0)
-                                .color(super::colors::timeline::ACTIVE_SWEEP),
+                                .color(super::theme::timeline::ACTIVE_SWEEP),
                         )
                         .on_hover_text("Currently displayed");
                     }
@@ -324,14 +323,14 @@ fn render_sweep_table(
                                                 chunks.chunks_expected
                                             ))
                                             .size(10.0)
-                                            .color(super::colors::acquisition::ACTIVE),
+                                            .color(super::theme::acquisition::ACTIVE),
                                         );
                                     } else {
                                         ui.label(
                                             RichText::new("downloading")
                                                 .size(10.0)
                                                 .italics()
-                                                .color(super::colors::acquisition::ACTIVE),
+                                                .color(super::theme::acquisition::ACTIVE),
                                         );
                                     }
                                 }
@@ -365,14 +364,14 @@ fn render_sweep_table(
 fn cell_state_display(state: FrameCellState) -> (&'static str, Color32) {
     // Neutral gray for the non-accent states (in archive / expected); accent
     // colors only for the states that carry one (red = failure).
-    let neutral = Color32::from_rgb(150, 150, 160);
+    let neutral = theme::TEXT_DIM;
     match state {
-        FrameCellState::Cached => ("on device", super::colors::acquisition::COMPLETED),
+        FrameCellState::Cached => ("on device", super::theme::acquisition::COMPLETED),
         FrameCellState::Available => ("in archive", neutral),
-        FrameCellState::InFlight => ("downloading", super::colors::acquisition::ACTIVE),
-        FrameCellState::Queued => ("queued", super::colors::acquisition::QUEUED),
+        FrameCellState::InFlight => ("downloading", super::theme::acquisition::ACTIVE),
+        FrameCellState::Queued => ("queued", super::theme::acquisition::QUEUED),
         FrameCellState::Projected => ("expected", neutral),
-        FrameCellState::Failed => ("failed", super::colors::acquisition::FAILED),
+        FrameCellState::Failed => ("failed", super::theme::acquisition::FAILED),
     }
 }
 

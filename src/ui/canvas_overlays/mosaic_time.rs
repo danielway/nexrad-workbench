@@ -6,8 +6,9 @@
 //! clock helpers so a local/UTC flip reformats this stamp in the same frame as
 //! every other readout.
 
+use crate::ui::theme;
 use crate::ui::time_format::format_mosaic_stamp;
-use eframe::egui::{self, Align2, Color32, FontId, Vec2};
+use eframe::egui::{self, Align2, FontId, Vec2};
 
 /// Trait wrapper for the registry. Z-order sits above the scale bar so the
 /// stamp stays readable over map chrome.
@@ -35,7 +36,7 @@ impl super::Overlay for MosaicTimeOverlay {
         let painter = ui.painter();
         let pos = ctx.rect.right_bottom() - Vec2::new(12.0, 12.0);
         let font = FontId::monospace(11.0);
-        let color = Color32::from_rgba_unmultiplied(200, 200, 220, 220);
+        let color = theme::alpha(theme::TEXT, 220);
 
         // Soft shadow so the stamp stays legible over bright mosaic cells.
         painter.text(
@@ -43,7 +44,7 @@ impl super::Overlay for MosaicTimeOverlay {
             Align2::RIGHT_BOTTOM,
             &label,
             font.clone(),
-            Color32::from_rgba_unmultiplied(0, 0, 0, 140),
+            theme::alpha(theme::MAP, 140),
         );
         painter.text(pos, Align2::RIGHT_BOTTOM, label, font, color);
     }

@@ -12,7 +12,8 @@
 
 use super::super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::state::{AppMode, AppState};
-use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText};
+use crate::ui::theme;
+use eframe::egui::{self, Align, Frame, Layout, Margin, RichText};
 
 const TOP_BAR_CONTENT_HEIGHT: f32 = 44.0;
 const ACCENT_THICKNESS: f32 = 2.0;
@@ -65,11 +66,7 @@ fn render_mobile_time_readout(ui: &mut egui::Ui, state: &mut AppState) {
             }
         }
         None => {
-            ui.label(
-                RichText::new("--:--")
-                    .size(13.0)
-                    .color(Color32::from_rgb(120, 120, 120)),
-            );
+            ui.label(RichText::new("--:--").size(13.0).color(theme::TEXT_FAINT));
         }
     }
 }
@@ -92,7 +89,7 @@ fn draw_mobile_top_bar(
     let (inset_top, _inset_right, _inset_bottom, _inset_left) = super::safe_area_insets();
 
     let panel_fill = ctx.global_style().visuals.panel_fill;
-    let accent_color = crate::ui::colors::mode::color(live.app_mode);
+    let accent_color = crate::ui::theme::mode_color(live.app_mode);
 
     // Zero inner-margin frame so the content sits as high as possible —
     // egui's default top-panel frame adds a couple of pixels of padding on
@@ -154,7 +151,7 @@ fn draw_mobile_top_bar(
 
                 // Worker error banner — critical, must be visible on mobile too.
                 if let Some(ref error_msg) = state.worker_init_error {
-                    let error_color = Color32::from_rgb(220, 60, 60);
+                    let error_color = theme::legacy::ERROR;
                     ui.label(
                         RichText::new(egui_phosphor::regular::WARNING)
                             .size(14.0)
@@ -198,9 +195,7 @@ fn draw_mobile_top_bar(
 
                     let response = ui.add(
                         egui::Button::new(
-                            RichText::new(display)
-                                .size(10.0)
-                                .color(Color32::from_rgb(120, 120, 120)),
+                            RichText::new(display).size(10.0).color(theme::TEXT_FAINT),
                         )
                         .frame(false),
                     );

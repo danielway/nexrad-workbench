@@ -6,7 +6,8 @@
 //! frame so it stays accurate across zoom and pan.
 
 use crate::geo::MapProjection;
-use eframe::egui::{self, Color32, Pos2, Rect, Stroke};
+use crate::ui::theme;
+use eframe::egui::{self, Pos2, Rect, Stroke};
 
 const TARGET_BAR_WIDTH_PX: f32 = 120.0;
 const KM_TO_MI: f64 = 0.621371;
@@ -98,8 +99,8 @@ fn draw_row(
     label_pad: f32,
     label: &str,
 ) {
-    let bar_color = Color32::from_rgba_unmultiplied(220, 220, 230, 230);
-    let text_color = Color32::from_rgba_unmultiplied(220, 220, 230, 230);
+    let bar_color = theme::alpha(theme::TEXT, 230);
+    let text_color = theme::alpha(theme::TEXT, 230);
     let stroke = Stroke::new(bar_thickness, bar_color);
 
     let right = left + width;

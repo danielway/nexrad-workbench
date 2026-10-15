@@ -9,7 +9,8 @@
 use crate::core::StormCellInfo;
 use crate::geo::MapProjection;
 use crate::nexrad::RadarGpuRenderer;
-use eframe::egui::{self, Color32, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
+use crate::ui::theme;
+use eframe::egui::{self, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
 use geo_types::Coord;
 use std::sync::{Arc, Mutex};
 
@@ -64,28 +65,24 @@ pub(crate) fn render_data_probe(
 
     // Draw tooltip background
     let font_id = egui::FontId::monospace(11.0);
-    let galley = painter.layout_no_wrap(text.clone(), font_id.clone(), Color32::WHITE);
+    let galley = painter.layout_no_wrap(text.clone(), font_id.clone(), theme::TEXT);
     let tooltip_size = galley.size();
     let padding = Vec2::new(6.0, 4.0);
     let tooltip_pos = hover_pos + Vec2::new(16.0, -tooltip_size.y - 8.0);
     let bg_rect = Rect::from_min_size(tooltip_pos - padding, tooltip_size + padding * 2.0);
 
-    painter.rect_filled(
-        bg_rect,
-        4.0,
-        Color32::from_rgba_unmultiplied(20, 20, 30, 220),
-    );
+    painter.rect_filled(bg_rect, 4.0, theme::alpha(theme::RAISED, 220));
     painter.rect_stroke(
         bg_rect,
         4.0,
-        Stroke::new(1.0_f32, Color32::from_rgb(80, 80, 100)),
+        Stroke::new(1.0_f32, theme::TEXT_FAINT),
         StrokeKind::Outside,
     );
-    painter.galley(tooltip_pos, galley, Color32::WHITE);
+    painter.galley(tooltip_pos, galley, theme::TEXT);
 
     // Draw crosshair at hover position
     let cross_size = 8.0;
-    let cross_color = Color32::from_rgba_unmultiplied(255, 255, 255, 160);
+    let cross_color = theme::alpha(theme::TEXT, 160);
     painter.line_segment(
         [
             hover_pos - Vec2::new(cross_size, 0.0),
@@ -118,8 +115,8 @@ pub(crate) fn render_distance_measurement(
     });
 
     // Draw start marker
-    painter.circle_filled(start_screen, 5.0, Color32::from_rgb(255, 100, 100));
-    painter.circle_stroke(start_screen, 5.0, Stroke::new(1.5_f32, Color32::WHITE));
+    painter.circle_filled(start_screen, 5.0, theme::map::TOOL);
+    painter.circle_stroke(start_screen, 5.0, Stroke::new(1.5_f32, theme::map::OUTLINE));
 
     if let Some((end_lat, end_lon)) = end {
         let end_screen = projection.geo_to_screen(Coord {
@@ -130,12 +127,12 @@ pub(crate) fn render_distance_measurement(
         // Draw line
         painter.line_segment(
             [start_screen, end_screen],
-            Stroke::new(2.0_f32, Color32::from_rgb(255, 100, 100)),
+            Stroke::new(2.0_f32, theme::map::TOOL),
         );
 
         // Draw end marker
-        painter.circle_filled(end_screen, 5.0, Color32::from_rgb(255, 100, 100));
-        painter.circle_stroke(end_screen, 5.0, Stroke::new(1.5_f32, Color32::WHITE));
+        painter.circle_filled(end_screen, 5.0, theme::map::TOOL);
+        painter.circle_stroke(end_screen, 5.0, Stroke::new(1.5_f32, theme::map::OUTLINE));
 
         // Compute great-circle distance using Haversine formula
         let distance_km = haversine_km(start_lat, start_lon, end_lat, end_lon);
@@ -153,24 +150,20 @@ pub(crate) fn render_distance_measurement(
         );
 
         let font_id = egui::FontId::monospace(11.0);
-        let galley = painter.layout_no_wrap(label, font_id, Color32::WHITE);
+        let galley = painter.layout_no_wrap(label, font_id, theme::TEXT);
         let label_size = galley.size();
         let padding = Vec2::new(5.0, 3.0);
         let label_pos = mid - Vec2::new(label_size.x / 2.0, label_size.y + 8.0);
         let bg_rect = Rect::from_min_size(label_pos - padding, label_size + padding * 2.0);
 
-        painter.rect_filled(
-            bg_rect,
-            3.0,
-            Color32::from_rgba_unmultiplied(30, 20, 20, 220),
-        );
+        painter.rect_filled(bg_rect, 3.0, theme::alpha(theme::RAISED, 220));
         painter.rect_stroke(
             bg_rect,
             3.0,
-            Stroke::new(1.0_f32, Color32::from_rgb(255, 100, 100)),
+            Stroke::new(1.0_f32, theme::map::TOOL),
             StrokeKind::Outside,
         );
-        painter.galley(label_pos, galley, Color32::WHITE);
+        painter.galley(label_pos, galley, theme::TEXT);
     }
 }
 
@@ -201,13 +194,7 @@ pub(crate) fn render_storm_cells(
             y: cell.lat,
         });
 
-        let color = if cell.max_dbz >= 60.0 {
-            Color32::from_rgb(255, 50, 50) // Severe
-        } else if cell.max_dbz >= 50.0 {
-            Color32::from_rgb(255, 150, 50) // Strong
-        } else {
-            Color32::from_rgb(255, 220, 80) // Moderate
-        };
+        let color = crate::ui::data_colors::storm_cell(cell.max_dbz);
 
         // Derive ellipse semi-axes from area + elongation: an ellipse of
         // area A and ratio e has semi-minor b = √(A / (π·e)) and semi-major

@@ -6,10 +6,10 @@
 //! In live mode, the donut chart shows per-chunk coverage with distinct colors.
 
 use super::super::canvas::{format_age_compact, format_time_short};
-use super::super::colors::{canvas as canvas_colors, radar};
 use crate::geo::MapProjection;
 use crate::nexrad::RADAR_COVERAGE_RANGE_KM;
 use crate::state::AppState;
+use crate::ui::theme;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, Vec2};
 use geo_types::Coord;
 use std::cell::RefCell;
@@ -63,7 +63,6 @@ pub(crate) fn render_radar_sweep(
 ) {
     let radar_lat = state.viz_state.center_lat;
     let radar_lon = state.viz_state.center_lon;
-    let dark = state.is_dark;
 
     // Compute center from geographic projection (same as GPU renderer)
     let center = projection.geo_to_screen(Coord {
@@ -84,8 +83,8 @@ pub(crate) fn render_radar_sweep(
     let radius = (edge.x - center.x).abs();
 
     // Draw range rings
-    let ring_color = canvas_colors::ring(dark);
-    let ring_major_color = canvas_colors::ring_major(dark);
+    let ring_color = theme::map::ring();
+    let ring_major_color = theme::map::ring_major();
     let num_rings = 6;
     for i in 1..=num_rings {
         let ring_radius = radius * (i as f32 / num_rings as f32);
@@ -100,7 +99,7 @@ pub(crate) fn render_radar_sweep(
     }
 
     // Draw radial lines (every 30 degrees)
-    let radial_color = canvas_colors::radial(dark);
+    let radial_color = theme::map::radial();
     for i in 0..12 {
         let angle = (i as f32) * 30.0 * PI / 180.0 - PI / 2.0;
         let end_x = center.x + radius * angle.cos();
@@ -114,7 +113,7 @@ pub(crate) fn render_radar_sweep(
     // Draw cardinal direction labels. Lay out fresh each frame (egui's
     // internal galley cache memoizes the identical layout job across frames).
     let label_offset = radius + 15.0;
-    let cardinal_color = canvas_colors::cardinal_label(dark);
+    let cardinal_color = theme::map::cardinal_label();
     let font = egui::FontId::proportional(12.0);
     let cardinal_specs: [(&str, Vec2, egui::Align2); 4] = [
         (
@@ -139,11 +138,11 @@ pub(crate) fn render_radar_sweep(
     }
 
     // Draw center marker (radar site)
-    painter.circle_filled(center, 4.0, canvas_colors::center_marker(dark));
+    painter.circle_filled(center, 4.0, theme::map::CENTER_MARKER);
     painter.circle_stroke(
         center,
         4.0,
-        Stroke::new(1.0_f32, canvas_colors::center_marker_stroke(dark)),
+        Stroke::new(1.0_f32, theme::map::CENTER_MARKER_STROKE),
     );
 
     // Sweep overlay drawing. The donut (data-age coverage indicator)
@@ -157,12 +156,16 @@ pub(crate) fn render_radar_sweep(
 
         let (start_line_color, data_edge_color, data_edge_width) = if stale {
             (
-                radar::sweep_start_line_stale(),
-                radar::sweep_line_stale(),
+                theme::radar::sweep_start_line_stale(),
+                theme::radar::sweep_line_stale(),
                 2.0_f32,
             )
         } else {
-            (radar::sweep_start_line(), radar::SWEEP_LINE, 3.0_f32)
+            (
+                theme::radar::sweep_start_line(),
+                theme::radar::SWEEP_LINE,
+                3.0_f32,
+            )
         };
 
         if show_lines {
@@ -195,7 +198,7 @@ pub(crate) fn render_radar_sweep(
         if is_live && show_lines {
             if let Some(now_az) = live.radar_model.estimated_azimuth {
                 let now_rad = (now_az - 90.0) * PI / 180.0;
-                let now_color = Color32::from_rgb(255, 80, 80);
+                let now_color = theme::NOW;
                 painter.line_segment(
                     [
                         center,
@@ -264,7 +267,7 @@ pub(crate) fn render_radar_sweep(
         // the toggle so they vanish when sweep animation is off.
         if show_lines {
             if let Some(sweep) = live.radar_model.active_sweep.as_ref() {
-                let boundary_line_color = Color32::from_rgba_unmultiplied(200, 200, 220, 100);
+                let boundary_line_color = theme::alpha(theme::TEXT, 100);
                 for c in sweep
                     .chunks
                     .iter()
@@ -331,7 +334,7 @@ fn draw_boundary_label(
             0.0,
             egui::TextFormat {
                 font_id: font.clone(),
-                color: Color32::from_rgb(120, 120, 140),
+                color: theme::TEXT_FAINT,
                 ..Default::default()
             },
         );
@@ -353,9 +356,9 @@ fn draw_boundary_label(
     painter.rect_filled(
         Rect::from_min_size(bg_pos - padding, text_size + padding * 2.0),
         3.0,
-        Color32::from_rgba_unmultiplied(15, 15, 25, 200),
+        theme::alpha(theme::RAISED, 200),
     );
-    painter.galley(bg_pos, galley, Color32::WHITE);
+    painter.galley(bg_pos, galley, theme::TEXT);
 }
 
 fn draw_sweep_donut_stale(painter: &Painter, center: Pos2, radius: f32) {
@@ -364,7 +367,7 @@ fn draw_sweep_donut_stale(painter: &Painter, center: Pos2, radius: f32) {
     let donut_mid = (donut_inner + donut_outer) / 2.0;
     let donut_width = donut_outer - donut_inner;
 
-    let color = Color32::from_rgba_unmultiplied(100, 100, 110, 80);
+    let color = theme::alpha(theme::TEXT_FAINT, 80);
     let segments = 180;
 
     for i in 0..segments {
@@ -405,10 +408,10 @@ fn draw_sweep_donut(
     let donut_mid = (donut_inner + donut_outer) / 2.0;
     let donut_width = donut_outer - donut_inner;
 
-    let current_color = Color32::from_rgba_unmultiplied(80, 200, 120, 160);
-    let prev_color = Color32::from_rgba_unmultiplied(120, 120, 180, 120);
-    let current_text_color = Color32::from_rgb(100, 220, 140);
-    let prev_text_color = Color32::from_rgb(160, 160, 220);
+    let current_color = theme::alpha(theme::legacy::SWEEP, 160);
+    let prev_color = theme::alpha(theme::legacy::SWEEP_PREV, 120);
+    let current_text_color = theme::legacy::SWEEP;
+    let prev_text_color = theme::legacy::SWEEP_PREV;
 
     let swept_arc_deg = (sweep_az - sweep_start).rem_euclid(360.0);
     let prev_arc_deg = 360.0 - swept_arc_deg;

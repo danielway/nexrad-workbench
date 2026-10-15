@@ -14,7 +14,8 @@
 //! painted bar is thin — the surrounding height is hittable.
 
 use crate::state::AppState;
-use crate::ui::colors::timeline as tl_colors;
+use crate::ui::theme;
+use crate::ui::theme::timeline as tl_colors;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 /// Total scrubber height in egui logical pixels. Sized to the 44pt touch-target
@@ -44,8 +45,7 @@ pub(super) fn render_scrubber(
         Pos2::new(full_rect.left() + 8.0, track_y - 4.0),
         Pos2::new(full_rect.right() - 8.0, track_y + 4.0),
     );
-    let dark = state.is_dark;
-    painter.rect_filled(track_rect, 2.0, tl_colors::background(dark));
+    painter.rect_filled(track_rect, 2.0, tl_colors::BACKGROUND);
 
     // Find the time range to render: the union of cached data and the
     // archive listing, so not-yet-downloaded data is visible too. Fall
@@ -109,17 +109,13 @@ pub(super) fn render_scrubber(
             if view.is_covered_by_cached(b.start) {
                 continue;
             }
-            draw_segment(
-                b.start as f64,
-                b.end as f64,
-                tl_colors::available_border(dark),
-            );
+            draw_segment(b.start as f64, b.end as f64, tl_colors::available_border());
         }
     }
 
     // Cached (on device) — solid steel blue.
     for range in timeline.scans.time_ranges() {
-        draw_segment(range.start, range.end, tl_colors::cached_fill(dark, false));
+        draw_segment(range.start, range.end, tl_colors::cached_fill(false));
     }
 
     let playback_ts = playback.state.playback_position();
@@ -142,22 +138,18 @@ pub(super) fn render_scrubber(
 
     // Thumb — the neutral playback needle, drawn last so it sits on top.
     let thumb_r = 8.0;
-    painter.circle_filled(
-        Pos2::new(thumb_x, track_y),
-        thumb_r,
-        tl_colors::selection(dark),
-    );
+    painter.circle_filled(Pos2::new(thumb_x, track_y), thumb_r, tl_colors::PLAYHEAD);
     painter.circle_stroke(
         Pos2::new(thumb_x, track_y),
         thumb_r,
-        Stroke::new(1.5_f32, tl_colors::background(dark)),
+        Stroke::new(1.5_f32, tl_colors::BACKGROUND),
     );
 
     // Outline for the whole hit area (subtle so it reads as draggable).
     painter.rect_stroke(
         full_rect,
         4.0,
-        Stroke::new(0.5_f32, Color32::from_rgba_unmultiplied(128, 128, 128, 40)),
+        Stroke::new(0.5_f32, theme::alpha(theme::TEXT_DIM, 40)),
         StrokeKind::Inside,
     );
 
@@ -169,7 +161,7 @@ pub(super) fn render_scrubber(
     if live.is_detached(&playback.state) {
         let label = "REJOIN";
         let font = egui::FontId::proportional(9.0);
-        let galley = painter.layout_no_wrap(label.to_string(), font.clone(), Color32::WHITE);
+        let galley = painter.layout_no_wrap(label.to_string(), font.clone(), theme::TEXT);
         let pad = Vec2::new(6.0, 2.5);
         let size = galley.size() + pad * 2.0;
         let rect = Rect::from_min_size(
@@ -188,7 +180,7 @@ pub(super) fn render_scrubber(
             alpha,
         );
         painter.rect_filled(rect, 3.0, fill);
-        painter.galley(rect.min + pad, galley, Color32::WHITE);
+        painter.galley(rect.min + pad, galley, theme::TEXT);
         pill_rect = Some(rect);
     }
 

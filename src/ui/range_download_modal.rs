@@ -9,7 +9,8 @@
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::subsystem::acquisition::SelectionFetchTarget;
 use crate::subsystem::{Acquisition, Chrome};
-use eframe::egui::{self, Color32, RichText, Vec2};
+use crate::ui::theme;
+use eframe::egui::{self, RichText, Vec2};
 
 pub(super) struct RangeDownloadModalLayer;
 
@@ -89,8 +90,8 @@ fn draw_range_download_modal(
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let confirm = ui.add(
-                        egui::Button::new(RichText::new("Download Anyway").color(Color32::WHITE))
-                            .fill(Color32::from_rgb(60, 120, 200)),
+                        egui::Button::new(RichText::new("Download Anyway").color(theme::TEXT))
+                            .fill(theme::legacy::BUTTON_BLUE),
                     );
                     if confirm.clicked() {
                         if let Some(range) = chrome.range_download_modal.take() {
