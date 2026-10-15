@@ -28,7 +28,6 @@ impl Layer for BottomPanelLayer {
         draw_bottom_panel(
             ctx.root_ui,
             ctx.state,
-            &mut ctx.modals.datetime,
             ctx.timeline,
             ctx.live,
             ctx.playback,
@@ -44,7 +43,6 @@ impl Layer for BottomPanelLayer {
 fn draw_bottom_panel(
     root_ui: &mut egui::Ui,
     state: &mut AppState,
-    picker: &mut crate::ui::DateTimePickerState,
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
@@ -108,15 +106,7 @@ fn draw_bottom_panel(
                 // bottom cluster: "transport row … above the timeline").
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    render_playback_controls(
-                        ui,
-                        state,
-                        picker,
-                        timeline,
-                        live,
-                        playback,
-                        activity_vm,
-                    );
+                    render_playback_controls(ui, state, live, playback, activity_vm);
                 });
 
                 ui.add_space(2.0);

@@ -614,6 +614,7 @@ mod tests {
             live_cut: None,
             scan_at_playhead: frame.is_some(),
             canvas_caption: CanvasCaption::None,
+            loop_mode: crate::core::LoopMode::Loop,
         })
     }
 

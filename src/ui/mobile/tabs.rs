@@ -12,6 +12,7 @@
 //!   2. Scrubber (~44px) — topmost. The coverage strip (faint=available,
 //!      solid=cached, red=now, neutral thumb, REJOIN pill, long-press→inspector).
 
+use crate::core::transport::StepDir;
 use crate::core::PlaybackMode;
 use crate::state::{AppState, MobileSettingsTab};
 use eframe::egui::{self, RichText};
@@ -97,12 +98,12 @@ fn draw_mobile_chrome(
 fn render_transport_row(
     ui: &mut egui::Ui,
     state: &mut AppState,
-    timeline: &crate::subsystem::Timeline,
+    _timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    let interactive = live.session.app_mode != crate::state::AppMode::Idle;
+    // Never disabled: the core decides what each press means (§2).
     let btn_h = 38.0;
 
     ui.horizontal_centered(|ui| {
@@ -111,14 +112,13 @@ fn render_transport_row(
 
         // Step back — a seek, so it detaches first (handled in `step_frame`).
         if ui
-            .add_enabled(
-                interactive,
+            .add(
                 egui::Button::new(RichText::new(egui_phosphor::regular::CARET_LEFT).size(15.0))
                     .min_size(egui::vec2(34.0, btn_h)),
             )
             .clicked()
         {
-            step_frame(state, timeline, live, playback, -1);
+            step_frame(state, StepDir::Back);
         }
 
         // Play/Pause — the primary control (spec §13). While tethered the feed
@@ -133,8 +133,7 @@ fn render_transport_row(
             egui_phosphor::regular::PLAY
         };
         if ui
-            .add_enabled(
-                interactive,
+            .add(
                 egui::Button::new(RichText::new(play_icon).size(20.0))
                     .min_size(egui::vec2(52.0, btn_h)),
             )
@@ -145,14 +144,13 @@ fn render_transport_row(
 
         // Step forward.
         if ui
-            .add_enabled(
-                interactive,
+            .add(
                 egui::Button::new(RichText::new(egui_phosphor::regular::CARET_RIGHT).size(15.0))
                     .min_size(egui::vec2(34.0, btn_h)),
             )
             .clicked()
         {
-            step_frame(state, timeline, live, playback, 1);
+            step_frame(state, StepDir::Forward);
         }
 
         ui.add_space(2.0);
@@ -284,61 +282,10 @@ pub(super) fn toggle_play(state: &mut AppState) {
     state.push_command(crate::core::Intent::TogglePlayPause);
 }
 
-pub(super) fn step_frame(
-    state: &mut AppState,
-    timeline: &crate::subsystem::Timeline,
-    live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
-    direction: isize,
-) {
-    use crate::core::PlaybackMode;
-
-    let current_pos = playback.state.playback_position();
-    // Jogging detaches the playhead; a running stream keeps ingesting unless
-    // the data-saver policy stops it.
-    live.detach_playhead(
-        &mut playback.state,
-        state.frame_now.secs(),
-        state.pause_stream_while_reviewing,
-    );
-    match playback.state.playback_mode() {
-        PlaybackMode::Macro => {
-            playback.state.step_macro_frame(direction);
-        }
-        PlaybackMode::Micro => {
-            let step = playback.state.speed.timeline_seconds_per_real_second();
-            let fallback = current_pos + step * direction as f64;
-            let new_pos = match &state.viz_state.elevation_selection {
-                crate::core::ElevationSelection::Fixed {
-                    elevation_number, ..
-                } => {
-                    if direction < 0 {
-                        timeline
-                            .scans
-                            .prev_matching_sweep_end_by_number(current_pos, *elevation_number)
-                            .unwrap_or(fallback)
-                    } else {
-                        timeline
-                            .scans
-                            .next_matching_sweep_end_by_number(current_pos, *elevation_number)
-                            .unwrap_or(fallback)
-                    }
-                }
-                crate::core::ElevationSelection::Latest => {
-                    if direction < 0 {
-                        timeline
-                            .scans
-                            .prev_any_sweep_end(current_pos)
-                            .unwrap_or(fallback)
-                    } else {
-                        timeline
-                            .scans
-                            .next_any_sweep_end(current_pos)
-                            .unwrap_or(fallback)
-                    }
-                }
-            };
-            playback.state.set_playback_position(new_pos);
-        }
-    }
+pub(super) fn step_frame(state: &mut AppState, dir: StepDir) {
+    // The same step as the desktop buttons and the arrow keys.
+    state.push_command(crate::core::Intent::Step {
+        dir,
+        unit: crate::core::transport::StepUnit::Frame,
+    });
 }

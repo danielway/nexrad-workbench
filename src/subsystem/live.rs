@@ -113,6 +113,7 @@ impl Live {
             &crate::core::transport::TransportEnv {
                 now_secs: now,
                 pause_stream_while_reviewing,
+                frame_secs: playback.median_frame_spacing(),
             },
             crate::core::transport::TransportSlices {
                 live_mode: &mut self.mode_state,
@@ -141,6 +142,7 @@ impl Live {
             &crate::core::transport::TransportEnv {
                 now_secs: now,
                 pause_stream_while_reviewing,
+                frame_secs: playback.median_frame_spacing(),
             },
             crate::core::transport::TransportSlices {
                 live_mode: &mut self.mode_state,
@@ -260,6 +262,7 @@ impl Live {
             live_phase: self.mode_state.phase,
             last_exit: self.mode_state.last_exit_reason,
             selection: inputs.playback.selection,
+            loop_mode: inputs.playback.time_model.loop_mode,
             playback_position_secs: inputs.playback.playback_position(),
             displayed: inputs.displayed,
             live_cut,

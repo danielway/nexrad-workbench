@@ -70,7 +70,7 @@ const FALLBACK_SCAN_DURATION_SECS: i64 = 300;
 /// Timeline zoom (px/sec) live mode floors to so the strip shows individual
 /// sweeps and chunks. Comfortably above the Micro-enter tier threshold so
 /// going/returning live lands the tier in Micro.
-const LIVE_DEFAULT_ZOOM: f64 = 2.0;
+const LIVE_DEFAULT_ZOOM: f64 = crate::core::timeline_interaction::LIVE_ZOOM;
 
 /// Maximum time difference (in seconds) between a cached scan's start_time
 /// and an archive file's timestamp for them to be considered the same scan.
@@ -284,22 +284,36 @@ fn apply_url_params(
         .camera
         .center_on(state.viz_state.center_lat, state.viz_state.center_lon);
 
+    // A deep link carries an explicit playback time WITHOUT `rt=true`: honor it
+    // as a detached archive view (the user shared "this moment"), and do NOT
+    // auto-tether. With `rt=true`, the boot-live path below re-tethers and the
+    // restored time is irrelevant (the playhead snaps to now).
+    let explicit_deep_link = url_params.time.is_some() && url_params.view.rt != Some(true);
+
     // Apply view state (zoom levels) before centering so the zoom is correct
     if let Some(mz) = url_params.view.mz {
         state.viz_state.set_zoom(mz);
     }
-    if let Some(tz) = url_params.view.tz {
-        // Clamp restored zoom into the *width-aware* range so an old link with
-        // an absurdly small (year-wide) zoom lands at the widest readable
+    {
+        // Boot zoom: the live zoom when the session boots pinned to now (so
+        // going live never jumps the strip), else the link's or the macro
+        // default. Clamp into the *width-aware* range so an old link with an
+        // absurdly small (year-wide) zoom lands at the widest readable
         // calendar span instead of decades out (spec §6.4 DECIDED). Width isn't
         // measured yet at boot, so use the seeded `timeline_width_px`; the
         // per-frame reconcile corrects the tier once the real width is known.
+        let zoom =
+            crate::core::timeline_interaction::boot_zoom(url_params.view.tz, !explicit_deep_link);
         let min = crate::core::PlaybackState::min_zoom_for_width(playback.state.timeline_width_px);
-        playback.state.timeline_zoom = tz.clamp(min, crate::core::TIMELINE_ZOOM_MAX);
+        playback.state.timeline_zoom = zoom.clamp(min, crate::core::TIMELINE_ZOOM_MAX);
         // Seed the tier deterministically from the restored zoom+width (no
         // hysteresis memory at boot). The per-frame reconcile corrects it once
         // the real strip width is measured.
         playback.state.seed_tier_from_state();
+        if !explicit_deep_link {
+            let now = playback.state.playback_position();
+            playback.state.center_view_on(now);
+        }
     }
 
     // Restore 3D view mode and camera parameters from URL. The camera is the
@@ -338,17 +352,14 @@ fn apply_url_params(
         }
     }
 
-    // A deep link carries an explicit playback time WITHOUT `rt=true`: honor it
-    // as a detached archive view (the user shared "this moment"), and do NOT
-    // auto-tether. With `rt=true`, the boot-live path below re-tethers and the
-    // restored time is irrelevant (the playhead snaps to now).
-    let explicit_deep_link = url_params.time.is_some() && url_params.view.rt != Some(true);
     if let Some(time) = url_params.time {
         playback.state.set_playback_position(time);
-        // Center view on the restored position. timeline_width_px may
-        // still be the default 1000px since we haven't rendered yet, but
-        // it will be accurate on subsequent centers.
-        playback.state.center_view_on(time);
+        // Center view on the restored position (a live boot stays centered on
+        // now). timeline_width_px may still be the default 1000px since we
+        // haven't rendered yet, but it will be accurate on subsequent centers.
+        if explicit_deep_link {
+            playback.state.center_view_on(time);
+        }
     }
 
     // First-launch detection: if no site specified in the URL, check for a

@@ -15,7 +15,8 @@
 //! and live-mode interactions there don't generalize; its entry in the
 //! help overlay still lives here so users see the full set in one place.
 
-use crate::core::{PlaybackSpeed, RadarProduct};
+use crate::core::transport::{LoopEdge, StepDir, StepUnit};
+use crate::core::RadarProduct;
 use crate::geo::ViewMode;
 use crate::state::AppState;
 use eframe::egui::{self, RichText};
@@ -364,201 +365,61 @@ pub(crate) fn handle_shortcuts(
 // Per-handler functions for the registry
 // ---------------------------------------------------------------------------
 
-fn current_pos(_state: &AppState, playback: &crate::subsystem::Playback) -> f64 {
-    playback.state.playback_position()
-}
-
-fn jog_fallback(_state: &AppState, playback: &crate::subsystem::Playback) -> f64 {
-    playback.state.speed.timeline_seconds_per_real_second()
-}
-
 /// Direction a step shortcut moves the playhead, read from this frame's input.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum StepDir {
-    Backward,
-    Forward,
-}
-
-/// Resolve the step direction for the arrow-key shortcuts. ArrowRight wins if
-/// somehow both are pressed in the same frame (forward bias).
+/// ArrowRight wins if somehow both are pressed in the same frame (forward
+/// bias).
 fn step_dir(ctx: &egui::Context) -> StepDir {
     if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
         StepDir::Forward
     } else {
-        StepDir::Backward
+        StepDir::Back
     }
 }
 
-/// Detach the tether for a seek gesture (spec §7/§12): stepping is a seek, so
-/// the playhead leaves the live edge first; the stream keeps ingesting unless
-/// the data-saver policy stops it. Threads `pause_stream_while_reviewing`
-/// through the one place that policy is checked.
-fn detach_for_seek(
-    state: &AppState,
-    live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
-) {
-    live.detach_playhead(
-        &mut playback.state,
-        state.frame_now.secs(),
-        state.pause_stream_while_reviewing,
-    );
-}
-
-/// ←/→ frame step: move one matching frame (a sweep of the selected product +
-/// tilt; a whole scan in volumetric 3D, where per-sweep steps wouldn't change
-/// the picture). Detach-then-step so the Free-mode seek assert holds and
-/// stepping while tethered detaches rather than no-opping (spec §7/§12).
+/// ←/→ frame step: the same step as the transport buttons (one frame of the
+/// selected product and tilt; a whole scan in volumetric 3D), decided by
+/// `core::transport::reduce_step`.
 fn handle_frame_step(
     state: &mut AppState,
-    live: &mut crate::subsystem::Live,
-    timeline: &crate::subsystem::Timeline,
-    playback: &mut crate::subsystem::Playback,
-    _chrome: &mut crate::subsystem::Chrome,
-    ctx: &egui::Context,
-) {
-    let dir = step_dir(ctx);
-    let pos = current_pos(state, playback);
-    let fallback = jog_fallback(state, playback);
-    detach_for_seek(state, live, playback);
-    // Volumetric 3D: a frame is a whole scan (the volume render is keyed
-    // per scan), so ←/→ uses the scan steppers regardless of the elevation
-    // selection — same predicate as the frame-list granularity.
-    if state.viz_state.volume_3d_enabled
-        && state.viz_state.view_mode() == crate::geo::ViewMode::Globe3D
-    {
-        let new_pos = match dir {
-            StepDir::Forward => timeline
-                .scans
-                .next_scan_any_sweep_end(pos)
-                .unwrap_or(pos + fallback),
-            StepDir::Backward => timeline
-                .scans
-                .prev_scan_any_sweep_end(pos)
-                .unwrap_or(pos - fallback),
-        };
-        playback.state.set_playback_position(new_pos);
-        return;
-    }
-    let new_pos = match (&state.viz_state.elevation_selection, dir) {
-        (
-            crate::core::ElevationSelection::Fixed {
-                elevation_number, ..
-            },
-            StepDir::Forward,
-        ) => timeline
-            .scans
-            .next_matching_sweep_end_by_number(pos, *elevation_number)
-            .unwrap_or(pos + fallback),
-        (
-            crate::core::ElevationSelection::Fixed {
-                elevation_number, ..
-            },
-            StepDir::Backward,
-        ) => timeline
-            .scans
-            .prev_matching_sweep_end_by_number(pos, *elevation_number)
-            .unwrap_or(pos - fallback),
-        (crate::core::ElevationSelection::Latest, StepDir::Forward) => timeline
-            .scans
-            .next_any_sweep_end(pos)
-            .unwrap_or(pos + fallback),
-        (crate::core::ElevationSelection::Latest, StepDir::Backward) => timeline
-            .scans
-            .prev_any_sweep_end(pos)
-            .unwrap_or(pos - fallback),
-    };
-    playback.state.set_playback_position(new_pos);
-}
-
-/// Shift+←/→ scan step: move one whole volume scan (spec §12). Lands on the
-/// matching frame of the adjacent volume (or its earliest sweep when the
-/// selected tilt is absent). Detach-then-step like the frame step. Falls back
-/// to a whole-volume time jump only when no adjacent scan exists.
-fn handle_scan_step(
-    state: &mut AppState,
-    live: &mut crate::subsystem::Live,
-    timeline: &crate::subsystem::Timeline,
-    playback: &mut crate::subsystem::Playback,
-    _chrome: &mut crate::subsystem::Chrome,
-    ctx: &egui::Context,
-) {
-    let dir = step_dir(ctx);
-    let pos = current_pos(state, playback);
-    // Whole-volume fallback when the timeline has no neighboring scan loaded.
-    let fallback = crate::FALLBACK_SCAN_DURATION_SECS as f64;
-    detach_for_seek(state, live, playback);
-    let new_pos = match (&state.viz_state.elevation_selection, dir) {
-        (
-            crate::core::ElevationSelection::Fixed {
-                elevation_number, ..
-            },
-            StepDir::Forward,
-        ) => timeline
-            .scans
-            .next_scan_matching_sweep_end_by_number(pos, *elevation_number)
-            .unwrap_or(pos + fallback),
-        (
-            crate::core::ElevationSelection::Fixed {
-                elevation_number, ..
-            },
-            StepDir::Backward,
-        ) => timeline
-            .scans
-            .prev_scan_matching_sweep_end_by_number(pos, *elevation_number)
-            .unwrap_or(pos - fallback),
-        (crate::core::ElevationSelection::Latest, StepDir::Forward) => timeline
-            .scans
-            .next_scan_any_sweep_end(pos)
-            .unwrap_or(pos + fallback),
-        (crate::core::ElevationSelection::Latest, StepDir::Backward) => timeline
-            .scans
-            .prev_scan_any_sweep_end(pos)
-            .unwrap_or(pos - fallback),
-    };
-    playback.state.set_playback_position(new_pos);
-}
-
-/// The speed variants the keyboard cycles through, restricted to the active
-/// effective mode's setting space: in Macro only the macro-capable (fps)
-/// variants, in Micro all variants. Cycling outside this set would land on a
-/// variant whose combo label and actual playback disagree (advance_macro
-/// silently falls back). When the current speed isn't in the active set
-/// (e.g. just snapped modes), the nearest index is found by position in the
-/// fallback `all()` ordering.
-fn active_mode_speeds(playback: &crate::subsystem::Playback) -> &'static [PlaybackSpeed] {
-    match playback.state.playback_mode() {
-        crate::core::PlaybackMode::Macro => PlaybackSpeed::macro_speeds(),
-        crate::core::PlaybackMode::Micro => PlaybackSpeed::all(),
-    }
-}
-
-/// [ / ] speed down / up (spec §12). `[` (OpenBracket) slows, `]`
-/// (CloseBracket) quickens; cycling stays within the active mode's valid speed
-/// set (macro fps vs micro multiples) so the combo label and playback never
-/// disagree (Phase 1 fix).
-fn handle_speed_step(
-    _state: &mut AppState,
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
-    playback: &mut crate::subsystem::Playback,
+    _playback: &mut crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
+    ctx: &egui::Context,
+) {
+    state.push_command(crate::core::Intent::Step {
+        dir: step_dir(ctx),
+        unit: StepUnit::Frame,
+    });
+}
+
+/// Shift+←/→ scan step: one whole volume.
+fn handle_scan_step(
+    state: &mut AppState,
+    _live: &mut crate::subsystem::Live,
+    _timeline: &crate::subsystem::Timeline,
+    _playback: &mut crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
+    ctx: &egui::Context,
+) {
+    state.push_command(crate::core::Intent::Step {
+        dir: step_dir(ctx),
+        unit: StepUnit::Volume,
+    });
+}
+
+/// [ / ] speed down / up (spec §12): one rung within the mode's speeds,
+/// decided by `core::transport::reduce_step_speed`.
+fn handle_speed_step(
+    state: &mut AppState,
+    _live: &mut crate::subsystem::Live,
+    _timeline: &crate::subsystem::Timeline,
+    _playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     ctx: &egui::Context,
 ) {
     let faster = ctx.input(|i| i.key_pressed(egui::Key::CloseBracket));
-    let speeds = active_mode_speeds(playback);
-    if let Some(idx) = speeds.iter().position(|s| *s == playback.state.speed) {
-        if faster {
-            if idx + 1 < speeds.len() {
-                playback.state.speed = speeds[idx + 1];
-            }
-        } else if idx > 0 {
-            playback.state.speed = speeds[idx - 1];
-        }
-    } else if let Some(&first) = speeds.first() {
-        // Current speed isn't valid in this mode — land on the slowest valid.
-        playback.state.speed = first;
-    }
+    state.push_command(crate::core::Intent::StepSpeed { faster });
 }
 
 /// Multiplicative timeline-zoom step per `+`/`−` press (spec §12). A ~1.3×
@@ -617,70 +478,28 @@ fn handle_zoom_step(
     ps.set_timeline_zoom(new_zoom, width);
 }
 
-/// Set a loop in/out point at the playhead (spec §8/§12 I/O keys): move the
-/// relevant edge of the current range to the playhead and select it — with
-/// the same live rule the drag/click selection paths use (a range ending near
-/// now while streaming is a live range; anything else detaches and is fixed).
-/// When no range exists yet, the other edge seeds at the playhead, so the
-/// first key parks a half-set range and the second completes it.
-fn set_loop_point(
-    state: &mut AppState,
-    live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
-    is_in: bool,
-) {
-    let now = state.frame_now.secs();
-    let pos = playback.state.playback_position();
-    let (mut a, mut b) = playback
-        .state
-        .playback_bounds()
-        .or(playback.state.drag.map(|d| (d.a, d.b)))
-        .unwrap_or((pos, pos));
-    if is_in {
-        a = pos;
-    } else {
-        b = pos;
-    }
-    let to_live = crate::core::transport::ends_at_live_edge(a.max(b), now);
-    if live.select_range(
-        &mut playback.state,
-        a,
-        b,
-        to_live,
-        now,
-        state.pause_stream_while_reviewing,
-    ) {
-        state.selection_just_finalized = playback.state.selection_range();
-    } else {
-        // Park the half-set range until the other edge is placed.
-        playback.state.drag = Some(crate::core::TimeSelection {
-            a,
-            b,
-            in_progress: false,
-        });
-    }
-}
-
+/// I: the range starts at the playhead (`core::transport::reduce_loop_point`).
 fn handle_loop_in(
     state: &mut AppState,
-    live: &mut crate::subsystem::Live,
+    _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
-    playback: &mut crate::subsystem::Playback,
+    _playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    set_loop_point(state, live, playback, true);
+    state.push_command(crate::core::Intent::SetLoopPoint(LoopEdge::In));
 }
 
+/// O: the range ends at the playhead.
 fn handle_loop_out(
     state: &mut AppState,
-    live: &mut crate::subsystem::Live,
+    _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
-    playback: &mut crate::subsystem::Playback,
+    _playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    set_loop_point(state, live, playback, false);
+    state.push_command(crate::core::Intent::SetLoopPoint(LoopEdge::Out));
 }
 
 /// L go live (spec §12): a one-way re-tether, never a toggle that can stop the
