@@ -120,7 +120,7 @@ fn measure(ui: &egui::Ui, vm: &TopBarVm) -> TopBarWidths {
     }
     fixed += mono(&vm.readout.time) + 2.0 * ui.spacing().button_padding.x;
     if let Some(pill) = &vm.pill {
-        fixed += text_width(ui, &pill.text, egui::FontId::proportional(theme::LABEL)) + 30.0 + sp;
+        fixed += text_width(ui, &pill.text, label_font()) + 36.0 + sp;
     }
     if let Some(err) = &vm.worker_error {
         fixed += text_width(ui, err, label_font()) + icon(icons::WARNING) + label("Retry");
@@ -282,36 +282,56 @@ fn frame_readout(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState, show_zo
 /// The pill: red dot (pinned to now), amber loop mark (looping to now), or
 /// nothing ("no frame yet"), then the words.
 pub(super) fn readout_pill(ui: &mut egui::Ui, pill: &ReadoutPill) {
-    egui::Frame::new()
-        .fill(theme::RAISED)
-        .stroke(egui::Stroke::new(1.0, theme::LINE))
-        .corner_radius(egui::CornerRadius::same(9))
-        .inner_margin(egui::Margin::symmetric(7, 1))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 5.0;
-            match pill.mark {
-                PillMark::Pinned => {
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 3.5, theme::NOW);
-                }
-                PillMark::Loop => {
-                    ui.label(
-                        RichText::new(icons::REPEAT)
-                            .size(theme::LABEL)
-                            .color(theme::LOOP),
-                    );
-                }
-                PillMark::None => {}
-            }
-            ui.label(
-                RichText::new(&pill.text)
-                    .size(theme::LABEL)
-                    .color(theme::TEXT_DIM),
-            );
-        })
-        .response
-        .on_hover_text(pill.hover);
+    // Painted at a fixed height so the pill never stretches to the bar.
+    const HEIGHT: f32 = 20.0;
+    const PAD: f32 = 8.0;
+    const GAP: f32 = 5.0;
+    let font = egui::FontId::proportional(theme::LABEL);
+    let text = ui
+        .painter()
+        .layout_no_wrap(pill.text.clone(), font.clone(), theme::TEXT_DIM);
+    let mark = match pill.mark {
+        PillMark::Pinned => None,
+        PillMark::Loop => Some(ui.painter().layout_no_wrap(
+            icons::REPEAT.to_string(),
+            font,
+            theme::LOOP,
+        )),
+        PillMark::None => None,
+    };
+    let mark_w = match (pill.mark, &mark) {
+        (PillMark::Pinned, _) => 7.0 + GAP,
+        (_, Some(g)) => g.size().x + GAP,
+        _ => 0.0,
+    };
+    let size = egui::vec2(PAD * 2.0 + mark_w + text.size().x, HEIGHT);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        egui::CornerRadius::same((HEIGHT / 2.0) as u8),
+        theme::RAISED,
+        egui::Stroke::new(1.0, theme::LINE),
+        egui::StrokeKind::Inside,
+    );
+    let mut x = rect.left() + PAD;
+    let cy = rect.center().y;
+    match (pill.mark, mark) {
+        (PillMark::Pinned, _) => {
+            painter.circle_filled(egui::pos2(x + 3.5, cy), 3.5, theme::NOW);
+        }
+        (_, Some(g)) => {
+            painter.galley(egui::pos2(x, cy - g.size().y / 2.0), g, theme::LOOP);
+        }
+        _ => {}
+    }
+    x += mark_w;
+    painter.galley(
+        egui::pos2(x, cy - text.size().y / 2.0),
+        text,
+        theme::TEXT_DIM,
+    );
+    resp.on_hover_text(pill.hover);
 }
 
 /// The decode worker failed to start. ⚠ in text color, never red.
