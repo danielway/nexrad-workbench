@@ -135,56 +135,15 @@ pub(crate) fn handle_canvas_interaction(
         }
     } else if response.clicked() {
         if let Some(click_pos) = response.interact_pointer_pos() {
-            // Point-like markers (sites, mPING) sit visually on top of alert
-            // polygons, so they hit-test first; alerts catch the rest.
-            let mut handled = false;
-            if let Some((site_id, lat, lon)) = pick_site_at(click_pos, projection, state) {
-                state.push_command(crate::core::Intent::SelectSite {
-                    site_id: site_id.to_string(),
-                    lat,
-                    lon,
-                });
-                handled = true;
-            }
-            if !handled && state.layer_state.geo.mping {
-                if let Some(id) = pick_mping_report_at(
-                    click_pos,
-                    projection,
-                    &diagnostics.mping.reports,
-                    playback.state.playback_position(),
-                ) {
-                    state.push_command(crate::core::Intent::Diagnostics(
-                        crate::core::diagnostics::DiagnosticsIntent::SelectMpingReport(id),
-                    ));
-                    handled = true;
-                }
-            }
-            let show_warnings = state.layer_state.geo.alerts_warnings;
-            let show_other = state.layer_state.geo.alerts_other;
-            if !handled && (show_warnings || show_other) && derived.data_is_live {
-                let geo = projection.screen_to_geo(click_pos);
-                let bounds = projection.visible_bounds();
-                // Pure hit-test + severity-rank tie-break lives in the core.
-                if let Some(id) = crate::core::diagnostics::select_alert_at(
-                    &diagnostics.alerts.alerts,
-                    geo.x,
-                    geo.y,
-                    bounds,
-                    show_warnings,
-                    show_other,
-                ) {
-                    state.push_command(crate::core::Intent::Diagnostics(
-                        crate::core::diagnostics::DiagnosticsIntent::SelectAlert(id),
-                    ));
-                    handled = true;
-                }
-            }
-            // Click missed every interactive overlay — dismiss any open
-            // mPING popover.
-            if !handled {
-                state.push_command(crate::core::Intent::Diagnostics(
+            // What the click picks is the core's call (`decide_map_pick`):
+            // marks over polygons, and only marks whose layer is drawn.
+            match pick_at(click_pos, projection, state, playback, diagnostics, derived) {
+                Some(pick) => state.push_command(pick.intent()),
+                // Missed every interactive overlay — dismiss any open mPING
+                // popover.
+                None => state.push_command(crate::core::Intent::Diagnostics(
                     crate::core::diagnostics::DiagnosticsIntent::ClearMpingSelection,
-                ));
+                )),
             }
         }
     }
@@ -245,6 +204,67 @@ pub(crate) fn handle_canvas_interaction(
         state.viz_state.set_zoom(crate::geo::DEFAULT_FLAT_ZOOM);
         state.viz_state.set_pan_offset(Vec2::ZERO);
     }
+}
+
+/// The map object under `pos`: hit-test every pickable mark against the
+/// projection (pixel radii, the shell's part), then let the core decide.
+/// Shared by clicks and hover so a hover state always previews the click.
+pub(crate) fn pick_at(
+    pos: egui::Pos2,
+    projection: &MapProjection,
+    state: &AppState,
+    playback: &crate::subsystem::Playback,
+    diagnostics: &crate::subsystem::Diagnostics,
+    derived: &crate::subsystem::Derived,
+) -> Option<crate::core::canvas::MapPick> {
+    let geo_layers = &state.layer_state.geo;
+    let show_warnings = geo_layers.alerts_warnings;
+    let show_other = geo_layers.alerts_other;
+    let layers = crate::core::canvas::PickLayers {
+        sites: geo_layers.nexrad_sites,
+        mping: geo_layers.mping,
+        alerts: (show_warnings || show_other) && derived.data_is_live,
+    };
+    let candidates = crate::core::canvas::PickCandidates {
+        site: layers
+            .sites
+            .then(|| pick_site_at(pos, projection, state))
+            .flatten(),
+        mping: layers
+            .mping
+            .then(|| {
+                pick_mping_report_at(
+                    pos,
+                    projection,
+                    &diagnostics.mping.reports,
+                    playback.state.playback_position(),
+                )
+            })
+            .flatten(),
+        alert: layers
+            .alerts
+            .then(|| {
+                let geo = projection.screen_to_geo(pos);
+                crate::core::diagnostics::select_alert_at(
+                    &diagnostics.alerts.alerts,
+                    geo.x,
+                    geo.y,
+                    projection.visible_bounds(),
+                    show_warnings,
+                    show_other,
+                )
+            })
+            .flatten()
+            .and_then(|id| {
+                diagnostics
+                    .alerts
+                    .alerts
+                    .iter()
+                    .find(|a| a.id == id)
+                    .map(|a| (id.clone(), a.event.clone()))
+            }),
+    };
+    crate::core::canvas::decide_map_pick(candidates, layers)
 }
 
 /// Return `(site_id, lat, lon)` for the NEXRAD site closest to `click_pos`

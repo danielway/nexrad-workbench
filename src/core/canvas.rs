@@ -1156,6 +1156,100 @@ fn format_mi(mi: f64) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Picking (one-instrument §7: hover states and a cursor; sites click only
+// when the Sites layer is on)
+// ---------------------------------------------------------------------------
+
+/// What the nearest marks under the cursor are, hit-tested by the shell
+/// against the projection (pixel radii).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct PickCandidates {
+    /// Another NEXRAD site's marker: `(id, lat, lon)`.
+    pub site: Option<(&'static str, f64, f64)>,
+    /// An mPING report's marker id.
+    pub mping: Option<i64>,
+    /// The alert polygon under the cursor (severity tie-break already
+    /// applied): `(id, event)`.
+    pub alert: Option<(String, String)>,
+}
+
+/// Which pickable layers are drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PickLayers {
+    pub sites: bool,
+    pub mping: bool,
+    /// Either alert class is on and live overlays apply at the playhead.
+    pub alerts: bool,
+}
+
+/// The map object a click picks and a hover highlights.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum MapPick {
+    Site {
+        id: &'static str,
+        lat: f64,
+        lon: f64,
+    },
+    Mping(i64),
+    Alert {
+        id: String,
+        event: String,
+    },
+}
+
+impl MapPick {
+    /// What a click on it does.
+    pub(crate) fn intent(&self) -> crate::core::Intent {
+        use crate::core::diagnostics::DiagnosticsIntent;
+        match self {
+            MapPick::Site { id, lat, lon } => crate::core::Intent::SelectSite {
+                site_id: id.to_string(),
+                lat: *lat,
+                lon: *lon,
+            },
+            MapPick::Mping(id) => {
+                crate::core::Intent::Diagnostics(DiagnosticsIntent::SelectMpingReport(*id))
+            }
+            MapPick::Alert { id, .. } => {
+                crate::core::Intent::Diagnostics(DiagnosticsIntent::SelectAlert(id.clone()))
+            }
+        }
+    }
+
+    /// The hover label beside the cursor: the site's ID, or the alert's
+    /// event. A report's marker needs none (its popover is one click away).
+    pub(crate) fn hover_label(&self) -> Option<String> {
+        match self {
+            MapPick::Site { id, .. } => Some(format!("{id} · switch site")),
+            MapPick::Mping(_) => None,
+            MapPick::Alert { event, .. } => Some(event.clone()),
+        }
+    }
+}
+
+/// Decide the pick. Point marks sit on top of alert polygons, so sites and
+/// reports win over alerts; a mark only picks while its layer is drawn — a
+/// click near an invisible site does nothing, as it looks like it should.
+pub(crate) fn decide_map_pick(c: PickCandidates, layers: PickLayers) -> Option<MapPick> {
+    if layers.sites {
+        if let Some((id, lat, lon)) = c.site {
+            return Some(MapPick::Site { id, lat, lon });
+        }
+    }
+    if layers.mping {
+        if let Some(id) = c.mping {
+            return Some(MapPick::Mping(id));
+        }
+    }
+    if layers.alerts {
+        if let Some((id, event)) = c.alert {
+            return Some(MapPick::Alert { id, event });
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Distance tool
 // ---------------------------------------------------------------------------
 
@@ -2358,5 +2452,91 @@ mod overlay_tests {
         assert!(faded_wedge_hint(true, sweep, 45.0, 50.0, 460.0).is_none());
         assert!(faded_wedge_hint(false, sweep, 200.0, 50.0, 460.0).is_none());
         assert!(faded_wedge_hint(true, sweep, 200.0, 470.0, 460.0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::*;
+    use crate::core::diagnostics::DiagnosticsIntent;
+    use crate::core::Intent;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn all() -> PickCandidates {
+        PickCandidates {
+            site: Some(("KFDR", 34.3, -98.9)),
+            mping: Some(7),
+            alert: Some(("a1".to_string(), "Tornado Warning".to_string())),
+        }
+    }
+
+    const ON: PickLayers = PickLayers {
+        sites: true,
+        mping: true,
+        alerts: true,
+    };
+
+    #[wasm_bindgen_test]
+    fn a_hidden_site_never_picks() {
+        let layers = PickLayers { sites: false, ..ON };
+        assert_eq!(decide_map_pick(all(), layers), Some(MapPick::Mping(7)));
+        let only_site = PickCandidates {
+            site: all().site,
+            ..PickCandidates::default()
+        };
+        assert_eq!(decide_map_pick(only_site, layers), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn point_marks_win_over_alert_polygons() {
+        assert!(matches!(
+            decide_map_pick(all(), ON),
+            Some(MapPick::Site { id: "KFDR", .. })
+        ));
+        let no_site = PickCandidates {
+            site: None,
+            ..all()
+        };
+        assert_eq!(
+            decide_map_pick(no_site.clone(), ON),
+            Some(MapPick::Mping(7))
+        );
+        let alert_only = PickCandidates {
+            mping: None,
+            ..no_site
+        };
+        assert!(matches!(
+            decide_map_pick(alert_only.clone(), ON),
+            Some(MapPick::Alert { .. })
+        ));
+        let off = PickLayers {
+            alerts: false,
+            ..ON
+        };
+        assert_eq!(decide_map_pick(alert_only, off), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_pick_carries_its_click_and_its_hover() {
+        let site = decide_map_pick(all(), ON).unwrap();
+        assert_eq!(
+            site.intent(),
+            Intent::SelectSite {
+                site_id: "KFDR".to_string(),
+                lat: 34.3,
+                lon: -98.9,
+            }
+        );
+        assert_eq!(site.hover_label().as_deref(), Some("KFDR · switch site"));
+        assert_eq!(
+            MapPick::Mping(7).intent(),
+            Intent::Diagnostics(DiagnosticsIntent::SelectMpingReport(7))
+        );
+        assert_eq!(MapPick::Mping(7).hover_label(), None);
+        let alert = MapPick::Alert {
+            id: "a1".to_string(),
+            event: "Tornado Warning".to_string(),
+        };
+        assert_eq!(alert.hover_label().as_deref(), Some("Tornado Warning"));
     }
 }

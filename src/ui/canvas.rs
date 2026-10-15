@@ -447,6 +447,24 @@ pub(crate) fn render_canvas_with_geo(
                     }
                 }
 
+                // Hover states (§7): every clickable mark gets a highlight and
+                // a pointing cursor, previewing exactly what a click picks.
+                if let Some(pos) = response.hover_pos() {
+                    if !state.viz_state.distance_tool_active && !response.dragged() {
+                        if let Some(pick) = super::canvas_interaction::pick_at(
+                            pos,
+                            &projection,
+                            state,
+                            playback,
+                            diagnostics,
+                            derived,
+                        ) {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            paint_pick_hover(&painter, &projection, &pick, pos, rect, diagnostics);
+                        }
+                    }
+                }
+
                 if state.layer_state.geo.mping && diagnostics.mping.selected_report_id.is_some() {
                     render_mping_detail(
                         &painter,
@@ -734,4 +752,48 @@ fn render_canvas_caption(
                     });
                 });
         });
+}
+
+/// Paint a hovered mark's highlight and its label (on a scrim beside the
+/// cursor). What is hovered is the core's [`crate::core::canvas::MapPick`].
+fn paint_pick_hover(
+    painter: &egui::Painter,
+    projection: &MapProjection,
+    pick: &crate::core::canvas::MapPick,
+    cursor: egui::Pos2,
+    rect: Rect,
+    diagnostics: &crate::subsystem::Diagnostics,
+) {
+    use crate::core::canvas::MapPick;
+    let mark = match pick {
+        MapPick::Site { lat, lon, .. } => Some((*lat, *lon)),
+        MapPick::Mping(id) => diagnostics
+            .mping
+            .reports
+            .iter()
+            .find(|r| r.id == *id)
+            .map(|r| (r.lat, r.lon)),
+        MapPick::Alert { .. } => None,
+    };
+    if let Some((lat, lon)) = mark {
+        let at = projection.geo_to_screen(Coord { x: lon, y: lat });
+        painter.circle_stroke(at, 9.0, Stroke::new(1.5_f32, theme::SEEN));
+    }
+    let Some(label) = pick.hover_label() else {
+        return;
+    };
+    let galley = painter.layout_no_wrap(label, theme::readout_font(), theme::TEXT);
+    let size = galley.size() + egui::vec2(10.0, 6.0);
+    let mut min = cursor + egui::vec2(12.0, 12.0);
+    min.x = min.x.min(rect.max.x - size.x);
+    min.y = min.y.min(rect.max.y - size.y);
+    let r = Rect::from_min_size(min, size);
+    painter.rect(
+        r,
+        4.0,
+        theme::map::scrim(),
+        Stroke::new(1.0_f32, theme::map::scrim_edge()),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(r.min + egui::vec2(5.0, 3.0), galley, theme::TEXT);
 }
