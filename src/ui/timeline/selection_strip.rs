@@ -12,8 +12,11 @@
 use crate::core::selection_strip::{
     drag_anchor, drag_point, grab_at, intent_for, release, StripGrab, StripRelease,
 };
+use crate::core::timeline_view::{
+    half_range, range_marks, HalfRange, RangeCost, RangeEndHandle, RangeMarks,
+};
 use crate::state::AppState;
-use crate::ui::theme::timeline::{self as tl_colors, LIVE_ACTIVE};
+use crate::ui::theme::timeline as tl_colors;
 use eframe::egui::{self, Pos2, Rect, Sense, Stroke};
 
 /// Painted handle size: a small tab at each end of the range bar.
@@ -126,32 +129,60 @@ pub(super) fn render_selection_strip(
         }
     };
 
-    paint_range(&painter, frame, rect, playback, response.hovered());
+    // Placed after this frame's drag update, so the bar never trails the
+    // pointer. The strip draws no label, so the cost doesn't matter here.
+    let marks = range_marks(
+        playback.state.selection_range(),
+        playback.state.is_live_range(),
+        playback.state.selection_in_progress(),
+        now,
+        RangeCost::default(),
+    );
+    let half = half_range(
+        playback
+            .state
+            .drag
+            .filter(|d| !d.in_progress)
+            .map(|d| (d.a, d.b)),
+        marks.is_some(),
+        playback.state.playback_position(),
+    );
+    if let Some(h) = half {
+        paint_half_range(&painter, frame, rect, h);
+    }
+    paint_range(
+        &painter,
+        frame,
+        rect,
+        marks.as_ref(),
+        response.hovered() && half.is_none(),
+    );
 }
 
 /// Push the intent a release maps to (and say why when a range is refused).
 fn finish(state: &mut AppState, rel: StripRelease, range: Option<(f64, f64)>) {
     if rel == StripRelease::TooLong {
-        state.status_message = format!(
-            "Range too long — zoom in and select at most {} days",
+        state.toasts.notice(format!(
+            "Range too long — select at most {} days",
             (crate::core::MAX_SELECTION_SPAN_SECS / 86_400.0) as i64
-        );
+        ));
     }
     if let Some(intent) = intent_for(rel, range.is_some()) {
         state.push_command(intent);
     }
 }
 
-/// The range bar with a handle at each end; the right handle turns red when
-/// the range is pinned to now. Shows the in-progress drag while drawing.
+/// The range bar with a handle at each end, as the core places it: amber
+/// handles on a fixed range, and on a range pinned to now a red dot that
+/// sits on the now line. Shows the in-progress drag while drawing.
 fn paint_range(
     painter: &egui::Painter,
     frame: &super::TimelineFrame<'_>,
     rect: Rect,
-    playback: &crate::subsystem::Playback,
+    range_marks: Option<&RangeMarks>,
     hovered: bool,
 ) {
-    let Some((start, end)) = playback.state.selection_range() else {
+    let Some(rm) = range_marks else {
         if hovered {
             painter.text(
                 Pos2::new(rect.left() + 6.0, rect.center().y),
@@ -163,39 +194,69 @@ fn paint_range(
         }
         return;
     };
-    let (sx, ex) = (frame.ts_to_x(start), frame.ts_to_x(end));
-    if ex < rect.left() || sx > rect.right() {
+    let (sx, ex) = (frame.ts_to_x(rm.start), frame.ts_to_x(rm.end));
+    if ex < rect.left() - HANDLE_W || sx > rect.right() + HANDLE_W {
         return;
     }
-    let pinned = playback.state.is_live_range() && !playback.state.selection_in_progress();
     let cy = rect.center().y;
     let bar = Rect::from_min_max(
         Pos2::new(sx.max(rect.left()), cy - BAR_H / 2.0),
         Pos2::new(ex.min(rect.right()), cy + BAR_H / 2.0),
     );
     painter.rect_filled(bar, 0.0, tl_colors::RANGE);
-    for (x, color) in [
-        (sx, tl_colors::RANGE),
-        (
-            ex,
-            if pinned {
-                LIVE_ACTIVE
-            } else {
-                tl_colors::RANGE
-            },
-        ),
-    ] {
+    let tab = |x: f32| {
         if x < rect.left() - HANDLE_W || x > rect.right() + HANDLE_W {
-            continue;
+            return;
         }
         let tab =
             Rect::from_center_size(Pos2::new(x, cy), egui::vec2(HANDLE_W, rect.height() - 2.0));
-        painter.rect_filled(tab, 2.0, color);
+        painter.rect_filled(tab, 2.0, tl_colors::RANGE);
         painter.rect_stroke(
             tab,
             2.0,
-            Stroke::new(1.0, color.gamma_multiply(0.6)),
+            Stroke::new(1.0, tl_colors::RANGE.gamma_multiply(0.6)),
             egui::StrokeKind::Inside,
         );
+    };
+    tab(sx);
+    match rm.end_handle {
+        RangeEndHandle::Fixed => tab(ex),
+        RangeEndHandle::PinnedToNow => {
+            if ex >= rect.left() - HANDLE_W && ex <= rect.right() + HANDLE_W {
+                painter.circle_filled(
+                    Pos2::new(ex, cy),
+                    HANDLE_W / 2.0 + 0.5,
+                    tl_colors::PINNED_HANDLE,
+                );
+            }
+        }
+    }
+}
+
+/// A half-placed range: one amber handle at the parked point and a faint
+/// amber bar to the playhead, where the second key would land.
+fn paint_half_range(
+    painter: &egui::Painter,
+    frame: &super::TimelineFrame<'_>,
+    rect: Rect,
+    h: HalfRange,
+) {
+    let (ax, px) = (frame.ts_to_x(h.anchor), frame.ts_to_x(h.toward));
+    let cy = rect.center().y;
+    let (x0, x1) = (ax.min(px).max(rect.left()), ax.max(px).min(rect.right()));
+    if x1 > x0 {
+        painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(x0, cy - BAR_H / 2.0),
+                Pos2::new(x1, cy + BAR_H / 2.0),
+            ),
+            0.0,
+            tl_colors::RANGE.gamma_multiply(0.45),
+        );
+    }
+    if ax >= rect.left() - HANDLE_W && ax <= rect.right() + HANDLE_W {
+        let tab =
+            Rect::from_center_size(Pos2::new(ax, cy), egui::vec2(HANDLE_W, rect.height() - 2.0));
+        painter.rect_filled(tab, 2.0, tl_colors::RANGE);
     }
 }

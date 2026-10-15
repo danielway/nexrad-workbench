@@ -127,12 +127,6 @@ pub(crate) mod legacy {
     /// Badge yellow-amber (SAILS/MRLE, cache warning, 3D pill, notes). SAILS
     /// keeps a tiny [`super::LOOP`] tick; the rest lose color.
     pub(crate) const CAUTION: Color32 = Color32::from_rgb(230, 190, 80);
-    /// Yellow ring on the frame that is on the GPU. Becomes a [`super::SEEN`]
-    /// outline (timeline marks PR).
-    pub(crate) const ACTIVE_RING: Color32 = Color32::from_rgb(255, 255, 100);
-    /// Dark red outline of the failure triangle on a frame cell. Failure
-    /// becomes a ⚠ mark (timeline marks PR).
-    pub(crate) const ERROR_DEEP: Color32 = Color32::from_rgb(120, 30, 30);
 }
 
 /// Map marks drawn over the radar (sites, location, rings, compass).
@@ -241,8 +235,7 @@ pub(crate) mod acquisition {
 /// Timeline roles, derived from the base tokens.
 pub(crate) mod timeline {
     use super::{
-        alpha, legacy, Color32, LINE, LOOP, NOW, ON_DEVICE, PANEL, RAISED, SEEN, TEXT, TEXT_DIM,
-        TEXT_FAINT,
+        alpha, Color32, LINE, LOOP, NOW, ON_DEVICE, PANEL, RAISED, SEEN, TEXT, TEXT_DIM, TEXT_FAINT,
     };
 
     /// The track's background.
@@ -258,13 +251,22 @@ pub(crate) mod timeline {
     /// The playhead ("the needle") and the playhead clock — *what you see*,
     /// never to be read as "now".
     pub(crate) const PLAYHEAD: Color32 = SEEN;
-    /// Active-frame ring.
-    pub(crate) const ACTIVE_SWEEP: Color32 = legacy::ACTIVE_RING;
+    /// The ring on the frame that is on the GPU — white, *what you see*,
+    /// the same mark the inspector uses for "currently displayed".
+    pub(crate) const ACTIVE_SWEEP: Color32 = SEEN;
     /// The previous active-frame ring during the cell-to-cell blend: a fainter
-    /// shade of the same hue so it trails the active ring for one animation.
+    /// shade of the same white so it trails the active ring for one animation.
     pub(crate) fn prev_active_sweep() -> Color32 {
-        alpha(legacy::ACTIVE_RING, 110)
+        alpha(SEEN, 110)
     }
+    /// The edge arrow for an off-screen playhead.
+    pub(crate) const PLAYHEAD_EDGE: Color32 = SEEN;
+    /// The ⚠ on a failed download — text color, never red (red is now).
+    pub(crate) const FAILURE_GLYPH: Color32 = TEXT;
+    /// The ⚠'s hover state.
+    pub(crate) const FAILURE_GLYPH_HOVER: Color32 = SEEN;
+    /// A pinned range's handle: the red dot that sits on the now line.
+    pub(crate) const PINNED_HANDLE: Color32 = NOW;
     /// The now line / cap when not streaming.
     pub(crate) const NOW_IDLE: Color32 = super::NOW_IDLE;
     /// The now line / cap while streaming.
@@ -323,10 +325,22 @@ pub(crate) mod timeline {
     pub(crate) fn available_fill() -> Color32 {
         alpha(TEXT_DIM, 36)
     }
-    /// An overview bar's storm-activity height for days not on this device.
+    /// An overview bar's storm-activity height — one color, so nothing
+    /// competes with the height (held time is the underline).
     pub(crate) fn activity_fill() -> Color32 {
         alpha(TEXT_DIM, 120)
     }
+    /// The stub of an overview bar whose days are still being listed.
+    pub(crate) fn activity_pending() -> Color32 {
+        alpha(TEXT_DIM, 45)
+    }
+    /// The overview's held underline — slate, *on device*.
+    pub(crate) const HELD: Color32 = ON_DEVICE;
+    /// A saved event's pennant and underline on the overview — amber, an
+    /// event loops under its name.
+    pub(crate) const PENNANT: Color32 = LOOP;
+    /// A known outage's tick on the overview — neutral, since red is now.
+    pub(crate) const OUTAGE: Color32 = TEXT_DIM;
     /// Dashed border for an archive-only block.
     pub(crate) fn available_border() -> Color32 {
         alpha(TEXT_DIM, 120)
@@ -381,7 +395,15 @@ pub(crate) mod timeline {
     pub(crate) fn cell_projected_fill() -> Color32 {
         alpha(TEXT_DIM, 24)
     }
-    /// Countdown text on the nearest projected ghost ("0.5° in ~40s").
+    /// A projected cell's `~0.5°` and the next-volume ghost's `~VCP 212`.
+    pub(crate) fn cell_projected_label() -> Color32 {
+        alpha(TEXT, 120)
+    }
+    /// Dashed border of the next-volume ghost container.
+    pub(crate) fn container_projected_border() -> Color32 {
+        alpha(TEXT_DIM, 80)
+    }
+    /// Countdown text on the nearest projected ghost ("~0.5° in ~0:40").
     pub(crate) fn cell_countdown_label() -> Color32 {
         alpha(TEXT, 220)
     }
@@ -539,6 +561,24 @@ mod tests {
         assert!(timeline::event_fill().a() < timeline::event_border().a());
         assert!(timeline::block_label_weak().a() < timeline::block_label().a());
         assert!(timeline::prev_active_sweep().a() < timeline::ACTIVE_SWEEP.a());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_timeline_speaks_the_accent_grammar() {
+        // White is what you see, amber what loops, red now; on device is
+        // slate; failure is text, not red.
+        assert!(timeline::ACTIVE_SWEEP == SEEN);
+        assert!(timeline::PLAYHEAD == SEEN);
+        assert!(timeline::PLAYHEAD_EDGE == SEEN);
+        assert!(timeline::RANGE == LOOP);
+        assert!(timeline::PENNANT == LOOP);
+        assert!(timeline::LIVE_ACTIVE == NOW);
+        assert!(timeline::PINNED_HANDLE == NOW);
+        assert!(timeline::HELD == ON_DEVICE);
+        assert!(timeline::FAILURE_GLYPH == TEXT);
+        for c in [timeline::FAILURE_GLYPH, timeline::OUTAGE] {
+            assert!(c != NOW && c != NOW_IDLE);
+        }
     }
 
     #[wasm_bindgen_test]
