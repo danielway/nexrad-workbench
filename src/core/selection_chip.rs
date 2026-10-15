@@ -11,9 +11,14 @@
 //! | fixed point      | `At 14:02:10 · 2:17 behind`  |
 //! | fixed range      | `⟲ 13:10 – 14:40`            |
 //! | range to now     | `⟲ Last 6 frames → now`      |
+//!
+//! The menu is the one place for everything about the selection: going live,
+//! presets, the loop style, the range's own times, saving it as an event, and
+//! stopping (the loop, or the stream). The loop style rides on the chip when
+//! it is not plain Loop (see [`crate::core::session::SessionVm::loop_style`]).
 
 use crate::core::transport::LiveStopPlacement;
-use crate::core::{Intent, LoopBasis, LoopPreset, PlaybackState};
+use crate::core::{Intent, LoopBasis, LoopMode, LoopPreset, PlaybackState};
 
 /// What the chip shows, as projected by [`crate::core::session::SessionVm`]
 /// (which also owns its words). Timestamps are left unformatted: the shell
@@ -49,6 +54,8 @@ impl ChipLabel {
 pub(crate) struct ChipEnv {
     /// A live stream is running (attached or in the background).
     pub stream_active: bool,
+    /// A touch device: the menu's hints never mention dragging or keys.
+    pub touch: bool,
 }
 
 /// One entry in the chip's menu.
@@ -62,8 +69,26 @@ pub(crate) enum ChipAction {
     StopStream,
     /// Loop the last N frames / minutes, attached to now.
     Preset(LoopPreset),
-    /// Loop what's in view, once (a fixed copy of the visible span).
+    /// Loop what's in view (a copy of the visible span; it pins when it
+    /// reaches now, by the one "ends at now" rule).
     LoopView { start: f64, end: f64 },
+    /// Choose how the range loops.
+    LoopStyle(LoopMode),
+    /// Retime the range from the menu's range editor.
+    EditRange { start: f64, end: f64 },
+    /// Open the event dialog for the range.
+    SaveAsEvent,
+}
+
+impl ChipAction {
+    /// The key that does the same thing, shown beside the entry.
+    pub(crate) fn key_hint(&self) -> Option<&'static str> {
+        match self {
+            ChipAction::Live => Some("L"),
+            ChipAction::StopStream => Some("Shift+L"),
+            _ => None,
+        }
+    }
 }
 
 /// The menu, grouped by the shape of the selection each entry makes.
@@ -77,9 +102,18 @@ pub(crate) struct ChipMenu {
     pub can_stop_stream: bool,
     /// The range-ending-now presets, the active one marked.
     pub presets: Vec<(LoopPreset, bool)>,
-    /// The visible span (clamped to now) to offer as a fixed loop, if it is
-    /// long enough to loop.
+    /// The visible span (clamped to now) to offer as a loop, if it is long
+    /// enough to loop.
     pub view_span: Option<(f64, f64)>,
+    /// The loop style, offered while a range is selected.
+    pub loop_style: Option<LoopMode>,
+    /// A fixed range's times, for the range editor. A range pinned to now
+    /// has no fixed end to edit.
+    pub fixed_range: Option<(f64, f64)>,
+    /// A range is selected, so it can be saved as an event.
+    pub can_save_event: bool,
+    /// Show the drag and key hints (not on a touch device).
+    pub pointer_hints: bool,
 }
 
 /// Build the menu from the selection, the stream, and the visible span.
@@ -107,6 +141,17 @@ pub(crate) fn chip_menu(
             .map(|p| (*p, live_basis == Some(p.basis())))
             .collect(),
         view_span: (view_end - view_start > 1.0).then_some((view_start, view_end)),
+        loop_style: playback
+            .selection
+            .range()
+            .map(|_| playback.time_model.loop_mode),
+        fixed_range: playback
+            .selection
+            .range()
+            .filter(|r| !r.live)
+            .and_then(|r| r.bounds),
+        can_save_event: playback.playback_bounds().is_some(),
+        pointer_hints: !env.touch,
     }
 }
 
@@ -123,11 +168,15 @@ pub(crate) fn intent_for(
         ChipAction::StopLooping => Intent::StopLooping,
         ChipAction::StopStream => Intent::StopLive(stop_placement),
         ChipAction::Preset(p) => Intent::ApplyLoopPreset(p),
-        ChipAction::LoopView { start, end } => Intent::SelectRange {
-            start,
-            end,
-            to_live: false,
-        },
+        ChipAction::LoopView { start, end } | ChipAction::EditRange { start, end } => {
+            Intent::SelectRange {
+                start,
+                end,
+                to_live: false,
+            }
+        }
+        ChipAction::LoopStyle(style) => Intent::SetLoopStyle(style),
+        ChipAction::SaveAsEvent => Intent::SaveSelectionAsEvent,
     }
 }
 
@@ -138,9 +187,11 @@ mod tests {
 
     const STREAMING: ChipEnv = ChipEnv {
         stream_active: true,
+        touch: false,
     };
     const NO_STREAM: ChipEnv = ChipEnv {
         stream_active: false,
+        touch: false,
     };
 
     #[wasm_bindgen_test]
@@ -218,5 +269,80 @@ mod tests {
                 to_live: false
             }
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_fixed_range_offers_its_style_times_and_save() {
+        let mut ps = PlaybackState::default();
+        assert!(ps.select_range(100.0, 400.0, false));
+        ps.time_model.loop_mode = LoopMode::PingPong;
+        let menu = chip_menu(&ps, NO_STREAM, (0.0, 2000.0), 1000.0);
+        assert_eq!(menu.loop_style, Some(LoopMode::PingPong));
+        assert_eq!(menu.fixed_range, Some((100.0, 400.0)));
+        assert!(menu.can_save_event);
+        assert!(menu.pointer_hints);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_point_offers_no_range_entries() {
+        let mut ps = PlaybackState::default();
+        ps.enter_pinned_live(1000.0);
+        let menu = chip_menu(&ps, STREAMING, (0.0, 2000.0), 1000.0);
+        assert_eq!(menu.loop_style, None);
+        assert_eq!(menu.fixed_range, None);
+        assert!(!menu.can_save_event);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_range_to_now_keeps_its_style_but_has_no_fixed_times() {
+        let mut ps = PlaybackState::default();
+        ps.enter_pinned_live(1000.0);
+        ps.enter_live_range(Some(900.0), LoopBasis::FrameCount(6));
+        let menu = chip_menu(&ps, STREAMING, (0.0, 2000.0), 1000.0);
+        assert_eq!(menu.loop_style, Some(LoopMode::Loop));
+        assert_eq!(menu.fixed_range, None);
+        // No bounds until the live tick resolves the window.
+        assert!(!menu.can_save_event);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_phone_menu_never_mentions_dragging() {
+        let ps = PlaybackState::default();
+        let touch = ChipEnv {
+            stream_active: false,
+            touch: true,
+        };
+        assert!(!chip_menu(&ps, touch, (0.0, 2000.0), 1000.0).pointer_hints);
+    }
+
+    #[wasm_bindgen_test]
+    fn range_entries_map_to_intents_and_keys() {
+        let placement = LiveStopPlacement::LiveEdge;
+        assert_eq!(
+            intent_for(ChipAction::LoopStyle(LoopMode::Once), NO_STREAM, placement),
+            Intent::SetLoopStyle(LoopMode::Once)
+        );
+        assert_eq!(
+            intent_for(ChipAction::SaveAsEvent, NO_STREAM, placement),
+            Intent::SaveSelectionAsEvent
+        );
+        assert_eq!(
+            intent_for(
+                ChipAction::EditRange {
+                    start: 5.0,
+                    end: 50.0
+                },
+                NO_STREAM,
+                placement
+            ),
+            Intent::SelectRange {
+                start: 5.0,
+                end: 50.0,
+                to_live: false
+            }
+        );
+        assert_eq!(ChipAction::Live.key_hint(), Some("L"));
+        assert_eq!(ChipAction::StopStream.key_hint(), Some("Shift+L"));
+        assert_eq!(ChipAction::SaveAsEvent.key_hint(), None);
     }
 }

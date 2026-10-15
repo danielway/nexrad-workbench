@@ -43,6 +43,7 @@ pub(crate) fn render_selection_chip(
 ) {
     let env = ChipEnv {
         stream_active: live.session.stream.is_running(),
+        touch: state.is_mobile,
     };
     let label = live.session.selection_chip;
     let use_local = state.use_local_time;
@@ -95,12 +96,20 @@ pub(crate) fn render_selection_chip(
     .min_size(egui::vec2(0.0, style.min_height));
     let response = ui.add(button).on_hover_text(label.hover());
 
-    let menu = chip_menu(&playback.state, env, view, state.frame_now.secs());
+    let now = state.frame_now.secs();
+    let menu = chip_menu(&playback.state, env, view, now);
     let mut picked = None;
-    egui::Popup::menu(&response).show(|ui| {
-        ui.set_min_width(240.0);
-        picked = render_menu(ui, &menu, use_local);
-    });
+    // Closes on a click outside, or on picking an entry (below), so the range
+    // editor's time fields can be clicked into.
+    egui::Popup::menu(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(260.0);
+            picked = render_menu(ui, &menu, use_local, now);
+            if picked.is_some() {
+                ui.close();
+            }
+        });
     if let Some(action) = picked {
         state.push_command(intent_for(action, env, style.stop_placement));
     }
@@ -108,16 +117,50 @@ pub(crate) fn render_selection_chip(
 
 /// The menu body, grouped by the shape each entry selects. Returns the entry
 /// picked this frame.
-fn render_menu(ui: &mut egui::Ui, menu: &ChipMenu, use_local: bool) -> Option<ChipAction> {
+fn render_menu(
+    ui: &mut egui::Ui,
+    menu: &ChipMenu,
+    use_local: bool,
+    now: f64,
+) -> Option<ChipAction> {
     let mut picked = None;
-    let mut entry = |ui: &mut egui::Ui, text: String, on: bool, action: ChipAction| {
-        if ui.selectable_label(on, text).clicked() {
-            picked = Some(action);
+    let keys = menu.pointer_hints;
+
+    // The selection itself first, where it lives: how it loops, its times,
+    // and saving it.
+    if let Some(current) = menu.loop_style {
+        group_heading(ui, "This range");
+        ui.horizontal(|ui| {
+            for style in crate::core::LoopMode::all() {
+                if ui
+                    .selectable_label(current == *style, style.label())
+                    .clicked()
+                {
+                    picked = Some(ChipAction::LoopStyle(*style));
+                }
+            }
+        });
+        if let Some((start, end)) = menu.fixed_range {
+            if let Some(action) = range_editor(ui, start, end, use_local, now) {
+                picked = Some(action);
+            }
         }
-    };
+        if menu.can_save_event
+            && entry(
+                ui,
+                format!("{} Save as event", egui_phosphor::regular::BOOKMARK_SIMPLE),
+                false,
+                ChipAction::SaveAsEvent,
+                keys,
+            )
+        {
+            picked = Some(ChipAction::SaveAsEvent);
+        }
+        ui.add_space(4.0);
+    }
 
     group_heading(ui, "A point in time");
-    entry(
+    if entry(
         ui,
         format!(
             "{} Live · the newest frame",
@@ -125,50 +168,113 @@ fn render_menu(ui: &mut egui::Ui, menu: &ChipMenu, use_local: bool) -> Option<Ch
         ),
         menu.at_live,
         ChipAction::Live,
-    );
+        keys,
+    ) {
+        picked = Some(ChipAction::Live);
+    }
     if let Some(ts) = menu.stop_looping_at {
-        entry(
+        if entry(
             ui,
             format!("Stop looping · stay at {}", hm(ts, use_local)),
             false,
             ChipAction::StopLooping,
-        );
+            keys,
+        ) {
+            picked = Some(ChipAction::StopLooping);
+        }
     }
-    if menu.can_stop_stream {
-        entry(
+    if menu.can_stop_stream
+        && entry(
             ui,
             "Stop the stream".to_string(),
             false,
             ChipAction::StopStream,
-        );
+            keys,
+        )
+    {
+        picked = Some(ChipAction::StopStream);
     }
 
     ui.add_space(4.0);
     group_heading(ui, "A range ending now");
     for (preset, on) in &menu.presets {
-        entry(
+        let action = ChipAction::Preset(*preset);
+        if entry(
             ui,
             format!("{} {} now", preset.label(), ARROW),
             *on,
-            ChipAction::Preset(*preset),
-        );
+            action,
+            keys,
+        ) {
+            picked = Some(action);
+        }
     }
-    hint(ui, "Or drop a range's right handle on the live edge.");
+    if menu.pointer_hints {
+        hint(ui, "Or drop a range's right handle on the live edge.");
+    }
 
     ui.add_space(4.0);
     group_heading(ui, "A fixed range");
     if let Some((start, end)) = menu.view_span {
-        entry(
+        let action = ChipAction::LoopView { start, end };
+        if entry(
             ui,
             format!(
                 "Loop what's in view ({})",
                 crate::core::LoopBasis::Duration(end - start).label()
             ),
             false,
-            ChipAction::LoopView { start, end },
-        );
+            action,
+            keys,
+        ) {
+            picked = Some(action);
+        }
     }
-    hint(ui, "Or drag along the strip above the frames.");
+    if menu.pointer_hints {
+        hint(ui, "Or drag along the strip above the frames.");
+        hint(ui, "I and O set the start and end at the playhead.");
+    }
+    picked
+}
+
+/// One menu entry, with its key beside it when the device has keys. Returns
+/// whether it was clicked.
+fn entry(ui: &mut egui::Ui, text: String, on: bool, action: ChipAction, keys: bool) -> bool {
+    let text = match action.key_hint().filter(|_| keys) {
+        Some(key) => format!("{text}   {key}"),
+        None => text,
+    };
+    ui.selectable_label(on, text).clicked()
+}
+
+/// The range's start and end as time fields: entering either retimes it.
+fn range_editor(
+    ui: &mut egui::Ui,
+    start: f64,
+    end: f64,
+    use_local: bool,
+    now: f64,
+) -> Option<ChipAction> {
+    let look = crate::ui::time_field::TimeFieldLook {
+        color: theme::LOOP_TEXT,
+        size: theme::LABEL,
+        hover: "Click to type a time",
+    };
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("From").size(theme::CAPTION).weak());
+        if let Some(t) =
+            crate::ui::time_field::time_field(ui, "range_start", start, now, use_local, &look)
+        {
+            picked = Some(ChipAction::EditRange { start: t, end });
+        }
+        ui.label(RichText::new("to").size(theme::CAPTION).weak());
+        if let Some(t) =
+            crate::ui::time_field::time_field(ui, "range_end", end, now, use_local, &look)
+        {
+            picked = Some(ChipAction::EditRange { start, end: t });
+        }
+    });
     picked
 }
 

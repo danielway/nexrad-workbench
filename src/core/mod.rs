@@ -49,6 +49,7 @@ pub(crate) mod session;
 pub(crate) mod storm_activity;
 pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;
+pub(crate) mod time_field;
 pub(crate) mod timeline_geometry;
 pub(crate) mod timeline_interaction;
 pub(crate) mod timeline_view;

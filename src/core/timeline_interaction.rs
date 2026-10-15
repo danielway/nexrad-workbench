@@ -23,6 +23,27 @@ const PAN_OVERSCROLL_FRAC: f64 = 0.5;
 /// exists there.
 pub(crate) const NEXRAD_ARCHIVE_START_SECS: f64 = 676_080_000.0;
 
+/// The live zoom (px/s): individual sweeps and chunks are visible, and the
+/// tier sits comfortably above the Micro-enter threshold.
+pub(crate) const LIVE_ZOOM: f64 = 2.0;
+
+/// The archive (macro) default zoom (px/s): about 1.8 hours across 1000 px.
+pub(crate) const ARCHIVE_ZOOM: f64 = 0.15;
+
+/// The strip's zoom at boot. A session that boots pinned to live starts at
+/// the live zoom (or a link's closer zoom), so going live never jumps the
+/// strip; a deep link to an archive time starts at its own zoom, else the
+/// macro default.
+pub(crate) fn boot_zoom(link_zoom: Option<f64>, boots_live: bool) -> f64 {
+    let link_zoom = link_zoom.filter(|z| z.is_finite() && *z > 0.0);
+    match (boots_live, link_zoom) {
+        (true, Some(z)) => z.max(LIVE_ZOOM),
+        (true, None) => LIVE_ZOOM,
+        (false, Some(z)) => z,
+        (false, None) => ARCHIVE_ZOOM,
+    }
+}
+
 /// Which pointer gesture owns the timeline strip this frame.
 ///
 /// Exactly one wins. Precedence is `Pan > Inspect > Seek`, and the reasons
@@ -228,6 +249,25 @@ mod tests {
     #[wasm_bindgen_test]
     fn idle_frame_is_none() {
         assert!(resolve_gesture(&StripInput::default()) == StripGesture::None);
+    }
+
+    // ---- boot_zoom --------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn booting_live_starts_at_the_live_zoom() {
+        assert!(approx(boot_zoom(None, true), LIVE_ZOOM));
+        // A link zoomed out further than live would jump on the first frame.
+        assert!(approx(boot_zoom(Some(0.15), true), LIVE_ZOOM));
+        // A closer link zoom is kept.
+        assert!(approx(boot_zoom(Some(8.0), true), 8.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn an_archive_deep_link_boots_at_its_zoom_or_the_macro_default() {
+        assert!(approx(boot_zoom(None, false), ARCHIVE_ZOOM));
+        assert!(approx(boot_zoom(Some(0.01), false), 0.01));
+        assert!(approx(boot_zoom(Some(f64::NAN), false), ARCHIVE_ZOOM));
+        assert!(approx(boot_zoom(Some(-1.0), true), LIVE_ZOOM));
     }
 
     // ---- clamp_view_start -------------------------------------------------

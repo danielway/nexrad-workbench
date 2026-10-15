@@ -614,8 +614,10 @@ impl LoopPreset {
     }
 }
 
-/// Loop behavior when playback bounds are set.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+/// Loop behavior when playback bounds are set (the loop style, chosen from
+/// the selection chip's menu). A standing preference: it survives across
+/// ranges, fixed or pinned to now.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum LoopMode {
     /// Play forward, jump to start when reaching end
     #[default]
@@ -630,7 +632,7 @@ impl LoopMode {
     pub(crate) fn label(&self) -> &'static str {
         match self {
             LoopMode::Loop => "Loop",
-            LoopMode::PingPong => "Ping-Pong",
+            LoopMode::PingPong => "Ping-pong",
             LoopMode::Once => "Once",
         }
     }
@@ -698,8 +700,10 @@ pub(crate) struct TimeModel {
 
 impl TimeModel {
     /// Advance playback position by delta time within `bounds` (if any),
-    /// respecting the loop mode. Returns true when a forward loop wrapped
-    /// back to the start.
+    /// respecting the loop mode. Returns true at the loop's wrap point: a
+    /// Loop jumping back to the start, a Ping-pong turning at either end, or
+    /// a Once reaching its end — the moments a range pinned to now may take
+    /// in the frames that arrived meanwhile.
     pub(crate) fn advance(
         &mut self,
         delta_secs: f64,
@@ -717,7 +721,10 @@ impl TimeModel {
 
         match bounds {
             Some((start, end)) => {
-                let wrapped = self.loop_mode == LoopMode::Loop && new_position >= end;
+                let wrapped = match self.loop_mode {
+                    LoopMode::Loop | LoopMode::Once => new_position >= end,
+                    LoopMode::PingPong => new_position >= end || new_position <= start,
+                };
                 self.playback_position = self.apply_bounds(new_position, start, end);
                 wrapped
             }
@@ -943,11 +950,14 @@ impl PlaybackState {
             live: true,
             basis,
         });
-        self.time_model.loop_mode = LoopMode::Loop;
+        // The loop style is the user's standing choice; only the direction
+        // restarts. Like every new range, it starts paused: Play is the Play
+        // button.
+        self.time_model.direction = PlaybackDirection::Forward;
         if let Some(ts) = seed {
             self.time_model.playback_position = ts;
         }
-        self.playing = true;
+        self.playing = false;
         self.macro_playback.current_frame_index = 0;
         self.macro_playback.frame_accumulator = 0.0;
     }
@@ -1216,7 +1226,9 @@ impl PlaybackState {
     }
 
     /// Step the macro frame index by `delta` (+1 = forward, -1 = backward).
-    /// Snaps playback_position to the frame's timestamp.
+    /// Snaps playback_position to the frame's timestamp. User steps go through
+    /// `core::transport::reduce_step`; this drives the wrap tests.
+    #[cfg(test)]
     pub(crate) fn step_macro_frame(&mut self, delta: isize) {
         let frames = &self.macro_playback.sweep_frames;
         if frames.is_empty() {
@@ -1245,8 +1257,19 @@ impl PlaybackState {
                     self.macro_playback.current_frame_index = 0;
                 }
                 LoopMode::PingPong => {
+                    // A turnaround is this style's wrap point.
+                    self.apply_pending_window_at_wrap();
                     self.time_model.direction = PlaybackDirection::Backward;
                     self.macro_playback.current_frame_index = len.saturating_sub(1);
+                }
+                LoopMode::Once if self.is_live_range() => {
+                    // Once with a pinned end plays to now and holds there:
+                    // take in what arrived, stay on the newest frame, and keep
+                    // playing so the next frame to arrive plays too.
+                    self.apply_pending_window_at_wrap();
+                    self.macro_playback.current_frame_index = len - 1;
+                    self.snap_playback_to_macro_frame();
+                    return false;
                 }
                 LoopMode::Once => {
                     self.macro_playback.current_frame_index = len - 1;
@@ -1262,6 +1285,7 @@ impl PlaybackState {
                     self.macro_playback.current_frame_index = len.saturating_sub(1);
                 }
                 LoopMode::PingPong => {
+                    self.apply_pending_window_at_wrap();
                     self.time_model.direction = PlaybackDirection::Forward;
                     self.macro_playback.current_frame_index = 0;
                 }
@@ -1492,10 +1516,12 @@ mod tests {
         // Pretend a prior macro session left a non-zero cursor.
         ps.macro_playback.current_frame_index = 7;
         ps.macro_playback.frame_accumulator = 0.4;
+        ps.time_model.loop_mode = LoopMode::PingPong;
         ps.enter_live_range(Some(940.0), LoopBasis::FrameCount(10));
-        assert!(ps.time_model.loop_mode == LoopMode::Loop);
+        // The loop style is kept, and the range starts paused.
+        assert!(ps.time_model.loop_mode == LoopMode::PingPong);
         assert!(ps.is_live_range());
-        assert!(ps.playing);
+        assert!(!ps.playing);
         assert_eq!(ps.playback_position(), 940.0);
         assert_eq!(ps.macro_playback.current_frame_index, 0);
         assert_eq!(ps.macro_playback.frame_accumulator, 0.0);
@@ -1590,6 +1616,7 @@ mod tests {
         let mut ps = PlaybackState::default();
         ps.enter_pinned_live(1000.0);
         ps.enter_live_range(Some(940.0), LoopBasis::default());
+        ps.playing = true;
         ps.slide_live_range(940.0, 1000.0); // tick's window
         ps.enter_pinned_live(1010.0);
         assert_eq!(ps.playback_bounds(), None);
@@ -2066,11 +2093,13 @@ mod tests {
     // Wrap-point incorporation (spec §8)
     // ---------------------------------------------------------------
 
-    /// A playing live range with no bounds resolved yet.
+    /// A playing live range with no bounds resolved yet (a range starts
+    /// paused; Play is pressed).
     fn live_range_state() -> PlaybackState {
         let mut ps = PlaybackState::default();
         ps.enter_pinned_live(1000.0);
         ps.enter_live_range(None, LoopBasis::default());
+        ps.playing = true;
         ps
     }
 
@@ -2116,6 +2145,62 @@ mod tests {
             "parked window committed at the wrap"
         );
         assert!(ps.pending_loop_window.is_none());
+    }
+
+    /// A playing pinned range with (100, 400) committed and (160, 460)
+    /// parked, on its last frame.
+    fn parked_range(style: LoopMode) -> PlaybackState {
+        let mut ps = live_range_state();
+        ps.time_model.loop_mode = style;
+        let w = ps.commit_pinned_window(100.0, 400.0);
+        ps.set_range_bounds_preserving(w.0, w.1);
+        ps.commit_pinned_window(160.0, 460.0);
+        ps.macro_playback.sweep_frames = vec![100.0, 250.0, 400.0];
+        ps.macro_playback.current_frame_index = 2;
+        ps
+    }
+
+    #[wasm_bindgen_test]
+    fn new_frames_join_a_ping_pong_at_its_turn() {
+        let mut ps = parked_range(LoopMode::PingPong);
+        ps.step_macro_frame(1);
+        assert!(ps.time_model.direction == PlaybackDirection::Backward);
+        assert_eq!(ps.playback_bounds(), Some((160.0, 460.0)));
+        assert!(ps.pending_loop_window.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn once_with_a_pinned_end_plays_to_now_and_holds() {
+        let mut ps = parked_range(LoopMode::Once);
+        ps.step_macro_frame(1);
+        assert_eq!(ps.playback_bounds(), Some((160.0, 460.0)));
+        assert_eq!(ps.macro_playback.current_frame_index, 2);
+        assert!(ps.playing, "holds at now, ready for the next frame");
+
+        // A fixed range played Once stops at its end.
+        let mut ps = PlaybackState::default();
+        assert!(ps.select_range(100.0, 400.0, false));
+        ps.time_model.loop_mode = LoopMode::Once;
+        ps.playing = true;
+        ps.macro_playback.sweep_frames = vec![100.0, 250.0, 400.0];
+        ps.macro_playback.current_frame_index = 2;
+        ps.step_macro_frame(1);
+        assert!(!ps.playing);
+    }
+
+    #[wasm_bindgen_test]
+    fn rays_flush_a_parked_window_at_every_style_s_wrap() {
+        for style in [LoopMode::Loop, LoopMode::PingPong, LoopMode::Once] {
+            let mut ps = parked_range(style);
+            ps.time_model.playback_position = 399.0;
+            ps.speed = PlaybackSpeed::Realtime;
+            ps.advance(5.0);
+            assert_eq!(
+                ps.playback_bounds(),
+                Some((160.0, 460.0)),
+                "{style:?} takes in new frames at its wrap"
+            );
+        }
     }
 
     #[wasm_bindgen_test]
@@ -2358,7 +2443,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn loop_mode_labels_and_table() {
         assert_eq!(LoopMode::Loop.label(), "Loop");
-        assert_eq!(LoopMode::PingPong.label(), "Ping-Pong");
+        assert_eq!(LoopMode::PingPong.label(), "Ping-pong");
         assert_eq!(LoopMode::Once.label(), "Once");
         let all = LoopMode::all();
         assert_eq!(all.len(), 3);
