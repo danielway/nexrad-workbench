@@ -911,7 +911,7 @@ impl eframe::App for WorkbenchApp {
             now: self.state.frame_now,
             elevation_selection: &self.state.viz_state.elevation_selection,
             displayed: self.state.viz_state.displayed.as_ref(),
-            canvas_caption: self.state.viz_state.canvas_caption,
+            caption_context: self.state.viz_state.caption_context,
         });
         self.state.refresh_mobile_mode(ctx);
 

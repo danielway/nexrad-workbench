@@ -183,6 +183,16 @@ pub(crate) mod map {
     pub(crate) const CENTER_MARKER_STROKE: Color32 = TEXT_FAINT;
     /// A label printed on the map (site IDs, readouts).
     pub(crate) const LABEL: Color32 = TEXT;
+    /// The translucent surface under anything that sits over the map (the
+    /// legend, the scale bar, the caption, stamps), so nothing prints
+    /// straight over map labels.
+    pub(crate) fn scrim() -> Color32 {
+        alpha(super::PANEL, 210)
+    }
+    /// The scrim's hairline edge.
+    pub(crate) fn scrim_edge() -> Color32 {
+        alpha(LINE, 200)
+    }
 }
 
 /// Radar sweep-position marks on the canvas.

@@ -418,84 +418,335 @@ pub(crate) fn geo_to_polar(lat: f64, lon: f64, radar_lat: f64, radar_lon: f64) -
 }
 
 // ---------------------------------------------------------------------------
-// Canvas honesty caption (moved from `state::viz` so the render-loop reducer
-// in `core::render_loop` can compose it)
+// Canvas caption (one-instrument §7 "Rules", §2 the caption surface)
 // ---------------------------------------------------------------------------
 
-/// Honesty caption for the canvas (spec §11.2 / alignment §3 — caption only).
-///
-/// The canvas keeps showing the most recent successfully displayed frame when
-/// the playhead drifts into an undownloaded region or gap (it never blanks
-/// merely because the playhead moved away in time). This enum tells the overlay
-/// which caption, if any, to render to keep the time honest.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub(crate) enum CanvasCaption {
-    /// No caption — the displayed frame covers the playhead, or live owns the
-    /// canvas.
-    #[default]
-    None,
-    /// Blank canvas with a reactive fetch in flight: show "Acquiring data…" so
-    /// an empty view reads as loading, not broken.
-    Acquiring,
-    /// A stale frame is held while the playhead sits past it. `showing` is the
-    /// displayed frame's representative (midpoint) time; `target` is the
-    /// playhead time. `fetching` distinguishes "fetching Y…" (a download covers
-    /// the playhead) from "no data at Y" (nothing is, or is coming).
-    Discrepancy {
-        showing: f64,
-        target: f64,
-        fetching: bool,
-    },
+/// Floor for [`frame_step_secs`]: below a minute the step would flicker the
+/// caption on every short high-tilt sweep and every chunk of latency.
+pub(crate) const MIN_FRAME_STEP_SECS: f64 = 60.0;
+
+/// Frame step when nothing better is known: a typical volume.
+pub(crate) const DEFAULT_FRAME_STEP_SECS: f64 = 300.0;
+
+/// What the render loop knows about the frame and the playhead that the
+/// session facts do not carry. Plain data; the caption rule
+/// ([`decide_canvas_caption`]) reads it beside [`crate::core::session::SessionVm`]'s
+/// frame and playhead facts.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct CaptionContext {
+    /// Seconds between consecutive frames of the tilt on screen ("one
+    /// frame" in the rule). See [`frame_step_secs`].
+    pub frame_step_secs: f64,
+    /// A cached frame the playhead calls for is not yet on the GPU (a render
+    /// is in flight); the frame and the playhead disagree only for a moment.
+    pub render_pending: bool,
+    /// A download or ingest covers the playhead.
+    pub fetch_covers_playhead: bool,
+    /// The tilt the user asked for; `None` is Latest.
+    pub wanted_tilt_deg: Option<f32>,
+    /// The archive lists a scan at the playhead that is not on the device
+    /// (its start, Unix seconds) — the caption offers to fetch it.
+    pub fetchable_scan_start: Option<i64>,
+    /// 3D volume rendering is on while the playhead is pinned to now: the
+    /// volume renders only once every tilt is in.
+    pub volume_waiting: bool,
 }
 
-/// Pure derivation of the canvas honesty caption (spec §11.2). Kept separate
-/// from `advance_playback` so the decision is unit-testable.
+impl Default for CaptionContext {
+    fn default() -> Self {
+        Self {
+            frame_step_secs: DEFAULT_FRAME_STEP_SECS,
+            render_pending: false,
+            fetch_covers_playhead: false,
+            wanted_tilt_deg: None,
+            fetchable_scan_start: None,
+            volume_waiting: false,
+        }
+    }
+}
+
+/// Why the frame is not the one the playhead calls for.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum CaptionReason {
+    /// A download covering the playhead is on its way.
+    Downloading,
+    /// A running stream will bring it; the antenna is elsewhere.
+    Waiting { antenna_deg: Option<f32> },
+    /// Nothing is coming. `fetch` is the listed scan the user can fetch.
+    NoData { fetch: Option<i64> },
+}
+
+/// The canvas caption decision — the only text that ever sits over the map.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub(crate) enum CanvasCaption {
+    /// The frame and the playhead agree (within one frame).
+    #[default]
+    None,
+    /// The map is blank. A blank map always says why.
+    NoFrame {
+        playhead: f64,
+        tilt_deg: Option<f32>,
+        reason: CaptionReason,
+    },
+    /// A frame is held more than one frame away from the playhead.
+    Discrepancy {
+        /// The frame's representative (midpoint) time.
+        showing: f64,
+        /// The playhead time (now, when pinned).
+        playhead: f64,
+        tilt_deg: Option<f32>,
+        reason: CaptionReason,
+    },
+    /// 3D volume rendering while pinned: waiting for the volume to complete.
+    VolumeWaiting,
+}
+
+/// The one caption rule (§7): caption whenever the frame on screen and the
+/// playhead differ by more than one frame, pinned or not; a blank map always
+/// says why.
 ///
-/// - `attached`: the playhead is tethered to the live edge (pinned/lookback) or
-///   a live stream owns the canvas — then live's partial path owns the caption,
-///   so we emit `None`.
-/// - `displayed`: the on-screen frame's `(start, end, midpoint)`, if any.
-/// - `playhead`: the playback position (seconds).
-/// - `scan_covers_playhead`: whether a cached scan exists at-or-before the
-///   playhead within the recency window (i.e. the resolver could pick a frame
-///   covering it). When true there's no discrepancy — the resolver/render path
-///   is repainting; when false the held frame is stale relative to the playhead.
-/// - `fetch_covers_playhead`: whether a download/ingest covers the playhead.
-pub(crate) fn derive_canvas_caption(
-    attached: bool,
-    displayed: Option<(f64, f64, f64)>,
-    playhead: f64,
-    scan_covers_playhead: bool,
-    fetch_covers_playhead: bool,
+/// - `frame` / `playhead`: the session's frame and playhead facts.
+/// - `now`: this frame's wall clock (the playhead's time when pinned).
+/// - `stream_running` / `antenna_deg`: whether a stream will bring the next
+///   frame, and the tilt the antenna is on.
+pub(crate) fn decide_canvas_caption(
+    frame: Option<&crate::core::session::FrameFact>,
+    playhead: crate::core::session::Playhead,
+    now: f64,
+    stream_running: bool,
+    antenna_deg: Option<f32>,
+    ctx: &CaptionContext,
 ) -> CanvasCaption {
-    // Live (or any attached) state: the live partial path owns the canvas.
-    if attached {
+    use crate::core::session::Playhead;
+    if ctx.volume_waiting {
+        return CanvasCaption::VolumeWaiting;
+    }
+    if ctx.render_pending {
         return CanvasCaption::None;
     }
-    match displayed {
-        // A frame is held. If no scan covers the playhead, the held frame is
-        // stale relative to where the playhead sits — surface the discrepancy
-        // (the canvas keeps showing it rather than blanking).
-        Some((_start, _end, midpoint)) => {
-            if scan_covers_playhead {
-                CanvasCaption::None
-            } else {
-                CanvasCaption::Discrepancy {
-                    showing: midpoint,
-                    target: playhead,
-                    fetching: fetch_covers_playhead,
+    let (target, pinned) = match playhead {
+        Playhead::PinnedToNow => (now, true),
+        Playhead::AtTime { ts, .. } => (ts, false),
+    };
+    let reason = if ctx.fetch_covers_playhead {
+        CaptionReason::Downloading
+    } else if pinned && stream_running {
+        CaptionReason::Waiting { antenna_deg }
+    } else {
+        CaptionReason::NoData {
+            fetch: ctx.fetchable_scan_start,
+        }
+    };
+    let Some(f) = frame else {
+        return CanvasCaption::NoFrame {
+            playhead: target,
+            tilt_deg: ctx.wanted_tilt_deg,
+            reason,
+        };
+    };
+    let start = 2.0 * f.time_secs - f.end_secs;
+    let gap = (target - f.end_secs).max(start - target).max(0.0);
+    if gap > ctx.frame_step_secs.max(MIN_FRAME_STEP_SECS) {
+        CanvasCaption::Discrepancy {
+            showing: f.time_secs,
+            playhead: target,
+            tilt_deg: ctx.wanted_tilt_deg,
+            reason,
+        }
+    } else {
+        CanvasCaption::None
+    }
+}
+
+/// "One frame" for the caption rule: the expected seconds between
+/// consecutive frames of what is on screen.
+///
+/// - A fixed tilt repeats once per volume: the volume's duration over the
+///   number of cuts with that elevation number.
+/// - Latest shows every sweep, so one frame is a sweep.
+///
+/// The volume's duration is the gap to the next cached volume when there is
+/// one, else its own span; the newest volume may still be filling, so it
+/// never counts as shorter than the one before it. Floored at
+/// [`MIN_FRAME_STEP_SECS`]; [`DEFAULT_FRAME_STEP_SECS`] when the frame's
+/// volume is not in the timeline.
+pub(crate) fn frame_step_secs(
+    timeline: &crate::core::RadarTimeline,
+    displayed: &crate::core::DisplayedSweep,
+    latest: bool,
+) -> f64 {
+    let sweep_secs = (displayed.end_time - displayed.start_time).max(0.0);
+    if latest {
+        return sweep_secs.max(MIN_FRAME_STEP_SECS);
+    }
+    let key_ms = displayed.identity.scan_key.scan_start.0;
+    let scans = &timeline.scans;
+    let Some(i) = scans.iter().position(|s| s.key_ms() == key_ms) else {
+        return DEFAULT_FRAME_STEP_SECS;
+    };
+    let scan = &scans[i];
+    let own = (scan.end_time - scan.start_time).max(0.0);
+    let volume_secs = match scans.get(i + 1) {
+        Some(next) if next.start_time - scan.start_time <= crate::core::recency::RECENCY_SECS => {
+            next.start_time - scan.start_time
+        }
+        Some(_) => own,
+        None => match i.checked_sub(1).map(|p| &scans[p]) {
+            Some(prev) => own.max(prev.end_time - prev.start_time),
+            None => own,
+        },
+    };
+    // The fixed-tilt resolver shows one elevation number, so its frames are
+    // that number's cuts in the volume.
+    let visits = scan
+        .sweeps
+        .iter()
+        .filter(|s| s.elevation_number == displayed.identity.elevation_number)
+        .count()
+        .max(1);
+    (volume_secs / visits as f64)
+        .max(sweep_secs)
+        .max(MIN_FRAME_STEP_SECS)
+}
+
+/// What a caption segment is, so the shell can set it in its color (§7:
+/// "the caption names both, in their colors").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CaptionRole {
+    /// Plain words.
+    Words,
+    /// The frame's time — what you see.
+    Frame,
+    /// The playhead's time; `pinned` when it is now.
+    Playhead { pinned: bool },
+    /// The clickable "fetch" (the line's [`CaptionLine::action`]).
+    Action,
+}
+
+/// The caption as words, segment by segment.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct CaptionLine {
+    pub segments: Vec<(String, CaptionRole)>,
+    /// What clicking the [`CaptionRole::Action`] segment does.
+    pub action: Option<crate::core::Intent>,
+}
+
+impl CaptionLine {
+    /// The whole line as one string.
+    #[cfg(test)]
+    pub(crate) fn text(&self) -> String {
+        self.segments.iter().map(|(s, _)| s.as_str()).collect()
+    }
+}
+
+fn tilt_word(tilt_deg: Option<f32>) -> Option<String> {
+    tilt_deg.map(|t| format!("{t:.1}°"))
+}
+
+/// The caption's words in the §7 forms:
+///
+/// - `showing 11:28:51 · playhead 11:30:49 · 0.5° at 11:30 is downloading`
+/// - `… · no 0.5° at 11:30` (`· fetch` when the archive lists it)
+/// - `… · waiting for 0.5° (antenna on 4.0°)`
+/// - `no frame yet · downloading 11:21:49`
+/// - `no 0.5° data at 11:30 · fetch`
+pub(crate) fn caption_line(
+    caption: &CanvasCaption,
+    pinned: bool,
+    clock: &dyn crate::core::session::Clock,
+) -> Option<CaptionLine> {
+    let mut segs: Vec<(String, CaptionRole)> = Vec::new();
+    let mut action = None;
+    let words = |s: String| (s, CaptionRole::Words);
+    let waiting = |tilt: Option<f32>, antenna: Option<f32>| {
+        let mut s = match tilt_word(tilt) {
+            Some(t) => format!("waiting for {t}"),
+            None => "waiting for the next sweep".to_string(),
+        };
+        if let Some(a) = antenna {
+            s.push_str(&format!(" (antenna on {a:.1}°)"));
+        }
+        s
+    };
+    match *caption {
+        CanvasCaption::None => return None,
+        CanvasCaption::VolumeWaiting => {
+            segs.push(words(
+                "waiting for the volume to complete · volume rendering needs every tilt"
+                    .to_string(),
+            ));
+        }
+        CanvasCaption::NoFrame {
+            playhead,
+            tilt_deg,
+            reason,
+        } => match reason {
+            CaptionReason::Downloading => {
+                segs.push(words("no frame yet · downloading ".to_string()));
+                segs.push((clock.hms(playhead), CaptionRole::Playhead { pinned }));
+            }
+            CaptionReason::Waiting { antenna_deg } => {
+                segs.push(words(format!(
+                    "no frame yet · {}",
+                    waiting(tilt_deg, antenna_deg)
+                )));
+            }
+            CaptionReason::NoData { fetch } => {
+                segs.push(words(match tilt_word(tilt_deg) {
+                    Some(t) => format!("no {t} data at "),
+                    None => "no data at ".to_string(),
+                }));
+                segs.push((clock.hm(playhead), CaptionRole::Playhead { pinned }));
+                if let Some(scan_start) = fetch {
+                    segs.push(words(" · ".to_string()));
+                    segs.push(("fetch".to_string(), CaptionRole::Action));
+                    action = Some(fetch_intent(scan_start));
+                }
+            }
+        },
+        CanvasCaption::Discrepancy {
+            showing,
+            playhead,
+            tilt_deg,
+            reason,
+        } => {
+            segs.push(words("showing ".to_string()));
+            segs.push((clock.hms(showing), CaptionRole::Frame));
+            segs.push(words(" · playhead ".to_string()));
+            segs.push((clock.hms(playhead), CaptionRole::Playhead { pinned }));
+            segs.push(words(" · ".to_string()));
+            match reason {
+                CaptionReason::Downloading => segs.push(words(match tilt_word(tilt_deg) {
+                    Some(t) => format!("{t} at {} is downloading", clock.hm(playhead)),
+                    None => format!("{} is downloading", clock.hm(playhead)),
+                })),
+                CaptionReason::Waiting { antenna_deg } => {
+                    segs.push(words(waiting(tilt_deg, antenna_deg)))
+                }
+                CaptionReason::NoData { fetch } => {
+                    segs.push(words(match tilt_word(tilt_deg) {
+                        Some(t) => format!("no {t} at {}", clock.hm(playhead)),
+                        None => format!("no data at {}", clock.hm(playhead)),
+                    }));
+                    if let Some(scan_start) = fetch {
+                        segs.push(words(" · ".to_string()));
+                        segs.push(("fetch".to_string(), CaptionRole::Action));
+                        action = Some(fetch_intent(scan_start));
+                    }
                 }
             }
         }
-        // Blank canvas: the legacy "Acquiring…" hint when a fetch covers the
-        // playhead, else nothing.
-        None => {
-            if fetch_covers_playhead {
-                CanvasCaption::Acquiring
-            } else {
-                CanvasCaption::None
-            }
-        }
+    }
+    Some(CaptionLine {
+        segments: segs,
+        action,
+    })
+}
+
+fn fetch_intent(scan_start: i64) -> crate::core::Intent {
+    crate::core::Intent::FetchScan {
+        scan_start,
+        elevation_filter: None,
     }
 }
 
@@ -1186,79 +1437,103 @@ mod coverage_tests {
 #[cfg(test)]
 mod caption_tests {
     use super::*;
+    use crate::core::{DisplayedSweep, RadarTimeline, Scan, SweepIdentity};
+    use crate::data::ScanKey;
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    // A displayed frame [100, 200], midpoint 150.
-    fn frame() -> Option<(f64, f64, f64)> {
-        Some((100.0, 200.0, 150.0))
+    fn sweep(elev_num: u8, start: f64, end: f64) -> Sweep {
+        Sweep {
+            start_time: start,
+            end_time: end,
+            elevation: 0.5,
+            elevation_number: elev_num,
+            start_azimuth: 0.0,
+            radials: Vec::new(),
+            cached_products: vec!["reflectivity".to_string()],
+        }
+    }
+
+    fn scan(start: f64, end: f64, sweeps: Vec<Sweep>) -> Scan {
+        Scan {
+            start_time: start,
+            end_time: end,
+            key_timestamp: start,
+            vcp: 9999,
+            vcp_pattern: None,
+            sweeps,
+            completeness: None,
+            cached_sweep_count: None,
+            planned_sweep_count: None,
+        }
+    }
+
+    fn shown(scan_start: f64, elev: u8, start: f64, end: f64) -> DisplayedSweep {
+        DisplayedSweep {
+            identity: SweepIdentity::new(
+                ScanKey::from_secs_f64("KTLX", scan_start),
+                elev,
+                "reflectivity",
+            ),
+            start_time: start,
+            end_time: end,
+            elevation_deg: 0.5,
+        }
     }
 
     #[wasm_bindgen_test]
     fn caption_defaults_to_none() {
         assert_eq!(CanvasCaption::default(), CanvasCaption::None);
-    }
-
-    #[wasm_bindgen_test]
-    fn caption_suppressed_while_attached() {
-        // Live owns the canvas while attached — never caption, even with a
-        // drifted playhead and no covering scan.
         assert_eq!(
-            derive_canvas_caption(true, frame(), 9999.0, false, false),
-            CanvasCaption::None
-        );
-        // Also suppressed on a blank canvas while attached.
-        assert_eq!(
-            derive_canvas_caption(true, None, 9999.0, false, true),
-            CanvasCaption::None
+            CaptionContext::default().frame_step_secs,
+            DEFAULT_FRAME_STEP_SECS
         );
     }
 
     #[wasm_bindgen_test]
-    fn caption_none_when_scan_covers_playhead() {
-        // A frame is held and a scan covers the playhead: the resolver/render
-        // path is repainting, so no discrepancy.
-        assert_eq!(
-            derive_canvas_caption(false, frame(), 180.0, true, false),
-            CanvasCaption::None
-        );
+    fn a_fixed_tilt_frame_is_one_volume_apart() {
+        let tl = RadarTimeline {
+            scans: vec![
+                scan(0.0, 270.0, vec![sweep(1, 0.0, 20.0), sweep(2, 20.0, 40.0)]),
+                scan(280.0, 560.0, vec![sweep(1, 280.0, 300.0)]),
+            ],
+        };
+        // The gap to the next volume's start.
+        let d = shown(0.0, 1, 0.0, 20.0);
+        assert!((frame_step_secs(&tl, &d, false) - 280.0).abs() < 1e-9);
+        // The newest volume is never shorter than the one before it.
+        let d = shown(280.0, 1, 280.0, 300.0);
+        assert!((frame_step_secs(&tl, &d, false) - 280.0).abs() < 1e-9);
     }
 
     #[wasm_bindgen_test]
-    fn caption_discrepancy_fetching_vs_no_data() {
-        // Held frame, playhead drifted past it, no covering scan, fetch in
-        // flight → "fetching" discrepancy carrying the displayed midpoint and
-        // the playhead.
-        assert_eq!(
-            derive_canvas_caption(false, frame(), 700.0, false, true),
-            CanvasCaption::Discrepancy {
-                showing: 150.0,
-                target: 700.0,
-                fetching: true,
-            }
-        );
-        // Same but nothing is being fetched → "no data" discrepancy.
-        assert_eq!(
-            derive_canvas_caption(false, frame(), 700.0, false, false),
-            CanvasCaption::Discrepancy {
-                showing: 150.0,
-                target: 700.0,
-                fetching: false,
-            }
-        );
+    fn a_revisited_elevation_number_shortens_the_step() {
+        let tl = RadarTimeline {
+            scans: vec![scan(
+                0.0,
+                300.0,
+                vec![sweep(1, 0.0, 20.0), sweep(1, 150.0, 170.0)],
+            )],
+        };
+        let d = shown(0.0, 1, 0.0, 20.0);
+        assert!((frame_step_secs(&tl, &d, false) - 150.0).abs() < 1e-9);
     }
 
     #[wasm_bindgen_test]
-    fn caption_blank_canvas_acquiring_hint() {
-        // No frame on screen + a fetch covering the playhead → the legacy
-        // centered "Acquiring data…" hint.
+    fn latest_steps_one_sweep_floored_at_a_minute() {
+        let tl = RadarTimeline { scans: Vec::new() };
         assert_eq!(
-            derive_canvas_caption(false, None, 700.0, false, true),
-            CanvasCaption::Acquiring
+            frame_step_secs(&tl, &shown(0.0, 1, 0.0, 20.0), true),
+            MIN_FRAME_STEP_SECS
         );
-        // No frame and nothing fetching → no caption (a plain empty canvas).
+        assert_eq!(frame_step_secs(&tl, &shown(0.0, 1, 0.0, 90.0), true), 90.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn an_unknown_volume_uses_the_default_step() {
+        let tl = RadarTimeline { scans: Vec::new() };
         assert_eq!(
-            derive_canvas_caption(false, None, 700.0, false, false),
-            CanvasCaption::None
+            frame_step_secs(&tl, &shown(0.0, 1, 0.0, 20.0), false),
+            DEFAULT_FRAME_STEP_SECS
         );
     }
 }

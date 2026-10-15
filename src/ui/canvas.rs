@@ -94,6 +94,9 @@ pub(crate) fn render_canvas_with_geo(
                     },
                 );
 
+                // The caption is the same chrome in 3D (§7).
+                render_canvas_caption(ui, &rect, state, live);
+
                 // Handle orbit/zoom interactions
                 handle_globe_interaction(&response, &rect, state);
             }
@@ -451,20 +454,7 @@ pub(crate) fn render_canvas_with_geo(
                     },
                 );
 
-                // Canvas honesty caption (spec §11.2). A blank canvas with a
-                // fetch in flight reads as "loading", not "broken"; a held frame
-                // whose time has drifted from the playhead surfaces the
-                // discrepancy ("showing X · fetching/​no-data Y"). The target (Y)
-                // is a PLAYHEAD time, kept visually distinct from the actual
-                // collection readouts (info overlay) by the wording.
-                if let Some(text) =
-                    live.session
-                        .canvas_caption_text(&crate::ui::time_format::ZoneClock {
-                            use_local: state.use_local_time,
-                        })
-                {
-                    render_canvas_caption(&painter, &rect, ui.visuals().weak_text_color(), text);
-                }
+                render_canvas_caption(ui, &rect, state, live);
 
                 // Mobile chrome reveal tap (spec §13): when the chrome was
                 // hidden, the resolver latched this frame's press as a reveal.
@@ -738,15 +728,62 @@ pub(super) fn format_age_compact(now_secs: f64, ts_secs: f64) -> Option<String> 
     }
 }
 
-/// Render the canvas honesty caption (spec §11.2): centered, low-key text.
-/// The words are the session view-model's
-/// ([`crate::core::session::SessionVm::canvas_caption_text`]).
-fn render_canvas_caption(painter: &egui::Painter, rect: &Rect, color: Color32, text: String) {
-    painter.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        text,
-        egui::FontId::proportional(15.0),
-        color,
-    );
+/// Paint the canvas caption (§7) on a scrim at the center of the map —
+/// the only text that ever sits over it. The words and their roles are the
+/// session view-model's ([`crate::core::session::SessionVm::canvas_caption_line`]);
+/// a "fetch" segment emits the line's intent.
+fn render_canvas_caption(
+    ui: &mut egui::Ui,
+    rect: &Rect,
+    state: &mut AppState,
+    live: &crate::subsystem::Live,
+) {
+    use crate::core::canvas::CaptionRole;
+    let Some(line) = live
+        .session
+        .canvas_caption_line(&crate::ui::time_format::ZoneClock {
+            use_local: state.use_local_time,
+        })
+    else {
+        return;
+    };
+    let font = theme::readout_font();
+    egui::Area::new(egui::Id::new("canvas_caption"))
+        .order(egui::Order::Middle)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .fixed_pos(rect.center())
+        .interactable(line.action.is_some())
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(theme::map::scrim())
+                .stroke(Stroke::new(1.0, theme::map::scrim_edge()))
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::symmetric(10, 5))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.horizontal(|ui| {
+                        for (words, role) in &line.segments {
+                            let color = match role {
+                                CaptionRole::Words => theme::TEXT_DIM,
+                                CaptionRole::Frame => theme::SEEN,
+                                CaptionRole::Playhead { pinned: true } => theme::NOW,
+                                CaptionRole::Playhead { pinned: false } => theme::SEEN,
+                                CaptionRole::Action => theme::SELECTED,
+                            };
+                            let text = egui::RichText::new(words).font(font.clone()).color(color);
+                            if *role == CaptionRole::Action {
+                                let r = ui
+                                    .add(egui::Label::new(text.underline()).sense(Sense::click()));
+                                if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                    if let Some(intent) = line.action.clone() {
+                                        state.push_command(intent);
+                                    }
+                                }
+                            } else {
+                                ui.label(text);
+                            }
+                        }
+                    });
+                });
+        });
 }

@@ -46,6 +46,10 @@ impl WorkbenchApp {
                 live_active: self.live.mode_state.is_active(),
                 has_worker: self.render.coordinator.has_worker(),
                 product: self.state.viz_state.product,
+                site_id: &self.state.viz_state.site_id,
+                elevation_selection: &self.state.viz_state.elevation_selection,
+                volume_3d_active: self.volume_3d_active(),
+                archive_boundaries: &self.timeline.shadow_scan_boundaries,
                 displayed: self.state.viz_state.displayed.as_ref(),
                 coordinator_scan_key: self.render.coordinator.scan_key(),
                 active_download_ranges: &self.state.download_progress.active_scans,
@@ -71,7 +75,7 @@ impl WorkbenchApp {
                 identity.product.clone(),
             );
         }
-        self.state.viz_state.canvas_caption = followup.canvas_caption;
+        self.state.viz_state.caption_context = followup.caption_context;
     }
 
     /// Execute the effects described by [`reduce_advance_playback`], in
