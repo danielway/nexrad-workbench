@@ -3,7 +3,8 @@
 //! Two flavors of overlay coexist:
 //!
 //! 1. **Corner-chrome overlays** — color scale, compass, scale bar, the
-//!    mosaic stamp (and the info box's fallback stamp, off by default). Each is small, self-contained, and depends only on
+//!    layer legends (the mosaic stamp with its palette, mPING categories)
+//!    and the info box's fallback stamp, off by default. Each is small, self-contained, and depends only on
 //!    [`OverlayContext`] state. These implement the [`Overlay`] trait
 //!    and are dispatched through the [`render_chrome_overlays`] loop in
 //!    z-order, with a `visible` predicate that gates on view mode and
@@ -21,13 +22,12 @@
 //!    reading the canvas top-to-bottom.
 
 mod alerts;
-mod alerts_time;
 mod color_scale;
 mod compass;
 mod frame_stamp;
 mod globe;
 mod gps_location;
-mod mosaic_time;
+mod layer_legends;
 mod mping;
 mod national_mosaic;
 mod scale_bar;
@@ -63,8 +63,10 @@ pub(crate) struct OverlayContext<'a> {
     pub live: &'a Live,
     /// Per-frame derived snapshot (e.g. `data_is_live` for mosaic stamp).
     pub derived: &'a Derived,
-    /// Pure diagnostics projection used by canvas provenance overlays.
-    pub diagnostics_vm: &'a crate::core::diagnostics::DiagnosticsVm,
+    /// The mPING reports on the map (for their layer legend).
+    pub mping_reports: &'a [crate::mping::StormReport],
+    /// The playhead (Unix seconds).
+    pub playback_secs: f64,
 }
 
 /// A corner-chrome overlay: one of the small self-contained surfaces
@@ -95,12 +97,11 @@ pub(crate) fn render_chrome_overlays(ui: &mut egui::Ui, ctx: &OverlayContext) {
     // checked once per build in debug. Adding an overlay is one new
     // struct + one new entry here, placed at its z-order position.
     let overlays: &[&dyn Overlay] = &[
-        &frame_stamp::FrameStampOverlay, // z=10 (fallback; off)
-        &color_scale::ColorScaleOverlay, // z=20
-        &compass::CompassOverlay,        // z=30
-        &scale_bar::ScaleBarOverlay,     // z=40
-        &mosaic_time::MosaicTimeOverlay, // z=50
-        &alerts_time::AlertsTimeOverlay, // z=60
+        &frame_stamp::FrameStampOverlay,     // z=10 (fallback; off)
+        &color_scale::ColorScaleOverlay,     // z=20
+        &compass::CompassOverlay,            // z=30
+        &scale_bar::ScaleBarOverlay,         // z=40
+        &layer_legends::LayerLegendsOverlay, // z=50
     ];
 
     debug_assert!(

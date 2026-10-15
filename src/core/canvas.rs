@@ -1156,6 +1156,49 @@ fn format_mi(mi: f64) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Layer legends (one-instrument §7: "legends for every colored layer")
+// ---------------------------------------------------------------------------
+
+/// The mosaic's palette steps (dBZ) for its stamp's legend: NWS base
+/// reflectivity, which the MRMS WMS layer is drawn in.
+pub(crate) const MOSAIC_LEGEND_DBZ: [f32; 15] = [
+    5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0, 70.0, 75.0,
+];
+
+/// The mosaic legend's end labels: `5` … `75 dBZ`.
+pub(crate) fn mosaic_legend_ends() -> (String, String) {
+    let first = MOSAIC_LEGEND_DBZ[0];
+    let last = MOSAIC_LEGEND_DBZ[MOSAIC_LEGEND_DBZ.len() - 1];
+    (format!("{first:.0}"), format!("{last:.0} dBZ"))
+}
+
+/// The mPING legend: the categories of the reports drawn at the playhead,
+/// in a fixed order so the legend does not reshuffle as reports come and go.
+pub(crate) fn mping_legend(
+    reports: &[crate::mping::StormReport],
+    playback_secs: f64,
+) -> Vec<(crate::mping::ReportCategory, &'static str)> {
+    use crate::mping::ReportCategory::*;
+    [
+        Tornado,
+        Hail,
+        WindDamage,
+        Flood,
+        RainSnow,
+        ReducedVisibility,
+        Other,
+    ]
+    .into_iter()
+    .filter(|cat| {
+        reports
+            .iter()
+            .any(|r| r.category == *cat && r.visible_at(playback_secs))
+    })
+    .map(|cat| (cat, cat.label()))
+    .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Picking (one-instrument §7: hover states and a cursor; sites click only
 // when the Sites layer is on)
 // ---------------------------------------------------------------------------
@@ -2538,5 +2581,53 @@ mod pick_tests {
             event: "Tornado Warning".to_string(),
         };
         assert_eq!(alert.hover_label().as_deref(), Some("Tornado Warning"));
+    }
+}
+
+#[cfg(test)]
+mod layer_legend_tests {
+    use super::*;
+    use crate::mping::{ReportCategory, StormReport};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn report(category: ReportCategory, obtime_ms: f64) -> StormReport {
+        StormReport {
+            id: 1,
+            obtime_ms,
+            category,
+            description: String::new(),
+            lat: 35.0,
+            lon: -97.0,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn mping_legend_lists_drawn_categories_in_a_fixed_order() {
+        let reports = [
+            report(ReportCategory::RainSnow, 1_000_000.0),
+            report(ReportCategory::Tornado, 1_000_000.0),
+            report(ReportCategory::Hail, 1_000_000.0),
+            // Hail again: listed once.
+            report(ReportCategory::Hail, 1_000_000.0),
+        ];
+        let legend: Vec<_> = mping_legend(&reports, 1_000.0)
+            .into_iter()
+            .map(|l| l.1)
+            .collect();
+        assert_eq!(legend, vec!["Tornado", "Hail", "Rain / Snow"]);
+    }
+
+    #[wasm_bindgen_test]
+    fn reports_after_the_playhead_are_not_in_the_legend() {
+        let reports = [report(ReportCategory::Flood, 5_000_000.0)];
+        assert!(mping_legend(&reports, 1_000.0).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn mosaic_legend_spans_its_palette() {
+        assert_eq!(
+            mosaic_legend_ends(),
+            ("5".to_string(), "75 dBZ".to_string())
+        );
     }
 }
