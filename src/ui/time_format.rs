@@ -150,6 +150,7 @@ pub(crate) enum Compaction {
     /// Full: hours:minutes:seconds + zone, e.g. "2:41:07 PM CDT".
     Full,
     /// Drop seconds, keep the zone: "2:41 PM CDT".
+    #[cfg_attr(not(test), allow(dead_code))]
     NoSeconds,
     /// Drop seconds and the zone: "2:41 PM".
     Bare,
