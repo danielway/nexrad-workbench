@@ -9,8 +9,8 @@
 use super::{format_timestamp_full, DateTimeComponents, TimelineFrame};
 use crate::core::projection::SweepAvailability;
 use crate::data::ScanCompleteness;
-use crate::ui::colors::timeline as tl_colors;
-use crate::ui::colors::ui as ui_colors;
+use crate::ui::theme;
+use crate::ui::theme::timeline as tl_colors;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
 
 /// Shared tooltip header: `<title> · <status>`, with the status word
@@ -203,7 +203,7 @@ fn render_available_tooltip_content(
         ui,
         "Volume scan",
         "In cloud archive",
-        tl_colors::status_available(),
+        tl_colors::STATUS_AVAILABLE,
     );
 
     // Boundary times come from S3 listing gaps, so they're approximate.
@@ -237,7 +237,7 @@ fn render_sweep_tooltip_content(
             sweep.elevation_number, display_angle
         ),
         "On device",
-        tl_colors::status_cached(),
+        tl_colors::STATUS_CACHED,
     );
 
     let sweep_count = parent_scan
@@ -264,7 +264,7 @@ fn render_sweep_tooltip_content(
                 RichText::new("Note: sweep time range extends outside its parent scan")
                     .size(9.0)
                     .italics()
-                    .color(Color32::from_rgb(255, 200, 100)),
+                    .color(theme::legacy::CAUTION),
             );
         }
     }
@@ -388,10 +388,10 @@ fn render_realtime_volume_tooltip(
             // header; the bare word "Available" was a third phrasing for the
             // same state and read as a capability rather than a location.
             let (state_label, state_color) = match sp.availability() {
-                SweepAvailability::Cached => ("On device", tl_colors::status_cached()),
-                SweepAvailability::Collecting => ("Collecting now", ui_colors::ACTIVE),
-                SweepAvailability::Available => ("In archive", tl_colors::status_available()),
-                SweepAvailability::Projected => ("Projected", tl_colors::status_available()),
+                SweepAvailability::Cached => ("On device", tl_colors::STATUS_CACHED),
+                SweepAvailability::Collecting => ("Collecting now", theme::legacy::ACTIVE_BLUE),
+                SweepAvailability::Available => ("In archive", tl_colors::STATUS_AVAILABLE),
+                SweepAvailability::Projected => ("Projected", tl_colors::STATUS_AVAILABLE),
             };
             tooltip_header(
                 ui,
@@ -420,7 +420,7 @@ fn render_realtime_volume_tooltip(
                 ui.label(
                     RichText::new("Data received and stored.")
                         .size(10.0)
-                        .color(ui_colors::SUCCESS),
+                        .color(theme::legacy::SUCCESS),
                 );
             } else if sp.is_in_progress() {
                 let completed_chunks = sp.chunks_received as usize;
@@ -443,7 +443,7 @@ fn render_realtime_volume_tooltip(
                             completed_chunks, total, in_progress_radials
                         ))
                         .size(10.0)
-                        .color(ui_colors::ACTIVE),
+                        .color(theme::legacy::ACTIVE_BLUE),
                     );
                 } else if completed_chunks > 0 {
                     ui.label(format!("{} chunks received", completed_chunks));
@@ -459,7 +459,7 @@ fn render_realtime_volume_tooltip(
                     RichText::new("Not yet started \u{2014} bounds are estimated.")
                         .size(10.0)
                         .italics()
-                        .color(Color32::from_rgba_unmultiplied(180, 200, 220, 160)),
+                        .color(theme::alpha(theme::TEXT_DIM, 160)),
                 );
             }
 
@@ -488,7 +488,12 @@ fn render_realtime_volume_tooltip(
     }
 
     // -- Volume-level tooltip (scan track or no sweep match) --
-    tooltip_header(ui, "Live volume", "Collecting now", ui_colors::ACTIVE);
+    tooltip_header(
+        ui,
+        "Live volume",
+        "Collecting now",
+        theme::legacy::ACTIVE_BLUE,
+    );
 
     let start_str = format_timestamp_full(vol_start, use_local);
     ui.label(format!("Started: {}", start_str));
@@ -514,7 +519,7 @@ fn render_realtime_volume_tooltip(
             RichText::new("Projected area \u{2014} data not yet collected")
                 .size(10.0)
                 .italics()
-                .color(Color32::from_rgba_unmultiplied(180, 200, 180, 160)),
+                .color(theme::alpha(theme::TEXT_DIM, 160)),
         );
         if remaining > 0.0 {
             ui.label(format!("Est. ~{}s remaining", remaining as i64));
@@ -534,11 +539,11 @@ fn render_scan_tooltip_content(
     use_local: bool,
 ) {
     let (status, status_color) = match scan.completeness {
-        Some(ScanCompleteness::Missing) => ("In cloud archive", tl_colors::status_available()),
+        Some(ScanCompleteness::Missing) => ("In cloud archive", tl_colors::STATUS_AVAILABLE),
         Some(ScanCompleteness::PartialWithVcp | ScanCompleteness::PartialNoVcp) => {
-            ("Partially on device", tl_colors::status_cached())
+            ("Partially on device", tl_colors::STATUS_CACHED)
         }
-        Some(ScanCompleteness::Complete) | None => ("On device", tl_colors::status_cached()),
+        Some(ScanCompleteness::Complete) | None => ("On device", tl_colors::STATUS_CACHED),
     };
     tooltip_header(ui, "Volume scan", status, status_color);
 
@@ -574,7 +579,7 @@ fn render_scan_tooltip_content(
                 let expected = live_roster.and_then(|r| r.expected_count()).unwrap_or(0);
                 ui.label(
                     RichText::new(format!("Live: {}/{} tilts received", received, expected))
-                        .color(ui_colors::SUCCESS),
+                        .color(theme::legacy::SUCCESS),
                 );
             }
         }

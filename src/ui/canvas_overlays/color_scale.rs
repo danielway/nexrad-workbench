@@ -3,6 +3,7 @@
 //! Builds a 1024-entry LUT matching the GPU shader's color mapping, then
 //! renders it as a gradient bar with tick marks and unit labels.
 
+use crate::ui::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
 /// Trait wrapper for the registry. Z-order 20 sits above the radar
@@ -88,7 +89,7 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::core::Radar
     painter.rect_stroke(
         bar_rect,
         0.0,
-        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(120, 120, 130, 180)),
+        Stroke::new(1.0_f32, theme::alpha(theme::TEXT_FAINT, 180)),
         StrokeKind::Outside,
     );
 
@@ -115,7 +116,7 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::core::Radar
         // Tick line
         painter.line_segment(
             [Pos2::new(bar_left - 3.0, y), Pos2::new(bar_left, y)],
-            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(180, 180, 190, 200)),
+            Stroke::new(1.0_f32, theme::alpha(theme::TEXT_DIM, 200)),
         );
 
         // Label
@@ -129,7 +130,7 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::core::Radar
             egui::Align2::RIGHT_CENTER,
             label,
             egui::FontId::monospace(10.0),
-            Color32::from_rgba_unmultiplied(180, 180, 190, 220),
+            theme::alpha(theme::TEXT_DIM, 220),
         );
         val += tick_step;
     }
@@ -140,6 +141,6 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::core::Radar
         egui::Align2::CENTER_BOTTOM,
         product.unit(),
         egui::FontId::monospace(10.0),
-        Color32::from_rgba_unmultiplied(160, 160, 170, 200),
+        theme::alpha(theme::TEXT_DIM, 200),
     );
 }

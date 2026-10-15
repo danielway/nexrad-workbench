@@ -240,13 +240,13 @@ fn render_stream_health(ui: &mut egui::Ui, live: &crate::subsystem::Live) {
     let resp = ui.label(
         RichText::new(egui_phosphor::regular::BROADCAST)
             .size(10.0)
-            .color(crate::ui::colors::live::ACQUIRING),
+            .color(crate::ui::theme::legacy::WARN),
     );
     ui.label(
         RichText::new("stalled")
             .size(10.0)
             .monospace()
-            .color(crate::ui::colors::live::ACQUIRING),
+            .color(crate::ui::theme::legacy::WARN),
     );
     if let Some(hover) = status.hover_text() {
         resp.on_hover_text(hover);

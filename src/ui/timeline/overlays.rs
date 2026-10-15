@@ -8,7 +8,7 @@
 
 use super::TimelineFrame;
 use crate::state::SavedEvents;
-use crate::ui::colors::timeline as tl_colors;
+use crate::ui::theme::timeline as tl_colors;
 use eframe::egui::{self, Painter, Pos2, Rect, Stroke};
 
 /// Render saved event overlays on the timeline: a faint neutral band, neutral
@@ -86,7 +86,7 @@ pub(super) fn render_saved_events(
                 egui::Align2::CENTER_TOP,
                 &event.name,
                 egui::FontId::proportional(9.0),
-                tl_colors::event_label(),
+                tl_colors::EVENT_LABEL,
             );
         }
     }

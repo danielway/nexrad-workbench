@@ -17,6 +17,7 @@
 
 use crate::alerts::{bbox_intersects, Alert};
 use crate::geo::MapProjection;
+use crate::ui::theme;
 use eframe::egui::epaint::{Vertex, WHITE_UV};
 use eframe::egui::{Color32, Mesh, Painter, Pos2, Shape, Stroke};
 use geo_types::Coord;
@@ -71,7 +72,7 @@ pub(crate) fn render_alerts(
 
     // Slightly wider black halo so warning strokes stay legible over bright
     // radar fills. Only warnings get it — watches stay subdued.
-    let halo = Stroke::new(4.5_f32, Color32::BLACK);
+    let halo = Stroke::new(4.5_f32, theme::map::HALO);
 
     for alert in ordered {
         let warning = alert.is_warning();

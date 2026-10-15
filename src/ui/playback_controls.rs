@@ -1,11 +1,12 @@
 //! Playback controls: play/pause, speed, datetime picker, live indicator, and session stats.
 
-use super::colors::{live, timeline as tl_colors, ui as ui_colors};
 use super::modal_states::PickerField;
 use super::overflow_menu::overflow_menu;
 use super::timeline::format_timestamp_compact;
 use crate::core::{LoopMode, PlaybackMode, PlaybackSpeed};
 use crate::state::{AppMode, AppState, WidthTier};
+use crate::ui::theme;
+use crate::ui::theme::timeline as tl_colors;
 use eframe::egui::{self, Color32, RichText};
 
 /// Render the datetime picker popup for jumping to a specific time.
@@ -120,7 +121,7 @@ pub(super) fn render_datetime_picker_popup(
                     // Validation feedback
                     let valid_ts = picker.to_timestamp(use_local);
                     if valid_ts.is_none() {
-                        ui.colored_label(Color32::from_rgb(255, 100, 100), "Invalid date/time");
+                        ui.colored_label(theme::legacy::ERROR, "Invalid date/time");
                     }
 
                     // Enter key submits the form when valid
@@ -231,7 +232,7 @@ pub(super) fn render_playback_controls(
             tz_suffix
         ))
         .size(13.0)
-        .color(tl_colors::selection(state.is_dark));
+        .color(tl_colors::PLAYHEAD);
         // Monospace reads as a precise instrument in Advanced; Basic (Level 0,
         // spec §14 "no jargon") gets a plain, friendly clock readout instead.
         if advanced {
@@ -277,7 +278,7 @@ pub(super) fn render_playback_controls(
     );
     // The tether's companion: whether data is actually still arriving. Silent
     // when there is no stream.
-    render_stream_activity(ui, state, live);
+    render_stream_activity(ui, live);
     ui.separator();
 
     // Play/Pause button — disabled in Idle (no data to play). While tethered
@@ -553,7 +554,7 @@ fn render_utc_toggle(ui: &mut egui::Ui, state: &mut AppState) {
 /// fill never was. The glyph pulses only while data is genuinely moving, so
 /// motion means exactly one thing. Neutral/amber tones only — the accent
 /// budget's red stays with the live edge and the tether.
-fn render_stream_activity(ui: &mut egui::Ui, state: &AppState, live: &crate::subsystem::Live) {
+fn render_stream_activity(ui: &mut egui::Ui, live: &crate::subsystem::Live) {
     use crate::core::StreamActivity;
 
     let status = &live.frame_status;
@@ -561,13 +562,12 @@ fn render_stream_activity(ui: &mut egui::Ui, state: &AppState, live: &crate::sub
         return; // No stream — the chip costs no chrome in the archive case.
     };
 
-    let dark = state.is_dark;
     let color = match status.activity {
         // Amber, not blue: a stall is degraded, and blue is the routine
         // "waiting" tone elsewhere in the live palette.
-        StreamActivity::Stalled => live::ACQUIRING,
-        StreamActivity::Receiving => ui_colors::value(dark),
-        _ => ui_colors::label(dark),
+        StreamActivity::Stalled => theme::legacy::WARN,
+        StreamActivity::Receiving => theme::TEXT_DIM,
+        _ => theme::TEXT_FAINT,
     };
     // The pulse is applied to alpha so the chip breathes without changing hue.
     let color = if status.activity.is_animated() {
@@ -608,7 +608,6 @@ fn render_session_stats(
     state: &mut AppState,
     activity_vm: &crate::core::activity::ActivityVm,
 ) {
-    let dark = state.is_dark;
     let cache_size = state.session_stats.format_cache_size();
 
     // Ambient activity chip (spec §5) — for ALL users, always visible
@@ -625,10 +624,6 @@ fn render_session_stats(
         if ui.small_button("x").on_hover_text("Clear cache").clicked() {
             state.push_command(crate::core::Intent::ClearCache);
         }
-        ui.label(
-            RichText::new(cache_size)
-                .size(10.0)
-                .color(ui_colors::value(dark)),
-        );
+        ui.label(RichText::new(cache_size).size(10.0).color(theme::TEXT_DIM));
     }
 }

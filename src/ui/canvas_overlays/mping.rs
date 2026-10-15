@@ -12,10 +12,11 @@
 
 use crate::geo::MapProjection;
 use crate::mping::StormReport;
-use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
 use geo_types::Coord;
 
-use super::super::colors::mping as mping_colors;
+use crate::ui::data_colors;
+use crate::ui::theme;
 
 pub(crate) fn render_mping_reports(
     painter: &Painter,
@@ -53,15 +54,15 @@ pub(crate) fn render_mping_reports(
             y: report.lat,
         });
 
-        let fill = mping_colors::fill(report.category);
+        let fill = data_colors::mping_fill(report.category);
         let is_selected = selected_report_id == Some(report.id);
         let radius = if is_selected { 6.5 } else { 4.5 };
         painter.circle_filled(pos, radius, fill);
-        painter.circle_stroke(pos, radius, Stroke::new(1.0_f32, mping_colors::STROKE));
+        painter.circle_stroke(pos, radius, Stroke::new(1.0_f32, theme::map::HALO));
         if is_selected {
             // Bright halo so the selected marker is visually distinct from
             // the dozens of unselected ones around it.
-            painter.circle_stroke(pos, radius + 2.5, Stroke::new(1.5_f32, Color32::WHITE));
+            painter.circle_stroke(pos, radius + 2.5, Stroke::new(1.5_f32, theme::map::OUTLINE));
         }
     }
 }
@@ -156,7 +157,7 @@ pub(crate) fn render_mping_detail(
             } else {
                 body_font.clone()
             };
-            painter.layout_no_wrap(text.clone(), font, Color32::WHITE)
+            painter.layout_no_wrap(text.clone(), font, theme::TEXT)
         })
         .collect();
 
@@ -180,28 +181,24 @@ pub(crate) fn render_mping_detail(
 
     // Background + colored left edge in the marker's category color so the
     // popover and marker are visually linked.
-    painter.rect_filled(
-        bg_rect,
-        4.0,
-        Color32::from_rgba_unmultiplied(20, 20, 30, 230),
-    );
+    painter.rect_filled(bg_rect, 4.0, theme::alpha(theme::RAISED, 230));
     painter.rect_stroke(
         bg_rect,
         4.0,
-        Stroke::new(1.0_f32, Color32::from_rgb(80, 80, 100)),
+        Stroke::new(1.0_f32, theme::TEXT_FAINT),
         StrokeKind::Outside,
     );
     let edge = Rect::from_min_size(bg_rect.min, Vec2::new(3.0, bg_rect.height()));
-    painter.rect_filled(edge, 0.0, mping_colors::fill(report.category));
+    painter.rect_filled(edge, 0.0, data_colors::mping_fill(report.category));
 
     // Draw text lines.
     let mut cursor = anchor + padding;
     for (i, galley) in galleys.into_iter().enumerate() {
         let h = galley.size().y;
         let color = if i == 0 {
-            mping_colors::fill(report.category)
+            data_colors::mping_fill(report.category)
         } else {
-            Color32::from_rgb(220, 220, 230)
+            theme::TEXT
         };
         painter.galley(cursor, galley, color);
         cursor.y += h + line_spacing;
@@ -215,7 +212,7 @@ pub(crate) fn render_mping_detail(
     };
     painter.line_segment(
         [marker_pos, line_target],
-        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 100)),
+        Stroke::new(1.0_f32, theme::alpha(theme::TEXT, 100)),
     );
 }
 

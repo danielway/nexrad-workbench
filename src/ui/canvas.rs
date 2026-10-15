@@ -9,12 +9,12 @@ use super::canvas_overlays::{
     render_mping_detail, render_mping_reports, render_nexrad_sites, render_radar_sweep,
     AlertRenderPhase, OverlayContext, RadarCutout,
 };
-use super::colors::canvas as canvas_colors;
 use crate::core::geo_labels::{GeoLabelPlacementKey, GeoLabelVisibilityKey};
 use crate::core::RenderProcessing;
 use crate::geo::{GeoLayerSet, MapProjection, ScreenBounds, ViewMode};
 use crate::nexrad::RadarGpuRenderer;
 use crate::state::AppState;
+use crate::ui::theme;
 use eframe::egui::{self, Color32, Rect, Sense, Stroke};
 use geo_types::Coord;
 use std::sync::{Arc, Mutex};
@@ -50,7 +50,7 @@ pub(crate) fn render_canvas_with_geo(
         let dark = state.is_dark;
 
         // Draw background
-        painter.rect_filled(rect, 0.0, canvas_colors::background(dark));
+        painter.rect_filled(rect, 0.0, theme::MAP);
 
         match state.viz_state.view_mode() {
             ViewMode::Globe3D => {
@@ -242,7 +242,7 @@ pub(crate) fn render_canvas_with_geo(
                         painter.circle_stroke(
                             c.center,
                             c.radius,
-                            Stroke::new(1.5_f32, canvas_colors::ring_major(dark)),
+                            Stroke::new(1.5_f32, theme::map::ring_major()),
                         );
                     }
                     // Request only as fast as the visible animation requires. A
@@ -593,13 +593,13 @@ pub(super) fn format_age(secs: f64) -> String {
 
 pub(super) fn age_color(secs: f64) -> Color32 {
     if secs > ARCHIVE_AGE_THRESHOLD_SECS {
-        Color32::from_rgb(255, 160, 40) // orange for archive data
+        theme::legacy::WARN // orange for archive data
     } else if secs > 300.0 {
-        Color32::from_rgb(255, 80, 80)
+        theme::legacy::ERROR
     } else if secs > 60.0 {
-        Color32::from_rgb(255, 200, 60)
+        theme::legacy::CAUTION
     } else {
-        Color32::from_rgb(80, 220, 100)
+        theme::legacy::SUCCESS
     }
 }
 

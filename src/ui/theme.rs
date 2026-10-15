@@ -1,0 +1,581 @@
+//! The one source of truth for chrome color and type ("One Instrument" §3, §4).
+//!
+//! **Color grammar.** Chrome is grey. Color is a claim about time. Three
+//! accents each mean one thing on every surface, one chrome color means
+//! *selected*, and nothing else in the interface is colored — the reflectivity
+//! palette owns green, yellow, red and magenta, so the chrome gives them up.
+//!
+//! | Token family | Role |
+//! |---|---|
+//! | [`MAP`] [`PANEL`] [`RAISED`] [`HOVER`] | the four surfaces, from the dark canvas outward |
+//! | [`TEXT`] [`TEXT_DIM`] [`TEXT_FAINT`] [`LINE`] | the four greys for text and dividers |
+//! | [`SEEN`] | white accent — *what you see* |
+//! | [`LOOP`] | amber accent — *what loops* (selection ranges) |
+//! | [`NOW`] / [`NOW_IDLE`] | red accent — *now*, at two strengths |
+//! | [`SELECTED`] | periwinkle — the one selected-control color, never a state |
+//! | [`ON_DEVICE`] | slate — cached / on this device; a neutral fill, not an accent |
+//!
+//! Widgets ask for a role, never an RGB. Role helpers that derive alphas from
+//! the base tokens live in the submodules ([`timeline`], [`canvas`]), and the
+//! map marks in [`map`]. Hues in use today that the grammar retires are kept,
+//! folded and named, in [`legacy`] until the PR that removes their use lands.
+//! Data colors (mPING categories, storm-cell intensity, saved-event swatches,
+//! the radar color tables) are not chrome and live in
+//! [`crate::ui::data_colors`] / `crate::nexrad::render::color_table`.
+//!
+//! **Type.** IBM Plex Sans for prose and labels, IBM Plex Mono for every time,
+//! number, ID and readout. Five sizes ([`CAPTION`], [`LABEL`], [`READOUT`],
+//! [`BODY`], [`TITLE`]) are installed as egui's text styles by [`install`], so
+//! stock widgets pick them up; [`readout`] / [`readout_font`] are the mono
+//! readout helpers. The "one clock" formatting rule (24 h `HH:MM:SS`, `~` for
+//! projected values, `m:ss` countdowns, "N min old" ages) belongs to
+//! [`crate::ui::time_format`].
+//!
+//! The app is dark-only (`ThemeMode` has a single variant), so every token is
+//! a constant.
+
+use eframe::egui::{self, Color32, FontFamily, FontId, RichText, TextStyle};
+
+// ── Surfaces ───────────────────────────────────────────────────────────────
+
+/// Surface 0 — behind the radar image (the map canvas).
+pub(crate) const MAP: Color32 = Color32::from_rgb(6, 8, 12);
+/// Surface 1 — the top bar, side panels and the timeline track.
+pub(crate) const PANEL: Color32 = Color32::from_rgb(12, 16, 22);
+/// Surface 2 — raised: fields, chips, dialogs and scrims over the map.
+pub(crate) const RAISED: Color32 = Color32::from_rgb(20, 26, 35);
+/// Surface 3 — hover and pressed.
+#[allow(dead_code)] // Hover states arrive with the dialogs and panel PRs.
+pub(crate) const HOVER: Color32 = Color32::from_rgb(28, 36, 48);
+
+// ── Greys for text and dividers ────────────────────────────────────────────
+
+/// Primary text — values and names.
+pub(crate) const TEXT: Color32 = Color32::from_rgb(232, 237, 244);
+/// Secondary text — labels.
+pub(crate) const TEXT_DIM: Color32 = Color32::from_rgb(143, 154, 170);
+/// Faint text — hints, units, idle states.
+pub(crate) const TEXT_FAINT: Color32 = Color32::from_rgb(93, 103, 117);
+/// The one hairline / divider grey (borders, minor ticks).
+pub(crate) const LINE: Color32 = Color32::from_rgb(39, 48, 64);
+
+// ── Accents ────────────────────────────────────────────────────────────────
+
+/// White — *what you see*: the playhead line and triangle, the playhead
+/// clock, the overview's view box.
+pub(crate) const SEEN: Color32 = Color32::from_rgb(244, 247, 251);
+/// Amber — *what loops*: the range bar, handles, wash and the selection chip.
+pub(crate) const LOOP: Color32 = Color32::from_rgb(230, 162, 60);
+/// [`LOOP`] lightened for text set on a dark chip.
+pub(crate) const LOOP_TEXT: Color32 = Color32::from_rgb(243, 207, 134);
+/// [`LOOP`] darkened for a chip's border.
+pub(crate) const LOOP_DEEP: Color32 = Color32::from_rgb(122, 90, 28);
+/// Red — *now*, full strength: the stream is running (now line, cap, the dot
+/// on a pinned handle, the overview's now dot).
+pub(crate) const NOW: Color32 = Color32::from_rgb(255, 95, 95);
+/// Red — *now*, low strength: not streaming (the idle now line, "GO LIVE").
+pub(crate) const NOW_IDLE: Color32 = Color32::from_rgb(200, 95, 95);
+
+// ── Selected control and on-device ─────────────────────────────────────────
+
+/// Periwinkle — the one *selected control* color (pressed product, chosen
+/// ladder row, active rail tab). In no radar palette. Never for a state.
+#[allow(dead_code)] // Adopted by the controls in later One Instrument PRs.
+pub(crate) const SELECTED: Color32 = Color32::from_rgb(138, 162, 255);
+/// Slate — *on device*: cached cells, received cuts, held days. A neutral,
+/// not an accent: it is the fill channel.
+pub(crate) const ON_DEVICE: Color32 = Color32::from_rgb(70, 96, 127);
+
+/// `c` with its alpha replaced (unmultiplied), for washes over another surface.
+pub(crate) fn alpha(c: Color32, a: u8) -> Color32 {
+    let [r, g, b, _] = c.to_srgba_unmultiplied();
+    Color32::from_rgba_unmultiplied(r, g, b, a)
+}
+
+/// The accent for the derived top-level mode (shell-side mapping; the core
+/// stays color-free).
+pub(crate) fn mode_color(mode: crate::state::AppMode) -> Color32 {
+    match mode {
+        crate::state::AppMode::Idle => TEXT_FAINT,
+        crate::state::AppMode::Archive => legacy::ACTIVE_BLUE,
+        crate::state::AppMode::Live => NOW,
+    }
+}
+
+/// Retired hues — in use today, outside the grammar. Each is folded from the
+/// near-duplicates it replaced and goes away with the PR named on it.
+pub(crate) mod legacy {
+    use super::Color32;
+
+    /// The old "active" blue: ARCHIVE badge, active pills, busy work, primary
+    /// buttons. Becomes [`super::SELECTED`] for selected controls and words
+    /// for busy work (top bar / transport / panel PRs).
+    pub(crate) const ACTIVE_BLUE: Color32 = Color32::from_rgb(100, 180, 255);
+    /// Filled primary-button blue (dialogs PR: one button component).
+    pub(crate) const BUTTON_BLUE: Color32 = Color32::from_rgb(65, 125, 200);
+    /// Success / "on device" / completed green. Becomes nothing in chrome.
+    pub(crate) const SUCCESS: Color32 = Color32::from_rgb(100, 200, 100);
+    /// Failure and form-error red. Becomes the ⚠ glyph in text color.
+    pub(crate) const ERROR: Color32 = Color32::from_rgb(255, 100, 100);
+    /// Filled destructive-button red. Becomes an outlined button (dialogs PR).
+    pub(crate) const DESTRUCTIVE: Color32 = Color32::from_rgb(200, 60, 60);
+    /// Stalled / degraded / caution orange. Stalled becomes a hollow red dot
+    /// plus the word.
+    pub(crate) const WARN: Color32 = Color32::from_rgb(255, 170, 50);
+    /// Badge yellow-amber (SAILS/MRLE, cache warning, 3D pill, notes). SAILS
+    /// keeps a tiny [`super::LOOP`] tick; the rest lose color.
+    pub(crate) const CAUTION: Color32 = Color32::from_rgb(230, 190, 80);
+    /// Yellow ring on the frame that is on the GPU. Becomes a [`super::SEEN`]
+    /// outline (timeline marks PR).
+    pub(crate) const ACTIVE_RING: Color32 = Color32::from_rgb(255, 255, 100);
+    /// Green sweep line / current beam. Becomes [`super::SEEN`] (quiet canvas).
+    pub(crate) const SWEEP: Color32 = Color32::from_rgb(100, 255, 100);
+    /// Lavender for the previous sweep's arc and start line (quiet canvas).
+    pub(crate) const SWEEP_PREV: Color32 = Color32::from_rgb(160, 160, 220);
+    /// Dark red outline of the failure triangle on a frame cell. Failure
+    /// becomes a ⚠ mark (timeline marks PR).
+    pub(crate) const ERROR_DEEP: Color32 = Color32::from_rgb(120, 30, 30);
+}
+
+/// Map marks drawn over the radar (sites, location, rings, compass).
+pub(crate) mod map {
+    use super::{alpha, Color32, LINE, TEXT, TEXT_DIM, TEXT_FAINT};
+
+    /// Other (non-current) NEXRAD site marker.
+    pub(crate) const SITE: Color32 = Color32::from_rgb(255, 180, 80);
+    /// Other site marker stroke.
+    pub(crate) const SITE_STROKE: Color32 = Color32::from_rgb(180, 120, 40);
+    /// The current site marker and its label.
+    pub(crate) const SITE_CURRENT: Color32 = Color32::from_rgb(50, 200, 255);
+    /// Current site marker stroke.
+    pub(crate) const SITE_CURRENT_STROKE: Color32 = Color32::from_rgb(30, 150, 200);
+    /// The user's GPS location dot.
+    pub(crate) const GPS: Color32 = Color32::from_rgb(33, 150, 243);
+    /// Dark stroke that keeps a mark legible on bright reflectivity.
+    pub(crate) const HALO: Color32 = Color32::from_rgb(20, 20, 25);
+    /// White ring around a map mark (location dot, measure end points,
+    /// storm reports), legible on any echo.
+    pub(crate) const OUTLINE: Color32 = Color32::WHITE;
+    /// The red "N" on the 3D compass.
+    pub(crate) const NORTH: Color32 = Color32::from_rgb(255, 80, 80);
+    /// The measure tool's line, end points and readout border.
+    pub(crate) const TOOL: Color32 = Color32::from_rgb(255, 100, 100);
+
+    /// Minor range ring.
+    pub(crate) fn ring() -> Color32 {
+        alpha(LINE, 120)
+    }
+    /// Major (labeled) range ring.
+    pub(crate) fn ring_major() -> Color32 {
+        alpha(TEXT_FAINT, 150)
+    }
+    /// Radial spokes.
+    pub(crate) fn radial() -> Color32 {
+        alpha(LINE, 80)
+    }
+    /// N/E/S/W letters on the rings.
+    pub(crate) fn cardinal_label() -> Color32 {
+        alpha(TEXT_FAINT, 200)
+    }
+    /// Radar-site center marker fill.
+    pub(crate) const CENTER_MARKER: Color32 = TEXT_DIM;
+    /// Radar-site center marker stroke.
+    pub(crate) const CENTER_MARKER_STROKE: Color32 = TEXT_FAINT;
+    /// A label printed on the map (site IDs, readouts).
+    pub(crate) const LABEL: Color32 = TEXT;
+}
+
+/// Radar sweep-position marks on the canvas.
+pub(crate) mod radar {
+    use super::{alpha, legacy, Color32, TEXT_FAINT};
+
+    /// Active sweep line.
+    pub(crate) const SWEEP_LINE: Color32 = legacy::SWEEP;
+    /// Sweep start boundary line (matches the previous sweep's arc).
+    pub(crate) fn sweep_start_line() -> Color32 {
+        alpha(legacy::SWEEP_PREV, 180)
+    }
+    /// Stale sweep line (shown between sweeps).
+    pub(crate) fn sweep_line_stale() -> Color32 {
+        alpha(TEXT_FAINT, 140)
+    }
+    /// Stale sweep start line (shown between sweeps).
+    pub(crate) fn sweep_start_line_stale() -> Color32 {
+        alpha(TEXT_FAINT, 100)
+    }
+}
+
+/// Acquisition queue operation statuses.
+pub(crate) mod acquisition {
+    use super::{legacy, Color32, TEXT_DIM, TEXT_FAINT};
+
+    /// Queued operation — waiting, so grey.
+    pub(crate) const QUEUED: Color32 = TEXT_DIM;
+    /// Active operation.
+    pub(crate) const ACTIVE: Color32 = legacy::ACTIVE_BLUE;
+    /// Completed operation.
+    pub(crate) const COMPLETED: Color32 = legacy::SUCCESS;
+    /// Failed operation.
+    pub(crate) const FAILED: Color32 = legacy::ERROR;
+    /// Cancelled operation.
+    pub(crate) const CANCELLED: Color32 = TEXT_FAINT;
+}
+
+/// Timeline roles, derived from the base tokens.
+pub(crate) mod timeline {
+    use super::{
+        alpha, legacy, Color32, LINE, LOOP, NOW, ON_DEVICE, PANEL, RAISED, SEEN, TEXT, TEXT_DIM,
+        TEXT_FAINT,
+    };
+
+    /// The track's background.
+    pub(crate) const BACKGROUND: Color32 = PANEL;
+    /// The track's outline.
+    pub(crate) const BORDER: Color32 = LINE;
+    /// Major tick.
+    pub(crate) const TICK_MAJOR: Color32 = TEXT_FAINT;
+    /// Minor tick.
+    pub(crate) const TICK_MINOR: Color32 = LINE;
+    /// Tick label.
+    pub(crate) const TICK_LABEL: Color32 = TEXT_DIM;
+    /// The playhead ("the needle") and the playhead clock — *what you see*,
+    /// never to be read as "now".
+    pub(crate) const PLAYHEAD: Color32 = SEEN;
+    /// Active-frame ring.
+    pub(crate) const ACTIVE_SWEEP: Color32 = legacy::ACTIVE_RING;
+    /// The previous active-frame ring during the cell-to-cell blend: a fainter
+    /// shade of the same hue so it trails the active ring for one animation.
+    pub(crate) fn prev_active_sweep() -> Color32 {
+        alpha(legacy::ACTIVE_RING, 110)
+    }
+    /// The now line / cap when not streaming.
+    pub(crate) const NOW_IDLE: Color32 = super::NOW_IDLE;
+    /// The now line / cap while streaming.
+    pub(crate) const LIVE_ACTIVE: Color32 = NOW;
+    /// A range boundary label.
+    pub(crate) const SELECTION_LABEL: Color32 = TEXT_DIM;
+    /// A selected range.
+    pub(crate) const RANGE: Color32 = LOOP;
+    /// A selected range's wash over the frames.
+    pub(crate) fn selection_fill() -> Color32 {
+        alpha(LOOP, 40)
+    }
+    /// A selected range's boundary lines over the frames.
+    pub(crate) fn selection_edge() -> Color32 {
+        alpha(LOOP, 190)
+    }
+    /// The selection strip's empty background, a step off the track's.
+    pub(crate) const SELECTION_STRIP_BG: Color32 = RAISED;
+    /// The overview's view box outline.
+    pub(crate) fn view_box_edge() -> Color32 {
+        SEEN.gamma_multiply(0.85)
+    }
+    /// The overview's view box wash, and the funnel joining it to the strip.
+    pub(crate) fn view_box_fill() -> Color32 {
+        SEEN.gamma_multiply(0.10)
+    }
+    /// The part of the overview past now, where nothing can be yet.
+    pub(crate) fn future_wash() -> Color32 {
+        SEEN.gamma_multiply(0.03)
+    }
+    /// Text drawn inside scan/frame blocks.
+    pub(crate) fn block_label() -> Color32 {
+        alpha(TEXT, 200)
+    }
+    /// De-emphasized in-block text (ghost/projected blocks).
+    pub(crate) fn block_label_weak() -> Color32 {
+        alpha(TEXT, 110)
+    }
+    /// Backdrop for a label chip drawn over frame cells.
+    pub(crate) fn block_label_backdrop() -> Color32 {
+        alpha(PANEL, 170)
+    }
+
+    // ── On device vs listed in the archive ──────────────────────────────
+    //
+    // The track's color answers one question — the data's relationship to
+    // the user. Solid slate = on this device; hollow grey = listed in the
+    // archive but not downloaded. VCP identity and counts are text.
+
+    /// Fill for an on-device scan block; partial scans keep the hue at
+    /// reduced alpha (two tiers only).
+    pub(crate) fn cached_fill(partial: bool) -> Color32 {
+        alpha(ON_DEVICE, if partial { 120 } else { 235 })
+    }
+    /// Faint interior wash for an archive-only block.
+    pub(crate) fn available_fill() -> Color32 {
+        alpha(TEXT_DIM, 36)
+    }
+    /// An overview bar's storm-activity height for days not on this device.
+    pub(crate) fn activity_fill() -> Color32 {
+        alpha(TEXT_DIM, 120)
+    }
+    /// Dashed border for an archive-only block.
+    pub(crate) fn available_border() -> Color32 {
+        alpha(TEXT_DIM, 120)
+    }
+    /// Tooltip status word for on-device data.
+    pub(crate) const STATUS_CACHED: Color32 = TEXT;
+    /// Tooltip status word for archive-only data.
+    pub(crate) const STATUS_AVAILABLE: Color32 = TEXT_DIM;
+
+    // ── Frame cells ─────────────────────────────────────────────────────
+    //
+    // Every cell state is fill + shape/texture, never a unique hue; accents
+    // (active ring, failure tick) are layered on top by the renderer.
+
+    /// Bounding box around a scan container.
+    pub(crate) fn container_border() -> Color32 {
+        alpha(TEXT_DIM, 90)
+    }
+    /// The sweep-boundary sub-texture inside a container.
+    pub(crate) fn sub_texture() -> Color32 {
+        alpha(TEXT_DIM, 45)
+    }
+    /// A downloaded (cached) frame cell.
+    pub(crate) fn cell_cached() -> Color32 {
+        alpha(ON_DEVICE, 230)
+    }
+    /// Hollow outline for an archive-only frame cell.
+    pub(crate) fn cell_available_border() -> Color32 {
+        available_border()
+    }
+    /// Faint wash inside an archive-only frame cell.
+    pub(crate) fn cell_available_fill() -> Color32 {
+        available_fill()
+    }
+    /// In-flight fill — the on-device hue at reduced alpha, "filling in".
+    pub(crate) fn cell_inflight() -> Color32 {
+        alpha(ON_DEVICE, 150)
+    }
+    /// Border around an in-flight cell.
+    pub(crate) fn cell_inflight_border() -> Color32 {
+        alpha(ON_DEVICE, 180)
+    }
+    /// Hatch for a queued frame cell.
+    pub(crate) fn cell_queued_hatch() -> Color32 {
+        alpha(TEXT_DIM, 95)
+    }
+    /// Dashed-ghost border for a projected (future) cell.
+    pub(crate) fn cell_projected_border() -> Color32 {
+        alpha(TEXT_DIM, 110)
+    }
+    /// Faint fill for a projected cell.
+    pub(crate) fn cell_projected_fill() -> Color32 {
+        alpha(TEXT_DIM, 24)
+    }
+    /// Countdown text on the nearest projected ghost ("0.5° in ~40s").
+    pub(crate) fn cell_countdown_label() -> Color32 {
+        alpha(TEXT, 220)
+    }
+
+    // ── Saved events: neutral, told apart by shape ──────────────────────
+
+    /// Faint fill for a saved event band.
+    pub(crate) fn event_fill() -> Color32 {
+        alpha(TEXT, 22)
+    }
+    /// Border / bookmark tick for a saved event.
+    pub(crate) fn event_border() -> Color32 {
+        alpha(TEXT, 150)
+    }
+    /// A saved event's name.
+    pub(crate) const EVENT_LABEL: Color32 = TEXT;
+}
+
+// ── Type ───────────────────────────────────────────────────────────────────
+
+/// Caption — hints, units, small print (egui `Small`).
+pub(crate) const CAPTION: f32 = 11.0;
+/// Label — chrome text: labels, buttons, list rows (egui `Body`, `Button`).
+pub(crate) const LABEL: f32 = 12.5;
+/// Readout — mono numbers that tick or line up: clocks, angles, values,
+/// sizes (egui `Monospace`).
+pub(crate) const READOUT: f32 = 13.0;
+/// Body — prose in dialogs and sheets ([`body_style`]).
+pub(crate) const BODY: f32 = 14.0;
+/// Title — dialog and section titles (egui `Heading`).
+pub(crate) const TITLE: f32 = 17.0;
+
+/// The named egui text style carrying [`BODY`] prose.
+pub(crate) fn body_style() -> TextStyle {
+    TextStyle::Name("body".into())
+}
+
+/// A mono readout font at [`READOUT`] size.
+#[allow(dead_code)] // Adopted by readouts in later One Instrument PRs.
+pub(crate) fn readout_font() -> FontId {
+    FontId::monospace(READOUT)
+}
+
+/// Mono readout text — times, numbers, IDs, dBZ values.
+#[allow(dead_code)] // Adopted by readouts in later One Instrument PRs.
+pub(crate) fn readout(text: impl Into<String>) -> RichText {
+    RichText::new(text.into()).monospace()
+}
+
+/// egui's text styles mapped onto the five sizes.
+pub(crate) fn text_styles() -> std::collections::BTreeMap<TextStyle, FontId> {
+    [
+        (TextStyle::Small, FontId::proportional(CAPTION)),
+        (TextStyle::Body, FontId::proportional(LABEL)),
+        (TextStyle::Button, FontId::proportional(LABEL)),
+        (TextStyle::Monospace, FontId::monospace(READOUT)),
+        (body_style(), FontId::proportional(BODY)),
+        (TextStyle::Heading, FontId::proportional(TITLE)),
+    ]
+    .into()
+}
+
+const PLEX_SANS: &str = "IBMPlexSans-Regular";
+const PLEX_MONO: &str = "IBMPlexMono-Regular";
+
+/// The app's font set: IBM Plex Sans (proportional) and IBM Plex Mono
+/// (monospace) first, egui's bundled fonts kept behind them as glyph
+/// fallbacks, and the Phosphor icon font.
+pub(crate) fn font_definitions() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        PLEX_SANS.to_owned(),
+        egui::FontData::from_static(include_bytes!("../../assets/fonts/IBMPlexSans-Regular.ttf"))
+            .into(),
+    );
+    fonts.font_data.insert(
+        PLEX_MONO.to_owned(),
+        egui::FontData::from_static(include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf"))
+            .into(),
+    );
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .insert(0, PLEX_SANS.to_owned());
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(0, PLEX_MONO.to_owned());
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    fonts
+}
+
+/// Install the theme's fonts and text styles on the context. Called once at
+/// startup; visuals are applied per theme in the app shell.
+pub(crate) fn install(ctx: &egui::Context) {
+    ctx.set_fonts(font_definitions());
+    ctx.all_styles_mut(|style| style.text_styles = text_styles());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn accents_are_distinct() {
+        let accents = [SEEN, LOOP, NOW, NOW_IDLE, SELECTED, ON_DEVICE];
+        for (i, a) in accents.iter().enumerate() {
+            for b in &accents[i + 1..] {
+                assert!(a != b);
+            }
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn grammar_values_match_the_design() {
+        assert!(SELECTED.to_array() == [0x8a, 0xa2, 0xff, 255]);
+        assert!(ON_DEVICE.to_array() == [0x46, 0x60, 0x7f, 255]);
+        // Now streaming is the stronger of the two reds.
+        assert!(NOW.r() > NOW_IDLE.r());
+    }
+
+    #[wasm_bindgen_test]
+    fn surfaces_step_outward_from_the_map() {
+        let s = [MAP, PANEL, RAISED, HOVER];
+        for w in s.windows(2) {
+            assert!(w[0].r() < w[1].r() && w[0].g() < w[1].g() && w[0].b() < w[1].b());
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn greys_rank_by_emphasis() {
+        assert!(TEXT.r() > TEXT_DIM.r());
+        assert!(TEXT_DIM.r() > TEXT_FAINT.r());
+        assert!(TEXT_FAINT.r() > LINE.r());
+    }
+
+    #[wasm_bindgen_test]
+    fn alpha_replaces_only_alpha() {
+        let c = alpha(LOOP, 40);
+        assert!(c == Color32::from_rgba_unmultiplied(230, 162, 60, 40));
+        assert!(c.a() == 40);
+        assert!(alpha(TEXT, 255) == TEXT);
+    }
+
+    #[wasm_bindgen_test]
+    fn timeline_alpha_tiers() {
+        assert!(timeline::cached_fill(true).a() < timeline::cached_fill(false).a());
+        assert!(timeline::cell_inflight().a() < timeline::cell_cached().a());
+        assert!(timeline::cell_inflight().a() > timeline::cell_projected_fill().a());
+        assert!(timeline::cell_inflight_border().a() > timeline::cell_inflight().a());
+        assert!(timeline::available_fill().a() < timeline::available_border().a());
+        assert!(timeline::event_fill().a() < timeline::event_border().a());
+        assert!(timeline::block_label_weak().a() < timeline::block_label().a());
+        assert!(timeline::prev_active_sweep().a() < timeline::ACTIVE_SWEEP.a());
+    }
+
+    #[wasm_bindgen_test]
+    fn mode_colors_are_distinct() {
+        use crate::state::AppMode;
+        let (i, a, l) = (
+            mode_color(AppMode::Idle),
+            mode_color(AppMode::Archive),
+            mode_color(AppMode::Live),
+        );
+        assert!(i != a && a != l && i != l);
+        assert!(l == NOW);
+    }
+
+    #[wasm_bindgen_test]
+    fn five_sizes_ascend() {
+        let sizes = [CAPTION, LABEL, READOUT, BODY, TITLE];
+        for w in sizes.windows(2) {
+            assert!(w[0] < w[1]);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn text_styles_map_onto_the_five_sizes() {
+        let styles = text_styles();
+        let size = |s: &TextStyle| styles.get(s).map(|f| f.size);
+        assert!(size(&TextStyle::Small) == Some(CAPTION));
+        assert!(size(&TextStyle::Body) == Some(LABEL));
+        assert!(size(&TextStyle::Button) == Some(LABEL));
+        assert!(size(&TextStyle::Monospace) == Some(READOUT));
+        assert!(size(&body_style()) == Some(BODY));
+        assert!(size(&TextStyle::Heading) == Some(TITLE));
+        // Readouts are mono; everything else is proportional.
+        for (style, font) in &styles {
+            let mono = *style == TextStyle::Monospace;
+            assert!((font.family == FontFamily::Monospace) == mono);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn plex_leads_both_families() {
+        let fonts = font_definitions();
+        let first = |f: FontFamily| fonts.families.get(&f).and_then(|v| v.first().cloned());
+        assert!(first(FontFamily::Proportional).as_deref() == Some(PLEX_SANS));
+        assert!(first(FontFamily::Monospace).as_deref() == Some(PLEX_MONO));
+        // egui's bundled fonts stay behind Plex as glyph fallbacks.
+        assert!(fonts.families[&FontFamily::Proportional].len() > 1);
+        assert!(fonts.families[&FontFamily::Monospace].len() > 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn readout_font_is_mono_at_readout_size() {
+        let f = readout_font();
+        assert!(f.family == FontFamily::Monospace);
+        assert!((f.size - READOUT).abs() < 1e-6);
+    }
+}

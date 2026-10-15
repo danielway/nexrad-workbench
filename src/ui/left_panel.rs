@@ -4,6 +4,7 @@ use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::panels::{query_radar_state_at_timestamp, RadarStateAtTimestamp};
 use crate::core::Scan;
 use crate::data::vcp::get_vcp_definition;
+use crate::ui::theme;
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
 use std::f32::consts::PI;
 
@@ -90,16 +91,11 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
     let (response, painter) = ui.allocate_painter(size, egui::Sense::hover());
     let rect = response.rect;
     let center = rect.center();
-    let dark = ui.visuals().dark_mode;
     // Leave more room for cardinal labels (12px margin instead of 8)
     let radius = (rect.width().min(rect.height()) / 2.0) - 12.0;
 
     // Background
-    let bg = if dark {
-        Color32::from_rgb(30, 30, 40)
-    } else {
-        Color32::from_rgb(225, 225, 230)
-    };
+    let bg = theme::RAISED;
     painter.rect_filled(rect, 4.0, bg);
 
     // In live mode, draw shaded "future" region (expected upcoming data)
@@ -138,7 +134,7 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
                 // Draw filled triangle for this segment
                 painter.add(egui::Shape::convex_polygon(
                     vec![p0, p1, p2],
-                    Color32::from_rgba_unmultiplied(80, 80, 120, 50),
+                    theme::alpha(theme::TEXT_FAINT, 50),
                     Stroke::NONE,
                 ));
             }
@@ -146,21 +142,13 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
     }
 
     // Concentric range rings
-    let ring_color = if dark {
-        Color32::from_rgb(60, 60, 80)
-    } else {
-        Color32::from_rgb(170, 170, 190)
-    };
+    let ring_color = theme::LINE;
     for factor in [0.33, 0.66, 1.0] {
         painter.circle_stroke(center, radius * factor, Stroke::new(1.0_f32, ring_color));
     }
 
     // Cardinal direction labels (inside the radar circle for cleaner look)
-    let label_color = if dark {
-        Color32::from_rgb(100, 100, 120)
-    } else {
-        Color32::from_rgb(80, 80, 100)
-    };
+    let label_color = theme::TEXT_FAINT;
     let label_offset = radius - 6.0;
     let font_id = egui::FontId::proportional(8.0);
 
@@ -194,7 +182,7 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
     );
 
     // Center dot (radar dish)
-    painter.circle_filled(center, 2.5, Color32::from_rgb(200, 200, 200));
+    painter.circle_filled(center, 2.5, theme::TEXT);
 
     // Azimuth line (if we have data)
     if let Some(az) = azimuth {
@@ -206,12 +194,12 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
 
         painter.line_segment(
             [center, Pos2::new(end_x, end_y)],
-            Stroke::new(2.0_f32, Color32::from_rgb(100, 255, 100)),
+            Stroke::new(2.0_f32, theme::legacy::SWEEP),
         );
 
         ui.label(RichText::new(format!("{:.1}\u{00B0}", az)).small());
     } else {
-        ui.label(RichText::new("--").small().color(Color32::GRAY));
+        ui.label(RichText::new("--").small().color(theme::TEXT_DIM));
     }
 }
 
@@ -219,23 +207,14 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
     let size = Vec2::new(120.0, 100.0);
     let (response, painter) = ui.allocate_painter(size, egui::Sense::hover());
     let rect = response.rect;
-    let dark = ui.visuals().dark_mode;
 
     // Background
-    let bg = if dark {
-        Color32::from_rgb(30, 30, 40)
-    } else {
-        Color32::from_rgb(225, 225, 230)
-    };
+    let bg = theme::RAISED;
     painter.rect_filled(rect, 4.0, bg);
 
     // Ground line at bottom
     let ground_y = rect.bottom() - 8.0;
-    let ground_color = if dark {
-        Color32::from_rgb(80, 60, 40)
-    } else {
-        Color32::from_rgb(140, 110, 80)
-    };
+    let ground_color = theme::LINE;
     painter.line_segment(
         [
             Pos2::new(rect.left() + 5.0, ground_y),
@@ -250,11 +229,7 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
     let tower_top = tower_bottom - 20.0;
 
     // Tower base
-    let tower_color = if dark {
-        Color32::from_rgb(150, 150, 150)
-    } else {
-        Color32::from_rgb(100, 100, 100)
-    };
+    let tower_color = theme::TEXT_DIM;
     painter.line_segment(
         [
             Pos2::new(tower_x, tower_bottom),
@@ -264,26 +239,14 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
     );
 
     // Dish (small circle at top of tower)
-    let dish_color = if dark {
-        Color32::from_rgb(200, 200, 200)
-    } else {
-        Color32::from_rgb(80, 80, 80)
-    };
+    let dish_color = theme::TEXT;
     painter.circle_filled(Pos2::new(tower_x, tower_top), 4.0, dish_color);
 
     // Reference angle lines (0°, 10°, 20°)
     let beam_origin = Pos2::new(tower_x, tower_top);
     let beam_length = rect.width() - 30.0;
-    let ref_line_color = if dark {
-        Color32::from_rgb(60, 60, 80)
-    } else {
-        Color32::from_rgb(170, 170, 190)
-    };
-    let label_color = if dark {
-        Color32::from_rgb(100, 100, 120)
-    } else {
-        Color32::from_rgb(80, 80, 100)
-    };
+    let ref_line_color = theme::LINE;
+    let label_color = theme::TEXT_FAINT;
     let font_id = egui::FontId::proportional(8.0);
 
     for angle in [0.0_f32, 10.0, 20.0] {
@@ -316,12 +279,12 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
 
         painter.line_segment(
             [beam_origin, Pos2::new(end_x, end_y)],
-            Stroke::new(2.5_f32, Color32::from_rgb(100, 255, 100)),
+            Stroke::new(2.5_f32, theme::legacy::SWEEP),
         );
 
         ui.label(RichText::new(format!("{:.1}\u{00B0}", elev)).small());
     } else {
-        ui.label(RichText::new("--").small().color(Color32::GRAY));
+        ui.label(RichText::new("--").small().color(theme::TEXT_DIM));
     }
 }
 
@@ -332,7 +295,7 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("VCP {}", vcp)).strong());
                 if let Some(def) = get_vcp_definition(vcp) {
-                    ui.label(RichText::new(def.name).small().color(Color32::GRAY));
+                    ui.label(RichText::new(def.name).small().color(theme::TEXT_DIM));
                 }
             });
 
@@ -377,7 +340,7 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
             ui.label(
                 RichText::new("No scan data at current time")
                     .small()
-                    .color(Color32::GRAY),
+                    .color(theme::TEXT_DIM),
             );
         }
     }
@@ -517,7 +480,7 @@ fn build_elevation_rows<'a>(
 }
 
 fn render_elevation_grid(ui: &mut egui::Ui, rows: &[ElevRow]) {
-    let hdr_color = Color32::from_rgb(130, 130, 140);
+    let hdr_color = theme::TEXT_DIM;
     let font = egui::FontId::monospace(10.0);
     let hdr_font = egui::FontId::monospace(9.0);
 
@@ -542,14 +505,14 @@ fn render_elevation_grid(ui: &mut egui::Ui, rows: &[ElevRow]) {
 
             for row in rows {
                 let text_color = if row.is_current {
-                    Color32::from_rgb(100, 255, 100)
+                    theme::legacy::SWEEP
                 } else {
-                    Color32::from_rgb(180, 180, 180)
+                    theme::TEXT_DIM
                 };
                 let dim_color = if row.is_current {
-                    Color32::from_rgb(80, 200, 80)
+                    theme::legacy::SUCCESS
                 } else {
-                    Color32::from_rgb(120, 120, 130)
+                    theme::TEXT_FAINT
                 };
 
                 // Elevation number + angle

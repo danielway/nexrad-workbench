@@ -9,6 +9,7 @@ use crate::core::Intent;
 use crate::core::RadarProduct;
 use crate::geo::ViewMode;
 use crate::state::{AppMode, AppState, WidthTier};
+use crate::ui::theme;
 use eframe::egui::{self, Color32, Frame, RichText};
 
 pub(super) struct TopBarLayer;
@@ -62,7 +63,7 @@ fn draw_top_bar(
     egui::Panel::top("mode_accent")
         .resizable(false)
         .exact_size(3.0)
-        .frame(Frame::NONE.fill(crate::ui::colors::mode::color(live.app_mode)))
+        .frame(Frame::NONE.fill(crate::ui::theme::mode_color(live.app_mode)))
         .show(root_ui, |ui| {
             ui.allocate_space(ui.available_size());
         });
@@ -117,7 +118,7 @@ fn draw_top_bar(
 
                 // Persistent worker initialization error banner
                 if let Some(ref error_msg) = state.worker_init_error {
-                    let error_color = Color32::from_rgb(220, 60, 60);
+                    let error_color = theme::legacy::ERROR;
                     ui.label(
                         RichText::new(egui_phosphor::regular::WARNING)
                             .size(14.0)
@@ -167,7 +168,7 @@ fn draw_top_bar(
                             ui.label(
                                 RichText::new(&state.status_message)
                                     .size(13.0)
-                                    .color(Color32::from_rgba_unmultiplied(128, 128, 128, alpha)),
+                                    .color(theme::alpha(theme::TEXT_DIM, alpha)),
                             );
                             // Request repaint during fade so the animation runs.
                             if fading {
@@ -271,8 +272,8 @@ fn readout_compaction(tier: WidthTier) -> Compaction {
 /// (spec §11.4 "UTC available on tap"); a compact product selector sits beside
 /// it, and while tethered to live a friendly "updated N ago" age trails it.
 fn render_primary_readout(ui: &mut egui::Ui, state: &mut AppState, live: &crate::subsystem::Live) {
-    let accent = Color32::from_rgb(225, 232, 240);
-    let dim = Color32::from_rgb(120, 130, 140);
+    let accent = theme::TEXT;
+    let dim = theme::TEXT_DIM;
 
     // The displayed frame's representative collection time, or None when the
     // canvas holds no frame.
@@ -334,8 +335,8 @@ fn render_primary_readout(ui: &mut egui::Ui, state: &mut AppState, live: &crate:
 /// Active segment is bold + colored; inactive is dim. Click flips the
 /// preference (also bound to Ctrl+Shift+A in `shortcuts.rs`).
 fn render_ui_mode_pill(ui: &mut egui::Ui, state: &mut AppState) {
-    let active_color = Color32::from_rgb(100, 180, 255);
-    let dim = Color32::from_rgb(100, 100, 100);
+    let active_color = theme::legacy::ACTIVE_BLUE;
+    let dim = theme::TEXT_FAINT;
 
     // Right-to-left layout: render the rightmost segment first (Advanced).
     for &(label, advanced_value) in &[("Advanced", true), ("Basic", false)] {
@@ -365,21 +366,11 @@ fn render_ui_mode_pill(ui: &mut egui::Ui, state: &mut AppState) {
 /// unified orbit camera). Rendered both inline in the top bar and, when
 /// space is tight, inside the overflow menu.
 fn render_view_mode_pills(ui: &mut egui::Ui, state: &mut AppState) {
-    let dim = Color32::from_rgb(100, 100, 100);
+    let dim = theme::TEXT_FAINT;
 
     let modes: &[(&str, ViewMode, Color32, &str)] = &[
-        (
-            "2D",
-            ViewMode::Flat2D,
-            Color32::from_rgb(100, 180, 255),
-            "1",
-        ),
-        (
-            "3D",
-            ViewMode::Globe3D,
-            Color32::from_rgb(255, 200, 80),
-            "2",
-        ),
+        ("2D", ViewMode::Flat2D, theme::legacy::ACTIVE_BLUE, "1"),
+        ("3D", ViewMode::Globe3D, theme::legacy::CAUTION, "2"),
     ];
 
     for &(label, view, color, key) in modes {
@@ -452,7 +443,7 @@ fn button_width(ui: &egui::Ui, text: &str, size: f32) -> f32 {
     let font = egui::FontId::proportional(size);
     let galley_w = ui
         .painter()
-        .layout_no_wrap(text.to_owned(), font, Color32::WHITE)
+        .layout_no_wrap(text.to_owned(), font, theme::TEXT)
         .size()
         .x;
     galley_w + 2.0 * ui.spacing().button_padding.x
@@ -538,12 +529,7 @@ fn render_version_link(ui: &mut egui::Ui, state: &mut AppState) {
     let display = version_display_text();
 
     let response = ui.add(
-        egui::Button::new(
-            RichText::new(&display)
-                .size(11.0)
-                .color(Color32::from_rgb(80, 80, 80)),
-        )
-        .frame(false),
+        egui::Button::new(RichText::new(&display).size(11.0).color(theme::TEXT_FAINT)).frame(false),
     );
 
     if response.hovered() {
@@ -581,7 +567,7 @@ pub(super) fn render_alerts_chip(
     if !has_ever_loaded && !has_error {
         let icon = RichText::new(egui_phosphor::regular::BELL_SIMPLE)
             .size(14.0)
-            .color(Color32::from_rgb(130, 130, 130));
+            .color(theme::TEXT_DIM);
         ui.add(egui::Label::new(icon))
             .on_hover_text("Loading NWS alerts\u{2026}");
         ui.separator();
@@ -610,9 +596,9 @@ pub(super) fn render_alerts_chip(
             )
         };
         let color = if has_error {
-            Color32::from_rgb(200, 120, 60)
+            theme::legacy::WARN
         } else {
-            Color32::from_rgb(110, 110, 110)
+            theme::TEXT_FAINT
         };
         let icon = RichText::new(egui_phosphor::regular::BELL_SIMPLE)
             .size(14.0)
@@ -709,7 +695,7 @@ pub(super) fn render_errors_chip(ui: &mut egui::Ui, errors: &mut ErrorContext, n
 
     let count = errors.len();
     let label = format!("{} {}", egui_phosphor::regular::WARNING, count);
-    let chip_color = Color32::from_rgb(220, 120, 60);
+    let chip_color = theme::legacy::WARN;
 
     let response = ui.add(egui::Button::new(
         RichText::new(label).size(13.0).strong().color(chip_color),
@@ -742,18 +728,18 @@ pub(super) fn render_errors_chip(ui: &mut egui::Ui, errors: &mut ErrorContext, n
                 ui.label(
                     RichText::new(format_age(now_ms - entry.timestamp_ms))
                         .size(11.0)
-                        .color(Color32::from_rgb(130, 130, 130)),
+                        .color(theme::TEXT_DIM),
                 );
                 ui.label(
                     RichText::new(entry.error.source_label())
                         .size(11.0)
-                        .color(Color32::from_rgb(180, 140, 80))
+                        .color(theme::legacy::CAUTION)
                         .strong(),
                 );
                 ui.label(
                     RichText::new(entry.error.message())
                         .size(12.0)
-                        .color(Color32::from_rgb(220, 220, 220)),
+                        .color(theme::TEXT),
                 );
             });
         }
@@ -795,7 +781,7 @@ fn format_age(age_ms: f64) -> String {
 /// the stream's `LiveStatus` detail text.
 pub(super) fn render_mode_badge(ui: &mut egui::Ui, live: &crate::subsystem::Live) {
     let mode = live.app_mode;
-    let color = crate::ui::colors::mode::color(mode);
+    let color = crate::ui::theme::mode_color(mode);
 
     let icon_str = match mode {
         AppMode::Idle => egui_phosphor::regular::PAUSE_CIRCLE,
@@ -844,11 +830,7 @@ pub(super) fn render_mode_badge(ui: &mut egui::Ui, live: &crate::subsystem::Live
     // this frame's `LiveStatus` snapshot (single source for all surfaces).
     if mode == AppMode::Live {
         if let Some(detail) = live.frame_status.detail_text() {
-            ui.label(
-                RichText::new(detail)
-                    .size(12.0)
-                    .color(Color32::from_rgb(180, 180, 180)),
-            );
+            ui.label(RichText::new(detail).size(12.0).color(theme::TEXT_DIM));
         }
     }
 }

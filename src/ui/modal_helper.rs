@@ -1,6 +1,7 @@
 //! Shared modal backdrop pattern used by all modal overlays.
 
-use eframe::egui::{self, Color32};
+use crate::ui::theme;
+use eframe::egui::{self};
 
 /// Renders a semi-transparent backdrop overlay that closes a modal on click or Escape.
 ///
@@ -19,11 +20,7 @@ pub(super) fn modal_backdrop(ctx: &egui::Context, id: &str, alpha: u8) -> bool {
         .show(ctx, |ui| {
             let screen_rect = ctx.input(|i| i.viewport_rect());
             let (response, painter) = ui.allocate_painter(screen_rect.size(), egui::Sense::click());
-            painter.rect_filled(
-                screen_rect,
-                0.0,
-                Color32::from_rgba_unmultiplied(0, 0, 0, alpha),
-            );
+            painter.rect_filled(screen_rect, 0.0, theme::alpha(theme::MAP, alpha));
             if response.clicked() {
                 close = true;
             }

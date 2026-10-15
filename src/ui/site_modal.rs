@@ -9,7 +9,8 @@ use crate::core::effect::enable_location_layer_on_site_pick;
 use crate::core::LocationResult;
 use crate::data::{all_sites_sorted, get_site, nearest_site};
 use crate::state::AppState;
-use eframe::egui::{self, Color32, RichText, Vec2};
+use crate::ui::theme;
+use eframe::egui::{self, RichText, Vec2};
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 
 /// Which view the modal is currently showing.
@@ -199,11 +200,7 @@ fn draw_site_modal(
         .show(ctx, |ui| {
             let screen_rect = ctx.input(|i| i.viewport_rect());
             let (response, painter) = ui.allocate_painter(screen_rect.size(), egui::Sense::click());
-            painter.rect_filled(
-                screen_rect,
-                0.0,
-                Color32::from_rgba_unmultiplied(0, 0, 0, 160),
-            );
+            painter.rect_filled(screen_rect, 0.0, theme::alpha(theme::MAP, 160));
             // Click backdrop to close (only if not first visit)
             if response.clicked()
                 && !modal_state.is_first_visit
@@ -266,7 +263,7 @@ fn render_welcome_screen(
 
             // Show error if any
             if let Some(ref err) = modal_state.error_message {
-                ui.colored_label(Color32::from_rgb(255, 120, 120), err);
+                ui.colored_label(theme::legacy::ERROR, err);
                 ui.add_space(8.0);
             }
 
@@ -332,7 +329,7 @@ fn render_welcome_screen(
                 ui.add_space(4.0);
                 ui.vertical_centered(|ui| {
                     if ui
-                        .small_button(RichText::new("Cancel").color(Color32::GRAY))
+                        .small_button(RichText::new("Cancel").color(theme::TEXT_DIM))
                         .clicked()
                     {
                         chrome.site_modal_open = false;
@@ -442,7 +439,7 @@ fn render_site_list(
             ui.label(
                 RichText::new(format!("{} sites", filtered.len()))
                     .small()
-                    .color(Color32::GRAY),
+                    .color(theme::TEXT_DIM),
             );
 
             ui.add_space(4.0);
@@ -458,7 +455,7 @@ fn render_site_list(
 
                         let text = if is_current {
                             RichText::new(format!("{} {}", label, egui_phosphor::regular::CHECK))
-                                .color(Color32::from_rgb(100, 200, 255))
+                                .color(theme::legacy::ACTIVE_BLUE)
                         } else {
                             RichText::new(label)
                         };
@@ -519,7 +516,7 @@ fn render_zip_entry(
 
             // Show error if any
             if let Some(ref err) = modal_state.error_message {
-                ui.colored_label(Color32::from_rgb(255, 120, 120), err);
+                ui.colored_label(theme::legacy::ERROR, err);
                 ui.add_space(4.0);
             }
 
@@ -558,7 +555,7 @@ fn render_zip_entry(
                 ui.add_space(4.0);
                 ui.vertical_centered(|ui| {
                     if ui
-                        .small_button(RichText::new("Cancel").color(Color32::GRAY))
+                        .small_button(RichText::new("Cancel").color(theme::TEXT_DIM))
                         .clicked()
                     {
                         chrome.site_modal_open = false;

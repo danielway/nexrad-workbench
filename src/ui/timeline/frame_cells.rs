@@ -20,8 +20,8 @@
 use super::strokes::{fill_hatched_rect, stroke_dashed_rect, DashedBorder};
 use super::{style, TimelineFrame};
 use crate::core::{FrameCell, FrameCellState, ScanContainer};
-use crate::ui::colors::acquisition as acq_colors;
-use crate::ui::colors::timeline as tl_colors;
+use crate::ui::theme;
+use crate::ui::theme::timeline as tl_colors;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
 /// A failed frame cell's clickable tick, returned so the orchestrator can wire
@@ -63,7 +63,6 @@ pub(super) fn paint_container(
     failed_ticks: &mut Vec<FailedTick>,
 ) {
     let track = &frame.rects.scan;
-    let dark = frame.dark;
     let x0 = frame.ts_to_x(container.start_secs).max(track.left());
     let x1 = frame.ts_to_x(container.end_secs).min(track.right());
     if x1 <= x0 {
@@ -84,7 +83,7 @@ pub(super) fn paint_container(
                 painter,
                 box_rect,
                 DashedBorder::uniform(
-                    Stroke::new(1.0_f32, tl_colors::container_border(dark)),
+                    Stroke::new(1.0_f32, tl_colors::container_border()),
                     4.0,
                     7.0,
                 ),
@@ -93,7 +92,7 @@ pub(super) fn paint_container(
             painter.rect_stroke(
                 box_rect,
                 2.0,
-                Stroke::new(1.0_f32, tl_colors::container_border(dark)),
+                Stroke::new(1.0_f32, tl_colors::container_border()),
                 StrokeKind::Inside,
             );
         }
@@ -103,7 +102,7 @@ pub(super) fn paint_container(
     //    volume (every sweep, not just matching tilts), neutral. Skipped for
     //    available containers (no known structure) and very narrow boxes.
     if box_rect.width() > 6.0 {
-        let tex = tl_colors::sub_texture(dark);
+        let tex = tl_colors::sub_texture();
         let top = box_rect.top() + 1.0;
         let bot = box_rect.bottom() - 1.0;
         for &(s, _e) in &container.sweep_spans {
@@ -138,7 +137,6 @@ pub(super) fn paint_container(
         let carry = carries_countdown && !first_projected_done;
         let consumed = paint_cell(
             painter,
-            frame,
             cell,
             cell_rect,
             box_rect,
@@ -174,7 +172,7 @@ pub(super) fn paint_container(
         );
         // Never let the chip spill outside its own container.
         if chip.right() <= box_rect.right() {
-            painter.rect_filled(chip, 2.0, tl_colors::block_label_backdrop(dark));
+            painter.rect_filled(chip, 2.0, tl_colors::block_label_backdrop());
             painter.galley(chip.min + pad, galley, tl_colors::block_label_weak());
         }
     }
@@ -186,7 +184,6 @@ pub(super) fn paint_container(
 #[allow(clippy::too_many_arguments)]
 fn paint_cell(
     painter: &Painter,
-    frame: &TimelineFrame<'_>,
     cell: &FrameCell,
     rect: Rect,
     box_rect: Rect,
@@ -195,28 +192,27 @@ fn paint_cell(
     failed_ticks: &mut Vec<FailedTick>,
     key_secs: f64,
 ) -> bool {
-    let dark = frame.dark;
     let width = rect.width();
     let mut consumed_countdown = false;
 
     match cell.state {
         FrameCellState::Cached => {
-            painter.rect_filled(rect, 1.0, tl_colors::cell_cached(dark));
+            painter.rect_filled(rect, 1.0, tl_colors::cell_cached());
         }
         FrameCellState::Available => {
-            painter.rect_filled(rect, 1.0, tl_colors::cell_available_fill(dark));
+            painter.rect_filled(rect, 1.0, tl_colors::cell_available_fill());
             stroke_dashed_rect(
                 painter,
                 rect,
                 DashedBorder::uniform(
-                    Stroke::new(1.0_f32, tl_colors::cell_available_border(dark)),
+                    Stroke::new(1.0_f32, tl_colors::cell_available_border()),
                     4.0,
                     7.0,
                 ),
             );
         }
         FrameCellState::InFlight => {
-            paint_inflight(painter, frame, cell, rect, anim, countdown_secs);
+            paint_inflight(painter, cell, rect, anim, countdown_secs);
             // A live in-flight cell with chunk telemetry draws the next-chunk
             // "Ns" in its filling slot; consume the container's countdown so a
             // later projected cell in the same container doesn't double it.
@@ -229,17 +225,17 @@ fn paint_cell(
             fill_hatched_rect(
                 painter,
                 rect,
-                Stroke::new(0.75_f32, tl_colors::cell_queued_hatch(dark)),
+                Stroke::new(0.75_f32, tl_colors::cell_queued_hatch()),
                 4.0,
             );
         }
         FrameCellState::Projected => {
-            painter.rect_filled(rect, 1.0, tl_colors::cell_projected_fill(dark));
+            painter.rect_filled(rect, 1.0, tl_colors::cell_projected_fill());
             stroke_dashed_rect(
                 painter,
                 rect,
                 DashedBorder::uniform(
-                    Stroke::new(0.75_f32, tl_colors::cell_projected_border(dark)),
+                    Stroke::new(0.75_f32, tl_colors::cell_projected_border()),
                     3.0,
                     6.0,
                 ),
@@ -258,7 +254,7 @@ fn paint_cell(
                         egui::Align2::CENTER_CENTER,
                         label,
                         style::block_font(),
-                        tl_colors::cell_countdown_label(dark),
+                        tl_colors::cell_countdown_label(),
                     );
                 }
             }
@@ -266,12 +262,12 @@ fn paint_cell(
         FrameCellState::Failed => {
             // Faint hollow body so the cell still has presence, then a red
             // alert triangle tick (the only red besides the live edge).
-            painter.rect_filled(rect, 1.0, tl_colors::cell_available_fill(dark));
+            painter.rect_filled(rect, 1.0, tl_colors::cell_available_fill());
             stroke_dashed_rect(
                 painter,
                 rect,
                 DashedBorder::uniform(
-                    Stroke::new(1.0_f32, tl_colors::cell_available_border(dark)),
+                    Stroke::new(1.0_f32, tl_colors::cell_available_border()),
                     3.0,
                     6.0,
                 ),
@@ -296,7 +292,7 @@ fn paint_cell(
         painter.rect_stroke(
             rect,
             1.0,
-            Stroke::new(1.5_f32, tl_colors::PREV_ACTIVE_SWEEP),
+            Stroke::new(1.5_f32, tl_colors::prev_active_sweep()),
             StrokeKind::Outside,
         );
     }
@@ -339,13 +335,11 @@ fn paint_cell(
 /// (with the reduced-motion fallback to a static partial fill).
 fn paint_inflight(
     painter: &Painter,
-    frame: &TimelineFrame<'_>,
     cell: &FrameCell,
     rect: Rect,
     anim: CellAnim,
     countdown_secs: Option<f64>,
 ) {
-    let dark = frame.dark;
     match &cell.chunks {
         Some(chunks) if chunks.chunks_expected > 0 => {
             // Live chunk slots: N equal slots, received fill left→right, the
@@ -359,7 +353,7 @@ fn paint_inflight(
                 let slot_rect =
                     Rect::from_min_max(Pos2::new(sx0, rect.min.y), Pos2::new(sx1, rect.max.y));
                 if slot < received {
-                    painter.rect_filled(slot_rect, 1.0, tl_colors::cell_inflight(dark));
+                    painter.rect_filled(slot_rect, 1.0, tl_colors::cell_inflight());
                 } else if slot == received {
                     // Partial fill for the currently-accumulating chunk, plus
                     // the next-chunk countdown. `partial_radials` counts the
@@ -377,7 +371,7 @@ fn paint_inflight(
                             slot_rect.min,
                             Pos2::new(slot_rect.min.x + slot_rect.width() * frac, slot_rect.max.y),
                         );
-                        painter.rect_filled(partial, 1.0, tl_colors::cell_inflight(dark));
+                        painter.rect_filled(partial, 1.0, tl_colors::cell_inflight());
                     }
                     if let Some(remaining) = countdown_secs {
                         if slot_rect.width() > 16.0 {
@@ -386,7 +380,7 @@ fn paint_inflight(
                                 egui::Align2::CENTER_CENTER,
                                 format!("{}s", remaining.ceil() as i32),
                                 style::block_font(),
-                                tl_colors::cell_countdown_label(dark),
+                                tl_colors::cell_countdown_label(),
                             );
                         }
                     }
@@ -396,7 +390,7 @@ fn paint_inflight(
                 painter,
                 rect,
                 DashedBorder::uniform(
-                    Stroke::new(1.0_f32, tl_colors::cell_inflight_border(dark)),
+                    Stroke::new(1.0_f32, tl_colors::cell_inflight_border()),
                     4.0,
                     8.0,
                 ),
@@ -405,7 +399,7 @@ fn paint_inflight(
         _ => {
             // Archive download (no chunk telemetry): pulsing fill inside the
             // frame cell (alignment #4). Reduced motion → static partial fill.
-            let base = tl_colors::cell_inflight(dark);
+            let base = tl_colors::cell_inflight();
             if anim.reduced_motion {
                 // Static partial fill at ~50% height so it reads as "working"
                 // without motion.
@@ -423,7 +417,7 @@ fn paint_inflight(
             painter.rect_stroke(
                 rect,
                 1.0,
-                Stroke::new(1.0_f32, tl_colors::cell_inflight_border(dark)),
+                Stroke::new(1.0_f32, tl_colors::cell_inflight_border()),
                 StrokeKind::Inside,
             );
         }
@@ -444,8 +438,8 @@ fn failure_tick(painter: &Painter, rect: Rect) -> Rect {
     ];
     painter.add(egui::Shape::convex_polygon(
         pts,
-        acq_colors::FAILED,
-        Stroke::new(0.5_f32, Color32::from_rgb(120, 30, 30)),
+        theme::acquisition::FAILED,
+        Stroke::new(0.5_f32, theme::legacy::ERROR_DEEP),
     ));
     // "!" mark for redundancy with shape (grayscale legibility).
     if size >= 8.0 {
@@ -454,7 +448,7 @@ fn failure_tick(painter: &Painter, rect: Rect) -> Rect {
             egui::Align2::CENTER_CENTER,
             "!",
             egui::FontId::proportional(size * 0.8),
-            Color32::WHITE,
+            theme::TEXT,
         );
     }
     Rect::from_min_max(

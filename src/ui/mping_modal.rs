@@ -7,7 +7,8 @@
 //! recent fetch error verbatim so a CORS or auth problem is immediately
 //! visible rather than silently leaving the layer empty.
 
-use eframe::egui::{self, Color32, RichText, Vec2};
+use crate::ui::theme;
+use eframe::egui::{self, RichText, Vec2};
 
 /// Persistent UI state for the mPING settings modal — kept outside
 /// `AppState` because it holds a transient text-edit buffer that should
@@ -126,7 +127,7 @@ fn draw_mping_modal(
                 ui.label(
                     RichText::new(format!("\u{26A0} {}", err))
                         .small()
-                        .color(Color32::from_rgb(220, 120, 120)),
+                        .color(theme::legacy::ERROR),
                 );
             } else if diagnostics.mping.fetch_in_flight {
                 ui.label(RichText::new("Fetching reports\u{2026}").small().weak());
@@ -148,7 +149,7 @@ fn draw_mping_modal(
                 ui.label(
                     RichText::new(format!("\u{2713} {} report(s) loaded{}", n, extra))
                         .small()
-                        .color(Color32::from_rgb(120, 200, 120)),
+                        .color(theme::legacy::SUCCESS),
                 );
             } else if diagnostics.mping.api_key.is_some() {
                 ui.label(
@@ -177,8 +178,8 @@ fn draw_mping_modal(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let trimmed = modal_state.key_input.trim();
                     let save_btn = ui.add(
-                        egui::Button::new(RichText::new("Save").color(Color32::WHITE))
-                            .fill(Color32::from_rgb(70, 130, 200)),
+                        egui::Button::new(RichText::new("Save").color(theme::TEXT))
+                            .fill(theme::legacy::BUTTON_BLUE),
                     );
                     if save_btn.clicked() {
                         let new_key = if trimmed.is_empty() {
@@ -196,7 +197,7 @@ fn draw_mping_modal(
 
                     if diagnostics.mping.api_key.is_some()
                         && ui
-                            .button(RichText::new("Clear").color(Color32::from_rgb(220, 120, 120)))
+                            .button(RichText::new("Clear").color(theme::legacy::ERROR))
                             .clicked()
                     {
                         state.push_command(Intent::Diagnostics(DiagnosticsIntent::ClearMpingKey));

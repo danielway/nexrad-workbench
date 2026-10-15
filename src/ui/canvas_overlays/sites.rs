@@ -13,7 +13,7 @@ use crate::geo::GeoLayerVisibility;
 use crate::geo::{text_with_halo, GeoPass, Projection};
 use eframe::egui::{self, Painter, Stroke, Vec2};
 
-use super::super::colors::sites as site_colors;
+use crate::ui::theme;
 
 pub(crate) fn render_nexrad_sites(
     painter: &Painter,
@@ -51,11 +51,11 @@ pub(crate) fn render_nexrad_sites(
 
             match pass {
                 GeoPass::Lines => {
-                    painter.circle_filled(screen_pos, 4.0, site_colors::OTHER);
+                    painter.circle_filled(screen_pos, 4.0, theme::map::SITE);
                     painter.circle_stroke(
                         screen_pos,
                         4.0,
-                        Stroke::new(1.0_f32, site_colors::OTHER_STROKE),
+                        Stroke::new(1.0_f32, theme::map::SITE_STROKE),
                     );
                 }
                 GeoPass::Labels => {
@@ -66,7 +66,7 @@ pub(crate) fn render_nexrad_sites(
                             egui::Align2::LEFT_CENTER,
                             site.id,
                             egui::FontId::proportional(10.0),
-                            site_colors::LABEL,
+                            theme::map::LABEL,
                         );
                     }
                 }
@@ -81,11 +81,11 @@ pub(crate) fn render_nexrad_sites(
 
         match pass {
             GeoPass::Lines => {
-                painter.circle_filled(screen_pos, 6.0, site_colors::CURRENT);
+                painter.circle_filled(screen_pos, 6.0, theme::map::SITE_CURRENT);
                 painter.circle_stroke(
                     screen_pos,
                     6.0,
-                    Stroke::new(1.5_f32, site_colors::CURRENT_STROKE),
+                    Stroke::new(1.5_f32, theme::map::SITE_CURRENT_STROKE),
                 );
             }
             GeoPass::Labels => {
@@ -95,7 +95,7 @@ pub(crate) fn render_nexrad_sites(
                     egui::Align2::LEFT_CENTER,
                     site.id,
                     egui::FontId::proportional(11.0),
-                    site_colors::CURRENT_LABEL,
+                    theme::map::SITE_CURRENT,
                 );
             }
         }

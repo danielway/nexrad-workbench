@@ -8,7 +8,8 @@
 use super::super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::{PlaybackMode, PlaybackSpeed};
 use crate::state::{AppState, MobileSettingsTab};
-use eframe::egui::{self, Color32, RichText, Vec2};
+use crate::ui::theme;
+use eframe::egui::{self, RichText, Vec2};
 
 pub(in crate::ui) struct MobileSettingsModalLayer;
 
@@ -132,7 +133,7 @@ fn render_tab_strip(
             let text_color = if is_active {
                 ui.visuals().strong_text_color()
             } else {
-                Color32::from_rgb(130, 130, 130)
+                theme::TEXT_DIM
             };
             let (rect, resp) =
                 ui.allocate_exact_size(egui::vec2(tab_w, 36.0), egui::Sense::click());
