@@ -252,7 +252,10 @@ in the P5 entry below and CORE_SHELL_MIGRATION_LOG.md §4.
   now lives in the core; the high-speed `animation_frozen` freeze rule, the
   archive sweep azimuth, and the top-bar status-message auto-dismiss/fade
   (`status_message_visibility`) are pure functions the panels call. 3 headless
-  tests. **Deferred (QA-gated):** the broad `&mut state` → intent conversion for
+  tests. (The left panel and that derivation were retired in the One
+  Instrument rollout: [`core::ladder`](../src/core/ladder.rs) now builds the
+  tilt ladder that replaced Radar Operations, and `core::panels` holds the
+  rail's decisions.) **Deferred (QA-gated):** the broad `&mut state` → intent conversion for
   the *interactive* surface (transport, layer checkboxes, camera, text-edit) and
   the `LayoutCtx` → `&ViewModel` + intent-sink reshape. Rationale (see log D6):
   that half is mechanical but one-frame-lag-risky on an interactive hot path that
