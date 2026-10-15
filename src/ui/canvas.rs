@@ -636,7 +636,7 @@ fn compute_gpu_sweep_state(
     let sweep_bounds = if live_range.is_none() && derived.effective_sweep_animation {
         timeline
             .scans
-            .find_recent_scan(playback_ts, 15.0 * 60.0)
+            .find_recent_scan(playback_ts, crate::core::recency::RECENCY_SECS)
             .and_then(|scan| {
                 let displayed_elev = state
                     .viz_state

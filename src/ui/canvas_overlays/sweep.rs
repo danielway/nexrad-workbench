@@ -533,7 +533,7 @@ fn draw_sweep_donut(
         // measured average — see `Scan::display_angle`.
         let current_sweep_info = timeline
             .scans
-            .find_recent_scan(playback_ts, 15.0 * 60.0)
+            .find_recent_scan(playback_ts, crate::core::recency::RECENCY_SECS)
             .and_then(|scan| {
                 scan.sweeps
                     .iter()

@@ -39,8 +39,8 @@ use state::AppState;
 
 /// Maximum age (in seconds) for a scan to be considered relevant to the current
 /// playback position. Scans older than this are not displayed when scrubbing.
-/// 15 minutes covers a full VCP cycle with margin.
-const MAX_SCAN_AGE_SECS: f64 = 15.0 * 60.0;
+/// The one recency rule ([`core::recency::RECENCY_SECS`]).
+const MAX_SCAN_AGE_SECS: f64 = core::recency::RECENCY_SECS;
 
 /// How far ahead (in real-time seconds) to prefetch the next sweep when
 /// playback is active. Multiplied by the playback speed to get the lookahead

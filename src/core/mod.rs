@@ -41,6 +41,7 @@ pub(crate) mod panels;
 pub(crate) mod persist;
 pub(crate) mod playback_manager;
 pub(crate) mod projection;
+pub(crate) mod recency;
 pub(crate) mod render;
 pub(crate) mod render_loop;
 pub(crate) mod selection_chip;
