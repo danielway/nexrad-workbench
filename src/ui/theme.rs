@@ -573,6 +573,27 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    fn installed_fonts_load_and_lay_out() {
+        // A headless frame parses the bundled TTFs and lays text out in both
+        // families; a bad font file would panic here.
+        let ctx = egui::Context::default();
+        install(&ctx);
+        ctx.begin_pass(egui::RawInput::default());
+        {
+            let style = ctx.global_style();
+            assert!(style.text_styles[&TextStyle::Body].size == LABEL);
+            let g =
+                ctx.fonts_mut(|f| f.layout_no_wrap("12:34:56 ~0.5°".into(), readout_font(), TEXT));
+            assert!(g.size().x > 0.0);
+            let g = ctx.fonts_mut(|f| {
+                f.layout_no_wrap("Reflectivity".into(), FontId::proportional(BODY), TEXT)
+            });
+            assert!(g.size().x > 0.0);
+        }
+        ctx.end_pass().textures_delta.clear();
+    }
+
+    #[wasm_bindgen_test]
     fn readout_font_is_mono_at_readout_size() {
         let f = readout_font();
         assert!(f.family == FontFamily::Monospace);
