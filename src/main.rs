@@ -666,6 +666,47 @@ impl WorkbenchApp {
         })
     }
 
+    /// Assemble this frame's top-bar view-model. Pure gathering: the words,
+    /// rows and alert-chip state are decided in [`core::top_bar`].
+    fn build_top_bar_vm(
+        &self,
+        diagnostics_vm: &core::diagnostics::DiagnosticsVm,
+        derived: &subsystem::Derived,
+    ) -> core::top_bar::TopBarVm {
+        let now = self.state.frame_now.secs();
+        let use_local = self.state.use_local_time;
+        let elevations = self.state.current_elevation_list(
+            &self.playback.state,
+            &self.timeline.scans,
+            self.live
+                .radar_model
+                .volume
+                .as_ref()
+                .and_then(|v| v.vcp_pattern.as_ref()),
+        );
+        let zone = ui::time_format::zone_label(now, use_local);
+        core::top_bar::TopBarVm::build(
+            core::top_bar::TopBarInputs {
+                session: &self.live.session,
+                now_secs: now,
+                site_id: &self.state.viz_state.site_id,
+                product: self.state.viz_state.product,
+                elevation_selection: &self.state.viz_state.elevation_selection,
+                elevations: &elevations,
+                zone: &zone,
+                use_local_time: use_local,
+                view_mode: self.state.viz_state.view_mode(),
+                advanced: self.state.show_advanced(),
+                alerts: &self.diagnostics.alerts,
+                visible_alerts: &diagnostics_vm.visible_alerts,
+                map_bounds_known: derived.visible_bounds.is_some(),
+                worker_init_error: self.state.worker_init_error.as_deref(),
+                version: env!("NEXRAD_VERSION_FULL"),
+            },
+            &ui::time_format::ZoneClock { use_local },
+        )
+    }
+
     /// Refresh every per-frame acquisition telemetry input.
     ///
     /// All of it feeds the activity surface, so none of it is dev-gated. The
@@ -999,6 +1040,17 @@ impl eframe::App for WorkbenchApp {
         // and the mobile bar all read the same numbers.
         let activity_vm = self.build_activity_vm();
 
+        // Toasts: move this frame's legacy status line and fresh errors into
+        // the queue, then advance it on the frame clock (core::toast).
+        self.state
+            .toasts
+            .absorb_status(&mut self.state.status_message);
+        self.state.toasts.absorb_errors(&self.state.errors);
+        self.state.toasts.tick(self.state.frame_now.millis());
+
+        // Top-bar view-model: what is on screen, in the bar's words.
+        let top_bar_vm = self.build_top_bar_vm(&diagnostics_vm, &derived);
+
         let is_mobile = self.state.is_mobile;
         let mut layout_ctx = ui::LayoutCtx {
             ctx,
@@ -1013,6 +1065,7 @@ impl eframe::App for WorkbenchApp {
             derived: &derived,
             diagnostics_vm: &diagnostics_vm,
             activity_vm: &activity_vm,
+            top_bar_vm: &top_bar_vm,
             modals: &mut self.modals,
         };
         ui::render_layout(is_mobile, &mut layout_ctx);

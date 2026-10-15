@@ -35,8 +35,6 @@ impl WorkbenchApp {
             self.playback.state.center_view_on(now);
         }
 
-        self.state.status_message = "Connecting to live stream...".to_string();
-
         // Push the current elevation filter into the channel before starting
         // so the streaming loop's init-time backfill targets the user's
         // selected elevation rather than a default.
@@ -166,9 +164,9 @@ impl WorkbenchApp {
                 crate::LIVE_DETACHED_STOP_SECS,
             ) {
                 self.live.stop(crate::core::LiveExitReason::DetachedTimeout);
-                self.state.status_message = crate::core::LiveExitReason::DetachedTimeout
-                    .message()
-                    .to_string();
+                self.state
+                    .toasts
+                    .notice(crate::core::LiveExitReason::DetachedTimeout.message());
             }
             return;
         }
@@ -387,13 +385,6 @@ impl WorkbenchApp {
         // playing=true at Realtime speed would keep it pacing "now" as if
         // still pinned. (Seek/jog no longer stop the stream — they detach.)
         self.playback.state.playing = false;
-
-        self.state.status_message = self
-            .live
-            .mode_state
-            .last_exit_reason
-            .map(|r| r.message().to_string())
-            .unwrap_or_default();
     }
 
     /// Handle a realtime streaming result.
@@ -408,7 +399,6 @@ impl WorkbenchApp {
             nexrad::RealtimeResult::Started { site_id } => {
                 log::debug!("Realtime streaming started for site: {}", site_id);
                 self.live.mode_state.handle_streaming_started(now);
-                self.state.status_message = format!("Live: connected to {}", site_id);
             }
             nexrad::RealtimeResult::ChunkReceived {
                 chunks_in_volume,
@@ -488,7 +478,6 @@ impl WorkbenchApp {
                     .mark_completed(op_id, data.len() as u64);
 
                 if is_start {
-                    self.state.status_message = "Live: receiving new volume...".to_string();
                     log::debug!("Realtime: new volume started, forwarding start chunk to worker");
                 }
 
@@ -531,7 +520,6 @@ impl WorkbenchApp {
                 self.stop_live_mode(crate::core::LiveExitReason::ConnectionError);
                 // Preserve error message (stop_live_mode clears it)
                 self.live.mode_state.error_message = Some(msg.clone());
-                self.state.status_message = format!("Live error: {}", msg);
 
                 // Track error as a failed acquisition operation
                 let err_site_id = self.state.viz_state.site_id.clone();

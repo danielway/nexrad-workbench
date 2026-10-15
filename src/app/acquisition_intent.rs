@@ -91,7 +91,7 @@ impl WorkbenchApp {
             acquisition_core::ReactivePrefetchPlan::CapReached { status_message } => {
                 // Surface it so an idle canvas isn't mistaken for breakage
                 // (PRODUCT.md §7.2).
-                self.state.status_message = status_message;
+                self.state.toasts.notice(status_message);
                 return;
             }
             acquisition_core::ReactivePrefetchPlan::Window(plan) => plan,
@@ -414,7 +414,7 @@ impl WorkbenchApp {
             acquisition_core::SelectionFetchPlan::Disarm { status_message } => {
                 self.acquisition.selection_fetch_target = None;
                 if let Some(message) = status_message {
-                    self.state.status_message = message;
+                    self.state.toasts.notice(message);
                 }
             }
             acquisition_core::SelectionFetchPlan::Window(plan) => {

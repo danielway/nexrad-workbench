@@ -52,7 +52,7 @@ fastest, so this table names *responsibilities*; find the file with `grep`.
 
 | Module | Purpose | Anchors |
 |--------|---------|---------|
-| `core` | The pure, headless core. `core/domain/` holds the domain vocabulary shared by every layer (radar model `Scan`/`Sweep`/`Radial`/`RadarTimeline`/`ScanMetadata`, playback time model, viz types incl. `RenderProcessing`/`SweepIdentity`/`StormCellInfo`, `UserPreferences`, `ViewState`, errors, feed states, telemetry records, worker result types). `core` also owns the contract types (`Intent`, `Effect`), the pure decision modules (`persist`, `diagnostics`, `canvas`, `render`, `panels`, `acquisition`), the worker/frame **reducers** (`worker_ingest`, `worker_decoded`, `render_loop`), the live-mode state machine (`live_mode`, `live_radar_model`), the per-frame session view-model (`session` — stream, playhead, selection and frame facts, and the words every status surface prints), playback sweep-cache logic (`playback_manager`), the timeline view model (`timeline_view`), streaming vocabulary (`streaming_plan`, `streaming_filter`), the projection engine (`projection/` — single owner of forward-looking radar timing; `projector.rs` is its private kernel), and the chunk-timing physics fork (`timing/`, upstream-contribution candidate). No I/O, no egui, no web_sys in decision logic. | `core/mod.rs`, `core/intent.rs`, `core/effect.rs`, `core/projection/engine.rs`, `core/timing/config.rs` |
+| `core` | The pure, headless core. `core/domain/` holds the domain vocabulary shared by every layer (radar model `Scan`/`Sweep`/`Radial`/`RadarTimeline`/`ScanMetadata`, playback time model, viz types incl. `RenderProcessing`/`SweepIdentity`/`StormCellInfo`, `UserPreferences`, `ViewState`, errors, feed states, telemetry records, worker result types). `core` also owns the contract types (`Intent`, `Effect`), the pure decision modules (`persist`, `diagnostics`, `canvas`, `render`, `panels`, `acquisition`), the worker/frame **reducers** (`worker_ingest`, `worker_decoded`, `render_loop`), the live-mode state machine (`live_mode`, `live_radar_model`), the per-frame session view-model (`session` — stream, playhead, selection and frame facts, and the words every status surface prints), the top bar's view-model and width rule (`top_bar`), the toast queue (`toast`), playback sweep-cache logic (`playback_manager`), the timeline view model (`timeline_view`), streaming vocabulary (`streaming_plan`, `streaming_filter`), the projection engine (`projection/` — single owner of forward-looking radar timing; `projector.rs` is its private kernel), and the chunk-timing physics fork (`timing/`, upstream-contribution candidate). No I/O, no egui, no web_sys in decision logic. | `core/mod.rs`, `core/intent.rs`, `core/effect.rs`, `core/projection/engine.rs`, `core/timing/config.rs` |
 | `state` | `AppState` root container (frame scratch, status, command queue, settings) plus focused state containers (`viz`, `acquisition`, `calendar`, `url_state`, `recency`, `render_cache`, `saved_events`, `settings`, `stats`, `theme`, `app_mode`, `layer`) and the **shell halves** of core types — the impls that touch the browser (`preferences` load/save, `frame_clock` capture, `playback` wall-clock constructors). | `state/mod.rs`, `state/viz.rs`, `state/url_state.rs` |
 | `subsystem` | Bounded state owners with typed APIs, each owning a coherent slice of state + channels: `Acquisition`, `Render`, `Timeline`, `Playback`, `Live`, `Chrome`, `Diagnostics`, `NetworkMonitor`, plus the per-frame `Derived` view-model cache. | `subsystem/mod.rs` |
 | `app` | The imperative shell over the core reducers: each frame-loop concern assembles read-only inputs, calls the pure core, then executes the described actions (`worker_results`, `render_loop`, `acquisition_intent`, `command_dispatch`, `live_mode`, `download`, `selection_download`, `frame_setup`). Also the `Effect` runtime (`effects.rs`) and the persistence shell (`persistence_manager.rs`). | `app/mod.rs`, `app/effects.rs` |
@@ -298,7 +298,7 @@ channel drains (via the core reducers), command dispatch, effect execution,
 then UI layout.
 
 - **`AppState`** (`state/mod.rs`) holds cross-cutting state: the per-frame
-  clock (`frame_now`), viz/layer state, status message, session stats, storage
+  clock (`frame_now`), viz/layer state, the toast queue, session stats, storage
   settings, saved events, theme, mobile/width-tier resolution, the recent-error
   ring, and the **command queue** (`VecDeque<Intent>`).
 - **Subsystems** (`subsystem/`) own their domains: `Acquisition` (download
@@ -320,7 +320,7 @@ executed by the `Effect` runtime (`app/effects.rs`).
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ Top Bar: Site context, status, mode indicators           │
+│ Top Bar: site · product · tilt · frame time + age pill   │
 ├──────────┬─────────────────────────────┬─────────────────┤
 │ Left     │ Canvas                      │ Right Panel     │
 │ Panel    │ (Radar + Geographic layers  │ • Product       │
@@ -342,6 +342,14 @@ collapsed Details disclosure. Both render a single per-frame projection,
 surfaces — the DL/PROC/GPU pipeline lamps, the Performance modal, the network
 log modal, and the expandable acquisition drawer — were folded into it; what
 was genuinely dev-only now lives inside Details behind `dev_mode`.
+
+**The top bar** (`ui/top_bar.rs`, `ui/mobile/top_bar.rs`) says what is on
+screen and nothing else: site, product and tilt pickers, the frame time in the
+chosen zone (the zone label toggles local/UTC) and the age pill. Both bars draw
+one per-frame `core::top_bar::TopBarVm`; the width rule (`core::top_bar::fold`)
+folds the city, then the zone, then help and 2D/3D into ⋯. Refusals,
+confirmations and failures with no other home go to the **toast** under the bar
+(`core::toast::ToastQueue` on `AppState::toasts`, drawn by `ui/toast.rs`).
 
 When `AppState::is_mobile` is true, `ui/mobile/` replaces this desktop layout
 with dedicated mobile chrome (tabs, scrubber, gesture handling, auto-hide).

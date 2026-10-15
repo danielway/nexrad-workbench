@@ -163,6 +163,9 @@ pub(crate) fn dispatch_state_only(
         Intent::PlaceDistancePoint { lat, lon } => s.place_distance_point(lat, lon),
         Intent::SetGeoLayer(layer, on) => layer.set(&mut s.state.layer_state.geo, on),
 
+        // ---- Top bar ------------------------------------------------
+        Intent::TopBar(intent) => s.top_bar(intent),
+
         // ---- Needs the shell --------------------------------------
         // Listed explicitly (not `_`) so a new intent forces a decision
         // about which half of the partition owns it. The reason each one
@@ -228,7 +231,43 @@ impl DispatchState<'_> {
             self.live.channel.stop();
         }
         if let Some(msg) = actions.status_message {
-            self.state.status_message = msg;
+            self.state.toasts.notice(msg);
+        }
+    }
+
+    /// Apply a top-bar intent. Every arm is a plain state write; the one
+    /// decision (what a tilt pick does to the selection) is
+    /// [`crate::core::top_bar::apply_tilt_pick`].
+    fn top_bar(&mut self, intent: crate::core::top_bar::TopBarIntent) {
+        use crate::core::top_bar::{apply_tilt_pick, TopBarIntent};
+        use crate::geo::ViewMode;
+        match intent {
+            TopBarIntent::OpenSitePicker => self.chrome.site_modal_open = true,
+            TopBarIntent::SetProduct(product) => self.state.viz_state.product = product,
+            TopBarIntent::SetTilt(pick) => {
+                let viz = &mut self.state.viz_state;
+                apply_tilt_pick(
+                    &mut viz.elevation_selection,
+                    &mut viz.last_fixed_selection,
+                    pick,
+                );
+            }
+            TopBarIntent::ToggleTimeZone => {
+                self.state.use_local_time = !self.state.use_local_time;
+            }
+            TopBarIntent::SetView(ViewMode::Flat2D) => self.state.viz_state.switch_to_2d(),
+            TopBarIntent::SetView(ViewMode::Globe3D) => self.state.viz_state.switch_to_3d_view(),
+            TopBarIntent::SetAdvanced(on) => self.state.advanced_mode = on,
+            TopBarIntent::ToggleShortcutsHelp => {
+                self.chrome.shortcuts_help_visible = !self.chrome.shortcuts_help_visible;
+            }
+            TopBarIntent::ToggleLeftPanel => {
+                self.chrome.left_sidebar_visible = !self.chrome.left_sidebar_visible;
+            }
+            TopBarIntent::ToggleRightPanel => {
+                self.chrome.right_sidebar_visible = !self.chrome.right_sidebar_visible;
+            }
+            TopBarIntent::DismissToast => self.state.toasts.dismiss(),
         }
     }
 
@@ -363,8 +402,9 @@ impl DispatchState<'_> {
                     .map(|(file, b)| (file.name.clone(), b.end))
             })
         else {
-            self.state.status_message =
-                "Can't fetch yet — still listing the archive for that time".to_string();
+            self.state
+                .toasts
+                .notice("Can't fetch yet — still listing the archive for that time");
             return;
         };
 
@@ -510,7 +550,8 @@ impl WorkbenchApp {
             | Intent::ReorderOperation(..)
             | Intent::ShowAlertOnMap(_)
             | Intent::PlaceDistancePoint { .. }
-            | Intent::SetGeoLayer(..) => {
+            | Intent::SetGeoLayer(..)
+            | Intent::TopBar(_) => {
                 unreachable!("state-only intent was not consumed by dispatch_state_only")
             }
         }
@@ -685,7 +726,6 @@ impl WorkbenchApp {
         match self.render.coordinator.create_worker(ctx.clone()) {
             Ok(()) => {
                 self.state.worker_init_error = None;
-                self.state.status_message = "Decode worker initialized".to_string();
             }
             Err(msg) => {
                 self.state.worker_init_error = Some(msg);
@@ -727,6 +767,7 @@ mod probe_tests {
 #[cfg(test)]
 mod dispatch_tests {
     use super::{dispatch_state_only, CommandOutcome, DispatchState};
+    use crate::core::top_bar::{TiltPick, TopBarIntent};
     use crate::core::transport::LiveStopPlacement;
     use crate::core::OperationStatus;
     use crate::core::{
@@ -784,6 +825,12 @@ mod dispatch_tests {
                 left.is_none(),
                 "{intent:?} should be handled state-only, but the shell got {left:?}"
             );
+        }
+
+        /// The toast this frame would show, if any.
+        fn toast(&mut self) -> Option<String> {
+            self.state.toasts.tick(0.0);
+            self.state.toasts.view(0.0).map(|t| t.text)
         }
 
         /// The operation ids in queue order.
@@ -875,8 +922,9 @@ mod dispatch_tests {
                 lon: -93.0,
             },
             Intent::SetGeoLayer(GeoLayer::Cities, false),
+            Intent::TopBar(TopBarIntent::ToggleTimeZone),
         ];
-        assert_eq!(state_only.len(), 17);
+        assert_eq!(state_only.len(), 18);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -1153,7 +1201,70 @@ mod dispatch_tests {
             .download_queue
             .find_by_scan_start(1_000)
             .is_none());
-        assert!(f.state.status_message.contains("still listing"));
+        assert!(f.toast().is_some_and(|t| t.contains("still listing")));
+    }
+
+    // ---- top bar ------------------------------------------------------
+
+    /// Each top-bar intent lands on the state it names — written to fail if
+    /// two arms were swapped (both panel toggles, both views).
+    #[wasm_bindgen_test]
+    fn top_bar_intents_write_the_state_they_name() {
+        let mut f = Fixture::new();
+        let local = f.state.use_local_time;
+        f.apply(Intent::TopBar(TopBarIntent::ToggleTimeZone));
+        assert_eq!(f.state.use_local_time, !local);
+
+        f.apply(Intent::TopBar(TopBarIntent::OpenSitePicker));
+        assert!(f.chrome.site_modal_open);
+
+        f.apply(Intent::TopBar(TopBarIntent::SetProduct(
+            crate::core::RadarProduct::Velocity,
+        )));
+        assert!(f.state.viz_state.product == crate::core::RadarProduct::Velocity);
+
+        f.state.viz_state.elevation_selection = ElevationSelection::Fixed {
+            elevation_number: 3,
+            angle: 1.3,
+        };
+        f.apply(Intent::TopBar(TopBarIntent::SetTilt(TiltPick::Latest)));
+        assert!(f.state.viz_state.elevation_selection == ElevationSelection::Latest);
+        assert_eq!(f.state.viz_state.last_fixed_selection, Some((3, 1.3)));
+
+        let (left, right) = (
+            f.chrome.left_sidebar_visible,
+            f.chrome.right_sidebar_visible,
+        );
+        f.apply(Intent::TopBar(TopBarIntent::ToggleRightPanel));
+        assert_eq!(f.chrome.right_sidebar_visible, !right);
+        assert_eq!(f.chrome.left_sidebar_visible, left);
+        f.apply(Intent::TopBar(TopBarIntent::ToggleLeftPanel));
+        assert_eq!(f.chrome.left_sidebar_visible, !left);
+
+        let help = f.chrome.shortcuts_help_visible;
+        f.apply(Intent::TopBar(TopBarIntent::ToggleShortcutsHelp));
+        assert_eq!(f.chrome.shortcuts_help_visible, !help);
+
+        f.apply(Intent::TopBar(TopBarIntent::SetAdvanced(true)));
+        assert!(f.state.advanced_mode);
+
+        f.apply(Intent::TopBar(TopBarIntent::SetView(
+            crate::geo::ViewMode::Globe3D,
+        )));
+        assert_eq!(f.state.viz_state.view_mode(), crate::geo::ViewMode::Globe3D);
+        f.apply(Intent::TopBar(TopBarIntent::SetView(
+            crate::geo::ViewMode::Flat2D,
+        )));
+        assert_eq!(f.state.viz_state.view_mode(), crate::geo::ViewMode::Flat2D);
+    }
+
+    #[wasm_bindgen_test]
+    fn dismiss_toast_clears_the_toast_on_screen() {
+        let mut f = Fixture::new();
+        f.state.toasts.notice("Forecast copied");
+        assert_eq!(f.toast().as_deref(), Some("Forecast copied"));
+        f.apply(Intent::TopBar(TopBarIntent::DismissToast));
+        assert_eq!(f.state.toasts.view(0.0), None);
     }
 
     // ---- transport / live ---------------------------------------------
@@ -1207,8 +1318,8 @@ mod dispatch_tests {
         assert!(!f.playback.state.is_pinned());
         assert!((f.playback.state.playback_position() - 5_000.0).abs() < 1e-9);
         assert_eq!(
-            f.state.status_message,
-            LiveExitReason::UserStopped.message()
+            f.toast().as_deref(),
+            Some(LiveExitReason::UserStopped.message())
         );
     }
 
@@ -1218,14 +1329,13 @@ mod dispatch_tests {
     fn stop_live_in_place_keeps_the_playhead_and_stays_silent() {
         let mut f = Fixture::new();
         f.state.frame_now = FrameNow(5_000.0);
-        f.state.status_message = "unchanged".to_string();
         f.live.mode_state.phase = LivePhase::Streaming;
         f.playback.state.enter_pinned_live(4_000.0);
 
         f.apply(Intent::StopLive(LiveStopPlacement::InPlace));
 
         assert!((f.playback.state.playback_position() - 4_000.0).abs() < 1e-9);
-        assert_eq!(f.state.status_message, "unchanged");
+        assert_eq!(f.toast(), None);
     }
 
     /// `CenterTimelineOnNow` scrolls the view so this frame's "now" sits in the

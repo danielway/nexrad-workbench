@@ -58,8 +58,6 @@ impl WorkbenchApp {
                 .push((scan_ts, scan_end));
 
             if is_cache_hit {
-                self.state.status_message = format!("Loaded from cache: {}", scan.file_name);
-
                 // Records are already in IDB — hold the ledger entry in
                 // AwaitingTimeline until a refresh actually shows them, so
                 // the per-frame anchor pump can't re-request into the gap.
@@ -97,9 +95,6 @@ impl WorkbenchApp {
                     self.request_worker_render_volume();
                 }
             } else {
-                self.state.status_message =
-                    format!("Downloaded: {} ({} bytes)", scan.file_name, scan.data.len());
-
                 // Count fresh-download bytes toward the reactive auto-fetch
                 // volume cap (cache hits cost no network, so they don't count).
                 self.acquisition
@@ -163,7 +158,6 @@ impl WorkbenchApp {
             scan_start,
         } = &result
         {
-            self.state.status_message = format!("Download failed: {}", message);
             log::error!("Download failed: {}", message);
             self.state.errors.push(crate::core::AppError::Download {
                 message: message.clone(),

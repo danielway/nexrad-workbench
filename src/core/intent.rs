@@ -128,4 +128,6 @@ pub(crate) enum Intent {
     /// Switch one map overlay on or off. Carries the new value (not a flip) so
     /// a repeated intent is idempotent.
     SetGeoLayer(GeoLayer, bool),
+    /// A top-bar picker, toggle or the toast under it (one-instrument §9).
+    TopBar(crate::core::top_bar::TopBarIntent),
 }

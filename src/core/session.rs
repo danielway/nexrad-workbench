@@ -210,7 +210,7 @@ pub(crate) struct AgePill {
     pub text: String,
 }
 
-/// The legacy three-way mode (badge, favicon, tab title, mode stripe). A
+/// The legacy three-way mode, now read only by the favicon and tab title. A
 /// projection of the facts kept until those surfaces are retired.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum AppMode {
@@ -221,16 +221,6 @@ pub(crate) enum AppMode {
     Archive,
     /// A stream runs and the selection is pinned to now.
     Live,
-}
-
-impl AppMode {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            AppMode::Idle => "IDLE",
-            AppMode::Archive => "ARCHIVE",
-            AppMode::Live => "LIVE",
-        }
-    }
 }
 
 /// Clock formatting in the user's chosen zone. Implemented by the shell,
@@ -307,7 +297,7 @@ pub(crate) struct SessionVm {
     /// Clock text via [`SessionVm::canvas_caption_text`].
     pub canvas_caption: CanvasCaption,
 
-    /// Legacy mode word for the badge, favicon and tab title.
+    /// Legacy mode for the favicon and tab title.
     pub app_mode: AppMode,
 }
 
@@ -1234,9 +1224,6 @@ mod tests {
             s.scan_at_playhead = scan;
             assert_eq!(s.vm().app_mode, want, "{stream} {selection:?} {scan}");
         }
-        assert_eq!(AppMode::Live.label(), "LIVE");
-        assert_eq!(AppMode::Archive.label(), "ARCHIVE");
-        assert_eq!(AppMode::Idle.label(), "IDLE");
     }
 
     #[wasm_bindgen_test]

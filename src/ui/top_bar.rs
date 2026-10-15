@@ -1,16 +1,27 @@
-//! Top bar UI: app title, status, and site context.
+//! The desktop top bar (one-instrument §9): a 1:1 projection of
+//! [`TopBarVm`].
+//!
+//! Left: site, product and tilt pickers, then the frame time with its zone and
+//! the age pill. Right: the alerts chip, 2D/3D, help, the ⋯ menu and the panel
+//! toggle. Every word comes from the view-model and every click is a
+//! [`TopBarIntent`]; the only thing decided here is how wide each piece draws,
+//! which feeds the pure width rule [`fold`].
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use super::overflow_menu::overflow_menu;
-use super::time_format::{format_clock_12h, Compaction};
-use crate::alerts::event_color;
-use crate::core::ErrorContext;
+use crate::core::top_bar::{
+    fold, AlertsChip, PillMark, ReadoutPill, TopBarFold, TopBarIntent, TopBarVm, TopBarWidths,
+};
 use crate::core::Intent;
-use crate::core::RadarProduct;
 use crate::geo::ViewMode;
-use crate::state::{AppMode, AppState, WidthTier};
+use crate::state::AppState;
 use crate::ui::theme;
-use eframe::egui::{self, Color32, Frame, RichText};
+use eframe::egui::{self, Color32, RichText};
+use egui_phosphor::regular as icons;
+
+const BAR_HEIGHT: f32 = 36.0;
+/// The releases page behind ⋯ › About.
+const CHANGELOG_URL: &str = "https://github.com/danielway/nexrad-workbench/releases";
 
 pub(super) struct TopBarLayer;
 
@@ -22,829 +33,438 @@ impl Layer for TopBarLayer {
         10
     }
     fn render(&self, ctx: &mut LayoutCtx) {
-        draw_top_bar(
-            ctx.root_ui,
-            ctx.state,
-            ctx.timeline,
-            ctx.live,
-            ctx.playback,
-            ctx.diagnostics,
-            ctx.derived,
-            ctx.diagnostics_vm,
-            ctx.chrome,
-        );
+        draw_top_bar(ctx.root_ui, ctx.top_bar_vm, ctx.state);
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_top_bar(
-    root_ui: &mut egui::Ui,
-    state: &mut AppState,
-    _timeline: &crate::subsystem::Timeline,
-    live: &crate::subsystem::Live,
-    _playback: &crate::subsystem::Playback,
-    diagnostics: &crate::subsystem::Diagnostics,
-    derived: &crate::subsystem::Derived,
-    diagnostics_vm: &crate::core::diagnostics::DiagnosticsVm,
-    chrome: &mut crate::subsystem::Chrome,
-) {
-    let ctx = root_ui.ctx().clone();
-    // Detect status message changes: if the message content differs from when we
-    // last recorded the timestamp, update the timestamp now. This works even when
-    // callers assign directly to `status_message` without using `set_status()`.
-    let status_id = egui::Id::new("__last_status_msg");
-    let prev_msg: Option<String> = ctx.data(|d| d.get_temp(status_id));
-    if prev_msg.as_deref() != Some(&state.status_message) {
-        state.status_message_set_ms = state.frame_now.millis();
-        ctx.data_mut(|d| d.insert_temp(status_id, state.status_message.clone()));
-    }
+pub(super) fn emit(state: &mut AppState, intent: TopBarIntent) {
+    state.push_command(Intent::TopBar(intent));
+}
 
-    // Thin mode-colored accent bar along the very top edge of the window.
-    egui::Panel::top("mode_accent")
-        .resizable(false)
-        .exact_size(3.0)
-        .frame(Frame::NONE.fill(crate::ui::theme::mode_color(live.session.app_mode)))
-        .show(root_ui, |ui| {
-            ui.allocate_space(ui.available_size());
-        });
-
-    egui::Panel::top("top_bar")
-        .exact_size(36.0)
+fn draw_top_bar(root_ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
+    let response = egui::Panel::top("top_bar")
+        .exact_size(BAR_HEIGHT)
         .show(root_ui, |ui| {
             ui.horizontal_centered(|ui| {
-                // Left panel toggle — hidden in Basic since the left panel
-                // (radar diagnostics) is itself force-hidden in Basic.
-                if state.show_advanced()
-                    && ui
-                        .button(RichText::new(egui_phosphor::regular::SIDEBAR_SIMPLE).size(14.0))
-                        .on_hover_text("Toggle left panel")
-                        .clicked()
+                let f = fold(ui.available_width(), &measure(ui, vm));
+
+                if vm.show_left_toggle
+                    && icon_button(ui, icons::SIDEBAR_SIMPLE, "Toggle left panel")
                 {
-                    chrome.left_sidebar_visible = !chrome.left_sidebar_visible;
+                    emit(state, TopBarIntent::ToggleLeftPanel);
+                }
+                site_picker(ui, vm, state, f.city);
+                product_picker(ui, vm, state);
+                tilt_picker(ui, vm, state);
+                ui.add_space(6.0);
+                frame_readout(ui, vm, state, f.zone);
+                if let Some(pill) = &vm.pill {
+                    readout_pill(ui, pill);
+                }
+                if let Some(err) = &vm.worker_error {
+                    worker_error(ui, err, state);
                 }
 
-                // App title — non-interactive, so it's the first thing to go:
-                // shown only at full width, dropped once space tightens.
-                if state.width_tier >= WidthTier::Full {
-                    ui.label(
-                        RichText::new("NEXRAD Workbench")
-                            .strong()
-                            .size(16.0)
-                            .color(ui.visuals().strong_text_color()),
-                    );
-                    ui.separator();
-                }
-
-                // Site context button — opens site selection modal
-                let site_label = format!("Site: {}", state.viz_state.site_id);
-                if ui
-                    .button(RichText::new(&site_label).size(14.0).strong())
-                    .on_hover_text("Click to change radar site")
-                    .clicked()
-                {
-                    chrome.site_modal_open = true;
-                }
-
-                ui.separator();
-
-                // NWS alerts chip — shown only in 2D when one or more alerts
-                // intersect the visible map bounds.
-                render_alerts_chip(ui, state, diagnostics, derived, diagnostics_vm, chrome);
-
-                // Recent-errors chip — surfaces failures from the unified
-                // ErrorContext aggregator. Quiet when no errors have been
-                // pushed; a click pops a small log with the latest entries.
-                render_errors_chip(ui, &mut state.errors, state.frame_now.millis());
-
-                // Persistent worker initialization error banner
-                if let Some(ref error_msg) = state.worker_init_error {
-                    let error_color = theme::legacy::ERROR;
-                    ui.label(
-                        RichText::new(egui_phosphor::regular::WARNING)
-                            .size(14.0)
-                            .color(error_color),
-                    );
-                    ui.label(
-                        RichText::new(error_msg.as_str())
-                            .size(13.0)
-                            .color(error_color),
-                    );
-                    if ui
-                        .button(RichText::new("Retry").size(12.0).color(error_color))
-                        .on_hover_text("Retry worker initialization")
-                        .clicked()
-                    {
-                        state.push_command(crate::core::Intent::RetryWorker);
-                    }
-                }
-
-                render_mode_badge(ui, live);
-
-                ui.separator();
-
-                // Primary top readout (spec §5/§11.1): the DISPLAYED frame's
-                // collection time + tilt — never the playhead — plus a compact
-                // product selector and, when tethered to live, a friendly
-                // "updated N ago" age. This is the product's most prominent time.
-                render_primary_readout(ui, state, live);
-
-                // Status message (Idle/Archive only — Live has its own trailing
-                // text with chunk counts/countdown). Suppressed below the full
-                // tier: it's transient and would crowd the narrow bar.
-                if state.width_tier >= WidthTier::Full
-                    && live.session.app_mode != AppMode::Live
-                    && !state.status_message.is_empty()
-                {
-                    // Auto-dismiss / fade decided by the pure core.
-                    let now = state.frame_now.millis();
-                    match crate::core::panels::status_message_visibility(
-                        state.status_message_set_ms,
-                        now,
-                    ) {
-                        crate::core::panels::StatusVisibility::Dismiss => {
-                            state.status_message.clear();
-                        }
-                        crate::core::panels::StatusVisibility::Visible { alpha, fading } => {
-                            ui.label(
-                                RichText::new(&state.status_message)
-                                    .size(13.0)
-                                    .color(theme::alpha(theme::TEXT_DIM, alpha)),
-                            );
-                            // Request repaint during fade so the animation runs.
-                            if fading {
-                                ui.ctx().request_repaint();
-                            }
-                        }
-                    }
-                }
-
-                // Right-aligned cluster: right panel toggle, view/camera mode,
-                // and a ⋯ overflow menu that absorbs lower-priority chrome when
-                // it doesn't fit. The fit decision is driven by the *measured*
-                // width remaining after the (variable-width) left content, so
-                // items collapse exactly when there's no room — no fixed-width
-                // band where the cluster overlaps the left content.
-                let advanced = state.show_advanced();
-                let fit = decide_right_cluster(ui, advanced, ui.available_width());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Right panel toggle — always the rightmost item.
-                    if ui
-                        .button(RichText::new(egui_phosphor::regular::SIDEBAR_SIMPLE).size(14.0))
-                        .on_hover_text("Toggle right panel")
-                        .clicked()
-                    {
-                        chrome.right_sidebar_visible = !chrome.right_sidebar_visible;
+                    if icon_button(ui, icons::SIDEBAR_SIMPLE, "Toggle right panel") {
+                        emit(state, TopBarIntent::ToggleRightPanel);
                     }
-
-                    // Overflow menu — holds whatever didn't fit. Placed just
-                    // left of the panel toggle so it's always reachable.
-                    if fit.any_overflow() {
-                        overflow_menu(ui, |ui| {
-                            if !fit.views {
-                                ui.label(RichText::new("View").size(11.0).weak());
-                                ui.horizontal(|ui| render_view_mode_pills(ui, state));
-                            }
-                            if !fit.pill {
-                                ui.label(RichText::new("Mode").size(11.0).weak());
-                                ui.horizontal(|ui| render_ui_mode_pill(ui, state));
-                            }
-                            if !fit.help
-                                && ui
-                                    .button(format!(
-                                        "{}  Keyboard shortcuts",
-                                        egui_phosphor::regular::QUESTION
-                                    ))
-                                    .clicked()
-                            {
-                                chrome.shortcuts_help_visible = !chrome.shortcuts_help_visible;
-                            }
-                            if !fit.version {
-                                render_version_link(ui, state);
-                            }
-                        });
+                    overflow_menu(ui, |ui| overflow_contents(ui, vm, state, f));
+                    if f.help_and_views {
+                        if icon_button(ui, icons::QUESTION, "Keyboard shortcuts (?)") {
+                            emit(state, TopBarIntent::ToggleShortcutsHelp);
+                        }
+                        view_toggle(ui, vm, state);
                     }
-
-                    // Inline survivors — right-to-left order matching the
-                    // original full-width layout (help, mode pill, version,
-                    // separator, view pills).
-                    if fit.help
-                        && ui
-                            .button(RichText::new(egui_phosphor::regular::QUESTION).size(14.0))
-                            .on_hover_text("Keyboard shortcuts (?)")
-                            .clicked()
-                    {
-                        chrome.shortcuts_help_visible = !chrome.shortcuts_help_visible;
-                    }
-
-                    if fit.pill {
-                        // Basic / Advanced pill — toggles UI complexity. Same
-                        // segmented-pill idiom as the view-mode selector.
-                        render_ui_mode_pill(ui, state);
-                    }
-
-                    if fit.version {
-                        render_version_link(ui, state);
-                    }
-
-                    if fit.views {
-                        ui.separator();
-                        render_view_mode_pills(ui, state);
-                    }
+                    alerts_chip(ui, &vm.alerts, state, false);
                 });
             });
         });
+    super::toast::set_anchor(root_ui.ctx(), response.response.rect.bottom());
 }
 
-/// Width-driven compaction for the primary clock readout. The time is primary,
-/// so narrow bars shed seconds (Compact) then the zone suffix (Cramped) rather
-/// than dropping the readout.
-fn readout_compaction(tier: WidthTier) -> Compaction {
-    match tier {
-        WidthTier::Full => Compaction::Full,
-        WidthTier::Compact => Compaction::NoSeconds,
-        WidthTier::Cramped => Compaction::Bare,
-    }
-}
+// ── Measuring (the shell's half of the width rule) ─────────────────────────
 
-/// The product's PRIMARY readout (spec §5/§11.1): the on-screen frame's actual
-/// collection time + tilt — never the playhead — formatted live so a local/UTC
-/// tap reformats it the same frame. Tapping the time toggles the timezone
-/// (spec §11.4 "UTC available on tap"); a compact product selector sits beside
-/// it, and while tethered to live a friendly "updated N ago" age trails it.
-fn render_primary_readout(ui: &mut egui::Ui, state: &mut AppState, live: &crate::subsystem::Live) {
-    let accent = theme::TEXT;
-    let dim = theme::TEXT_DIM;
-
-    // The displayed frame's representative collection time, or None when the
-    // canvas holds no frame.
-    match state.viz_state.displayed_midpoint_secs() {
-        Some(mid) => {
-            let compaction = readout_compaction(state.width_tier);
-            let time_str = format_clock_12h(mid, state.use_local_time, compaction);
-            // Tilt comes from the displayed frame's elevation (actual), already
-            // formatted as e.g. "0.5°".
-            let label = format!("{time_str} · {}", state.viz_state.elevation);
-            let resp = ui.add(
-                egui::Button::new(RichText::new(label).size(14.0).strong().color(accent))
-                    .frame(false),
-            );
-            if resp.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            let to = if state.use_local_time { "UTC" } else { "local" };
-            if resp
-                .on_hover_text(format!("Displayed frame time — tap for {to} time"))
-                .clicked()
-            {
-                state.use_local_time = !state.use_local_time;
-            }
-        }
-        None => {
-            ui.add(egui::Button::new(RichText::new("--:--").size(14.0).color(dim)).frame(false))
-                .on_hover_text("No frame on screen yet");
-        }
-    }
-
-    // Compact product selector (the Level-0/1 always-visible affordance; the
-    // right panel keeps the full power surface). Drives the same state.
-    egui::ComboBox::from_id_salt("topbar_product")
-        .selected_text(RichText::new(state.viz_state.product.short_code()).size(13.0))
-        .width(56.0)
-        .show_ui(ui, |ui| {
-            for product in RadarProduct::all() {
-                ui.selectable_value(
-                    &mut state.viz_state.product,
-                    *product,
-                    format!("{} — {}", product.short_code(), product.label()),
-                );
-            }
-        });
-
-    // The age pill (one-instrument §2): the frame's age, only while the
-    // selection is pinned to now; at a time the timestamp carries the meaning.
-    if let Some(pill) = &live.session.age_pill {
-        ui.label(RichText::new(&pill.text).size(12.0).color(dim));
-    }
-}
-
-/// Two-segment Basic/Advanced pill matching the view-mode selector idiom.
-/// Active segment is bold + colored; inactive is dim. Click flips the
-/// preference (also bound to Ctrl+Shift+A in `shortcuts.rs`).
-fn render_ui_mode_pill(ui: &mut egui::Ui, state: &mut AppState) {
-    let active_color = theme::legacy::ACTIVE_BLUE;
-    let dim = theme::TEXT_FAINT;
-
-    // Right-to-left layout: render the rightmost segment first (Advanced).
-    for &(label, advanced_value) in &[("Advanced", true), ("Basic", false)] {
-        let is_active = state.show_advanced() == advanced_value;
-        let text = if is_active {
-            RichText::new(label).size(13.0).strong().color(active_color)
-        } else {
-            RichText::new(label).size(13.0).color(dim)
-        };
-        let resp = ui.add(egui::Button::new(text).frame(is_active));
-        if !is_active && resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        if resp
-            .on_hover_text(format!(
-                "Switch to {} controls (Ctrl+Shift+A)",
-                label.to_lowercase()
-            ))
-            .clicked()
-        {
-            state.advanced_mode = advanced_value;
-        }
-    }
-}
-
-/// View-mode selector pills: a single 2D / 3D toggle (the 3D globe has one
-/// unified orbit camera). Rendered both inline in the top bar and, when
-/// space is tight, inside the overflow menu.
-fn render_view_mode_pills(ui: &mut egui::Ui, state: &mut AppState) {
-    let dim = theme::TEXT_FAINT;
-
-    let modes: &[(&str, ViewMode, Color32, &str)] = &[
-        ("2D", ViewMode::Flat2D, theme::legacy::ACTIVE_BLUE, "1"),
-        ("3D", ViewMode::Globe3D, theme::legacy::CAUTION, "2"),
-    ];
-
-    for &(label, view, color, key) in modes {
-        let is_active = state.viz_state.view_mode() == view;
-
-        let text = if is_active {
-            RichText::new(label).size(13.0).strong().color(color)
-        } else {
-            RichText::new(label).size(13.0).color(dim)
-        };
-
-        let response = ui.add(egui::Button::new(text).frame(is_active));
-
-        if !is_active && response.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-
-        if response
-            .on_hover_text(format!("Switch to {} ({})", label, key))
-            .clicked()
-        {
-            match view {
-                ViewMode::Flat2D => state.viz_state.switch_to_2d(),
-                ViewMode::Globe3D => state.viz_state.switch_to_3d_view(),
-            }
-        }
-    }
-}
-
-/// The (possibly truncated) version string shown by [`render_version_link`].
-/// Factored out so the right-cluster fit logic can measure it.
-fn version_display_text() -> String {
-    const MAX_LEN: usize = 24;
-    let version = env!("NEXRAD_VERSION");
-    if version.len() > MAX_LEN {
-        let mut truncated = String::with_capacity(MAX_LEN + 3);
-        for (i, ch) in version.char_indices() {
-            if i >= MAX_LEN {
-                break;
-            }
-            truncated.push(ch);
-        }
-        truncated.push('\u{2026}');
-        truncated
-    } else {
-        version.to_string()
-    }
-}
-
-/// Which demotable items in the top bar's right cluster fit inline this frame.
-/// Anything `false` is rendered inside the `⋯` overflow menu instead.
-#[derive(Clone, Copy)]
-struct RightClusterFit {
-    help: bool,
-    pill: bool,
-    version: bool,
-    views: bool,
-}
-
-impl RightClusterFit {
-    fn any_overflow(&self) -> bool {
-        !(self.help && self.pill && self.version && self.views)
-    }
-}
-
-/// Width a text/icon button occupies for `text` at `size`. Frame on or off
-/// doesn't change the footprint — the horizontal padding is the same — so this
-/// works for both the framed icon buttons and the frameless version link.
-fn button_width(ui: &egui::Ui, text: &str, size: f32) -> f32 {
-    let font = egui::FontId::proportional(size);
-    let galley_w = ui
-        .painter()
+fn text_width(ui: &egui::Ui, text: &str, font: egui::FontId) -> f32 {
+    ui.painter()
         .layout_no_wrap(text.to_owned(), font, theme::TEXT)
         .size()
-        .x;
-    galley_w + 2.0 * ui.spacing().button_padding.x
+        .x
 }
 
-/// Decide which right-cluster items fit inline given the measured width
-/// remaining after the left content. Demotes lowest-priority items first
-/// (version → help → view pills → Basic/Advanced pill) until the cluster fits,
-/// accounting for the `⋯` button once anything is demoted. Slightly
-/// conservative (a small margin plus rounded-up estimates) so the bias is
-/// toward collapsing one frame early rather than ever overlapping.
-fn decide_right_cluster(ui: &egui::Ui, advanced: bool, avail: f32) -> RightClusterFit {
+fn label_font() -> egui::FontId {
+    egui::FontId::proportional(theme::LABEL)
+}
+
+/// A framed button around `text`, plus the gap after it.
+fn button_width(ui: &egui::Ui, text: &str, font: egui::FontId) -> f32 {
+    text_width(ui, text, font) + 2.0 * ui.spacing().button_padding.x + ui.spacing().item_spacing.x
+}
+
+fn measure(ui: &egui::Ui, vm: &TopBarVm) -> TopBarWidths {
     let sp = ui.spacing().item_spacing.x;
-    let icon = |g: &str| button_width(ui, g, 14.0);
-    let w_toggle = icon(egui_phosphor::regular::SIDEBAR_SIMPLE);
-    let w_menu = icon(egui_phosphor::regular::DOTS_THREE);
-    let w_help = icon(egui_phosphor::regular::QUESTION);
-    let w_pill = button_width(ui, "Basic", 13.0) + sp + button_width(ui, "Advanced", 13.0);
-    let w_version = button_width(ui, &version_display_text(), 11.0);
+    let icon = |g: &str| button_width(ui, g, egui::FontId::proportional(theme::BODY));
+    let label = |t: &str| button_width(ui, t, label_font());
+    let mono = |t: &str| text_width(ui, t, theme::readout_font()) + sp;
 
-    let view_labels: &[&str] = if advanced {
-        &["2D", "3D Site", "3D Planet", "3D Free"]
-    } else {
-        &["2D", "3D"]
+    let mut fixed = 0.0;
+    if vm.show_left_toggle {
+        fixed += icon(icons::SIDEBAR_SIMPLE);
+    }
+    fixed += label(&format!("{} {}", vm.site.id, icons::CARET_DOWN));
+    fixed += label(&format!("{} {}", vm.product.code, icons::CARET_DOWN));
+    fixed += label(&format!("{} {}", vm.tilt.label, icons::CARET_DOWN));
+    fixed += 6.0;
+    if let Some(date) = &vm.readout.date {
+        fixed += mono(date);
+    }
+    fixed += mono(&vm.readout.time) + 2.0 * ui.spacing().button_padding.x;
+    if let Some(pill) = &vm.pill {
+        fixed += text_width(ui, &pill.text, egui::FontId::proportional(theme::LABEL)) + 30.0 + sp;
+    }
+    if let Some(err) = &vm.worker_error {
+        fixed += text_width(ui, err, label_font()) + icon(icons::WARNING) + label("Retry");
+    }
+    // Right cluster: panel toggle, ⋯ and the alerts chip.
+    fixed += icon(icons::SIDEBAR_SIMPLE) + icon(icons::DOTS_THREE);
+    fixed += match &vm.alerts {
+        AlertsChip::Hidden => 0.0,
+        AlertsChip::Loading | AlertsChip::Quiet { .. } => icon(icons::BELL_SIMPLE),
+        AlertsChip::Active { label: l, .. } => label(&format!("{l} {}", icons::CARET_DOWN)),
     };
-    // A leading separator (a Separator widget plus its spacing) precedes the pills.
-    let mut w_views = 6.0 + sp;
-    for (i, label) in view_labels.iter().enumerate() {
-        if i > 0 {
-            w_views += sp;
-        }
-        w_views += button_width(ui, label, 13.0);
-    }
 
-    let mut fit = RightClusterFit {
-        help: true,
-        pill: true,
-        version: true,
-        views: true,
-    };
-    const MARGIN: f32 = 6.0;
-    loop {
-        let mut used = w_toggle;
-        if fit.any_overflow() {
-            used += sp + w_menu;
-        }
-        if fit.help {
-            used += sp + w_help;
-        }
-        if fit.pill {
-            used += sp + w_pill;
-        }
-        if fit.version {
-            used += sp + w_version;
-        }
-        if fit.views {
-            used += sp + w_views;
-        }
-        if used <= avail - MARGIN {
-            break;
-        }
-        // Demote the lowest-priority item still inline.
-        if fit.version {
-            fit.version = false;
-        } else if fit.help {
-            fit.help = false;
-        } else if fit.views {
-            fit.views = false;
-        } else if fit.pill {
-            fit.pill = false;
-        } else {
-            break; // nothing left to demote
-        }
-    }
-    fit
-}
-
-/// Version stamp — a frameless, clickable link that opens the GitHub releases
-/// page. Rendered inline in the top bar and, when space is tight, inside the
-/// overflow menu.
-fn render_version_link(ui: &mut egui::Ui, state: &mut AppState) {
-    let full_version = env!("NEXRAD_VERSION_FULL");
-    let display = version_display_text();
-
-    let response = ui.add(
-        egui::Button::new(RichText::new(&display).size(11.0).color(theme::TEXT_FAINT)).frame(false),
-    );
-
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-
-    let clicked = response.clicked();
-
-    response.on_hover_text(format!("{} — click to view changelog", full_version));
-
-    if clicked {
-        state.push_command(crate::core::Intent::OpenExternalUrl(
-            "https://github.com/danielway/nexrad-workbench/releases",
-        ));
+    TopBarWidths {
+        fixed,
+        city: vm
+            .site
+            .city
+            .as_deref()
+            .map_or(0.0, |c| text_width(ui, c, label_font()) + 6.0),
+        zone: text_width(ui, &vm.readout.zone, label_font())
+            + 2.0 * ui.spacing().button_padding.x
+            + sp,
+        help_and_views: icon(icons::QUESTION) + label("2D") + label("3D"),
     }
 }
 
-/// Render a compact alerts indicator for the top bar. Shows nothing when
-/// no active NWS alerts intersect the current viewing area (or when the
-/// viewing area is undefined, e.g. in 3D globe mode).
-pub(super) fn render_alerts_chip(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    diagnostics: &crate::subsystem::Diagnostics,
-    derived: &crate::subsystem::Derived,
-    diagnostics_vm: &crate::core::diagnostics::DiagnosticsVm,
-    _chrome: &mut crate::subsystem::Chrome,
-) {
-    use crate::core::diagnostics::DiagnosticsIntent;
-    // Show a subtle loading/error hint on the first fetch so the user knows
-    // the feed is being contacted. After the first success, stay quiet unless
-    // there are alerts to surface.
-    let has_ever_loaded = diagnostics.alerts.last_success_ms > 0.0;
-    let has_error = diagnostics.alerts.last_error.is_some();
-    if !has_ever_loaded && !has_error {
-        let icon = RichText::new(egui_phosphor::regular::BELL_SIMPLE)
-            .size(14.0)
-            .color(theme::TEXT_DIM);
-        ui.add(egui::Label::new(icon))
-            .on_hover_text("Loading NWS alerts\u{2026}");
-        ui.separator();
-        return;
-    }
+// ── Pieces ─────────────────────────────────────────────────────────────────
 
-    if derived.visible_bounds.is_none() {
-        // 3D globe view or canvas hasn't rendered yet.
-        return;
-    }
-
-    // The severity-sorted visible-alert list is the view-model.
-    let visible = &diagnostics_vm.visible_alerts;
-
-    if visible.is_empty() {
-        // Render a quiet dimmed icon so users know the feed is live when hovered.
-        let tooltip = if has_error {
-            format!(
-                "NWS alerts: {}",
-                diagnostics.alerts.last_error.as_deref().unwrap_or("error")
-            )
-        } else {
-            format!(
-                "No active alerts in view ({} active nationwide)",
-                diagnostics.alerts.alerts.len()
-            )
-        };
-        let color = if has_error {
-            theme::legacy::WARN
-        } else {
-            theme::TEXT_FAINT
-        };
-        let icon = RichText::new(egui_phosphor::regular::BELL_SIMPLE)
-            .size(14.0)
-            .color(color);
-        let response = ui.add(egui::Label::new(icon).sense(egui::Sense::click()));
-        response.clone().on_hover_text(tooltip);
-        if response.clicked() {
-            state.push_command(Intent::Diagnostics(DiagnosticsIntent::RefreshAlerts));
-        }
-        ui.separator();
-        return;
-    }
-
-    // Color the chip after the highest-severity alert's event type (the list is
-    // already sorted by severity descending by `visible_in`).
-    let (r, g, b) = event_color(&visible[0].event);
-    let chip_color = Color32::from_rgb(r, g, b);
-
-    let label = if visible.len() == 1 {
-        let event = &visible[0].event;
-        format!("{} {}", egui_phosphor::regular::WARNING, event)
-    } else {
-        // Split the count into warnings vs everything else (watches/advisories),
-        // omitting a side when it's zero.
-        let warnings = visible.iter().filter(|a| a.is_warning).count();
-        let watches = visible.len() - warnings;
-        let mut parts = Vec::new();
-        if warnings > 0 {
-            parts.push(format!(
-                "{} warning{}",
-                warnings,
-                if warnings == 1 { "" } else { "s" }
-            ));
-        }
-        if watches > 0 {
-            parts.push(format!(
-                "{} watch{}",
-                watches,
-                if watches == 1 { "" } else { "es" }
-            ));
-        }
-        format!("{} {}", egui_phosphor::regular::WARNING, parts.join(" · "))
-    };
-
-    let response = ui.add(egui::Button::new(
-        RichText::new(label).size(13.0).strong().color(chip_color),
-    ));
-
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-
-    let hover = if visible.len() == 1 {
-        format!("{} — click for details", visible[0].event,)
-    } else {
-        let mut lines = String::from("Click to view alerts in this area:\n");
-        for alert in visible.iter().take(6) {
-            lines.push_str(&format!(
-                "\n  \u{2022} [{}] {}",
-                alert.severity.label(),
-                alert.event
-            ));
-        }
-        if visible.len() > 6 {
-            lines.push_str(&format!("\n  \u{2026} and {} more", visible.len() - 6));
-        }
-        lines
-    };
-
-    if response.on_hover_text(hover).clicked() {
-        if visible.len() == 1 {
-            state.push_command(Intent::Diagnostics(DiagnosticsIntent::SelectAlert(
-                visible[0].id.clone(),
-            )));
-        } else {
-            state.push_command(Intent::Diagnostics(DiagnosticsIntent::OpenAlertList));
-        }
-    }
-
-    ui.separator();
+fn icon_button(ui: &mut egui::Ui, glyph: &str, hover: &str) -> bool {
+    ui.button(RichText::new(glyph).size(theme::BODY))
+        .on_hover_text(hover)
+        .clicked()
 }
 
-/// Render a compact errors-log indicator for the top bar.
-///
-/// Renders nothing when no errors have been recorded — this is the
-/// quiet, non-intrusive baseline. As soon as any reporter pushes into
-/// [`ErrorContext`], a warning chip with a count appears; clicking it
-/// pops a small log showing the most recent entries (newest first) and
-/// a Clear button to dismiss the ring.
-pub(super) fn render_errors_chip(ui: &mut egui::Ui, errors: &mut ErrorContext, now_ms: f64) {
-    if errors.is_empty() {
-        return;
-    }
-
-    let count = errors.len();
-    let label = format!("{} {}", egui_phosphor::regular::WARNING, count);
-    let chip_color = theme::legacy::WARN;
-
-    let response = ui.add(egui::Button::new(
-        RichText::new(label).size(13.0).strong().color(chip_color),
-    ));
-
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-
-    let hover = if count == 1 {
-        "1 recent error — click for details".to_string()
-    } else {
-        format!("{} recent errors — click for details", count)
+/// "KTLX  Oklahoma City, OK ▾" — the ID always, the city while it fits.
+fn site_picker(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState, show_city: bool) {
+    let mut job = egui::text::LayoutJob::default();
+    let style = ui.style().clone();
+    let mut push = |text: RichText| {
+        text.append_to(
+            &mut job,
+            &style,
+            egui::FontSelection::Default,
+            egui::Align::Center,
+        )
     };
+    push(RichText::new(&vm.site.id).strong().color(theme::TEXT));
+    if let (true, Some(city)) = (show_city, &vm.site.city) {
+        push(RichText::new(format!("  {city}")).color(theme::TEXT_DIM));
+    }
+    push(RichText::new(format!(" {}", icons::CARET_DOWN)).color(theme::TEXT_FAINT));
+    let hover = match &vm.site.city {
+        Some(city) => format!("{} · {city} — change site", vm.site.id),
+        None => format!("{} — change site", vm.site.id),
+    };
+    if ui.button(job).on_hover_text(hover).clicked() {
+        emit(state, TopBarIntent::OpenSitePicker);
+    }
+}
 
-    let response = response.on_hover_text(hover);
+fn picker_label(text: &str) -> RichText {
+    RichText::new(format!("{text} {}", icons::CARET_DOWN)).color(theme::TEXT)
+}
 
-    egui::Popup::menu(&response).show(|ui| {
-        ui.set_min_width(320.0);
-        ui.set_max_width(480.0);
-        ui.label(RichText::new(format!("Recent errors ({})", count)).strong());
-        ui.separator();
-
-        // Show newest first, capped at 10 entries to keep the popup
-        // compact. The ring buffer retains 50 total — opening a full
-        // log view is left to a future Modal if appetite arises.
-        let entries: Vec<_> = errors.iter().rev().take(10).cloned().collect();
-        for entry in &entries {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format_age(now_ms - entry.timestamp_ms))
-                        .size(11.0)
-                        .color(theme::TEXT_DIM),
-                );
-                ui.label(
-                    RichText::new(entry.error.source_label())
-                        .size(11.0)
-                        .color(theme::legacy::CAUTION)
-                        .strong(),
-                );
-                ui.label(
-                    RichText::new(entry.error.message())
-                        .size(12.0)
-                        .color(theme::TEXT),
-                );
-            });
-        }
-
-        ui.separator();
-        if ui
-            .button(format!("{} Clear", egui_phosphor::regular::TRASH))
-            .clicked()
-        {
-            errors.clear();
-            ui.close();
+fn product_picker(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
+    let resp = ui.menu_button(picker_label(vm.product.code), |ui| {
+        ui.set_min_width(200.0);
+        for row in &vm.product.rows {
+            if ui.selectable_label(row.selected, &row.label).clicked() {
+                emit(state, TopBarIntent::SetProduct(row.product));
+                ui.close();
+            }
         }
     });
-
-    ui.separator();
+    resp.response.on_hover_text(vm.product.hover);
 }
 
-/// Compact relative-age string for the errors popup. Always returns a
-/// 4–6 char string so columns stay aligned.
-fn format_age(age_ms: f64) -> String {
-    let secs = (age_ms.max(0.0) / 1000.0) as u64;
-    if secs < 60 {
-        format!("{}s", secs)
-    } else if secs < 3600 {
-        format!("{}m", secs / 60)
-    } else if secs < 86400 {
-        format!("{}h", secs / 3600)
+fn tilt_picker(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
+    let resp = ui.menu_button(picker_label(&vm.tilt.label), |ui| {
+        ui.set_min_width(120.0);
+        egui::ScrollArea::vertical()
+            .max_height(320.0)
+            .id_salt("topbar_tilt_rows")
+            .show(ui, |ui| {
+                for row in &vm.tilt.rows {
+                    let mut text = RichText::new(&row.label);
+                    if row.label != "Latest" {
+                        text = text.monospace();
+                    }
+                    let resp = ui.horizontal(|ui| {
+                        let r = ui
+                            .add_enabled(row.enabled, egui::Button::selectable(row.selected, text));
+                        if let Some(note) = row.note {
+                            ui.label(
+                                RichText::new(note)
+                                    .size(theme::CAPTION)
+                                    .color(theme::TEXT_FAINT),
+                            );
+                        }
+                        r
+                    });
+                    let r = resp
+                        .inner
+                        .on_disabled_hover_text("Not recorded at this tilt");
+                    if r.clicked() {
+                        emit(state, TopBarIntent::SetTilt(row.pick));
+                        ui.close();
+                    }
+                }
+            });
+    });
+    resp.response.on_hover_text("Tilt");
+}
+
+/// The frame time in the one clock, the zone shown once after it. Clicking
+/// either toggles local / UTC.
+fn frame_readout(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState, show_zone: bool) {
+    let r = &vm.readout;
+    let spacing = ui.spacing().item_spacing.x;
+    ui.spacing_mut().item_spacing.x = 4.0;
+    if let Some(date) = &r.date {
+        ui.label(theme::readout(date).color(theme::TEXT_DIM));
+    }
+    let color = if r.has_frame {
+        theme::TEXT
     } else {
-        format!("{}d", secs / 86400)
+        theme::TEXT_FAINT
+    };
+    let hover = if r.has_frame {
+        format!("Frame on screen · {}", r.zone_hover)
+    } else {
+        r.zone_hover.clone()
+    };
+    let time = ui
+        .add(egui::Button::new(theme::readout(&r.time).color(color)).frame(false))
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(hover);
+    let mut clicked = time.clicked();
+    if show_zone {
+        clicked |= ui
+            .add(
+                egui::Button::new(
+                    RichText::new(&r.zone)
+                        .size(theme::LABEL)
+                        .color(theme::TEXT_DIM),
+                )
+                .frame(false),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(&r.zone_hover)
+            .clicked();
+    }
+    ui.spacing_mut().item_spacing.x = spacing;
+    if clicked {
+        emit(state, TopBarIntent::ToggleTimeZone);
     }
 }
 
-/// Render the unified mode badge (Idle / Archive / Live) in the top bar.
-/// Drawn as a colored pill (~20% alpha fill + colored border) so the
-/// active mode is glanceable. Indicator-only: entering/leaving Live
-/// happens through the timeline now-cap, the transport LIVE button, or
-/// `L` / `Shift+L` — a fourth control this far from the timeline would
-/// dilute rather than clarify. While Live, the pill pulses and trails
-/// the stream's `LiveStatus` detail text.
-pub(super) fn render_mode_badge(ui: &mut egui::Ui, live: &crate::subsystem::Live) {
-    let mode = live.session.app_mode;
-    let color = crate::ui::theme::mode_color(mode);
-
-    let icon_str = match mode {
-        AppMode::Idle => egui_phosphor::regular::PAUSE_CIRCLE,
-        AppMode::Archive => egui_phosphor::regular::ARCHIVE_BOX,
-        AppMode::Live => egui_phosphor::regular::BROADCAST,
-    };
-
-    // For Live, pulse the icon's alpha channel; other modes render solid.
-    let icon_color = if mode == AppMode::Live {
-        let pulse = live.mode_state.pulse_alpha();
-        Color32::from_rgba_unmultiplied(
-            color.r(),
-            color.g(),
-            color.b(),
-            (128.0 + 127.0 * pulse) as u8,
-        )
-    } else {
-        color
-    };
-
-    let fill = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 40);
-    let stroke = egui::Stroke::new(1.0_f32, color);
-    let inner = egui::Frame::default()
-        .fill(fill)
-        .stroke(stroke)
-        .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(8, 2))
+/// The pill: red dot (pinned to now), amber loop mark (looping to now), or
+/// nothing ("no frame yet"), then the words.
+pub(super) fn readout_pill(ui: &mut egui::Ui, pill: &ReadoutPill) {
+    egui::Frame::new()
+        .fill(theme::RAISED)
+        .stroke(egui::Stroke::new(1.0, theme::LINE))
+        .corner_radius(egui::CornerRadius::same(9))
+        .inner_margin(egui::Margin::symmetric(7, 1))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                ui.label(RichText::new(icon_str).size(15.0).color(icon_color));
-                ui.label(RichText::new(mode.label()).size(13.0).strong().color(color));
-            });
-        });
-    // Indicator-only: the badge reports the current mode. Entering/leaving Live
-    // happens through the timeline (click the now-line, press play at the live
-    // edge, or the Go-live button) — not through this pill.
-    let hover_text = match mode {
-        AppMode::Live => "Streaming live",
-        AppMode::Archive => "Browsing archive — go to now to stream",
-        AppMode::Idle => "No data loaded",
-    };
-    inner.response.on_hover_text(hover_text);
+            ui.spacing_mut().item_spacing.x = 5.0;
+            match pill.mark {
+                PillMark::Pinned => {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 3.5, theme::NOW);
+                }
+                PillMark::Loop => {
+                    ui.label(
+                        RichText::new(icons::REPEAT)
+                            .size(theme::LABEL)
+                            .color(theme::LOOP),
+                    );
+                }
+                PillMark::None => {}
+            }
+            ui.label(
+                RichText::new(&pill.text)
+                    .size(theme::LABEL)
+                    .color(theme::TEXT_DIM),
+            );
+        })
+        .response
+        .on_hover_text(pill.hover);
+}
 
-    // Live-only trailing detail: what the stream is doing right now, from
-    // this frame's `LiveStatus` snapshot (single source for all surfaces).
-    if mode == AppMode::Live {
-        if let Some(detail) = &live.session.activity_chip {
-            ui.label(RichText::new(detail).size(12.0).color(theme::TEXT_DIM));
+/// The decode worker failed to start. ⚠ in text color, never red.
+pub(super) fn worker_error(ui: &mut egui::Ui, message: &str, state: &mut AppState) {
+    ui.label(RichText::new(icons::WARNING).color(theme::TEXT));
+    ui.label(RichText::new(message).color(theme::TEXT_DIM));
+    if ui
+        .small_button("Retry")
+        .on_hover_text("Retry starting the decode worker")
+        .clicked()
+    {
+        state.push_command(Intent::RetryWorker);
+    }
+}
+
+/// 2D / 3D as a two-segment toggle; the active segment is the one selected
+/// color. Drawn right-to-left, so 3D first.
+fn view_toggle(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
+    for (label, mode, key) in [
+        ("3D", ViewMode::Globe3D, "2"),
+        ("2D", ViewMode::Flat2D, "1"),
+    ] {
+        let active = vm.view_mode == mode;
+        let text = RichText::new(label).color(if active {
+            theme::SELECTED
+        } else {
+            theme::TEXT_DIM
+        });
+        if ui
+            .add(egui::Button::new(text).frame(active))
+            .on_hover_text(format!("{label} view ({key})"))
+            .clicked()
+            && !active
+        {
+            emit(state, TopBarIntent::SetView(mode));
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test;
+/// The alerts chip, in the most severe event's color. `compact` (the phone
+/// bar) shows the count instead of the words.
+pub(super) fn alerts_chip(
+    ui: &mut egui::Ui,
+    chip: &AlertsChip,
+    state: &mut AppState,
+    compact: bool,
+) {
+    match chip {
+        AlertsChip::Hidden => {}
+        AlertsChip::Loading => {
+            ui.label(RichText::new(icons::BELL_SIMPLE).color(theme::TEXT_FAINT))
+                .on_hover_text("Loading NWS alerts\u{2026}");
+        }
+        AlertsChip::Quiet {
+            failed,
+            hover,
+            click,
+        } => {
+            let (glyph, color) = if *failed {
+                (icons::WARNING, theme::TEXT_DIM)
+            } else {
+                (icons::BELL_SIMPLE, theme::TEXT_FAINT)
+            };
+            if ui
+                .add(egui::Button::new(RichText::new(glyph).color(color)).frame(false))
+                .on_hover_text(hover)
+                .clicked()
+            {
+                state.push_command(click.clone());
+            }
+        }
+        AlertsChip::Active {
+            label,
+            compact: count,
+            event,
+            hover,
+            click,
+        } => {
+            let (r, g, b) = crate::alerts::event_color(event);
+            let color = Color32::from_rgb(r, g, b);
+            let text = if compact {
+                format!("{} {count}", icons::BELL_SIMPLE)
+            } else {
+                format!("{label} {}", icons::CARET_DOWN)
+            };
+            if ui
+                .button(RichText::new(text).strong().color(color))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(hover)
+                .clicked()
+            {
+                state.push_command(click.clone());
+            }
+        }
+    }
+}
 
-    #[wasm_bindgen_test]
-    fn readout_compaction_sheds_detail_as_width_narrows() {
-        // The time is primary, so narrower tiers drop detail rather than the
-        // readout: full → seconds+zone, compact → no seconds, cramped → bare.
-        assert_eq!(readout_compaction(WidthTier::Full), Compaction::Full);
-        assert_eq!(
-            readout_compaction(WidthTier::Compact),
-            Compaction::NoSeconds
+/// ⋯: the keyboard map, settings and About (§9, §11), plus help and 2D/3D
+/// once they have folded.
+fn overflow_contents(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState, f: TopBarFold) {
+    if !f.help_and_views {
+        ui.label(
+            RichText::new("View")
+                .size(theme::CAPTION)
+                .color(theme::TEXT_FAINT),
         );
-        assert_eq!(readout_compaction(WidthTier::Cramped), Compaction::Bare);
+        ui.horizontal(|ui| {
+            for (label, mode) in [("2D", ViewMode::Flat2D), ("3D", ViewMode::Globe3D)] {
+                if ui.selectable_label(vm.view_mode == mode, label).clicked() {
+                    emit(state, TopBarIntent::SetView(mode));
+                }
+            }
+        });
+        ui.separator();
+    }
+    if ui
+        .button(format!("{}  Keyboard shortcuts", icons::KEYBOARD))
+        .clicked()
+    {
+        emit(state, TopBarIntent::ToggleShortcutsHelp);
+        ui.close();
+    }
+    ui.separator();
+    ui.label(
+        RichText::new("Settings")
+            .size(theme::CAPTION)
+            .color(theme::TEXT_FAINT),
+    );
+    let mut advanced = vm.advanced;
+    if ui
+        .checkbox(&mut advanced, "Advanced controls")
+        .on_hover_text("Show every control (Ctrl+Shift+A)")
+        .changed()
+    {
+        emit(state, TopBarIntent::SetAdvanced(advanced));
+    }
+    ui.separator();
+    ui.label(
+        RichText::new("About")
+            .size(theme::CAPTION)
+            .color(theme::TEXT_FAINT),
+    );
+    ui.label(
+        RichText::new(&vm.version)
+            .size(theme::CAPTION)
+            .monospace()
+            .color(theme::TEXT_DIM),
+    );
+    if ui
+        .button(format!("{}  Changelog", icons::ARROW_SQUARE_OUT))
+        .clicked()
+    {
+        state.push_command(Intent::OpenExternalUrl(CHANGELOG_URL));
+        ui.close();
     }
 }
