@@ -113,11 +113,14 @@ pub(crate) struct AppState {
 
     // ------------------------------------------------------------------------
     // Session data — accumulated while the tab is open, not persisted.
-    /// Application status message displayed in top bar
+    /// Legacy write port for a one-line notice. Nothing prints it any more:
+    /// each frame the shell moves whatever was written into [`Self::toasts`]
+    /// as a notice ([`crate::core::toast::ToastQueue::absorb_status`]). New
+    /// code pushes to `toasts` directly.
     pub status_message: String,
-    /// Timestamp (ms since epoch) when the status message was last set.
-    /// Used for auto-dismissal.
-    pub status_message_set_ms: f64,
+    /// The toast surface's queue (one-instrument §10): refusals,
+    /// confirmations and failures with no other home.
+    pub toasts: crate::core::toast::ToastQueue,
     /// Session and performance statistics
     pub session_stats: SessionStats,
     /// Download progress tracking for timeline ghost markers and pipeline display.
@@ -369,7 +372,6 @@ impl AppState {
 
         let mut state = Self {
             frame_now: FrameNow(now),
-            status_message: "Ready".to_string(),
             session_stats: SessionStats::new(),
             storage_settings,
             saved_events,

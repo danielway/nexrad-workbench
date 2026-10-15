@@ -45,6 +45,7 @@ pub(crate) mod theme;
 pub(crate) mod time_field;
 pub(crate) mod time_format;
 mod timeline;
+mod toast;
 mod top_bar;
 mod vcp_forecast_modal;
 mod vcp_forecast_serialize;

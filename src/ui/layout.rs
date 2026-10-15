@@ -56,6 +56,7 @@ use super::right_panel::RightPanelLayer;
 use super::scan_inspector::ScanInspectorLayer;
 use super::shortcuts::ShortcutsHelpLayer;
 use super::site_modal::SiteModalLayer;
+use super::toast::ToastLayer;
 use super::top_bar::TopBarLayer;
 use super::vcp_forecast_modal::VcpForecastModalLayer;
 use crate::state::AppState;
@@ -123,6 +124,9 @@ pub(crate) struct LayoutCtx<'a> {
     /// network rows. The chip, the activity sheet, and the mobile top bar all
     /// render from this one value, so they cannot disagree.
     pub activity_vm: &'a crate::core::activity::ActivityVm,
+    /// The top bar's view-model ([`crate::core::top_bar::TopBarVm`]), built
+    /// once per frame and read by both the desktop and the phone bar.
+    pub top_bar_vm: &'a crate::core::top_bar::TopBarVm,
     /// Still `&mut`, legitimately: these are transient egui form buffers
     /// (site filter/zip entry, event form fields, mPING key input) that are
     /// two-way bound to widgets and deliberately live outside `AppState`.
@@ -178,6 +182,7 @@ pub(crate) fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
             &AlertsModalsLayer,        // z=80
             &MpingModalLayer,          // z=90
             &MobileSettingsModalLayer, // z=100
+            &ToastLayer,               // z=200
         ]
     } else {
         &[
@@ -198,6 +203,7 @@ pub(crate) fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
             &AlertsModalsLayer,        // z=80
             &MpingModalLayer,          // z=90
             &MobileSettingsModalLayer, // z=100
+            &ToastLayer,               // z=200
         ]
     };
 

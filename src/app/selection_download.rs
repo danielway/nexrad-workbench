@@ -107,10 +107,7 @@ impl WorkbenchApp {
                     scan_end,
                     elevation_filter,
                     operation_id,
-                    remaining,
                 } => {
-                    self.state.status_message =
-                        format!("Downloading {} ({} remaining)", file_name, remaining);
                     self.state.download_progress.phase = crate::state::DownloadPhase::Downloading;
                     self.state.download_progress.batch_completed += 1;
                     self.state

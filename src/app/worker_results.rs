@@ -286,9 +286,6 @@ impl WorkbenchApp {
                 }
             }
         }
-        if let Some(msg) = actions.status_message {
-            self.state.status_message = msg;
-        }
         for intent in actions.intents {
             self.state.push_command(intent);
         }
@@ -540,7 +537,6 @@ impl WorkbenchApp {
             kind,
             message
         );
-        self.state.status_message = format!("Worker error: {}", message);
         self.state.errors.push(crate::core::AppError::Worker {
             kind,
             message: message.clone(),

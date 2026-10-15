@@ -139,7 +139,6 @@ pub(crate) enum QueueAction {
         scan_end: i64,
         elevation_filter: Option<u8>,
         operation_id: Option<crate::core::OperationId>,
-        remaining: usize,
     },
     /// All items are done/failed — queue is drained.
     Complete,
@@ -287,11 +286,6 @@ impl DownloadQueueManager {
             .map(|(idx, _)| idx);
 
         if let Some(idx) = next_pending {
-            let remaining = self
-                .queue
-                .iter()
-                .filter(|item| matches!(item.state, QueueItemState::Pending))
-                .count();
             let item = &self.queue[idx];
             let action = QueueAction::StartDownload {
                 file_name: item.file_name.clone(),
@@ -299,7 +293,6 @@ impl DownloadQueueManager {
                 scan_end: item.scan_end,
                 elevation_filter: item.elevation_filter,
                 operation_id: item.operation_id,
-                remaining,
             };
             self.queue[idx].state = QueueItemState::Active;
             action
@@ -877,7 +870,7 @@ mod coverage_tests {
         assert_eq!(q.pending_items().count(), 0);
     }
 
-    // ── advance: Paused / Saturated / remaining ─────────────────────────────
+    // ── advance: Paused / Saturated ─────────────────────────────
 
     #[wasm_bindgen_test]
     fn advance_paused_short_circuits_without_dispatch() {
@@ -910,23 +903,6 @@ mod coverage_tests {
         // Ceiling reached, one still pending → Saturated, not a dispatch.
         assert!(matches!(q.advance(false), QueueAction::Saturated));
         assert_eq!(q.pending_items().count(), 1);
-    }
-
-    #[wasm_bindgen_test]
-    fn advance_remaining_counts_pending_including_self() {
-        let mut q = DownloadQueueManager::new();
-        q.enqueue([item(100, None), item(200, None), item(300, None)]);
-        q.reprioritize(0, true);
-        // First dispatch: 3 items pending at the moment it's measured.
-        match q.advance(false) {
-            QueueAction::StartDownload { remaining, .. } => assert_eq!(remaining, 3),
-            other => panic!("expected dispatch, got {other:?}"),
-        }
-        // Second dispatch: 2 remain.
-        match q.advance(false) {
-            QueueAction::StartDownload { remaining, .. } => assert_eq!(remaining, 2),
-            other => panic!("expected dispatch, got {other:?}"),
-        }
     }
 
     #[wasm_bindgen_test]

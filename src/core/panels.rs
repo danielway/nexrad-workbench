@@ -3,8 +3,8 @@
 //! The panels (left/right/top/bottom) should *render a view and emit intents*.
 //! This module holds the read-only derivations and small decision predicates
 //! they previously computed inline: the radar-state query the left panel shows,
-//! the high-speed animation freeze rule, the archive sweep-azimuth, and the
-//! top-bar status-message auto-dismiss/fade. All pure and unit-tested.
+//! the high-speed animation freeze rule and the archive sweep-azimuth. All
+//! pure and unit-tested.
 //!
 //! Note: the broad `&mut`-state → intent migration for the interactive panels
 //! (transport, layer toggles, camera) is intentionally *not* done here — see
@@ -36,38 +36,6 @@ pub(crate) fn archive_azimuth_from_progress(start: f64, end: f64, ts: f64) -> Op
     }
     let progress = (ts - start) / dur;
     Some(((progress * 360.0) as f32) % 360.0)
-}
-
-/// Fade window for the transient top-bar status message (Idle/Archive).
-const STATUS_FADE_START_MS: f64 = 8000.0;
-/// Dismiss threshold for the status message.
-const STATUS_DISMISS_MS: f64 = 10000.0;
-
-/// What the top bar should do with the transient status message this frame.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum StatusVisibility {
-    /// Past the dismiss window — the shell should clear the message.
-    Dismiss,
-    /// Still showing at this `alpha`; `fading` ⇒ request a repaint to animate.
-    Visible { alpha: u8, fading: bool },
-}
-
-/// Decide the status message's visibility given when it was set (`set_ms`, ms
-/// since epoch; `<= 0` means "never set") and `now_ms`. Pure extraction of the
-/// top-bar auto-dismiss/fade math.
-pub(crate) fn status_message_visibility(set_ms: f64, now_ms: f64) -> StatusVisibility {
-    let age_ms = now_ms - set_ms;
-    if set_ms > 0.0 && age_ms >= STATUS_DISMISS_MS {
-        return StatusVisibility::Dismiss;
-    }
-    let alpha = if set_ms <= 0.0 || age_ms < STATUS_FADE_START_MS {
-        255u8
-    } else {
-        let t = 1.0 - (age_ms - STATUS_FADE_START_MS) / (STATUS_DISMISS_MS - STATUS_FADE_START_MS);
-        (t.clamp(0.0, 1.0) * 255.0) as u8
-    };
-    let fading = (STATUS_FADE_START_MS..STATUS_DISMISS_MS).contains(&age_ms);
-    StatusVisibility::Visible { alpha, fading }
 }
 
 // ---------------------------------------------------------------------------
@@ -259,47 +227,6 @@ mod tests {
         assert_eq!(archive_azimuth_from_progress(10.0, 10.0, 10.0), None);
         assert_eq!(archive_azimuth_from_progress(10.0, 5.0, 7.0), None);
     }
-
-    #[wasm_bindgen_test]
-    fn status_visibility_full_fade_dismiss() {
-        // Fresh message → fully opaque, not fading.
-        assert_eq!(
-            status_message_visibility(1000.0, 1000.0),
-            StatusVisibility::Visible {
-                alpha: 255,
-                fading: false
-            }
-        );
-        // Within the steady window (age 5s) → opaque, not fading.
-        assert_eq!(
-            status_message_visibility(1000.0, 6000.0),
-            StatusVisibility::Visible {
-                alpha: 255,
-                fading: false
-            }
-        );
-        // Mid-fade (age 9s, halfway through the 8..10s window) → ~half alpha, fading.
-        match status_message_visibility(0.0 + 1000.0, 1000.0 + 9000.0) {
-            StatusVisibility::Visible { alpha, fading } => {
-                assert!(fading);
-                assert!((120..=135).contains(&alpha), "alpha {alpha}");
-            }
-            other => panic!("expected Visible, got {other:?}"),
-        }
-        // Past dismiss (age 10s) → Dismiss.
-        assert_eq!(
-            status_message_visibility(1000.0, 11000.0),
-            StatusVisibility::Dismiss
-        );
-        // Never-set sentinel (set_ms <= 0) → always opaque, never dismissed.
-        assert_eq!(
-            status_message_visibility(0.0, 999_999.0),
-            StatusVisibility::Visible {
-                alpha: 255,
-                fading: false
-            }
-        );
-    }
 }
 
 #[cfg(test)]
@@ -369,131 +296,5 @@ mod coverage_tests {
             Some(a) => assert!((a - 90.0).abs() < 1e-3, "az {a}"),
             None => panic!("expected Some"),
         }
-    }
-
-    // --- status_message_visibility: fade-window boundaries and sentinels ---
-
-    #[wasm_bindgen_test]
-    fn status_visibility_fade_start_edge() {
-        // Age exactly 8000 ms: enters the fade branch, t == 1.0 → alpha 255,
-        // and `fading` is true because 8000 is the inclusive start of the window.
-        match status_message_visibility(1000.0, 1000.0 + 8000.0) {
-            StatusVisibility::Visible { alpha, fading } => {
-                assert_eq!(alpha, 255);
-                assert!(fading);
-            }
-            other => panic!("expected Visible, got {other:?}"),
-        }
-        // Age just below 8000 (7999): steady branch → opaque, not fading.
-        match status_message_visibility(1000.0, 1000.0 + 7999.0) {
-            StatusVisibility::Visible { alpha, fading } => {
-                assert_eq!(alpha, 255);
-                assert!(!fading);
-            }
-            other => panic!("expected Visible, got {other:?}"),
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn status_visibility_near_dismiss_edge() {
-        // Age 9000 → t = 1 - 1000/2000 = 0.5 → alpha (0.5*255) as u8 == 127, fading.
-        match status_message_visibility(1000.0, 1000.0 + 9000.0) {
-            StatusVisibility::Visible { alpha, fading } => {
-                assert_eq!(alpha, 127);
-                assert!(fading);
-            }
-            other => panic!("expected Visible, got {other:?}"),
-        }
-        // Age 9999 → t ~= 0.0005 → alpha (0.1275) as u8 == 0, still fading & visible.
-        match status_message_visibility(1000.0, 1000.0 + 9999.0) {
-            StatusVisibility::Visible { alpha, fading } => {
-                assert_eq!(alpha, 0);
-                assert!(fading);
-            }
-            other => panic!("expected Visible, got {other:?}"),
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn status_visibility_exact_dismiss_threshold() {
-        // Age exactly 10000 ms with set_ms > 0 → Dismiss (>= is inclusive).
-        assert_eq!(
-            status_message_visibility(1000.0, 1000.0 + 10000.0),
-            StatusVisibility::Dismiss
-        );
-        // Age slightly below 10000 (9999.9) → still Visible (not dismissed).
-        match status_message_visibility(1000.0, 1000.0 + 9999.9) {
-            StatusVisibility::Visible { .. } => {}
-            other => panic!("expected Visible, got {other:?}"),
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn status_visibility_negative_age_is_opaque() {
-        // now before set (clock skew): age negative, set_ms > 0 → not dismissed,
-        // alpha 255 (age < fade-start), not fading (window excludes negatives).
-        match status_message_visibility(5000.0, 1000.0) {
-            StatusVisibility::Visible { alpha, fading } => {
-                assert_eq!(alpha, 255);
-                assert!(!fading);
-            }
-            other => panic!("expected Visible, got {other:?}"),
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn status_visibility_never_set_never_dismisses() {
-        // set_ms == 0 sentinel: even a huge `now` never dismisses and stays opaque,
-        // because the dismiss/alpha-fade gates both require set_ms > 0.
-        assert_eq!(
-            status_message_visibility(0.0, 1_000_000.0),
-            StatusVisibility::Visible {
-                alpha: 255,
-                fading: false,
-            }
-        );
-        // Negative set_ms is also treated as never-set.
-        assert_eq!(
-            status_message_visibility(-1.0, 1_000_000.0),
-            StatusVisibility::Visible {
-                alpha: 255,
-                fading: false,
-            }
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn status_visibility_never_set_but_fading_window_quirk() {
-        // set_ms == 0 yet now lands inside the [8000,10000) age window: the alpha
-        // stays 255 (set_ms<=0 short-circuits the fade math) but `fading` is true,
-        // since that flag depends only on age_ms, not on set_ms.
-        match status_message_visibility(0.0, 9000.0) {
-            StatusVisibility::Visible { alpha, fading } => {
-                assert_eq!(alpha, 255);
-                assert!(fading);
-            }
-            other => panic!("expected Visible, got {other:?}"),
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn status_visibility_variant_is_copy_and_eq() {
-        // StatusVisibility derives Copy + PartialEq; pin the enum identity table.
-        let v = StatusVisibility::Visible {
-            alpha: 10,
-            fading: true,
-        };
-        let v_copy = v; // Copy, not move.
-        assert_eq!(v, v_copy);
-        assert!(v != StatusVisibility::Dismiss);
-        assert!(
-            StatusVisibility::Visible {
-                alpha: 10,
-                fading: true
-            } != StatusVisibility::Visible {
-                alpha: 10,
-                fading: false
-            }
-        );
     }
 }

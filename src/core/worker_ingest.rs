@@ -59,8 +59,6 @@ pub(crate) struct ChunkIngestActions {
     pub render_live: Option<(u8, String)>,
     /// GPU `promote_current_to_previous` under the renderer lock.
     pub promote_prev_texture: bool,
-    /// Assign `state.status_message`.
-    pub status_message: Option<String>,
     /// `state.push_command(..)` pushes (RefreshTimeline / CheckEviction).
     pub intents: Vec<Intent>,
     /// `state.session_stats.pipeline.mark_processing_done()`.
@@ -381,13 +379,6 @@ pub(crate) fn reduce_chunk_ingested(
         actions.intents.push(Intent::RefreshTimeline {
             auto_position: !is_live,
         });
-
-        if is_live {
-            actions.status_message = Some(format!(
-                "Live: {} elevation(s) cached",
-                env.available_elevations.len()
-            ));
-        }
     }
 
     if result.is_end {
@@ -398,10 +389,6 @@ pub(crate) fn reduce_chunk_ingested(
             // then reset them for the next volume (seal-before-reset).
             live_mode.handle_volume_complete(now, engine.observations());
             engine.reset_volume_observations();
-            actions.status_message = Some(format!(
-                "Live: volume complete ({} elevations)",
-                env.available_elevations.len()
-            ));
         } else {
             // Archive volume-end: jump the playhead to now. Applied directly
             // to the playback slice — the shell has nothing to execute.
@@ -565,7 +552,6 @@ mod tests {
             }]
         );
         assert!(a.render_live.is_none());
-        assert!(a.status_message.is_none());
         assert!(!a.promote_prev_texture);
         assert!(!a.mark_processing_done);
         assert!(!a.force_fresh_render && !a.request_render && !a.request_volume_render);
@@ -610,7 +596,7 @@ mod tests {
         assert_eq!(obs.current_elev_chunks, vec![(0.0, 120.0, 120)]);
     }
 
-    // (3) Live volume end: promote, seal-before-reset, status message, both
+    // (3) Live volume end: promote, seal-before-reset, both
     // RefreshTimeline pushes + CheckEviction, mark done, fresh render but NO
     // worker render request (live renders come from the stream).
     #[wasm_bindgen_test]
@@ -631,10 +617,6 @@ mod tests {
         let a = fx.run(env(true, true, &[1, 2]), &end);
 
         assert!(a.promote_prev_texture);
-        assert_eq!(
-            a.status_message.as_deref(),
-            Some("Live: volume complete (2 elevations)")
-        );
         assert_eq!(
             a.intents,
             vec![
@@ -680,7 +662,6 @@ mod tests {
         assert!(!a.request_volume_render, "3D disabled → no volume render");
         assert!(a.mark_processing_done);
         assert!(!a.promote_prev_texture);
-        assert!(a.status_message.is_none());
         assert_eq!(
             a.intents,
             vec![

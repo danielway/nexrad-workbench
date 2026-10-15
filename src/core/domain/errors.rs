@@ -6,10 +6,10 @@
 //! that all reporters push to, so the UI can surface a coherent
 //! recent-errors view instead of multiple ad-hoc indicators.
 //!
-//! This is the seed: a small ring buffer on [`AppState`]
-//! (`crate::state::AppState::errors`) plus the [`AppError`] taxonomy.
-//! Reporters migrate to it incrementally — the worker-error handler is
-//! the first.
+//! A small ring buffer on [`AppState`] (`crate::state::AppState::errors`)
+//! plus the [`AppError`] taxonomy. The toast surface turns each new entry
+//! into a failure toast ([`crate::core::toast::ToastQueue::absorb_errors`]);
+//! download failures are left to the activity chip.
 
 use std::collections::VecDeque;
 
@@ -82,17 +82,6 @@ pub(crate) enum AppError {
 }
 
 impl AppError {
-    /// Short human-readable label for the originating subsystem.
-    pub(crate) fn source_label(&self) -> &'static str {
-        match self {
-            AppError::Worker { .. } => "worker",
-            AppError::Download { .. } => "download",
-            AppError::Alerts { .. } => "alerts",
-            AppError::Mping { .. } => "mping",
-            AppError::Other { .. } => "other",
-        }
-    }
-
     /// The user-facing message.
     pub(crate) fn message(&self) -> &str {
         match self {
@@ -109,8 +98,6 @@ impl AppError {
 #[derive(Debug, Clone)]
 pub(crate) struct TimestampedError {
     pub error: AppError,
-    /// Wall-clock time the error was pushed (milliseconds since epoch).
-    pub timestamp_ms: f64,
 }
 
 /// Recent-errors ring buffer. Lives on [`crate::state::AppState`] and
@@ -118,20 +105,26 @@ pub(crate) struct TimestampedError {
 #[derive(Default)]
 pub(crate) struct ErrorContext {
     recent: VecDeque<TimestampedError>,
+    /// Errors ever pushed, so a reader can tell which entries are new after
+    /// the ring has wrapped (the toast surface reads it).
+    pushed: u64,
 }
 
 impl ErrorContext {
     /// Push a fresh error. Older entries fall off when the ring exceeds
     /// [`MAX_RETAINED`].
     pub(crate) fn push(&mut self, error: AppError) {
-        let entry = TimestampedError {
-            error,
-            timestamp_ms: js_sys::Date::now(),
-        };
+        let entry = TimestampedError { error };
         if self.recent.len() >= MAX_RETAINED {
             self.recent.pop_front();
         }
         self.recent.push_back(entry);
+        self.pushed += 1;
+    }
+
+    /// Errors ever pushed (monotonic).
+    pub(crate) fn pushed_count(&self) -> u64 {
+        self.pushed
     }
 
     /// All retained entries, oldest first. The returned iterator is
@@ -150,16 +143,6 @@ impl ErrorContext {
     pub(crate) fn len(&self) -> usize {
         self.recent.len()
     }
-
-    /// Whether the ring is currently empty.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.recent.is_empty()
-    }
-
-    /// Clear the ring.
-    pub(crate) fn clear(&mut self) {
-        self.recent.clear();
-    }
 }
 
 #[cfg(test)]
@@ -171,42 +154,6 @@ mod coverage_tests {
         AppError::Other {
             message: msg.to_string(),
         }
-    }
-
-    #[wasm_bindgen_test]
-    fn source_label_identifies_each_subsystem() {
-        assert_eq!(
-            AppError::Worker {
-                kind: WorkerErrorKind::IdbFailure,
-                message: "x".into(),
-                scan_timestamp_secs: None,
-            }
-            .source_label(),
-            "worker"
-        );
-        assert_eq!(
-            AppError::Download {
-                message: "x".into(),
-                scan_start_secs: None,
-            }
-            .source_label(),
-            "download"
-        );
-        assert_eq!(
-            AppError::Alerts {
-                message: "x".into()
-            }
-            .source_label(),
-            "alerts"
-        );
-        assert_eq!(
-            AppError::Mping {
-                message: "x".into()
-            }
-            .source_label(),
-            "mping"
-        );
-        assert_eq!(other("x").source_label(), "other");
     }
 
     #[wasm_bindgen_test]
@@ -249,7 +196,6 @@ mod coverage_tests {
     fn fresh_context_is_empty() {
         let ctx = ErrorContext::default();
         assert_eq!(ctx.len(), 0);
-        assert!(ctx.is_empty());
         assert!(ctx.most_recent().is_none());
     }
 
@@ -259,7 +205,6 @@ mod coverage_tests {
         ctx.push(other("first"));
         ctx.push(other("second"));
         assert_eq!(ctx.len(), 2);
-        assert!(!ctx.is_empty());
         let msgs: Vec<&str> = ctx.iter().map(|e| e.error.message()).collect();
         assert_eq!(msgs, vec!["first", "second"]);
         assert_eq!(ctx.most_recent().unwrap().error.message(), "second");
@@ -277,14 +222,6 @@ mod coverage_tests {
         assert_eq!(ctx.most_recent().unwrap().error.message(), "e54");
         // Newest-first view via the double-ended iterator.
         assert_eq!(ctx.iter().next_back().unwrap().error.message(), "e54");
-    }
-
-    #[wasm_bindgen_test]
-    fn clear_empties_the_ring() {
-        let mut ctx = ErrorContext::default();
-        ctx.push(other("x"));
-        ctx.clear();
-        assert!(ctx.is_empty());
     }
 
     #[wasm_bindgen_test]
