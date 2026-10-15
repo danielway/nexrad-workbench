@@ -7,30 +7,26 @@
 //! faint neutral sub-texture inside each scan container.
 //!
 //! Visual grammar, distinguishable by fill + shape so it reads in grayscale
-//! (accent budget: only the playhead, the live edge, and the active-frame ring
-//! are colored — everything else is neutral):
+//! (one-instrument §3: white is what you see, slate is on device, dashed and
+//! a tilde is a projection; everything else is neutral):
 //!   - Available  → hollow dashed outline
-//!   - Cached     → solid fill
+//!   - Cached     → solid slate fill
 //!   - In flight  → live chunk slots (3/6, faithful) or a pulsing fill (archive)
 //!   - Queued     → faint diagonal hatch
-//!   - Projected  → dashed ghost; the nearest one carries a "0.5° in ~40s" countdown
-//!   - Failed     → small red alert triangle; its hit-rect is returned for retry
-//!   - Active     → yellow accent ring snapping cell-to-cell
+//!   - Projected  → dashed ghost labeled `~0.5°`; the nearest one carries a
+//!     `~0.5° in ~0:40` countdown; the next-volume ghost's box is dashed too
+//!   - Failed     → hollow body; its ⚠ is a strip mark ([`super::marks`]), so
+//!     it is the same clickable glyph at every zoom
+//!   - Active     → white ring snapping cell-to-cell
 
 use super::strokes::{fill_hatched_rect, stroke_dashed_rect, DashedBorder};
 use super::{style, TimelineFrame};
+use crate::core::timeline_view::{
+    chunk_countdown_label, projected_cell_label, projected_countdown_label,
+};
 use crate::core::{FrameCell, FrameCellState, ScanContainer};
-use crate::ui::theme;
 use crate::ui::theme::timeline as tl_colors;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
-
-/// A failed frame cell's clickable tick, returned so the orchestrator can wire
-/// a retry. `key_secs` is the container scan-start (the join key the retry
-/// targets).
-pub(super) struct FailedTick {
-    pub rect: Rect,
-    pub key_secs: f64,
-}
 
 /// Per-frame animation inputs threaded to the cell painter.
 #[derive(Clone, Copy)]
@@ -47,8 +43,8 @@ pub(super) struct CellAnim {
     pub morph: f32,
 }
 
-/// Paint one scan container and its frame cells onto the main track. Appends
-/// any failed-cell ticks to `failed_ticks`. When `carries_countdown` is set,
+/// Paint one scan container and its frame cells onto the main track. When
+/// `carries_countdown` is set,
 /// the container owns the "next data" countdown: it lands on the in-flight cell
 /// (next chunk) if one has chunk telemetry, otherwise on the first projected
 /// cell ("0.5° in ~Ns"). `countdown_secs` is the remaining time.
@@ -60,7 +56,6 @@ pub(super) fn paint_container(
     anim: CellAnim,
     countdown_secs: Option<f64>,
     carries_countdown: bool,
-    failed_ticks: &mut Vec<FailedTick>,
 ) {
     let track = &frame.rects.scan;
     let x0 = frame.ts_to_x(container.start_secs).max(track.left());
@@ -78,7 +73,17 @@ pub(super) fn paint_container(
     //    (server-only) read as hollow (dashed); cached/live containers get a
     //    faint solid box.
     if box_rect.width() >= 2.0 {
-        if container.is_available {
+        if container.is_projected {
+            stroke_dashed_rect(
+                painter,
+                box_rect,
+                DashedBorder::uniform(
+                    Stroke::new(1.0_f32, tl_colors::container_projected_border()),
+                    3.0,
+                    6.0,
+                ),
+            );
+        } else if container.is_available {
             stroke_dashed_rect(
                 painter,
                 box_rect,
@@ -142,8 +147,6 @@ pub(super) fn paint_container(
             box_rect,
             anim,
             if carry { countdown_secs } else { None },
-            failed_ticks,
-            container.key_secs,
         );
         if consumed {
             first_projected_done = true;
@@ -159,8 +162,10 @@ pub(super) fn paint_container(
     //    it as a chip on a neutral backdrop so it reads as chrome sitting over
     //    the data instead of tangling with it. Neutral, so no accent is spent.
     if container.vcp > 0 && box_rect.width() > 64.0 && m > 0.6 {
+        // A projected volume's identity is a projection too: `~VCP 212`.
+        let tilde = if container.is_projected { "~" } else { "" };
         let galley = painter.layout_no_wrap(
-            format!("VCP {}", container.vcp),
+            format!("{tilde}VCP {}", container.vcp),
             style::block_font(),
             tl_colors::block_label_weak(),
         );
@@ -181,7 +186,6 @@ pub(super) fn paint_container(
 /// Paint a single frame cell. Returns true when this cell consumed the
 /// container's countdown slot (i.e. it was the first projected cell that drew
 /// the countdown), so the caller marks the countdown as placed.
-#[allow(clippy::too_many_arguments)]
 fn paint_cell(
     painter: &Painter,
     cell: &FrameCell,
@@ -189,8 +193,6 @@ fn paint_cell(
     box_rect: Rect,
     anim: CellAnim,
     countdown_secs: Option<f64>,
-    failed_ticks: &mut Vec<FailedTick>,
-    key_secs: f64,
 ) -> bool {
     let width = rect.width();
     let mut consumed_countdown = false;
@@ -240,28 +242,33 @@ fn paint_cell(
                     6.0,
                 ),
             );
-            // Nearest ghost: countdown including tilt identity ("0.5° in ~40s").
+            // Nearest ghost: countdown including tilt identity
+            // ("~0.5° in ~0:40"); any other ghost wide enough says its angle
+            // with the projection's tilde.
             if let Some(remaining) = countdown_secs {
                 consumed_countdown = true;
                 if width > 22.0 {
-                    let label = format!(
-                        "{:.1}\u{00B0} in ~{}s",
-                        cell.elevation_angle,
-                        remaining.ceil() as i32
-                    );
                     painter.text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
-                        label,
+                        projected_countdown_label(cell.elevation_angle, remaining),
                         style::block_font(),
                         tl_colors::cell_countdown_label(),
                     );
                 }
+            } else if width > 28.0 && cell.elevation_angle > 0.0 {
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    projected_cell_label(cell.elevation_angle),
+                    style::block_font(),
+                    tl_colors::cell_projected_label(),
+                );
             }
         }
         FrameCellState::Failed => {
-            // Faint hollow body so the cell still has presence, then a red
-            // alert triangle tick (the only red besides the live edge).
+            // A faint hollow body so the cell still has presence; the ⚠ on it
+            // is a strip mark, painted with the other marks.
             painter.rect_filled(rect, 1.0, tl_colors::cell_available_fill());
             stroke_dashed_rect(
                 painter,
@@ -272,11 +279,6 @@ fn paint_cell(
                     6.0,
                 ),
             );
-            let tick = failure_tick(painter, rect);
-            failed_ticks.push(FailedTick {
-                rect: tick,
-                key_secs,
-            });
         }
     }
 
@@ -374,11 +376,11 @@ fn paint_inflight(
                         painter.rect_filled(partial, 1.0, tl_colors::cell_inflight());
                     }
                     if let Some(remaining) = countdown_secs {
-                        if slot_rect.width() > 16.0 {
+                        if slot_rect.width() > 22.0 {
                             painter.text(
                                 slot_rect.center(),
                                 egui::Align2::CENTER_CENTER,
-                                format!("{}s", remaining.ceil() as i32),
+                                chunk_countdown_label(remaining),
                                 style::block_font(),
                                 tl_colors::cell_countdown_label(),
                             );
@@ -422,37 +424,4 @@ fn paint_inflight(
             );
         }
     }
-}
-
-/// Draw a small red alert triangle in the top-right of a failed cell, and
-/// return its (slightly padded) hit rect.
-fn failure_tick(painter: &Painter, rect: Rect) -> Rect {
-    let size = (rect.height() * 0.5).clamp(6.0, 10.0);
-    let pad = 1.5;
-    let right = rect.right() - pad;
-    let top = rect.top() + pad;
-    let pts = vec![
-        Pos2::new(right - size, top),
-        Pos2::new(right, top),
-        Pos2::new(right - size / 2.0, top + size),
-    ];
-    painter.add(egui::Shape::convex_polygon(
-        pts,
-        theme::acquisition::FAILED,
-        Stroke::new(0.5_f32, theme::legacy::ERROR_DEEP),
-    ));
-    // "!" mark for redundancy with shape (grayscale legibility).
-    if size >= 8.0 {
-        painter.text(
-            Pos2::new(right - size / 2.0, top + size * 0.32),
-            egui::Align2::CENTER_CENTER,
-            "!",
-            egui::FontId::proportional(size * 0.8),
-            theme::TEXT,
-        );
-    }
-    Rect::from_min_max(
-        Pos2::new(right - size - pad, rect.top()),
-        Pos2::new(rect.right(), top + size + pad),
-    )
 }

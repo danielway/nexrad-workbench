@@ -1355,6 +1355,7 @@ impl PlaybackState {
     }
 
     /// Whether a timestamp falls inside the current selection.
+    #[cfg(test)]
     pub(crate) fn selection_contains(&self, ts: f64) -> bool {
         self.selection_range()
             .is_some_and(|(s, e)| ts >= s && ts <= e)

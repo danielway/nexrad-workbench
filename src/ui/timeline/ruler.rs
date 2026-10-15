@@ -1,6 +1,7 @@
 //! Ruler rendering: tick marks and playback cursor.
 
 use super::{format_timestamp, select_tick_config, style, TimelineFrame};
+use crate::core::timeline_view::EdgeSide;
 use crate::ui::theme::timeline as tl_colors;
 use eframe::egui::{self, Painter, Pos2, Stroke};
 
@@ -18,15 +19,8 @@ pub(super) fn render_tick_marks(painter: &Painter, frame: &TimelineFrame<'_>) {
     let major_interval = tick_config.major_interval;
     let minor_interval = (major_interval / tick_config.minor_divisions as i64).max(1);
 
-    // getTimezoneOffset() returns minutes positive-west; convert to
-    // seconds-east so that local = utc + tz_offset_secs.
-    let tz_offset_secs: i64 = if use_local {
-        let d = js_sys::Date::new_0();
-        d.set_time(frame.view_start * 1000.0);
-        -(d.get_timezone_offset() as i64) * 60
-    } else {
-        0
-    };
+    // Seconds east of UTC, so that local = utc + tz_offset_secs.
+    let tz_offset_secs = super::tz_offset_secs(frame.view_start, use_local);
 
     let local_start = frame.view_start as i64 + tz_offset_secs;
     let local_end = frame.view_end as i64 + tz_offset_secs;
@@ -73,15 +67,22 @@ pub(super) fn render_tick_marks(painter: &Painter, frame: &TimelineFrame<'_>) {
     }
 }
 
-/// Draw the playback-position cursor ("the needle") — a neutral marker
+/// Draw the playback-position cursor ("the needle") — white, *what you see*,
 /// deliberately distinct from the red now/live family, so "where I'm looking"
-/// never reads as "now". The now-line itself is owned by [`super::now_edge`].
+/// never reads as "now". When it is out of view, `edge` (from
+/// [`crate::core::timeline_view::edge_markers`]) says which edge gets its
+/// white arrow instead. The now-line itself is owned by [`super::now_edge`].
 pub(super) fn render_playback_cursor(
     painter: &Painter,
     frame: &TimelineFrame<'_>,
     selected_ts: f64,
+    edge: Option<EdgeSide>,
 ) {
     let overlay_rect = &frame.rects.overlay;
+    if let Some(side) = edge {
+        paint_edge_arrow(painter, overlay_rect, side);
+        return;
+    }
     let sel_x = frame.ts_to_x(selected_ts);
     if sel_x < overlay_rect.left() || sel_x > overlay_rect.right() {
         return;
@@ -104,6 +105,25 @@ pub(super) fn render_playback_cursor(
     painter.add(egui::Shape::convex_polygon(
         triangle,
         marker_color,
+        Stroke::NONE,
+    ));
+}
+
+/// A white arrow at the track's edge, in its lower half (the now marker
+/// owns the top), pointing at the off-screen playhead.
+fn paint_edge_arrow(painter: &Painter, track: &eframe::egui::Rect, side: EdgeSide) {
+    let cy = track.bottom() - 10.0;
+    let (tip, back) = match side {
+        EdgeSide::Left => (track.left() + 2.0, track.left() + 9.0),
+        EdgeSide::Right => (track.right() - 2.0, track.right() - 9.0),
+    };
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(tip, cy),
+            Pos2::new(back, cy - 5.0),
+            Pos2::new(back, cy + 5.0),
+        ],
+        tl_colors::PLAYHEAD_EDGE,
         Stroke::NONE,
     ));
 }
