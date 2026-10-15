@@ -10,14 +10,17 @@
 //!   the stream ingests in the background with the playhead detached
 //!   (click re-pins instantly — no re-acquisition).
 //! - When "now" is scrolled off-screen (browsing the archive) it collapses
-//!   into a chip pinned to the timeline edge that points back toward now.
+//!   into a chip pinned to the timeline edge that points back toward now,
+//!   carrying the same word as the inline cap (LIVE, REJOIN or GO LIVE).
 //!   Clicking the chip scrolls the view to now and attaches to live in one
-//!   action (instant if a stream is already running).
+//!   action (instant if a stream is already running). Which edge is the
+//!   core's [`crate::core::timeline_view::edge_markers`].
 //!
 //! Red is reserved exclusively for this concept: muted red ([`NOW_IDLE`]) as
 //! an invitation, bright pulsing red ([`LIVE_ACTIVE`]) while live.
 
 use crate::core::session::{NowCap, SessionVm};
+use crate::core::timeline_view::EdgeSide;
 use crate::core::Intent;
 use crate::state::AppState;
 use crate::ui::theme;
@@ -34,6 +37,7 @@ pub(super) fn render_now_affordance(
     state: &mut AppState,
     live: &crate::subsystem::Live,
     frame: &super::TimelineFrame<'_>,
+    edge: Option<EdgeSide>,
 ) -> Option<Rect> {
     let overlay_rect = &frame.rects.overlay;
     let now_ts = frame.now_secs;
@@ -47,13 +51,19 @@ pub(super) fn render_now_affordance(
         0.0
     };
 
-    if now_x >= overlay_rect.left() && now_x <= overlay_rect.right() {
-        render_inline_now(ui, painter, state, overlay_rect, now_x, session, pulse)
-    } else {
-        // "Now" is off-screen — pin a "jump to live" chip to the nearest edge,
-        // pointing back toward now.
-        let on_left = now_x < overlay_rect.left();
-        render_edge_chip(ui, painter, state, overlay_rect, session, pulse, on_left)
+    match edge {
+        None => render_inline_now(ui, painter, state, overlay_rect, now_x, session, pulse),
+        // "Now" is off-screen — pin the cap to that edge, pointing back
+        // toward now.
+        Some(side) => render_edge_chip(
+            ui,
+            painter,
+            state,
+            overlay_rect,
+            session,
+            pulse,
+            side == EdgeSide::Left,
+        ),
     }
 }
 
@@ -144,15 +154,18 @@ fn render_edge_chip(
 ) -> Option<Rect> {
     let is_live = session.stream.is_running();
     let base = if is_live { LIVE_ACTIVE } else { NOW_IDLE };
+    // The same word as the inline cap, so the off-screen now never says
+    // LIVE while the cap would say GO LIVE or REJOIN.
+    let word = session.now_cap.label();
     let label = if on_left {
         format!(
-            "{} {} LIVE",
+            "{} {} {word}",
             egui_phosphor::regular::ARROW_LEFT,
             egui_phosphor::regular::BROADCAST
         )
     } else {
         format!(
-            "{} LIVE {}",
+            "{} {word} {}",
             egui_phosphor::regular::BROADCAST,
             egui_phosphor::regular::ARROW_RIGHT
         )

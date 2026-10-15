@@ -281,10 +281,21 @@ pub(crate) fn label_step(px_per_sec: f64, min_px: f64) -> LabelStep {
     LabelStep::Years(n)
 }
 
-/// Label times (Unix seconds, UTC-aligned) in `[start, end]` for a
-/// day / month / year step. Empty for [`LabelStep::Clock`], which the strip's
-/// tick ladder handles.
-pub(crate) fn label_times(start: f64, end: f64, step: LabelStep) -> Vec<f64> {
+/// Label times (Unix seconds) in `[start, end]` for a day / month / year
+/// step, on midnights of the chosen zone: `tz_offset_secs` is the zone's
+/// offset east of UTC (0 for UTC), so the overview labels days the way the
+/// strip does. Empty for [`LabelStep::Clock`], which the strip's tick ladder
+/// handles.
+pub(crate) fn label_times(start: f64, end: f64, step: LabelStep, tz_offset_secs: i64) -> Vec<f64> {
+    let off = tz_offset_secs as f64;
+    utc_label_times(start + off, end + off, step)
+        .into_iter()
+        .map(|t| t - off)
+        .collect()
+}
+
+/// [`label_times`] on UTC midnights.
+fn utc_label_times(start: f64, end: f64, step: LabelStep) -> Vec<f64> {
     use chrono::{Datelike, NaiveDate};
     let ymd = |y: i32, m: u32| {
         NaiveDate::from_ymd_opt(y, m, 1)
@@ -355,6 +366,279 @@ pub(crate) fn resized_view(
         OverviewGrab::ViewEnd => Some((view_start, ts.max(view_start + MIN_VIEW_SPAN_SECS))),
         OverviewGrab::View | OverviewGrab::Lane => None,
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Overview marks (one-instrument §5 "Overview", answers "Storm activity
+// stays"). Two channels, two glyphs: bar height is storm activity, a thin
+// underline is what is held on device. Saved events are amber pennants on
+// the underline, a known outage is a neutral tick, now is the red dot, and
+// the playhead a white tick when it isn't at now. The lane is never empty:
+// a bar whose days aren't known yet draws a pending stub while they list.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Held spans closer than this (px) merge into one underline.
+const HELD_MERGE_PX: f64 = 1.0;
+
+/// Outage spans closer than this (px) merge into one tick.
+const OUTAGE_MERGE_PX: f64 = 3.0;
+
+/// A pennant is found by hover within this many px of its flag.
+pub(crate) const PENNANT_HIT_PX: f64 = 5.0;
+
+/// A saved event, as the overview is given it (current site only).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct OverviewEvent<'a> {
+    pub start: f64,
+    pub end: f64,
+    pub name: &'a str,
+}
+
+/// A saved event's pennant: an amber flag at its start and an amber
+/// underline across it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Pennant {
+    pub start: f64,
+    pub end: f64,
+    pub name: String,
+}
+
+/// The now dot, at the strength of the red that means now.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NowDot {
+    pub ts: f64,
+    /// Full-strength red while streaming, the idle red otherwise.
+    pub streaming: bool,
+}
+
+/// What the overview needs to place its marks.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OverviewMarkInputs<'a> {
+    /// The overview window (Unix seconds).
+    pub start: f64,
+    pub end: f64,
+    pub px_per_sec: f64,
+    /// Time spans held on this device, in time order.
+    pub held: &'a [(f64, f64)],
+    pub events: &'a [OverviewEvent<'a>],
+    /// Starts of known outage days ([`crate::core::storm_activity::ActivityBook::outage_days`]).
+    pub outage_days: &'a [i64],
+    pub now: f64,
+    pub streaming: bool,
+    pub playhead: f64,
+    /// The playhead rides now (pinned while streaming), so the now dot
+    /// stands for it.
+    pub playhead_at_now: bool,
+    /// The selected range (the drag while drawing).
+    pub range: Option<(f64, f64)>,
+    /// The range's end rides now.
+    pub range_pinned: bool,
+}
+
+/// Every mark on the overview lane, in window coordinates (Unix seconds).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub(crate) struct OverviewMarks {
+    /// The held underline: on-device spans, merged below a pixel apart.
+    pub held: Vec<(f64, f64)>,
+    pub pennants: Vec<Pennant>,
+    /// Known outages, merged when a few pixels apart.
+    pub outages: Vec<(f64, f64)>,
+    pub now_dot: Option<NowDot>,
+    /// The playhead's white tick, when it isn't at now.
+    pub playhead_tick: Option<f64>,
+    /// The amber range line along the lane's top.
+    pub range: Option<(f64, f64)>,
+}
+
+impl OverviewMarks {
+    /// Place the marks.
+    pub(crate) fn build(i: &OverviewMarkInputs<'_>) -> Self {
+        let in_window = |t: f64| t >= i.start && t <= i.end;
+        let overlaps = |s: f64, e: f64| e >= i.start && s <= i.end;
+        let px = i.px_per_sec.max(f64::MIN_POSITIVE);
+        let held = merge_spans(
+            i.held
+                .iter()
+                .copied()
+                .filter(|&(s, e)| overlaps(s, e) && e > s)
+                .map(|(s, e)| (s.max(i.start), e.min(i.end))),
+            HELD_MERGE_PX / px,
+        );
+        let mut pennants: Vec<Pennant> = i
+            .events
+            .iter()
+            .filter(|e| overlaps(e.start, e.end))
+            .map(|e| Pennant {
+                start: e.start,
+                end: e.end.max(e.start),
+                name: e.name.to_string(),
+            })
+            .collect();
+        pennants.sort_by(|a, b| a.start.total_cmp(&b.start));
+        let outages = merge_spans(
+            i.outage_days
+                .iter()
+                .map(|&d| (d as f64, d as f64 + DAY_SECS))
+                .filter(|&(s, e)| overlaps(s, e)),
+            OUTAGE_MERGE_PX / px,
+        );
+        let range = i.range.map(|(s, e)| {
+            let e = if i.range_pinned { i.now.max(s) } else { e };
+            (s, e)
+        });
+        Self {
+            held,
+            pennants,
+            outages,
+            now_dot: in_window(i.now).then_some(NowDot {
+                ts: i.now,
+                streaming: i.streaming,
+            }),
+            playhead_tick: (!i.playhead_at_now && in_window(i.playhead)).then_some(i.playhead),
+            range: range.filter(|&(s, e)| overlaps(s, e)),
+        }
+    }
+
+    /// The pennant whose flag is within `tolerance_secs` of `ts` (the
+    /// nearest), for its hover name.
+    pub(crate) fn pennant_at(&self, ts: f64, tolerance_secs: f64) -> Option<&Pennant> {
+        self.pennants
+            .iter()
+            .filter(|p| (p.start - ts).abs() <= tolerance_secs)
+            .min_by(|a, b| (a.start - ts).abs().total_cmp(&(b.start - ts).abs()))
+    }
+}
+
+/// Merge time-ordered-or-not spans whose gap is under `gap`.
+fn merge_spans(spans: impl Iterator<Item = (f64, f64)>, gap: f64) -> Vec<(f64, f64)> {
+    let mut v: Vec<(f64, f64)> = spans.collect();
+    v.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for (s, e) in v {
+        match out.last_mut() {
+            Some(last) if s - last.1 < gap => last.1 = last.1.max(e),
+            _ => out.push((s, e)),
+        }
+    }
+    out
+}
+
+/// How a zoomed-out bar draws its activity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum BarShape {
+    /// As tall as this fraction of the bar area.
+    Height(f32),
+    /// Its days are still being listed: a faint stub, so the lane is never
+    /// empty while the background listing fills it in.
+    Pending,
+    /// Nothing to draw (an outage, whose tick stands for it).
+    Empty,
+}
+
+/// The shape of a bar for its days' activity on the view's `scale`.
+pub(crate) fn bar_shape(
+    activity: crate::core::storm_activity::BarActivity,
+    scale: &crate::core::storm_activity::ViewScale,
+) -> BarShape {
+    use crate::core::storm_activity::BarActivity;
+    match activity {
+        BarActivity::Level(level) => BarShape::Height(scale.height_frac(level)),
+        BarActivity::Unknown => BarShape::Pending,
+        BarActivity::Outage => BarShape::Empty,
+    }
+}
+
+// ── Hover words, in the chosen zone ────────────────────────────────────
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// `Oct 3, 2026` in the clock's zone.
+pub(crate) fn date_words(clock: &dyn crate::core::session::Clock, ts: f64) -> String {
+    let (y, m, d) = clock.day(ts);
+    format!("{} {d}, {y}", MONTHS[(m.clamp(1, 12) - 1) as usize])
+}
+
+/// The lane's hover text when it isn't over a bar or a volume.
+pub(crate) const LANE_HINT: &str =
+    "Click to look here. Drag to slide the overview, scroll to zoom it.";
+
+/// A volume's hover text, zoomed in: when it started and how much echo.
+pub(crate) fn scan_tip(
+    clock: &dyn crate::core::session::Clock,
+    scan: &crate::core::storm_activity::ScanActivity,
+) -> String {
+    format!(
+        "{}, {}\n{} (volume {:.1} MB)\n{}",
+        date_words(clock, scan.start),
+        clock.hm(scan.start),
+        crate::core::storm_activity::activity_word(scan.level),
+        scan.bytes as f64 / 1e6,
+        LANE_HINT
+    )
+}
+
+/// What a zoomed-out bar's hover text is about.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BarTipInputs {
+    /// The bar's span (Unix seconds).
+    pub start: f64,
+    pub end: f64,
+    pub activity: crate::core::storm_activity::SpanActivity,
+    /// A one-day bar's mean volume size, MB, when known.
+    pub day_mean_mb: Option<f64>,
+    /// Seconds of the bar held on this device.
+    pub cached_secs: f64,
+    /// The day a click goes to.
+    pub go_to: f64,
+}
+
+/// A bar's hover text: its date, storm activity, what's downloaded, and the
+/// day a click goes to.
+pub(crate) fn bar_tip(clock: &dyn crate::core::session::Clock, b: &BarTipInputs) -> String {
+    use crate::core::storm_activity::{activity_word, BarActivity};
+    let one_day = b.end - b.start <= DAY_SECS;
+    let when = if one_day {
+        date_words(clock, b.start)
+    } else if b.end - b.start <= 7.0 * DAY_SECS {
+        format!("Week of {}", date_words(clock, b.start))
+    } else {
+        let (y, m, _) = clock.day(b.start);
+        format!("{} {y}", MONTHS[(m.clamp(1, 12) - 1) as usize])
+    };
+    let weather = match b.activity.bar() {
+        BarActivity::Level(level) if one_day => match b.day_mean_mb {
+            Some(mb) => format!("{} (volumes average {mb:.1} MB)", activity_word(level)),
+            None => activity_word(level).to_string(),
+        },
+        BarActivity::Level(level) => {
+            let peak = b
+                .activity
+                .peak_day
+                .map_or(String::new(), |d| date_words(clock, d as f64));
+            let days = ((b.end - b.start) / DAY_SECS).round() as u32;
+            let known = if b.activity.known_days < days {
+                format!(", {} of {days} days checked", b.activity.known_days)
+            } else {
+                String::new()
+            };
+            format!("Most echo: {peak} ({}){known}", activity_word(level))
+        }
+        BarActivity::Outage => "No radar data recorded".to_string(),
+        BarActivity::Unknown => "Checking echo amounts\u{2026}".to_string(),
+    };
+    let held = if b.cached_secs >= 3600.0 {
+        format!("{:.1} h on this device", b.cached_secs / 3600.0)
+    } else if b.cached_secs > 0.0 {
+        format!("{:.0} min on this device", (b.cached_secs / 60.0).max(1.0))
+    } else {
+        "None downloaded".to_string()
+    };
+    format!(
+        "{when}\n{weather}\n{held}\nClick to go to {}.",
+        date_words(clock, b.go_to)
+    )
 }
 
 #[cfg(test)]
@@ -481,20 +765,20 @@ mod tests {
     fn labels_land_on_calendar_boundaries() {
         use chrono::{Datelike, TimeZone, Utc};
         let t = |y, m, d| Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).unwrap().timestamp() as f64;
-        let months = label_times(t(2025, 11, 15), t(2026, 3, 2), LabelStep::Months(1));
+        let months = label_times(t(2025, 11, 15), t(2026, 3, 2), LabelStep::Months(1), 0);
         assert_eq!(
             months,
             vec![t(2025, 12, 1), t(2026, 1, 1), t(2026, 2, 1), t(2026, 3, 1)]
         );
-        let years = label_times(t(1991, 6, 5), t(2001, 1, 2), LabelStep::Years(5));
+        let years = label_times(t(1991, 6, 5), t(2001, 1, 2), LabelStep::Years(5), 0);
         assert_eq!(years, vec![t(1995, 1, 1), t(2000, 1, 1)]);
-        let weeks = label_times(t(2026, 10, 1), t(2026, 10, 20), LabelStep::Days(7));
+        let weeks = label_times(t(2026, 10, 1), t(2026, 10, 20), LabelStep::Days(7), 0);
         assert!(!weeks.is_empty());
         for w in weeks {
             let d = Utc.timestamp_opt(w as i64, 0).unwrap();
             assert_eq!(d.weekday(), chrono::Weekday::Mon);
         }
-        assert!(label_times(t(2026, 1, 1), t(2026, 1, 2), LabelStep::Clock).is_empty());
+        assert!(label_times(t(2026, 1, 1), t(2026, 1, 2), LabelStep::Clock, 0).is_empty());
     }
 
     #[wasm_bindgen_test]
@@ -600,5 +884,236 @@ mod tests {
             Some((a, a + MIN_VIEW_SPAN_SECS))
         );
         assert_eq!(resized_view(OverviewGrab::View, 0.0, a, b), None);
+    }
+
+    // ── Marks ──────────────────────────────────────────────────────────
+
+    fn inputs<'a>(
+        held: &'a [(f64, f64)],
+        events: &'a [OverviewEvent<'a>],
+        outage_days: &'a [i64],
+    ) -> OverviewMarkInputs<'a> {
+        OverviewMarkInputs {
+            start: 0.0,
+            end: 100_000.0,
+            // 1000 px across: 100 s per px.
+            px_per_sec: 0.01,
+            held,
+            events,
+            outage_days,
+            now: 90_000.0,
+            streaming: false,
+            playhead: 50_000.0,
+            playhead_at_now: false,
+            range: None,
+            range_pinned: false,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn held_underline_follows_the_cached_spans_not_the_whole_day() {
+        // One cached minute stays one minute wide; spans under a pixel apart
+        // merge; spans outside the window drop; edges clip.
+        let held = [
+            (-500.0, 200.0),
+            (1000.0, 1060.0),
+            (1100.0, 1300.0),
+            (40_000.0, 40_060.0),
+            (200_000.0, 300_000.0),
+        ];
+        let m = OverviewMarks::build(&inputs(&held, &[], &[]));
+        assert_eq!(
+            m.held,
+            vec![(0.0, 200.0), (1000.0, 1300.0), (40_000.0, 40_060.0)]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn saved_events_become_pennants_in_time_order() {
+        let events = [
+            OverviewEvent {
+                start: 60_000.0,
+                end: 61_000.0,
+                name: "Derecho",
+            },
+            OverviewEvent {
+                start: 10_000.0,
+                end: 12_000.0,
+                name: "Hail",
+            },
+            OverviewEvent {
+                start: 500_000.0,
+                end: 501_000.0,
+                name: "Out of view",
+            },
+        ];
+        let m = OverviewMarks::build(&inputs(&[], &events, &[]));
+        let names: Vec<&str> = m.pennants.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["Hail", "Derecho"]);
+        // Hover finds the nearest flag within tolerance.
+        assert_eq!(m.pennant_at(10_300.0, 500.0).unwrap().name, "Hail");
+        assert!(m.pennant_at(30_000.0, 500.0).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn outage_days_merge_into_ticks() {
+        let day = DAY_SECS as i64;
+        let ov = OverviewMarkInputs {
+            end: 30.0 * DAY_SECS,
+            px_per_sec: 1000.0 / (30.0 * DAY_SECS),
+            now: 29.0 * DAY_SECS,
+            ..inputs(&[], &[], &[])
+        };
+        let days = [2 * day, 3 * day, 10 * day];
+        let m = OverviewMarks::build(&OverviewMarkInputs {
+            outage_days: &days,
+            ..ov
+        });
+        assert_eq!(
+            m.outages,
+            vec![
+                (2.0 * DAY_SECS, 4.0 * DAY_SECS),
+                (10.0 * DAY_SECS, 11.0 * DAY_SECS)
+            ]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn now_dot_strength_and_playhead_tick() {
+        let base = inputs(&[], &[], &[]);
+        let m = OverviewMarks::build(&base);
+        assert_eq!(
+            m.now_dot,
+            Some(NowDot {
+                ts: 90_000.0,
+                streaming: false
+            })
+        );
+        assert_eq!(m.playhead_tick, Some(50_000.0));
+        // Riding now: the dot stands for the playhead, at full strength.
+        let m = OverviewMarks::build(&OverviewMarkInputs {
+            streaming: true,
+            playhead_at_now: true,
+            playhead: 90_000.0,
+            ..base
+        });
+        assert!(m.now_dot.unwrap().streaming);
+        assert_eq!(m.playhead_tick, None);
+        // Now out of the window: no dot.
+        let m = OverviewMarks::build(&OverviewMarkInputs {
+            now: 200_000.0,
+            ..base
+        });
+        assert_eq!(m.now_dot, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_pinned_range_line_runs_to_now() {
+        let base = inputs(&[], &[], &[]);
+        let m = OverviewMarks::build(&OverviewMarkInputs {
+            range: Some((80_000.0, 85_000.0)),
+            range_pinned: true,
+            ..base
+        });
+        assert_eq!(m.range, Some((80_000.0, 90_000.0)));
+        let m = OverviewMarks::build(&OverviewMarkInputs {
+            range: Some((80_000.0, 85_000.0)),
+            ..base
+        });
+        assert_eq!(m.range, Some((80_000.0, 85_000.0)));
+    }
+
+    #[wasm_bindgen_test]
+    fn bars_are_never_blank_while_their_days_list() {
+        use crate::core::storm_activity::{BarActivity, ViewScale};
+        let scale = ViewScale::default();
+        assert_eq!(bar_shape(BarActivity::Unknown, &scale), BarShape::Pending);
+        assert_eq!(bar_shape(BarActivity::Outage, &scale), BarShape::Empty);
+        match bar_shape(BarActivity::Level(1.0), &scale) {
+            BarShape::Height(h) => assert!((h - 1.0).abs() < 1e-6),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A UTC clock for hover words.
+    struct Utc;
+    impl crate::core::session::Clock for Utc {
+        fn hms(&self, ts: f64) -> String {
+            let d = chrono::DateTime::from_timestamp(ts as i64, 0).unwrap();
+            d.format("%H:%M:%S").to_string()
+        }
+        fn hm(&self, ts: f64) -> String {
+            let d = chrono::DateTime::from_timestamp(ts as i64, 0).unwrap();
+            d.format("%H:%M").to_string()
+        }
+        fn day(&self, ts: f64) -> (i32, u32, u32) {
+            use chrono::Datelike;
+            let d = chrono::DateTime::from_timestamp(ts as i64, 0).unwrap();
+            (d.year(), d.month(), d.day())
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn hover_words_use_the_clock_and_no_zone_suffix() {
+        use crate::core::storm_activity::{ScanActivity, SpanActivity};
+        // 2026-10-03 00:00 UTC.
+        let oct3 = 1_790_985_600.0;
+        assert_eq!(date_words(&Utc, oct3), "Oct 3, 2026");
+        let scan = ScanActivity {
+            start: oct3 + 3600.0 + 120.0,
+            end: oct3 + 4000.0,
+            bytes: 12_300_000,
+            level: 0.7,
+        };
+        assert!(
+            scan_tip(&Utc, &scan).starts_with("Oct 3, 2026, 01:02\nLots of echo (volume 12.3 MB)")
+        );
+        let tip = bar_tip(
+            &Utc,
+            &BarTipInputs {
+                start: oct3,
+                end: oct3 + DAY_SECS,
+                activity: SpanActivity::default(),
+                day_mean_mb: None,
+                cached_secs: 60.0,
+                go_to: oct3,
+            },
+        );
+        assert_eq!(
+            tip,
+            "Oct 3, 2026\nChecking echo amounts\u{2026}\n1 min on this device\nClick to go to Oct 3, 2026."
+        );
+        assert!(!tip.contains("UTC"));
+    }
+
+    #[wasm_bindgen_test]
+    fn labels_follow_the_chosen_zone() {
+        use chrono::{TimeZone, Utc as ChronoUtc};
+        let t = |y, m, d, h| {
+            ChronoUtc
+                .with_ymd_and_hms(y, m, d, h, 0, 0)
+                .unwrap()
+                .timestamp() as f64
+        };
+        // Five hours west of UTC: local midnight is 05:00 UTC.
+        let off = -5 * 3600;
+        let days = label_times(
+            t(2026, 10, 1, 0),
+            t(2026, 10, 5, 0),
+            LabelStep::Days(2),
+            off,
+        );
+        assert!(!days.is_empty());
+        for d in &days {
+            let local = (*d as i64 + off).rem_euclid(DAY_SECS as i64);
+            assert_eq!(local, 0);
+        }
+        let months = label_times(
+            t(2026, 9, 15, 0),
+            t(2026, 11, 15, 0),
+            LabelStep::Months(1),
+            off,
+        );
+        assert_eq!(months, vec![t(2026, 10, 1, 5), t(2026, 11, 1, 5)]);
     }
 }

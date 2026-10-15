@@ -3,8 +3,8 @@
 //! Download/realtime/ghost rendering moved to the frames-first cell painter
 //! ([`super::frame_cells`]) and the Macro track ([`super::scan_track`]) so live
 //! and settled cells share one code path. This module now carries only the
-//! saved-event overlay, drawn in neutral with a distinct bookmark shape (the
-//! accent budget reserves color for the playhead / live edge / active ring).
+//! saved-event overlay: a neutral band with an amber pennant at its start,
+//! the same pennant the overview draws.
 
 use super::TimelineFrame;
 use crate::state::SavedEvents;
@@ -12,8 +12,8 @@ use crate::ui::theme::timeline as tl_colors;
 use eframe::egui::{self, Painter, Pos2, Rect, Stroke};
 
 /// Render saved event overlays on the timeline: a faint neutral band, neutral
-/// boundary lines, and a small bookmark tick at the start so events read by
-/// SHAPE (not an amber accent fill). The name label disambiguates.
+/// boundary lines, and a small amber pennant at the start (the overview's
+/// event mark). The name label disambiguates.
 pub(super) fn render_saved_events(
     painter: &Painter,
     frame: &TimelineFrame<'_>,
@@ -64,7 +64,12 @@ pub(super) fn render_saved_events(
                 Pos2::new(tip_x + 6.0, overlay_rect.top()),
                 Pos2::new(tip_x + 3.0, overlay_rect.top() + 5.0),
             ];
-            painter.add(egui::Shape::convex_polygon(pts, border_color, Stroke::NONE));
+            // Amber, as on the overview: an event loops under its name.
+            painter.add(egui::Shape::convex_polygon(
+                pts,
+                tl_colors::PENNANT,
+                Stroke::NONE,
+            ));
         }
         if end_x >= overlay_rect.left() && end_x <= overlay_rect.right() {
             painter.line_segment(

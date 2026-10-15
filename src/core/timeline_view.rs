@@ -149,6 +149,9 @@ pub(crate) struct ScanContainer {
     pub is_available: bool,
     /// True when this container is the live in-progress volume.
     pub is_live: bool,
+    /// True when the whole volume is a projection (the next-volume ghost):
+    /// its box is dashed and its words carry a tilde.
+    pub is_projected: bool,
 }
 
 /// The extra join inputs the frame-cell model needs beyond the sources
@@ -482,6 +485,7 @@ impl<'a> TimelineView<'a> {
             sweep_spans,
             is_available,
             is_live: false,
+            is_projected: false,
         }
     }
 
@@ -599,6 +603,7 @@ fn container_from_shadow(b: &ScanBoundary, join: &FrameJoinInputs<'_>) -> ScanCo
         sweep_spans: Vec::new(),
         is_available: true,
         is_live: false,
+        is_projected: false,
     }
 }
 
@@ -659,6 +664,7 @@ fn container_from_live(pos: &ScanProjection, join: &FrameJoinInputs<'_>) -> Scan
         sweep_spans,
         is_available: false,
         is_live: true,
+        is_projected: false,
     }
 }
 
@@ -695,6 +701,7 @@ fn container_from_ghost(ghost: &ScanProjection, join: &FrameJoinInputs<'_>) -> S
         sweep_spans,
         is_available: false,
         is_live: false,
+        is_projected: true,
     }
 }
 
@@ -759,6 +766,335 @@ pub(crate) fn merge_cached_into_live(position: &mut ScanProjection, cached: &Sca
                 p.chunks.clear();
             }
         }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Strip marks (one-instrument §5 "Zoom and tiers"). Queued, failed,
+// projected and filling states draw in both tiers: as the cell itself when
+// the cell has room, as a mark when it doesn't (always, zoomed out to
+// blocks). A failure is always a ⚠ mark, so it is clickable at any zoom.
+// The range, its pinned handle and cost label, and the edge markers for an
+// off-screen playhead or now are values here too; the shell only paints.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Below this width (px) a cell's state draws as a mark instead of in the
+/// cell.
+pub(crate) const MIN_STATE_CELL_PX: f64 = 6.0;
+
+/// Marks of one kind closer than this (px) merge into one.
+pub(crate) const MARK_MERGE_PX: f64 = 12.0;
+
+/// What a strip mark says about the scans under it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum StripMarkKind {
+    /// A download failed — the ⚠ glyph in text color; click retries.
+    Failed,
+    /// Waiting to download — hatched.
+    Queued,
+    /// Expected but not collected yet — dashed, with a tilde.
+    Projected,
+    /// Downloading or being collected. `progress` is the received fraction
+    /// when live chunk telemetry knows it.
+    Filling { progress: Option<f32> },
+}
+
+impl StripMarkKind {
+    fn same_kind(self, other: Self) -> bool {
+        std::mem::discriminant(&self) == std::mem::discriminant(&other)
+    }
+}
+
+/// One mark on the strip, spanning the cells it stands for.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StripMark {
+    pub kind: StripMarkKind,
+    pub start_secs: f64,
+    pub end_secs: f64,
+    /// Scan-start keys (seconds) of the containers under the mark, oldest
+    /// first — the retry targets of a failure.
+    pub keys: Vec<f64>,
+}
+
+impl StripMark {
+    /// Where the mark's glyph sits.
+    pub(crate) fn center_secs(&self) -> f64 {
+        (self.start_secs + self.end_secs) / 2.0
+    }
+}
+
+/// The marks for `containers` at `px_per_sec` in `tier`.
+///
+/// - A failed cell is always a ⚠ mark (the cell body stays hollow).
+/// - A queued, projected or filling cell is a mark zoomed out to blocks, or
+///   when the cell is narrower than [`MIN_STATE_CELL_PX`]; otherwise the cell
+///   draws its own state.
+/// - Neighboring marks of one kind closer than [`MARK_MERGE_PX`] merge, so a
+///   run of narrow cells reads as one mark rather than a smear of glyphs.
+pub(crate) fn strip_marks(
+    containers: &[ScanContainer],
+    px_per_sec: f64,
+    tier: crate::core::TimelineTier,
+) -> Vec<StripMark> {
+    let zoomed_out = tier == crate::core::TimelineTier::Macro;
+    let mut raw: Vec<StripMark> = Vec::new();
+    for c in containers {
+        for cell in &c.cells {
+            let kind = match cell.state {
+                FrameCellState::Failed => StripMarkKind::Failed,
+                FrameCellState::Queued => StripMarkKind::Queued,
+                FrameCellState::Projected => StripMarkKind::Projected,
+                FrameCellState::InFlight => StripMarkKind::Filling {
+                    progress: cell.chunks.as_ref().and_then(chunk_progress),
+                },
+                FrameCellState::Cached | FrameCellState::Available => continue,
+            };
+            let narrow = (cell.end_secs - cell.start_secs) * px_per_sec < MIN_STATE_CELL_PX;
+            if kind != StripMarkKind::Failed && !zoomed_out && !narrow {
+                continue;
+            }
+            raw.push(StripMark {
+                kind,
+                start_secs: cell.start_secs,
+                end_secs: cell.end_secs.max(cell.start_secs),
+                keys: vec![c.key_secs],
+            });
+        }
+    }
+    raw.sort_by(|a, b| a.start_secs.total_cmp(&b.start_secs));
+
+    let merge_secs = if px_per_sec > 0.0 {
+        MARK_MERGE_PX / px_per_sec
+    } else {
+        f64::INFINITY
+    };
+    let mut out: Vec<StripMark> = Vec::new();
+    for m in raw {
+        // Merge into the latest mark of the same kind when they nearly touch.
+        if let Some(prev) = out
+            .iter_mut()
+            .rev()
+            .find(|p| p.kind.same_kind(m.kind))
+            .filter(|p| m.start_secs - p.end_secs < merge_secs)
+        {
+            prev.end_secs = prev.end_secs.max(m.end_secs);
+            for k in m.keys {
+                if !prev.keys.iter().any(|p| (p - k).abs() < 0.5) {
+                    prev.keys.push(k);
+                }
+            }
+            if let (
+                StripMarkKind::Filling { progress: a },
+                StripMarkKind::Filling { progress: b },
+            ) = (&mut prev.kind, m.kind)
+            {
+                *a = a.or(b);
+            }
+            continue;
+        }
+        out.push(m);
+    }
+    out
+}
+
+/// The received fraction of a cut the stream is filling.
+fn chunk_progress(c: &CellChunkProgress) -> Option<f32> {
+    (c.chunks_expected > 0).then(|| (c.chunks_received as f32 / c.chunks_expected as f32).min(1.0))
+}
+
+/// A projected cell's words: its angle with the tilde that marks every
+/// projection (`~0.5°`).
+pub(crate) fn projected_cell_label(angle_deg: f32) -> String {
+    format!("~{angle_deg:.1}\u{00B0}")
+}
+
+/// The countdown on the nearest projected cell: `~0.5° in ~4:46`.
+pub(crate) fn projected_countdown_label(angle_deg: f32, remaining_secs: f64) -> String {
+    format!(
+        "~{angle_deg:.1}\u{00B0} in ~{}",
+        crate::core::format_lag(remaining_secs.ceil())
+    )
+}
+
+/// The countdown in a filling chunk slot: `~0:12`.
+pub(crate) fn chunk_countdown_label(remaining_secs: f64) -> String {
+    format!("~{}", crate::core::format_lag(remaining_secs.ceil()))
+}
+
+/// What a range selection costs to fetch, for its label.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub(crate) struct RangeCost {
+    pub duration_secs: f64,
+    /// Volumes that start inside the range (on device or not).
+    pub scans: u32,
+    /// Bytes still to download for it (0 when all of it is on device).
+    pub fetch_bytes: u64,
+}
+
+impl RangeCost {
+    /// `6:00 · 2 scans · 30 MB`, or `… · on device` when nothing is left to
+    /// fetch; just the duration when no volume is known inside it.
+    pub(crate) fn label(&self) -> String {
+        let duration = crate::core::format_lag(self.duration_secs.round());
+        match self.scans {
+            0 => duration,
+            n => {
+                let scans = if n == 1 {
+                    "1 scan".to_string()
+                } else {
+                    format!("{n} scans")
+                };
+                let cost = if self.fetch_bytes == 0 {
+                    "on device".to_string()
+                } else {
+                    format_bytes(self.fetch_bytes)
+                };
+                format!("{duration} \u{00B7} {scans} \u{00B7} {cost}")
+            }
+        }
+    }
+}
+
+/// `30 MB`, `4.2 MB`, `1.3 GB` (decimal units, as the archive lists sizes).
+pub(crate) fn format_bytes(bytes: u64) -> String {
+    let mb = bytes as f64 / 1e6;
+    if mb >= 1000.0 {
+        format!("{:.1} GB", mb / 1000.0)
+    } else if mb >= 10.0 {
+        format!("{mb:.0} MB")
+    } else {
+        format!("{mb:.1} MB")
+    }
+}
+
+impl TimelineView<'_> {
+    /// What selecting `[start, end]` costs: the volumes starting inside it
+    /// (cached scans, the live volume, and archive listings not already on
+    /// device) and the bytes still to fetch. `size_of` gives a listed
+    /// volume's size by its start time when the archive listing is known;
+    /// others are estimated at [`crate::core::AVG_SCAN_BYTES`].
+    pub(crate) fn range_cost(
+        &self,
+        start: f64,
+        end: f64,
+        size_of: impl Fn(f64) -> Option<u32>,
+    ) -> RangeCost {
+        let (start, end) = (start.min(end), start.max(end));
+        let inside = |t: f64| t >= start && t <= end;
+        let mut cost = RangeCost {
+            duration_secs: end - start,
+            ..RangeCost::default()
+        };
+        let estimate = |t: f64| size_of(t).map_or(crate::core::AVG_SCAN_BYTES, u64::from);
+        for scan in self.cache.scans.iter().filter(|s| inside(s.start_time)) {
+            cost.scans += 1;
+            if scan.completeness == Some(crate::data::ScanCompleteness::Missing) {
+                cost.fetch_bytes += estimate(scan.start_time);
+            }
+        }
+        if let Some(pos) = self.live_position.as_ref() {
+            let cached = self
+                .live_volume_ms
+                .is_some_and(|ms| self.cache.scans.iter().any(|s| s.key_ms() == ms));
+            if !cached && inside(pos.volume_start) {
+                cost.scans += 1;
+            }
+        }
+        for b in self.shadows {
+            if inside(b.start as f64) && !self.is_covered_by_cached(b.start) {
+                cost.scans += 1;
+                cost.fetch_bytes += estimate(b.start as f64);
+            }
+        }
+        cost
+    }
+}
+
+/// Which end of a range carries the right handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RangeEndHandle {
+    /// A fixed end: an amber handle.
+    Fixed,
+    /// The end rides now: a red dot on the now line.
+    PinnedToNow,
+}
+
+/// The range as the strip, the main track and the overview draw it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RangeMarks {
+    pub start: f64,
+    /// Where the bar, the wash and the right handle end — now, when pinned,
+    /// so the pinned handle sits on the now line rather than at the last
+    /// frame's end.
+    pub end: f64,
+    pub end_handle: RangeEndHandle,
+    /// The cost label (`6:00 · 2 scans · 30 MB`), shown while drawing and
+    /// over the range afterwards.
+    pub label: String,
+}
+
+/// The range marks for a selection `range` (the in-progress drag while one
+/// is drawn). `pinned` is the selection's "ends at now" fact; a range still
+/// being drawn is never drawn pinned.
+pub(crate) fn range_marks(
+    range: Option<(f64, f64)>,
+    pinned: bool,
+    drawing: bool,
+    now: f64,
+    cost: RangeCost,
+) -> Option<RangeMarks> {
+    let (start, end) = range?;
+    let pinned = pinned && !drawing;
+    Some(RangeMarks {
+        start,
+        end: if pinned { now.max(start) } else { end },
+        end_handle: if pinned {
+            RangeEndHandle::PinnedToNow
+        } else {
+            RangeEndHandle::Fixed
+        },
+        label: cost.label(),
+    })
+}
+
+/// Which edge of the strip an off-screen mark points out of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EdgeSide {
+    Left,
+    Right,
+}
+
+/// Arrows for things the strip can't show because they're out of view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) struct EdgeMarkers {
+    /// The playhead is off-screen: a white arrow at this edge. `None` while
+    /// it rides now (the now marker stands for it then).
+    pub playhead: Option<EdgeSide>,
+    /// Now is off-screen: the now cap, at this edge, with an arrow.
+    pub now: Option<EdgeSide>,
+}
+
+fn side_of(ts: f64, view_start: f64, view_end: f64) -> Option<EdgeSide> {
+    if ts < view_start {
+        Some(EdgeSide::Left)
+    } else if ts > view_end {
+        Some(EdgeSide::Right)
+    } else {
+        None
+    }
+}
+
+/// The edge markers for a view `[view_start, view_end]`. `playhead` is
+/// `None` while the playhead rides now.
+pub(crate) fn edge_markers(
+    view_start: f64,
+    view_end: f64,
+    playhead: Option<f64>,
+    now: f64,
+) -> EdgeMarkers {
+    EdgeMarkers {
+        playhead: playhead.and_then(|p| side_of(p, view_start, view_end)),
+        now: side_of(now, view_start, view_end),
     }
 }
 
@@ -1829,5 +2165,257 @@ mod coverage_tests {
     fn tolerance_constants_agree() {
         assert_eq!(SCAN_JOIN_TOLERANCE_SECS, 60);
         assert_eq!(BOUNDARY_MATCH_TOLERANCE_SECS, SCAN_JOIN_TOLERANCE_SECS);
+    }
+}
+
+#[cfg(test)]
+mod marks_tests {
+    use super::*;
+    use crate::core::TimelineTier;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn cell(start: f64, end: f64, state: FrameCellState) -> FrameCell {
+        FrameCell {
+            start_secs: start,
+            end_secs: end,
+            elevation_number: 1,
+            elevation_angle: 0.5,
+            state,
+            chunks: None,
+            is_active: false,
+            is_prev_active: false,
+        }
+    }
+
+    fn container(key: f64, cells: Vec<FrameCell>) -> ScanContainer {
+        ScanContainer {
+            start_secs: key,
+            end_secs: key + 300.0,
+            key_secs: key,
+            vcp: 212,
+            cells,
+            sweep_spans: Vec::new(),
+            is_available: false,
+            is_live: false,
+            is_projected: false,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn a_failure_is_a_mark_at_every_zoom() {
+        let cs = vec![container(
+            1000.0,
+            vec![cell(1000.0, 1300.0, FrameCellState::Failed)],
+        )];
+        for (zoom, tier) in [(2.0, TimelineTier::Micro), (0.01, TimelineTier::Macro)] {
+            let marks = strip_marks(&cs, zoom, tier);
+            assert_eq!(marks.len(), 1);
+            assert_eq!(marks[0].kind, StripMarkKind::Failed);
+            assert_eq!(marks[0].keys, vec![1000.0]);
+            assert_eq!(marks[0].center_secs(), 1150.0);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn wide_cells_draw_their_own_state_when_zoomed_in() {
+        let cs = vec![container(
+            0.0,
+            vec![
+                cell(0.0, 30.0, FrameCellState::Queued),
+                cell(40.0, 70.0, FrameCellState::Projected),
+                cell(80.0, 110.0, FrameCellState::Cached),
+            ],
+        )];
+        // 30 s at 2 px/s is 60 px: the cells have room.
+        assert!(strip_marks(&cs, 2.0, TimelineTier::Micro).is_empty());
+        // Zoomed out the same states become marks; cached cells never do.
+        let marks = strip_marks(&cs, 0.01, TimelineTier::Macro);
+        let kinds: Vec<_> = marks.iter().map(|m| m.kind).collect();
+        assert_eq!(kinds, vec![StripMarkKind::Queued, StripMarkKind::Projected]);
+    }
+
+    #[wasm_bindgen_test]
+    fn narrow_cells_become_marks_even_zoomed_in() {
+        let cs = vec![container(
+            0.0,
+            vec![cell(0.0, 2.0, FrameCellState::Projected)],
+        )];
+        // 2 s at 2 px/s is 4 px, under the cell minimum.
+        let marks = strip_marks(&cs, 2.0, TimelineTier::Micro);
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].kind, StripMarkKind::Projected);
+    }
+
+    #[wasm_bindgen_test]
+    fn neighboring_marks_of_one_kind_merge_and_keep_every_key() {
+        let cs = vec![
+            container(0.0, vec![cell(0.0, 300.0, FrameCellState::Failed)]),
+            container(300.0, vec![cell(300.0, 600.0, FrameCellState::Failed)]),
+            container(5000.0, vec![cell(5000.0, 5300.0, FrameCellState::Failed)]),
+        ];
+        // 0.01 px/s: 12 px merge distance is 1200 s.
+        let marks = strip_marks(&cs, 0.01, TimelineTier::Macro);
+        assert_eq!(marks.len(), 2);
+        assert_eq!(marks[0].keys, vec![0.0, 300.0]);
+        assert_eq!((marks[0].start_secs, marks[0].end_secs), (0.0, 600.0));
+        assert_eq!(marks[1].keys, vec![5000.0]);
+    }
+
+    #[wasm_bindgen_test]
+    fn marks_of_different_kinds_never_merge() {
+        let cs = vec![container(
+            0.0,
+            vec![
+                cell(0.0, 10.0, FrameCellState::Queued),
+                cell(10.0, 20.0, FrameCellState::Failed),
+                cell(20.0, 30.0, FrameCellState::Queued),
+            ],
+        )];
+        let marks = strip_marks(&cs, 0.01, TimelineTier::Macro);
+        // The two queued cells merge across the failure between them.
+        assert_eq!(marks.len(), 2);
+        assert_eq!(marks[0].kind, StripMarkKind::Queued);
+        assert_eq!(marks[0].end_secs, 30.0);
+        assert_eq!(marks[1].kind, StripMarkKind::Failed);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_filling_mark_carries_the_chunk_fraction() {
+        let mut c = cell(0.0, 30.0, FrameCellState::InFlight);
+        c.chunks = Some(CellChunkProgress {
+            chunks_expected: 6,
+            chunks_received: 3,
+            partial_radials: 0,
+        });
+        let marks = strip_marks(&[container(0.0, vec![c])], 0.01, TimelineTier::Macro);
+        assert_eq!(
+            marks[0].kind,
+            StripMarkKind::Filling {
+                progress: Some(0.5)
+            }
+        );
+        // An archive download has no telemetry.
+        let marks = strip_marks(
+            &[container(
+                0.0,
+                vec![cell(0.0, 30.0, FrameCellState::InFlight)],
+            )],
+            0.01,
+            TimelineTier::Macro,
+        );
+        assert_eq!(marks[0].kind, StripMarkKind::Filling { progress: None });
+    }
+
+    #[wasm_bindgen_test]
+    fn projections_carry_a_tilde() {
+        assert_eq!(projected_cell_label(0.5), "~0.5\u{00B0}");
+        assert_eq!(
+            projected_countdown_label(0.5, 285.2),
+            "~0.5\u{00B0} in ~4:46"
+        );
+        assert_eq!(chunk_countdown_label(11.4), "~0:12");
+    }
+
+    #[wasm_bindgen_test]
+    fn the_cost_label_reads_duration_scans_and_bytes() {
+        let cost = RangeCost {
+            duration_secs: 360.0,
+            scans: 2,
+            fetch_bytes: 30_000_000,
+        };
+        assert_eq!(cost.label(), "6:00 \u{00B7} 2 scans \u{00B7} 30 MB");
+        let on_device = RangeCost {
+            fetch_bytes: 0,
+            scans: 1,
+            ..cost
+        };
+        assert_eq!(on_device.label(), "6:00 \u{00B7} 1 scan \u{00B7} on device");
+        let empty = RangeCost { scans: 0, ..cost };
+        assert_eq!(empty.label(), "6:00");
+        assert_eq!(format_bytes(4_200_000), "4.2 MB");
+        assert_eq!(format_bytes(1_300_000_000), "1.3 GB");
+    }
+
+    fn scan(key: f64, completeness: Option<crate::data::ScanCompleteness>) -> Scan {
+        Scan {
+            start_time: key,
+            end_time: key + 300.0,
+            key_timestamp: key,
+            vcp: 212,
+            vcp_pattern: None,
+            sweeps: Vec::new(),
+            completeness,
+            cached_sweep_count: None,
+            planned_sweep_count: None,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn range_cost_counts_cached_and_listed_scans_and_prices_the_rest() {
+        let cache = RadarTimeline {
+            scans: vec![scan(1000.0, None)],
+        };
+        let shadows = vec![
+            // Covered by the cached scan: not counted twice.
+            ScanBoundary {
+                start: 1000,
+                end: 1300,
+            },
+            ScanBoundary {
+                start: 1300,
+                end: 1600,
+            },
+            ScanBoundary {
+                start: 1600,
+                end: 1900,
+            },
+            // Outside the range.
+            ScanBoundary {
+                start: 9000,
+                end: 9300,
+            },
+        ];
+        let view = TimelineView::build(&cache, &shadows, None, None);
+        // 1300 has a known size; 1600 is estimated.
+        let cost = view.range_cost(1700.0, 900.0, |t| (t == 1300.0).then_some(12_000_000));
+        assert_eq!(cost.scans, 3);
+        assert_eq!(cost.fetch_bytes, 12_000_000 + crate::core::AVG_SCAN_BYTES);
+        assert_eq!(cost.duration_secs, 800.0);
+
+        // A scan indexed but not downloaded still has to be fetched.
+        let cache = RadarTimeline {
+            scans: vec![scan(1000.0, Some(crate::data::ScanCompleteness::Missing))],
+        };
+        let view = TimelineView::build(&cache, &[], None, None);
+        let cost = view.range_cost(900.0, 1100.0, |_| Some(7_000_000));
+        assert_eq!((cost.scans, cost.fetch_bytes), (1, 7_000_000));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_pinned_range_ends_on_the_now_line() {
+        let cost = RangeCost::default();
+        let m = range_marks(Some((100.0, 400.0)), true, false, 700.0, cost).unwrap();
+        assert_eq!((m.start, m.end), (100.0, 700.0));
+        assert_eq!(m.end_handle, RangeEndHandle::PinnedToNow);
+        // A fixed range keeps its own end and an amber handle.
+        let m = range_marks(Some((100.0, 400.0)), false, false, 700.0, cost).unwrap();
+        assert_eq!((m.end, m.end_handle), (400.0, RangeEndHandle::Fixed));
+        // While drawing, the drag is the range and nothing is pinned yet.
+        let m = range_marks(Some((100.0, 400.0)), true, true, 700.0, cost).unwrap();
+        assert_eq!((m.end, m.end_handle), (400.0, RangeEndHandle::Fixed));
+        assert!(range_marks(None, true, false, 700.0, cost).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn edge_markers_point_out_of_the_view() {
+        let e = edge_markers(100.0, 200.0, Some(50.0), 300.0);
+        assert_eq!(e.playhead, Some(EdgeSide::Left));
+        assert_eq!(e.now, Some(EdgeSide::Right));
+        let e = edge_markers(100.0, 200.0, Some(150.0), 150.0);
+        assert_eq!(e, EdgeMarkers::default());
+        // A playhead riding now leaves the arrow to the now marker.
+        let e = edge_markers(100.0, 200.0, None, 300.0);
+        assert_eq!(e.playhead, None);
+        assert_eq!(e.now, Some(EdgeSide::Right));
     }
 }
