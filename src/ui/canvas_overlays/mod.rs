@@ -2,8 +2,8 @@
 //!
 //! Two flavors of overlay coexist:
 //!
-//! 1. **Corner-chrome overlays** — color scale, overlay info, compass,
-//!    scale bar. Each is small, self-contained, and depends only on
+//! 1. **Corner-chrome overlays** — color scale, compass, scale bar, the
+//!    mosaic stamp (and the info box's fallback stamp, off by default). Each is small, self-contained, and depends only on
 //!    [`OverlayContext`] state. These implement the [`Overlay`] trait
 //!    and are dispatched through the [`render_chrome_overlays`] loop in
 //!    z-order, with a `visible` predicate that gates on view mode and
@@ -24,9 +24,9 @@ mod alerts;
 mod alerts_time;
 mod color_scale;
 mod compass;
+mod frame_stamp;
 mod globe;
 mod gps_location;
-mod info;
 mod mosaic_time;
 mod mping;
 mod national_mosaic;
@@ -40,7 +40,7 @@ pub(crate) use gps_location::render_gps_location;
 pub(crate) use mping::{render_mping_detail, render_mping_reports};
 pub(crate) use national_mosaic::{draw_national_mosaic, RadarCutout};
 pub(crate) use sites::render_nexrad_sites;
-pub(crate) use sweep::render_radar_sweep;
+pub(crate) use sweep::{render_radar_sweep, SiteScreen, SweepPaint};
 
 use crate::state::AppState;
 use crate::subsystem::{Derived, Live};
@@ -95,7 +95,7 @@ pub(crate) fn render_chrome_overlays(ui: &mut egui::Ui, ctx: &OverlayContext) {
     // checked once per build in debug. Adding an overlay is one new
     // struct + one new entry here, placed at its z-order position.
     let overlays: &[&dyn Overlay] = &[
-        &info::OverlayInfo,              // z=10
+        &frame_stamp::FrameStampOverlay, // z=10 (fallback; off)
         &color_scale::ColorScaleOverlay, // z=20
         &compass::CompassOverlay,        // z=30
         &scale_bar::ScaleBarOverlay,     // z=40

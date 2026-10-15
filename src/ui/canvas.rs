@@ -15,7 +15,7 @@ use crate::geo::{GeoLayerSet, MapProjection, ScreenBounds, ViewMode};
 use crate::nexrad::RadarGpuRenderer;
 use crate::state::AppState;
 use crate::ui::theme;
-use eframe::egui::{self, Color32, Rect, Sense, Stroke};
+use eframe::egui::{self, Rect, Sense, Stroke};
 use geo_types::Coord;
 use std::sync::{Arc, Mutex};
 
@@ -134,30 +134,25 @@ pub(crate) fn render_canvas_with_geo(
                         ));
                 }
 
-                // Screen-space cutout circle for the active radar's coverage.
-                // Fixed at the WSR-88D reflectivity range so the hole stays
-                // stable as the user scrubs elevations/products instead of
-                // tracking the current sweep's per-gate extent.
-                const NEXRAD_MAX_RANGE_KM: f64 = 460.0;
-                let radar_cutout = gpu_renderer.and_then(|renderer| {
-                    let has_data = renderer.lock().expect("renderer mutex poisoned").has_data();
-                    if !has_data {
-                        return None;
-                    }
-                    let lon_range = crate::core::canvas::cutout_lon_range_deg(
-                        state.viz_state.center_lat,
-                        NEXRAD_MAX_RANGE_KM,
-                    );
-                    let center = projection.geo_to_screen(Coord {
-                        x: state.viz_state.center_lon,
-                        y: state.viz_state.center_lat,
-                    });
-                    let edge = projection.geo_to_screen(Coord {
-                        x: state.viz_state.center_lon + lon_range,
-                        y: state.viz_state.center_lat,
-                    });
-                    let radius = (edge.x - center.x).abs();
-                    Some(RadarCutout { center, radius })
+                // Every circle around the site from one core decision (§7
+                // "the rings agree"): range rings and the edge ring at the
+                // data's real range — the same range the GPU disc and the 3D
+                // drape use — and the coverage ring and mosaic cutout at the
+                // product's maximum range.
+                let data_range_km = gpu_renderer.and_then(|renderer| {
+                    let r = renderer.lock().expect("renderer mutex poisoned");
+                    r.has_data().then(|| r.max_range_km())
+                });
+                let site_screen = super::canvas_overlays::SiteScreen::new(
+                    &projection,
+                    state.viz_state.center_lat,
+                    state.viz_state.center_lon,
+                );
+                let coverage_km =
+                    crate::core::canvas::product_max_range_km(state.viz_state.product);
+                let radar_cutout = data_range_km.map(|_| RadarCutout {
+                    center: site_screen.center,
+                    radius: coverage_km as f32 * site_screen.px_per_km,
                 });
 
                 if state.layer_state.geo.national_mosaic && derived.data_is_live {
@@ -370,12 +365,11 @@ pub(crate) fn render_canvas_with_geo(
                     }
                 }
 
-                // Show sweep line when actively revealing, between sweeps, or during live streaming.
-                // In live mode, the data boundaries and the "now" line are separate:
-                //   data_sweep = (data_edge, data_start) — from actual received chunks
-                //   now_line = estimated antenna position — what's currently being collected
+                // Rays' marks. Live: the data edge comes from received
+                // chunks and the now line from the estimated antenna
+                // position; archive: the reveal follows the playhead, and
+                // between sweeps the last position is held, faint.
                 let (sweep_line_info, sweep_stale) = if live.radar_model.active {
-                    // Use data boundaries for the donut arc (same as GPU compositing)
                     (gpu_sweep, false)
                 } else {
                     match gpu_sweep {
@@ -386,17 +380,45 @@ pub(crate) fn render_canvas_with_geo(
                         _ => (None, false),
                     }
                 };
+                let active_sweep = live.radar_model.active_sweep.as_ref();
+                let chunk_last_az: Vec<f32> = active_sweep
+                    .map(|s| s.chunks.iter().map(|c| c.last_az).collect())
+                    .unwrap_or_default();
+                let overlay_vm = crate::core::canvas::CanvasOverlayVm::build(
+                    &crate::core::canvas::CanvasOverlayInputs {
+                        product: state.viz_state.product,
+                        data_range_km,
+                        sweep: sweep_line_info,
+                        stale: sweep_stale,
+                        show_lines: derived.effective_sweep_animation,
+                        live: live.radar_model.active,
+                        antenna_az: live.radar_model.estimated_azimuth,
+                        chunk_last_az: &chunk_last_az,
+                        live_edge_time: active_sweep
+                            .and_then(|s| s.chunk_time_spans.last().map(|&(_, end, _)| end)),
+                        playhead_secs: playback.state.playback_position(),
+                        fallbacks: crate::core::canvas::CANVAS_FALLBACKS,
+                    },
+                );
+                let clock = crate::ui::time_format::ZoneClock {
+                    use_local: state.use_local_time,
+                };
                 render_radar_sweep(
                     &painter,
-                    &projection,
-                    state,
-                    timeline,
-                    live,
-                    playback,
-                    chrome,
-                    derived,
-                    sweep_line_info,
-                    sweep_stale,
+                    &overlay_vm,
+                    &super::canvas_overlays::SweepPaint {
+                        site: &site_screen,
+                        rect,
+                        hover: response
+                            .hover_pos()
+                            .filter(|_| !state.viz_state.data_probe_enabled),
+                        desaturating: crate::core::canvas::data_age_desaturation_effective(
+                            state.render_processing.data_age_desaturation,
+                            derived.effective_sweep_animation,
+                        ),
+                        now_secs: derived.frame_now_secs,
+                        clock: &clock,
+                    },
                 );
 
                 if state.viz_state.distance_tool_active || state.viz_state.distance_start.is_some()
@@ -552,52 +574,6 @@ fn draw_radar_gpu(
     ui.painter().add(callback);
 }
 
-pub(super) fn format_age(secs: f64) -> String {
-    if secs < 60.0 {
-        format!("{}s", secs as u32)
-    } else if secs < 3600.0 {
-        let m = (secs / 60.0) as u32;
-        let s = (secs % 60.0) as u32;
-        format!("{}m{}s", m, s)
-    } else if secs < 86400.0 {
-        let h = (secs / 3600.0) as u32;
-        let m = ((secs % 3600.0) / 60.0) as u32;
-        format!("{}h{}m", h, m)
-    } else if secs < 86400.0 * 365.0 {
-        let d = (secs / 86400.0) as u32;
-        let h = ((secs % 86400.0) / 3600.0) as u32;
-        if d == 1 {
-            format!("1 day {}h", h)
-        } else {
-            format!("{} days", d)
-        }
-    } else {
-        let y = (secs / (86400.0 * 365.25)) as u32;
-        let remaining_days = ((secs % (86400.0 * 365.25)) / 86400.0) as u32;
-        if y == 1 {
-            format!("1 year {} days", remaining_days)
-        } else {
-            format!("{} years", y)
-        }
-    }
-}
-
-pub(super) fn age_color(secs: f64) -> Color32 {
-    if secs > ARCHIVE_AGE_THRESHOLD_SECS {
-        theme::legacy::WARN // orange for archive data
-    } else if secs > 300.0 {
-        theme::legacy::ERROR
-    } else if secs > 60.0 {
-        theme::legacy::CAUTION
-    } else {
-        theme::legacy::SUCCESS
-    }
-}
-
-pub(super) const ARCHIVE_AGE_THRESHOLD_SECS: f64 = 3600.0;
-
-pub(super) const AGE_RANGE_COLLAPSE_SECS: f64 = 300.0;
-
 #[allow(clippy::too_many_arguments)]
 fn compute_gpu_sweep_state(
     state: &mut AppState,
@@ -691,14 +667,6 @@ fn compute_sweep_line_azimuth(
         .and_then(|(_, sweep)| crate::core::canvas::sweep_line_azimuth(sweep, ts))
 }
 
-pub(super) fn format_time_short(ts: f64, use_local: bool) -> String {
-    let p = super::time_format::parts(ts, use_local);
-    format!(
-        "{:02}:{:02}:{:02}.{:03}",
-        p.hour, p.minute, p.second, p.millis
-    )
-}
-
 pub(super) fn format_unix_timestamp(ts: f64, use_local: bool) -> String {
     let p = super::time_format::parts(ts, use_local);
     let zone = if use_local { "Local" } else { "UTC" };
@@ -706,26 +674,6 @@ pub(super) fn format_unix_timestamp(ts: f64, use_local: bool) -> String {
         "{:02}:{:02}:{:02}.{:03} {zone}",
         p.hour, p.minute, p.second, p.millis
     )
-}
-
-pub(super) fn format_unix_timestamp_with_date(ts: f64, use_local: bool) -> String {
-    let p = super::time_format::parts(ts, use_local);
-    let suffix = if use_local { "" } else { " UTC" };
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}{suffix}",
-        p.year, p.month, p.day, p.hour, p.minute, p.second, p.millis
-    )
-}
-
-pub(super) fn format_age_compact(now_secs: f64, ts_secs: f64) -> Option<String> {
-    let age = now_secs - ts_secs;
-    if (0.0..1.5).contains(&age) {
-        Some("(now)".to_string())
-    } else if (0.0..300.0).contains(&age) {
-        Some(format!("({})", format_age(age)))
-    } else {
-        None
-    }
 }
 
 /// Paint the canvas caption (§7) on a scrim at the center of the map —
