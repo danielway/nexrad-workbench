@@ -46,8 +46,8 @@ use crate::core::live_status::LiveStatus;
 use crate::core::selection_chip::ChipLabel;
 use crate::core::transport::LiveStopPlacement;
 use crate::core::{
-    format_lag, DisplayedSweep, FrameNow, Intent, LiveExitReason, LivePhase, LoopBasis, Selection,
-    StreamActivity,
+    format_lag, DisplayedSweep, FrameNow, Intent, LiveExitReason, LivePhase, LoopBasis, LoopMode,
+    Selection, StreamActivity,
 };
 use crate::data::ScanKey;
 
@@ -276,6 +276,8 @@ pub(crate) struct SessionInputs<'a> {
     pub live_phase: LivePhase,
     pub last_exit: Option<LiveExitReason>,
     pub selection: Selection,
+    /// How a range loops (the chip menu's loop style).
+    pub loop_mode: LoopMode,
     pub playback_position_secs: f64,
     /// What is on the GPU.
     pub displayed: Option<&'a DisplayedSweep>,
@@ -301,6 +303,9 @@ pub(crate) struct SessionVm {
     // The surfaces.
     /// What plays. Clock text via [`SessionVm::selection_chip_text`].
     pub selection_chip: ChipLabel,
+    /// The loop style riding on the chip: `Some` only for a range that does
+    /// not plainly Loop.
+    pub loop_style: Option<LoopMode>,
     pub now_cap: NowCap,
     /// `None` while the selection is not pinned, or with no frame.
     pub age_pill: Option<AgePill>,
@@ -331,6 +336,7 @@ impl Default for SessionVm {
                 ts: 0.0,
                 behind_secs: None,
             },
+            loop_style: None,
             now_cap: NowCap::GoLive,
             age_pill: None,
             activity_chip: None,
@@ -385,6 +391,9 @@ impl SessionVm {
             pinned_point || matches!(selection, SelectionFact::RangeToNow { .. });
 
         let selection_chip = chip_label(selection, playhead, stream);
+        let loop_style = (!matches!(selection, SelectionFact::Point)
+            && inputs.loop_mode != LoopMode::Loop)
+            .then_some(inputs.loop_mode);
         let now_cap = if selection_pinned {
             NowCap::Live
         } else if stream.is_running() {
@@ -427,6 +436,7 @@ impl SessionVm {
             selection,
             frame,
             selection_chip,
+            loop_style,
             now_cap,
             age_pill,
             activity_chip,
@@ -461,14 +471,19 @@ impl SessionVm {
     }
 
     /// The selection chip's words. `compact` (the phone bar) drops the
-    /// seconds and the lag from a point.
+    /// seconds and the lag from a point. A loop style other than Loop rides
+    /// on the end: `⟲ 11:28 → 11:34 · Ping-pong`.
     pub(crate) fn selection_chip_text(
         &self,
         clock: &dyn Clock,
         glyphs: &ChipGlyphs,
         compact: bool,
     ) -> String {
-        chip_text(&self.selection_chip, clock, glyphs, compact)
+        let text = chip_text(&self.selection_chip, clock, glyphs, compact);
+        match self.loop_style {
+            Some(style) => format!("{text} · {}", style.label()),
+            None => text,
+        }
     }
 
     /// The canvas caption, segment by segment (§7 forms), or `None` when
@@ -747,6 +762,7 @@ mod tests {
         phase: LivePhase,
         last_exit: Option<LiveExitReason>,
         selection: Selection,
+        loop_mode: LoopMode,
         playhead: f64,
         displayed: Option<&'a DisplayedSweep>,
         live_cut: Option<LiveCut>,
@@ -762,6 +778,7 @@ mod tests {
                 phase: LivePhase::Idle,
                 last_exit: None,
                 selection: POINT,
+                loop_mode: LoopMode::Loop,
                 playhead: now,
                 displayed: None,
                 live_cut: None,
@@ -788,6 +805,7 @@ mod tests {
                 live_phase: self.phase,
                 last_exit: self.last_exit,
                 selection: self.selection,
+                loop_mode: self.loop_mode,
                 playback_position_secs: self.playhead,
                 displayed: self.displayed,
                 live_cut: self.live_cut.clone(),
@@ -1435,5 +1453,19 @@ mod tests {
             Some("Expected sweep is late — change elevation or stop streaming")
         );
         assert_eq!(S::at(now).vm().activity_hover, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_loop_style_rides_on_a_range_chip_unless_it_is_plain_loop() {
+        let mut s = S::at(1_000.0);
+        s.selection = fixed_range(400.0, 760.0);
+        assert_eq!(s.vm().loop_style, None);
+        s.loop_mode = LoopMode::PingPong;
+        let vm = s.vm();
+        assert_eq!(vm.loop_style, Some(LoopMode::PingPong));
+        assert!(chip(&vm).ends_with(" · Ping-pong"), "{}", chip(&vm));
+        // A point has no loop to style.
+        s.selection = POINT;
+        assert_eq!(s.vm().loop_style, None);
     }
 }

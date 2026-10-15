@@ -96,9 +96,7 @@ fn draw_mobile_settings_modal(
             // The datetime picker popup (opened by tapping the current-time
             // label in the Playback tab) renders as an Area, so it must be
             // spawned from within the window.
-            super::super::playback_controls::render_datetime_picker_popup(
-                ui, state, picker, live, playback,
-            );
+            super::super::playback_controls::render_datetime_picker_popup(ui, state, picker);
         });
 }
 
