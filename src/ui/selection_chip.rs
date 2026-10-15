@@ -4,8 +4,9 @@
 //! intents they emit are all decided there.
 
 use crate::core::selection_chip::{
-    chip_label, chip_menu, intent_for, ChipAction, ChipEnv, ChipLabel, ChipMenu,
+    chip_menu, intent_for, ChipAction, ChipEnv, ChipLabel, ChipMenu,
 };
+use crate::core::session::ChipGlyphs;
 use crate::core::transport::LiveStopPlacement;
 use crate::state::AppState;
 use crate::ui::colors::live;
@@ -18,7 +19,13 @@ const LOOP_BORDER: Color32 = Color32::from_rgb(122, 90, 28);
 
 // Icon-font glyphs (the text font has no arrows).
 const ARROW: &str = egui_phosphor::regular::ARROW_RIGHT;
-const LOOP: &str = egui_phosphor::regular::REPEAT;
+
+/// The chip's glyphs in the icon font, standing in for the design's ● ⟲ →.
+const ICON_GLYPHS: ChipGlyphs = ChipGlyphs {
+    live: egui_phosphor::regular::BROADCAST,
+    loop_mark: egui_phosphor::regular::REPEAT,
+    arrow: ARROW,
+};
 
 /// Where the chip is drawn: the desktop row or the mobile bar.
 pub(crate) struct ChipStyle {
@@ -39,14 +46,17 @@ pub(crate) fn render_selection_chip(
     style: &ChipStyle,
 ) {
     let env = ChipEnv {
-        stream_active: live.mode_state.is_active(),
-        lag_secs: live.frame_status.lag_secs,
+        stream_active: live.session.stream.is_running(),
     };
-    let label = chip_label(&playback.state, env);
+    let label = live.session.selection_chip;
     let use_local = state.use_local_time;
     let text = format!(
         "{} {}",
-        label_text(&label, use_local, style.compact),
+        live.session.selection_chip_text(
+            &crate::ui::time_format::ZoneClock { use_local },
+            &ICON_GLYPHS,
+            style.compact
+        ),
         egui_phosphor::regular::CARET_DOWN
     );
 
@@ -174,48 +184,7 @@ fn hint(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).size(10.0).weak().italics());
 }
 
-/// The chip's words for a selection.
-fn label_text(label: &ChipLabel, use_local: bool, compact: bool) -> String {
-    match *label {
-        ChipLabel::Live => format!("{} LIVE", egui_phosphor::regular::BROADCAST),
-        ChipLabel::At { ts, .. } if compact => format!("At {}", hm(ts, use_local)),
-        ChipLabel::At { ts, behind_secs } => match behind_secs {
-            Some(lag) => format!(
-                "At {} · {} behind",
-                hms(ts, use_local),
-                crate::core::format_lag(lag)
-            ),
-            None => format!("At {}", hms(ts, use_local)),
-        },
-        ChipLabel::Range { start, end } => {
-            format!("{LOOP} {}", range_text(start, end, use_local))
-        }
-        ChipLabel::RangeToNow { basis } => format!("{LOOP} Last {} {ARROW} now", basis.label()),
-    }
-}
-
-fn hms(ts: f64, use_local: bool) -> String {
-    let p = parts(ts, use_local);
-    format!("{:02}:{:02}:{:02}", p.hour, p.minute, p.second)
-}
-
 fn hm(ts: f64, use_local: bool) -> String {
     let p = parts(ts, use_local);
     format!("{:02}:{:02}", p.hour, p.minute)
-}
-
-/// "13:10 → 14:40", with dates when the range crosses a day boundary.
-fn range_text(start: f64, end: f64, use_local: bool) -> String {
-    let (a, b) = (parts(start, use_local), parts(end, use_local));
-    if (a.year, a.month, a.day) == (b.year, b.month, b.day) {
-        format!(
-            "{:02}:{:02} {ARROW} {:02}:{:02}",
-            a.hour, a.minute, b.hour, b.minute
-        )
-    } else {
-        format!(
-            "{}/{} {:02}:{:02} {ARROW} {}/{} {:02}:{:02}",
-            a.month, a.day, a.hour, a.minute, b.month, b.day, b.hour, b.minute
-        )
-    }
 }

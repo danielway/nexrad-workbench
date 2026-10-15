@@ -10,7 +10,6 @@ use crate::core::{
 };
 
 pub(crate) mod acquisition;
-mod app_mode;
 pub(crate) mod calendar;
 mod frame_clock;
 mod layer;
@@ -29,8 +28,8 @@ pub(crate) use acquisition::AcquisitionState;
 // The operation vocabulary lives in `core::domain::ops` (the pure activity
 // view-model reads it, and `core` may not import `state`). Re-exported here so
 // existing `crate::state::OperationKind`-style paths keep resolving.
+pub(crate) use crate::core::session::AppMode;
 pub(crate) use crate::core::{DownloadPhase, OperationKind};
-pub(crate) use app_mode::{derive_app_mode, AppMode};
 pub(crate) use calendar::{aggregate_buckets, TimeBucket};
 pub(crate) use layer::LayerState;
 pub(crate) use render_cache::{PrevSweepCacheKey, RenderCache};

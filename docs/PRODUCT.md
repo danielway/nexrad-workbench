@@ -308,14 +308,15 @@ mode — it is a tether state.
   now-cap) the chip's menu owns stop and leaves the playhead in place. Stop ≠ freeze: pause-while-tethered keeps
   the stream filling the cache, stop tears the channel down. A status line
   confirms the stop.
-- **Streaming visibility:** all live surfaces project one per-frame
-  `LiveStatus` view-model, so "is data actually arriving?" reads the same
-  everywhere. The transport activity chip carries the moving part —
-   "receiving · 12", "waiting for 2.4° · expected in ~40s", or an amber
-   "stalled — 2.4° is late" — the tethered now-cap carries the countdown
-   ("◉ LIVE · 12s"), and
-  pulsing is reserved for data genuinely moving (connecting/receiving), never
-  for a routine wait.
+- **Streaming visibility:** every status surface (selection chip, now cap,
+  age pill, activity line, canvas caption) projects one per-frame
+  `core::session::SessionVm` — four facts (stream, playhead, selection,
+  frame) — so "is data actually arriving?" reads the same everywhere. The
+  transport activity line carries the moving part — "receiving 2.4° · 3 of 6",
+  "next 0.5° in ~0:40", or an amber "stalled · 2.4° is 0:42 late" — the
+  now cap stays a two-word pill (LIVE / REJOIN / GO LIVE), and pulsing is
+  reserved for data genuinely moving (connecting/receiving), never for a
+  routine wait.
 - **Idle-stop:** while detached, background streaming auto-stops after **60 min**
   to bound S3 chunk polling; "return to live" stays instant for any realistic
   browsing detour.

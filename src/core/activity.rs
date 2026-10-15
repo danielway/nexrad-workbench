@@ -27,10 +27,11 @@
 use std::collections::VecDeque;
 
 use crate::core::acquisition::LedgerSummary;
+use crate::core::session::Stream;
 use crate::core::timeline_view::SCAN_JOIN_TOLERANCE_SECS;
 use crate::core::{
     describe_operation, operation_bytes, shows_in_activity_list, AcquisitionOperation,
-    NetworkAggregate, NetworkRequest, OperationId, OperationKind, OperationStatus, StreamActivity,
+    NetworkAggregate, NetworkRequest, OperationId, OperationKind, OperationStatus,
     ThroughputWindow, WorkerLoad,
 };
 
@@ -75,8 +76,9 @@ pub(crate) struct ActivityInputs<'a> {
     pub sw_aggregate: &'a NetworkAggregate,
     pub recent_requests: &'a VecDeque<NetworkRequest>,
     pub cache_size_bytes: u64,
-    pub streaming: bool,
-    pub stream_activity: StreamActivity,
+    /// The session's stream fact — the activity chip projects its healthy
+    /// states ([`Stream::headline_word`]) when no archive work is outstanding.
+    pub stream: Stream,
     /// Whether the activity sheet is open. Rows and network entries are only
     /// materialized when something is actually looking at them.
     pub sheet_open: bool,
@@ -121,7 +123,8 @@ pub(crate) enum ActivityState {
     Downloading { scans: u32 },
     /// Downloads are drained but data is still being decoded or settling.
     Processing,
-    /// Live stream is running and no archive work is outstanding.
+    /// Live stream is connecting, receiving or waiting, and no archive work is
+    /// outstanding.
     Streaming,
     /// The user paused the queue with work still in it.
     Paused { queued: u32 },
@@ -302,7 +305,7 @@ impl ActivityVm {
 
         Self {
             state,
-            headline: headline_for(state, &counts),
+            headline: headline_for(state, &counts, inputs.stream),
             stages: [
                 ActivityStage {
                     kind: ActivityStageKind::Queued,
@@ -457,18 +460,13 @@ fn derive_state(counts: &StageCounts, inputs: &ActivityInputs<'_>) -> ActivitySt
     if counts.processing > 0 || counts.settling > 0 || inputs.gpu_render_in_flight {
         return ActivityState::Processing;
     }
-    if inputs.streaming
-        && matches!(
-            inputs.stream_activity,
-            StreamActivity::Connecting | StreamActivity::Receiving | StreamActivity::Waiting
-        )
-    {
+    if inputs.stream.headline_word().is_some() {
         return ActivityState::Streaming;
     }
     ActivityState::UpToDate
 }
 
-fn headline_for(state: ActivityState, counts: &StageCounts) -> ActivityHeadline {
+fn headline_for(state: ActivityState, counts: &StageCounts, stream: Stream) -> ActivityHeadline {
     match state {
         ActivityState::UpToDate => ActivityHeadline {
             count: None,
@@ -488,11 +486,13 @@ fn headline_for(state: ActivityState, counts: &StageCounts) -> ActivityHeadline 
             glyph: ActivityGlyph::Gear,
             animate: true,
         },
+        // The session's stream word, so the chip never says "Receiving"
+        // while the stream line says it is waiting.
         ActivityState::Streaming => ActivityHeadline {
             count: None,
-            label: "Receiving",
+            label: stream.headline_word().unwrap_or("Receiving"),
             glyph: ActivityGlyph::Wave,
-            animate: true,
+            animate: stream.is_animated(),
         },
         ActivityState::Paused { queued } => ActivityHeadline {
             count: Some(queued),
@@ -599,6 +599,7 @@ pub(crate) fn shorten_url(url: &str) -> String {
 mod coverage_tests {
     use super::*;
     use crate::core::acquisition::LedgerSummary;
+    use crate::core::session::Stream;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn download(id: OperationId, scan_start: i64, status: OperationStatus) -> AcquisitionOperation {
@@ -644,8 +645,7 @@ mod coverage_tests {
         last_worker_outcome_ms: f64,
         gpu_render_in_flight: bool,
         http_in_flight: u32,
-        streaming: bool,
-        stream_activity: StreamActivity,
+        stream: Stream,
         sheet_open: bool,
         dev: Option<ActivityDevInputs>,
         now_ms: f64,
@@ -665,8 +665,7 @@ mod coverage_tests {
                 last_worker_outcome_ms: 1_000.0,
                 gpu_render_in_flight: false,
                 http_in_flight: 0,
-                streaming: false,
-                stream_activity: StreamActivity::Off,
+                stream: Stream::Off,
                 sheet_open: false,
                 dev: None,
                 now_ms: 1_000.0,
@@ -690,8 +689,7 @@ mod coverage_tests {
                 sw_aggregate: &self.aggregate,
                 recent_requests: &self.requests,
                 cache_size_bytes: 0,
-                streaming: self.streaming,
-                stream_activity: self.stream_activity,
+                stream: self.stream,
                 sheet_open: self.sheet_open,
                 dev: self.dev,
             })
@@ -791,9 +789,10 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn streaming_state_only_when_no_archive_work() {
         let mut f = Fixture::new();
-        f.streaming = true;
-        f.stream_activity = StreamActivity::Receiving;
+        f.stream = Stream::Receiving;
         assert_eq!(f.vm().state, ActivityState::Streaming);
+        assert_eq!(f.vm().headline.label, "Receiving");
+        assert!(f.vm().headline.animate);
 
         f.operations
             .push_back(download(1, 1000, OperationStatus::Active));
@@ -805,9 +804,27 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn stalled_stream_is_not_streaming_state() {
         let mut f = Fixture::new();
-        f.streaming = true;
-        f.stream_activity = StreamActivity::Stalled;
+        f.stream = Stream::Stalled;
         assert_eq!(f.vm().state, ActivityState::UpToDate);
+        f.stream = Stream::Failed;
+        assert_eq!(f.vm().state, ActivityState::UpToDate);
+    }
+
+    /// The chip's stream word is the session's: a waiting stream says
+    /// "Waiting" and holds still, so it never contradicts the stream line.
+    #[wasm_bindgen_test]
+    fn streaming_headline_projects_the_session_stream_word() {
+        let mut f = Fixture::new();
+        f.stream = Stream::Waiting;
+        let vm = f.vm();
+        assert_eq!(vm.state, ActivityState::Streaming);
+        assert_eq!(vm.headline.label, "Waiting");
+        assert!(!vm.headline.animate);
+
+        f.stream = Stream::Connecting;
+        let vm = f.vm();
+        assert_eq!(vm.headline.label, "Connecting");
+        assert!(vm.headline.animate);
     }
 
     /// Failures never suppress the activity state: a failed scan coexists with
@@ -1148,8 +1165,7 @@ mod coverage_tests {
                 sw_aggregate: &f.aggregate,
                 recent_requests: &f.requests,
                 cache_size_bytes: 0,
-                streaming: false,
-                stream_activity: StreamActivity::Off,
+                stream: Stream::Off,
                 sheet_open: false,
                 dev: None,
             }

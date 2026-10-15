@@ -102,7 +102,7 @@ fn render_transport_row(
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    let interactive = live.app_mode != crate::state::AppMode::Idle;
+    let interactive = live.session.app_mode != crate::state::AppMode::Idle;
     let btn_h = 38.0;
 
     ui.horizontal_centered(|ui| {
@@ -228,27 +228,29 @@ fn render_transport_row(
 }
 
 /// Compact stream-health readout beside the mobile LIVE button. The ~360 px
-/// transport row has no room for the desktop activity chip, so only the state
-/// that demands attention surfaces here: a stalled stream. Healthy activity
+/// transport row has no room for the desktop activity chip, so only the states
+/// that demand attention surface here: a stalled or failed stream. Healthy activity
 /// (receiving / waiting) is carried by the LIVE button itself.
 fn render_stream_health(ui: &mut egui::Ui, live: &crate::subsystem::Live) {
-    use crate::core::StreamActivity;
-    let status = &live.frame_status;
-    if status.activity != StreamActivity::Stalled {
-        return;
-    }
+    use crate::core::session::Stream;
+    let session = &live.session;
+    let word = match session.stream {
+        Stream::Stalled => "stalled",
+        Stream::Failed => "failed",
+        _ => return,
+    };
     let resp = ui.label(
         RichText::new(egui_phosphor::regular::BROADCAST)
             .size(10.0)
             .color(crate::ui::colors::live::ACQUIRING),
     );
     ui.label(
-        RichText::new("stalled")
+        RichText::new(word)
             .size(10.0)
             .monospace()
             .color(crate::ui::colors::live::ACQUIRING),
     );
-    if let Some(hover) = status.hover_text() {
+    if let Some(hover) = session.activity_hover {
         resp.on_hover_text(hover);
     }
 }

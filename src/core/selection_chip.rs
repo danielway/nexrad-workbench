@@ -13,10 +13,11 @@
 //! | range to now     | `⟲ Last 6 frames → now`      |
 
 use crate::core::transport::LiveStopPlacement;
-use crate::core::{Intent, LoopBasis, LoopPreset, PlaybackState, Selection};
+use crate::core::{Intent, LoopBasis, LoopPreset, PlaybackState};
 
-/// What the chip shows. Timestamps are left unformatted: the shell owns the
-/// clock format (UTC / local).
+/// What the chip shows, as projected by [`crate::core::session::SessionVm`]
+/// (which also owns its words). Timestamps are left unformatted: the shell
+/// owns the zone.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ChipLabel {
     /// Pinned to the live edge.
@@ -43,37 +44,11 @@ impl ChipLabel {
     }
 }
 
-/// The chip's view of the stream.
+/// The chip menu's view of the stream.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ChipEnv {
     /// A live stream is running (attached or in the background).
     pub stream_active: bool,
-    /// Seconds the playhead is behind now while detached from a stream.
-    pub lag_secs: Option<f64>,
-}
-
-/// Resolve the chip label from the selection.
-pub(crate) fn chip_label(playback: &PlaybackState, env: ChipEnv) -> ChipLabel {
-    match playback.selection {
-        Selection::Point { live: true } => ChipLabel::Live,
-        Selection::Point { live: false } => ChipLabel::At {
-            ts: playback.playback_position(),
-            behind_secs: if env.stream_active {
-                env.lag_secs
-            } else {
-                None
-            },
-        },
-        Selection::Range(r) if r.live => ChipLabel::RangeToNow { basis: r.basis },
-        Selection::Range(r) => match r.bounds {
-            Some((start, end)) => ChipLabel::Range { start, end },
-            // A fixed range always has bounds; fall back to the point.
-            None => ChipLabel::At {
-                ts: playback.playback_position(),
-                behind_secs: None,
-            },
-        },
-    }
 }
 
 /// One entry in the chip's menu.
@@ -163,58 +138,10 @@ mod tests {
 
     const STREAMING: ChipEnv = ChipEnv {
         stream_active: true,
-        lag_secs: Some(137.0),
     };
     const NO_STREAM: ChipEnv = ChipEnv {
         stream_active: false,
-        lag_secs: None,
     };
-
-    #[wasm_bindgen_test]
-    fn label_names_each_of_the_four_selections() {
-        let mut ps = PlaybackState::default();
-        ps.enter_pinned_live(1000.0);
-        assert_eq!(chip_label(&ps, STREAMING), ChipLabel::Live);
-
-        assert!(ps.select_range(700.0, 1000.0, true));
-        assert_eq!(
-            chip_label(&ps, STREAMING),
-            ChipLabel::RangeToNow {
-                basis: LoopBasis::Duration(300.0)
-            }
-        );
-
-        assert!(ps.select_range(100.0, 400.0, false));
-        assert_eq!(
-            chip_label(&ps, STREAMING),
-            ChipLabel::Range {
-                start: 100.0,
-                end: 400.0
-            }
-        );
-
-        ps.clear_selection();
-        assert_eq!(
-            chip_label(&ps, STREAMING),
-            ChipLabel::At {
-                ts: ps.playback_position(),
-                behind_secs: Some(137.0)
-            }
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn point_shows_no_lag_without_a_stream() {
-        let mut ps = PlaybackState::default();
-        ps.time_model.playback_position = 500.0;
-        assert_eq!(
-            chip_label(&ps, NO_STREAM),
-            ChipLabel::At {
-                ts: 500.0,
-                behind_secs: None
-            }
-        );
-    }
 
     #[wasm_bindgen_test]
     fn menu_marks_the_active_preset_and_offers_stop_looping_on_a_range() {

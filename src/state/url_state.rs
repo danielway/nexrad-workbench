@@ -176,7 +176,7 @@ mod tests {
     fn rt_persisted_only_when_caller_reports_attached_live() {
         // The persistence rule (spec §7): `rt=true` (reload re-tethers) is
         // written ONLY while the playhead is attached to the live edge. The
-        // caller passes that as `is_live` (`live.app_mode == AppMode::Live`,
+        // caller passes that as `is_live` (`live.session.app_mode == AppMode::Live`,
         // which requires both a stream session AND an attached playhead), so a
         // detached background stream persists `t` only — no `rt`.
         let state = crate::state::AppState::default();

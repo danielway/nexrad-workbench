@@ -45,6 +45,7 @@ pub(crate) mod render;
 pub(crate) mod render_loop;
 pub(crate) mod selection_chip;
 pub(crate) mod selection_strip;
+pub(crate) mod session;
 pub(crate) mod storm_activity;
 pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;
@@ -106,7 +107,7 @@ pub(crate) use live_mode::{
     StreamActivity,
 };
 pub(crate) use live_radar_model::LiveRadarModel;
-pub(crate) use live_status::{derive_live_status, LiveStatus, LiveStatusInputs, LiveTether};
+pub(crate) use live_status::{derive_live_status, LiveStatus, LiveStatusInputs};
 pub(crate) use persist::{decide_persist, persist_due, PersistDecision};
 pub(crate) use streaming_filter::StreamingFilter;
 pub(crate) use streaming_plan::{ChunkProjectedTimes, ChunkProjectionInfo, StreamingPlan};

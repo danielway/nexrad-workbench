@@ -217,7 +217,7 @@ pub(super) fn render_playback_controls(
     // Idle = nothing under the playback cursor. Disable transport controls
     // so they don't visibly do nothing; layout stays stable for when data
     // arrives.
-    let interactive = live.app_mode != AppMode::Idle;
+    let interactive = live.session.app_mode != AppMode::Idle;
 
     // Current position timestamp display. In Advanced it's a button that
     // opens the datetime picker; in Basic it's a plain label so a casual
@@ -546,31 +546,31 @@ fn render_utc_toggle(ui: &mut egui::Ui, state: &mut AppState) {
 /// the fact the LIVE button used to carry alone.
 ///
 /// Renders nothing when there is no stream, so it costs no chrome in the common
-/// archive case. When there is one it projects [`crate::core::LiveStatus`]'s
-/// `detail_text` — the activity word plus whatever visibly moves (the chunk
-/// count ticking up, the "next in ~Ns" countdown, the stall duration growing):
+/// archive case. When there is one it projects the session's
+/// `activity_chip` line — the activity word plus whatever visibly moves (the
+/// chunk count ticking up, the "next in ~m:ss" countdown, the stall growing):
 /// a changing number is unambiguous evidence of ingestion in a way a static
 /// fill never was. The glyph pulses only while data is genuinely moving, so
 /// motion means exactly one thing. Neutral/amber tones only — the accent
 /// budget's red stays with the live edge and the tether.
 fn render_stream_activity(ui: &mut egui::Ui, state: &AppState, live: &crate::subsystem::Live) {
-    use crate::core::StreamActivity;
+    use crate::core::session::Stream;
 
-    let status = &live.frame_status;
-    let Some(detail) = status.detail_text() else {
+    let session = &live.session;
+    let Some(detail) = session.activity_chip.as_deref() else {
         return; // No stream — the chip costs no chrome in the archive case.
     };
 
     let dark = state.is_dark;
-    let color = match status.activity {
+    let color = match session.stream {
         // Amber, not blue: a stall is degraded, and blue is the routine
         // "waiting" tone elsewhere in the live palette.
-        StreamActivity::Stalled => live::ACQUIRING,
-        StreamActivity::Receiving => ui_colors::value(dark),
+        Stream::Stalled | Stream::Failed => live::ACQUIRING,
+        Stream::Receiving => ui_colors::value(dark),
         _ => ui_colors::label(dark),
     };
     // The pulse is applied to alpha so the chip breathes without changing hue.
-    let color = if status.activity.is_animated() {
+    let color = if session.stream.is_animated() {
         let pulse = live.mode_state.pulse_alpha();
         let alpha = (150.0 + 105.0 * pulse) as u8;
         Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
@@ -584,13 +584,13 @@ fn render_stream_activity(ui: &mut egui::Ui, state: &AppState, live: &crate::sub
             .color(color),
     );
     ui.label(RichText::new(detail).size(11.0).monospace().color(color));
-    if let Some(hover) = status.hover_text() {
+    if let Some(hover) = session.activity_hover {
         resp.on_hover_text(hover);
     }
 
     // The countdown must keep ticking even at the detached 1 s repaint
     // cadence (same pattern as the timeline's in-flight cells).
-    if status.countdown_secs.is_some() {
+    if live.frame_status.countdown_secs.is_some() {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(500));
     }

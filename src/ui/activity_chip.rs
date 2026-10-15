@@ -43,7 +43,7 @@ fn hover_text(state: ActivityState) -> &'static str {
         ActivityState::UpToDate => "Everything you're viewing is downloaded",
         ActivityState::Downloading { .. } => "Downloading scans — click for details",
         ActivityState::Processing => "Decoding downloaded data — click for details",
-        ActivityState::Streaming => "Receiving live data — click for details",
+        ActivityState::Streaming => "Live stream running — click for details",
         ActivityState::Paused { .. } => "Downloads paused — click to resume",
     }
 }

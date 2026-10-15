@@ -628,8 +628,7 @@ impl WorkbenchApp {
             sw_aggregate: &self.state.network_aggregate,
             recent_requests: &self.state.recent_network_requests,
             cache_size_bytes: stats.cache_size_bytes,
-            streaming: self.live.mode_state.is_active(),
-            stream_activity: self.live.frame_status.activity,
+            stream: self.live.session.stream,
             sheet_open: self.chrome.activity_sheet_open,
             dev: self
                 .state
@@ -741,7 +740,7 @@ impl WorkbenchApp {
             &self.state,
             &self.playback.state,
             self.diagnostics.mping.api_key.clone(),
-            self.live.app_mode == state::AppMode::Live,
+            self.live.session.app_mode == state::AppMode::Live,
         );
         self.apply_effects(ctx, effects);
     }
@@ -757,7 +756,7 @@ impl WorkbenchApp {
             fn js_set_favicon_color(hex: &str) -> Result<(), JsValue>;
         }
 
-        let mode = self.live.app_mode;
+        let mode = self.live.session.app_mode;
         if self.last_favicon_mode == Some(mode) {
             return;
         }
@@ -913,6 +912,8 @@ impl eframe::App for WorkbenchApp {
             archive_boundaries: &self.timeline.shadow_scan_boundaries,
             now: self.state.frame_now,
             elevation_selection: &self.state.viz_state.elevation_selection,
+            displayed: self.state.viz_state.displayed.as_ref(),
+            canvas_caption: self.state.viz_state.canvas_caption,
         });
         self.state.refresh_mobile_mode(ctx);
 

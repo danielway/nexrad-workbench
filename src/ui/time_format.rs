@@ -73,6 +73,30 @@ pub(crate) fn parts(ts: f64, use_local: bool) -> TimeParts {
     }
 }
 
+/// The session view-model's [`crate::core::session::Clock`]: 24-hour clocks
+/// in the user's chosen zone, so core-owned words (the selection chip, the
+/// canvas caption) print times without knowing the zone.
+pub(crate) struct ZoneClock {
+    pub use_local: bool,
+}
+
+impl crate::core::session::Clock for ZoneClock {
+    fn hms(&self, ts: f64) -> String {
+        let p = parts(ts, self.use_local);
+        format!("{:02}:{:02}:{:02}", p.hour, p.minute, p.second)
+    }
+
+    fn hm(&self, ts: f64) -> String {
+        let p = parts(ts, self.use_local);
+        format!("{:02}:{:02}", p.hour, p.minute)
+    }
+
+    fn day(&self, ts: f64) -> (i32, u32, u32) {
+        let p = parts(ts, self.use_local);
+        (p.year, p.month, p.day)
+    }
+}
+
 /// How aggressively to compact a primary clock readout. Higher tiers shed
 /// detail (seconds, then the zone suffix) so the time survives at narrow widths
 /// instead of being demoted out of the bar.
@@ -181,25 +205,6 @@ pub(crate) fn format_mosaic_stamp(ts: Option<f64>, use_local: bool) -> Option<St
     Some(format!("Mosaic \u{00B7} {clock}"))
 }
 
-/// Plain-language data-age phrasing for the live edge (spec §5/§11.3):
-/// "updated just now", "updated 1m ago", "updated 2h ago". `age_secs` is
-/// wall-clock now minus the displayed frame's collection time. Negative ages
-/// (clock skew / a frame stamped slightly in the future) read as "just now".
-pub(crate) fn format_updated_ago(age_secs: f64) -> String {
-    if age_secs < 45.0 {
-        "updated just now".to_string()
-    } else if age_secs < 3600.0 {
-        let m = (age_secs / 60.0).round().max(1.0) as u32;
-        format!("updated {m}m ago")
-    } else if age_secs < 86_400.0 {
-        let h = (age_secs / 3600.0).floor() as u32;
-        format!("updated {h}h ago")
-    } else {
-        let d = (age_secs / 86_400.0).floor() as u32;
-        format!("updated {d}d ago")
-    }
-}
-
 #[cfg(test)]
 mod parts_tests {
     use super::*;
@@ -287,24 +292,6 @@ mod tests {
         let s = format_clock_12h(TS, true, Compaction::Full);
         assert!(!s.is_empty());
         assert!(s.contains("AM") || s.contains("PM"), "got {s}");
-    }
-
-    #[wasm_bindgen_test]
-    fn updated_ago_buckets() {
-        assert_eq!(format_updated_ago(0.0), "updated just now");
-        assert_eq!(format_updated_ago(20.0), "updated just now");
-        // Just under the 45s threshold still reads as "just now".
-        assert_eq!(format_updated_ago(44.0), "updated just now");
-        assert_eq!(format_updated_ago(60.0), "updated 1m ago");
-        assert_eq!(format_updated_ago(90.0), "updated 2m ago");
-        assert_eq!(format_updated_ago(3600.0), "updated 1h ago");
-        assert_eq!(format_updated_ago(7200.0), "updated 2h ago");
-        assert_eq!(format_updated_ago(90_000.0), "updated 1d ago");
-    }
-
-    #[wasm_bindgen_test]
-    fn updated_ago_negative_reads_as_just_now() {
-        assert_eq!(format_updated_ago(-5.0), "updated just now");
     }
 
     #[wasm_bindgen_test]
