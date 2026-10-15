@@ -37,6 +37,3 @@ pub(crate) use render::gpu_renderer::RadarGpuRenderer;
 pub(crate) use render::national_mosaic::NationalMosaic;
 pub(crate) use render::render_coordinator::RenderCoordinator;
 pub(crate) use render::volume_ray_renderer::VolumeRayRenderer;
-
-/// Standard NEXRAD coverage range in km.
-pub(crate) const RADAR_COVERAGE_RANGE_KM: f64 = 300.0;

@@ -125,10 +125,10 @@ pub(crate) mod legacy {
     /// Badge yellow-amber (SAILS/MRLE, cache warning, 3D pill, notes). SAILS
     /// keeps a tiny [`super::LOOP`] tick; the rest lose color.
     pub(crate) const CAUTION: Color32 = Color32::from_rgb(230, 190, 80);
-    /// Green sweep line / current beam. Becomes [`super::SEEN`] (quiet canvas).
+    /// Green current-beam mark, left only in the left panel's Radar
+    /// Operations gauges; goes when the ladder replaces them (the ladder and
+    /// the rail PR). The canvas sweep line is [`super::SEEN`].
     pub(crate) const SWEEP: Color32 = Color32::from_rgb(100, 255, 100);
-    /// Lavender for the previous sweep's arc and start line (quiet canvas).
-    pub(crate) const SWEEP_PREV: Color32 = Color32::from_rgb(160, 160, 220);
 }
 
 /// Map marks drawn over the radar (sites, location, rings, compass).
@@ -167,27 +167,46 @@ pub(crate) mod map {
     pub(crate) fn radial() -> Color32 {
         alpha(LINE, 80)
     }
-    /// N/E/S/W letters on the rings.
-    pub(crate) fn cardinal_label() -> Color32 {
-        alpha(TEXT_FAINT, 200)
-    }
     /// Radar-site center marker fill.
     pub(crate) const CENTER_MARKER: Color32 = TEXT_DIM;
     /// Radar-site center marker stroke.
     pub(crate) const CENTER_MARKER_STROKE: Color32 = TEXT_FAINT;
     /// A label printed on the map (site IDs, readouts).
     pub(crate) const LABEL: Color32 = TEXT;
+    /// The translucent surface under anything that sits over the map (the
+    /// legend, the scale bar, the caption, stamps), so nothing prints
+    /// straight over map labels.
+    pub(crate) fn scrim() -> Color32 {
+        alpha(super::PANEL, 210)
+    }
+    /// The scrim's hairline edge.
+    pub(crate) fn scrim_edge() -> Color32 {
+        alpha(LINE, 200)
+    }
 }
 
-/// Radar sweep-position marks on the canvas.
+/// Radar sweep-position marks on the canvas (§7): white is what you see,
+/// red is now.
 pub(crate) mod radar {
-    use super::{alpha, legacy, Color32, TEXT_FAINT};
+    use super::{alpha, Color32, SEEN, TEXT, TEXT_FAINT};
 
-    /// Active sweep line.
-    pub(crate) const SWEEP_LINE: Color32 = legacy::SWEEP;
-    /// Sweep start boundary line (matches the previous sweep's arc).
+    /// The data edge: the newest radial drawn.
+    pub(crate) const SWEEP_LINE: Color32 = SEEN;
+    /// Where the new sweep started: a faint white.
     pub(crate) fn sweep_start_line() -> Color32 {
-        alpha(legacy::SWEEP_PREV, 180)
+        alpha(SEEN, 90)
+    }
+    /// A received chunk's boundary inside the live cut.
+    pub(crate) fn chunk_line() -> Color32 {
+        alpha(TEXT, 60)
+    }
+    /// The edge ring's arc for the new sweep.
+    pub(crate) fn edge_ring_new() -> Color32 {
+        alpha(SEEN, 190)
+    }
+    /// The edge ring's arc for the previous sweep (and the held ring).
+    pub(crate) fn edge_ring_old() -> Color32 {
+        alpha(TEXT_FAINT, 150)
     }
     /// Stale sweep line (shown between sweeps).
     pub(crate) fn sweep_line_stale() -> Color32 {

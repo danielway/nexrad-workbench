@@ -1,6 +1,6 @@
 //! Visualization state (canvas, zoom/pan, product selection).
 
-use crate::core::canvas::CanvasCaption;
+use crate::core::canvas::CaptionContext;
 use crate::core::{DisplayedSweep, ElevationSelection, RadarProduct, StormCellInfo};
 use crate::geo::{Camera, Flat2DState, ViewMode};
 use eframe::egui::Vec2;
@@ -102,12 +102,11 @@ pub(crate) struct VizState {
     /// panel.
     pub previous_displayed: Option<DisplayedSweep>,
 
-    /// What honesty caption the canvas should show this frame (spec §11.2).
-    /// Recomputed each frame in `advance_playback`; replaces the old
-    /// `acquiring` bool. Either the centered "Acquiring data…" hint on a blank
-    /// canvas, or a "showing X · fetching/​no-data Y" discrepancy caption when a
-    /// stale frame is held while the playhead has drifted past it.
-    pub canvas_caption: CanvasCaption,
+    /// What the render loop knows for the canvas caption rule this frame
+    /// (one frame's length, a render in flight, downloads, the wanted tilt).
+    /// Recomputed each frame in `advance_playback`; the session's caption
+    /// rule reads it beside its frame and playhead facts.
+    pub caption_context: CaptionContext,
 }
 
 impl Default for VizState {
@@ -136,7 +135,7 @@ impl Default for VizState {
             last_visible_bounds: None,
             displayed: None,
             previous_displayed: None,
-            canvas_caption: CanvasCaption::None,
+            caption_context: CaptionContext::default(),
         }
     }
 }

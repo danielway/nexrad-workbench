@@ -56,43 +56,6 @@ pub(crate) fn displayed_elevation_is_collecting(
     }
 }
 
-/// Whether the canvas shows a sweep of the volume the stream is collecting,
-/// so the "Current" line carries the live tag. A loop to now also plays
-/// earlier volumes' settled sweeps; those get no tag.
-pub(crate) fn displays_live_volume(
-    stream_active: bool,
-    displayed_scan: Option<&crate::data::ScanKey>,
-    live_volume: Option<&crate::data::ScanKey>,
-) -> bool {
-    stream_active && displayed_scan.is_some() && displayed_scan == live_volume
-}
-
-/// The live tag beside the "Current" sweep in the canvas info overlay.
-///
-/// Rays shows the partial itself, so the tag counts the chunks drawn so far
-/// ("streaming 2/3"). Frames keeps the last whole sweep up, so the tag says
-/// the next one is on its way ("collecting 2/3") and the canvas doesn't read
-/// as stalled while the beam fills it in.
-pub(crate) fn live_sweep_tag(
-    whole_sweeps_only: bool,
-    partial: bool,
-    chunks: u32,
-    chunks_expected: Option<u32>,
-) -> String {
-    if !partial {
-        return "live".to_string();
-    }
-    let verb = if whole_sweeps_only {
-        "collecting"
-    } else {
-        "streaming"
-    };
-    match chunks_expected {
-        Some(e) => format!("{verb} {chunks}/{e}"),
-        None => verb.to_string(),
-    }
-}
-
 /// Whether data-age desaturation should run this frame.
 ///
 /// Desaturation only makes sense while the sweep animation is effectively
@@ -418,84 +381,335 @@ pub(crate) fn geo_to_polar(lat: f64, lon: f64, radar_lat: f64, radar_lon: f64) -
 }
 
 // ---------------------------------------------------------------------------
-// Canvas honesty caption (moved from `state::viz` so the render-loop reducer
-// in `core::render_loop` can compose it)
+// Canvas caption (one-instrument §7 "Rules", §2 the caption surface)
 // ---------------------------------------------------------------------------
 
-/// Honesty caption for the canvas (spec §11.2 / alignment §3 — caption only).
-///
-/// The canvas keeps showing the most recent successfully displayed frame when
-/// the playhead drifts into an undownloaded region or gap (it never blanks
-/// merely because the playhead moved away in time). This enum tells the overlay
-/// which caption, if any, to render to keep the time honest.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub(crate) enum CanvasCaption {
-    /// No caption — the displayed frame covers the playhead, or live owns the
-    /// canvas.
-    #[default]
-    None,
-    /// Blank canvas with a reactive fetch in flight: show "Acquiring data…" so
-    /// an empty view reads as loading, not broken.
-    Acquiring,
-    /// A stale frame is held while the playhead sits past it. `showing` is the
-    /// displayed frame's representative (midpoint) time; `target` is the
-    /// playhead time. `fetching` distinguishes "fetching Y…" (a download covers
-    /// the playhead) from "no data at Y" (nothing is, or is coming).
-    Discrepancy {
-        showing: f64,
-        target: f64,
-        fetching: bool,
-    },
+/// Floor for [`frame_step_secs`]: below a minute the step would flicker the
+/// caption on every short high-tilt sweep and every chunk of latency.
+pub(crate) const MIN_FRAME_STEP_SECS: f64 = 60.0;
+
+/// Frame step when nothing better is known: a typical volume.
+pub(crate) const DEFAULT_FRAME_STEP_SECS: f64 = 300.0;
+
+/// What the render loop knows about the frame and the playhead that the
+/// session facts do not carry. Plain data; the caption rule
+/// ([`decide_canvas_caption`]) reads it beside [`crate::core::session::SessionVm`]'s
+/// frame and playhead facts.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct CaptionContext {
+    /// Seconds between consecutive frames of the tilt on screen ("one
+    /// frame" in the rule). See [`frame_step_secs`].
+    pub frame_step_secs: f64,
+    /// A cached frame the playhead calls for is not yet on the GPU (a render
+    /// is in flight); the frame and the playhead disagree only for a moment.
+    pub render_pending: bool,
+    /// A download or ingest covers the playhead.
+    pub fetch_covers_playhead: bool,
+    /// The tilt the user asked for; `None` is Latest.
+    pub wanted_tilt_deg: Option<f32>,
+    /// The archive lists a scan at the playhead that is not on the device
+    /// (its start, Unix seconds) — the caption offers to fetch it.
+    pub fetchable_scan_start: Option<i64>,
+    /// 3D volume rendering is on while the playhead is pinned to now: the
+    /// volume renders only once every tilt is in.
+    pub volume_waiting: bool,
 }
 
-/// Pure derivation of the canvas honesty caption (spec §11.2). Kept separate
-/// from `advance_playback` so the decision is unit-testable.
+impl Default for CaptionContext {
+    fn default() -> Self {
+        Self {
+            frame_step_secs: DEFAULT_FRAME_STEP_SECS,
+            render_pending: false,
+            fetch_covers_playhead: false,
+            wanted_tilt_deg: None,
+            fetchable_scan_start: None,
+            volume_waiting: false,
+        }
+    }
+}
+
+/// Why the frame is not the one the playhead calls for.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum CaptionReason {
+    /// A download covering the playhead is on its way.
+    Downloading,
+    /// A running stream will bring it; the antenna is elsewhere.
+    Waiting { antenna_deg: Option<f32> },
+    /// Nothing is coming. `fetch` is the listed scan the user can fetch.
+    NoData { fetch: Option<i64> },
+}
+
+/// The canvas caption decision — the only text that ever sits over the map.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub(crate) enum CanvasCaption {
+    /// The frame and the playhead agree (within one frame).
+    #[default]
+    None,
+    /// The map is blank. A blank map always says why.
+    NoFrame {
+        playhead: f64,
+        tilt_deg: Option<f32>,
+        reason: CaptionReason,
+    },
+    /// A frame is held more than one frame away from the playhead.
+    Discrepancy {
+        /// The frame's representative (midpoint) time.
+        showing: f64,
+        /// The playhead time (now, when pinned).
+        playhead: f64,
+        tilt_deg: Option<f32>,
+        reason: CaptionReason,
+    },
+    /// 3D volume rendering while pinned: waiting for the volume to complete.
+    VolumeWaiting,
+}
+
+/// The one caption rule (§7): caption whenever the frame on screen and the
+/// playhead differ by more than one frame, pinned or not; a blank map always
+/// says why.
 ///
-/// - `attached`: the playhead is tethered to the live edge (pinned/lookback) or
-///   a live stream owns the canvas — then live's partial path owns the caption,
-///   so we emit `None`.
-/// - `displayed`: the on-screen frame's `(start, end, midpoint)`, if any.
-/// - `playhead`: the playback position (seconds).
-/// - `scan_covers_playhead`: whether a cached scan exists at-or-before the
-///   playhead within the recency window (i.e. the resolver could pick a frame
-///   covering it). When true there's no discrepancy — the resolver/render path
-///   is repainting; when false the held frame is stale relative to the playhead.
-/// - `fetch_covers_playhead`: whether a download/ingest covers the playhead.
-pub(crate) fn derive_canvas_caption(
-    attached: bool,
-    displayed: Option<(f64, f64, f64)>,
-    playhead: f64,
-    scan_covers_playhead: bool,
-    fetch_covers_playhead: bool,
+/// - `frame` / `playhead`: the session's frame and playhead facts.
+/// - `now`: this frame's wall clock (the playhead's time when pinned).
+/// - `stream_running` / `antenna_deg`: whether a stream will bring the next
+///   frame, and the tilt the antenna is on.
+pub(crate) fn decide_canvas_caption(
+    frame: Option<&crate::core::session::FrameFact>,
+    playhead: crate::core::session::Playhead,
+    now: f64,
+    stream_running: bool,
+    antenna_deg: Option<f32>,
+    ctx: &CaptionContext,
 ) -> CanvasCaption {
-    // Live (or any attached) state: the live partial path owns the canvas.
-    if attached {
+    use crate::core::session::Playhead;
+    if ctx.volume_waiting {
+        return CanvasCaption::VolumeWaiting;
+    }
+    if ctx.render_pending {
         return CanvasCaption::None;
     }
-    match displayed {
-        // A frame is held. If no scan covers the playhead, the held frame is
-        // stale relative to where the playhead sits — surface the discrepancy
-        // (the canvas keeps showing it rather than blanking).
-        Some((_start, _end, midpoint)) => {
-            if scan_covers_playhead {
-                CanvasCaption::None
-            } else {
-                CanvasCaption::Discrepancy {
-                    showing: midpoint,
-                    target: playhead,
-                    fetching: fetch_covers_playhead,
+    let (target, pinned) = match playhead {
+        Playhead::PinnedToNow => (now, true),
+        Playhead::AtTime { ts, .. } => (ts, false),
+    };
+    let reason = if ctx.fetch_covers_playhead {
+        CaptionReason::Downloading
+    } else if pinned && stream_running {
+        CaptionReason::Waiting { antenna_deg }
+    } else {
+        CaptionReason::NoData {
+            fetch: ctx.fetchable_scan_start,
+        }
+    };
+    let Some(f) = frame else {
+        return CanvasCaption::NoFrame {
+            playhead: target,
+            tilt_deg: ctx.wanted_tilt_deg,
+            reason,
+        };
+    };
+    let start = 2.0 * f.time_secs - f.end_secs;
+    let gap = (target - f.end_secs).max(start - target).max(0.0);
+    if gap > ctx.frame_step_secs.max(MIN_FRAME_STEP_SECS) {
+        CanvasCaption::Discrepancy {
+            showing: f.time_secs,
+            playhead: target,
+            tilt_deg: ctx.wanted_tilt_deg,
+            reason,
+        }
+    } else {
+        CanvasCaption::None
+    }
+}
+
+/// "One frame" for the caption rule: the expected seconds between
+/// consecutive frames of what is on screen.
+///
+/// - A fixed tilt repeats once per volume: the volume's duration over the
+///   number of cuts with that elevation number.
+/// - Latest shows every sweep, so one frame is a sweep.
+///
+/// The volume's duration is the gap to the next cached volume when there is
+/// one, else its own span; the newest volume may still be filling, so it
+/// never counts as shorter than the one before it. Floored at
+/// [`MIN_FRAME_STEP_SECS`]; [`DEFAULT_FRAME_STEP_SECS`] when the frame's
+/// volume is not in the timeline.
+pub(crate) fn frame_step_secs(
+    timeline: &crate::core::RadarTimeline,
+    displayed: &crate::core::DisplayedSweep,
+    latest: bool,
+) -> f64 {
+    let sweep_secs = (displayed.end_time - displayed.start_time).max(0.0);
+    if latest {
+        return sweep_secs.max(MIN_FRAME_STEP_SECS);
+    }
+    let key_ms = displayed.identity.scan_key.scan_start.0;
+    let scans = &timeline.scans;
+    let Some(i) = scans.iter().position(|s| s.key_ms() == key_ms) else {
+        return DEFAULT_FRAME_STEP_SECS;
+    };
+    let scan = &scans[i];
+    let own = (scan.end_time - scan.start_time).max(0.0);
+    let volume_secs = match scans.get(i + 1) {
+        Some(next) if next.start_time - scan.start_time <= crate::core::recency::RECENCY_SECS => {
+            next.start_time - scan.start_time
+        }
+        Some(_) => own,
+        None => match i.checked_sub(1).map(|p| &scans[p]) {
+            Some(prev) => own.max(prev.end_time - prev.start_time),
+            None => own,
+        },
+    };
+    // The fixed-tilt resolver shows one elevation number, so its frames are
+    // that number's cuts in the volume.
+    let visits = scan
+        .sweeps
+        .iter()
+        .filter(|s| s.elevation_number == displayed.identity.elevation_number)
+        .count()
+        .max(1);
+    (volume_secs / visits as f64)
+        .max(sweep_secs)
+        .max(MIN_FRAME_STEP_SECS)
+}
+
+/// What a caption segment is, so the shell can set it in its color (§7:
+/// "the caption names both, in their colors").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CaptionRole {
+    /// Plain words.
+    Words,
+    /// The frame's time — what you see.
+    Frame,
+    /// The playhead's time; `pinned` when it is now.
+    Playhead { pinned: bool },
+    /// The clickable "fetch" (the line's [`CaptionLine::action`]).
+    Action,
+}
+
+/// The caption as words, segment by segment.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct CaptionLine {
+    pub segments: Vec<(String, CaptionRole)>,
+    /// What clicking the [`CaptionRole::Action`] segment does.
+    pub action: Option<crate::core::Intent>,
+}
+
+impl CaptionLine {
+    /// The whole line as one string.
+    #[cfg(test)]
+    pub(crate) fn text(&self) -> String {
+        self.segments.iter().map(|(s, _)| s.as_str()).collect()
+    }
+}
+
+fn tilt_word(tilt_deg: Option<f32>) -> Option<String> {
+    tilt_deg.map(|t| format!("{t:.1}°"))
+}
+
+/// The caption's words in the §7 forms:
+///
+/// - `showing 11:28:51 · playhead 11:30:49 · 0.5° at 11:30 is downloading`
+/// - `… · no 0.5° at 11:30` (`· fetch` when the archive lists it)
+/// - `… · waiting for 0.5° (antenna on 4.0°)`
+/// - `no frame yet · downloading 11:21:49`
+/// - `no 0.5° data at 11:30 · fetch`
+pub(crate) fn caption_line(
+    caption: &CanvasCaption,
+    pinned: bool,
+    clock: &dyn crate::core::session::Clock,
+) -> Option<CaptionLine> {
+    let mut segs: Vec<(String, CaptionRole)> = Vec::new();
+    let mut action = None;
+    let words = |s: String| (s, CaptionRole::Words);
+    let waiting = |tilt: Option<f32>, antenna: Option<f32>| {
+        let mut s = match tilt_word(tilt) {
+            Some(t) => format!("waiting for {t}"),
+            None => "waiting for the next sweep".to_string(),
+        };
+        if let Some(a) = antenna {
+            s.push_str(&format!(" (antenna on {a:.1}°)"));
+        }
+        s
+    };
+    match *caption {
+        CanvasCaption::None => return None,
+        CanvasCaption::VolumeWaiting => {
+            segs.push(words(
+                "waiting for the volume to complete · volume rendering needs every tilt"
+                    .to_string(),
+            ));
+        }
+        CanvasCaption::NoFrame {
+            playhead,
+            tilt_deg,
+            reason,
+        } => match reason {
+            CaptionReason::Downloading => {
+                segs.push(words("no frame yet · downloading ".to_string()));
+                segs.push((clock.hms(playhead), CaptionRole::Playhead { pinned }));
+            }
+            CaptionReason::Waiting { antenna_deg } => {
+                segs.push(words(format!(
+                    "no frame yet · {}",
+                    waiting(tilt_deg, antenna_deg)
+                )));
+            }
+            CaptionReason::NoData { fetch } => {
+                segs.push(words(match tilt_word(tilt_deg) {
+                    Some(t) => format!("no {t} data at "),
+                    None => "no data at ".to_string(),
+                }));
+                segs.push((clock.hm(playhead), CaptionRole::Playhead { pinned }));
+                if let Some(scan_start) = fetch {
+                    segs.push(words(" · ".to_string()));
+                    segs.push(("fetch".to_string(), CaptionRole::Action));
+                    action = Some(fetch_intent(scan_start));
+                }
+            }
+        },
+        CanvasCaption::Discrepancy {
+            showing,
+            playhead,
+            tilt_deg,
+            reason,
+        } => {
+            segs.push(words("showing ".to_string()));
+            segs.push((clock.hms(showing), CaptionRole::Frame));
+            segs.push(words(" · playhead ".to_string()));
+            segs.push((clock.hms(playhead), CaptionRole::Playhead { pinned }));
+            segs.push(words(" · ".to_string()));
+            match reason {
+                CaptionReason::Downloading => segs.push(words(match tilt_word(tilt_deg) {
+                    Some(t) => format!("{t} at {} is downloading", clock.hm(playhead)),
+                    None => format!("{} is downloading", clock.hm(playhead)),
+                })),
+                CaptionReason::Waiting { antenna_deg } => {
+                    segs.push(words(waiting(tilt_deg, antenna_deg)))
+                }
+                CaptionReason::NoData { fetch } => {
+                    segs.push(words(match tilt_word(tilt_deg) {
+                        Some(t) => format!("no {t} at {}", clock.hm(playhead)),
+                        None => format!("no data at {}", clock.hm(playhead)),
+                    }));
+                    if let Some(scan_start) = fetch {
+                        segs.push(words(" · ".to_string()));
+                        segs.push(("fetch".to_string(), CaptionRole::Action));
+                        action = Some(fetch_intent(scan_start));
+                    }
                 }
             }
         }
-        // Blank canvas: the legacy "Acquiring…" hint when a fetch covers the
-        // playhead, else nothing.
-        None => {
-            if fetch_covers_playhead {
-                CanvasCaption::Acquiring
-            } else {
-                CanvasCaption::None
-            }
-        }
+    }
+    Some(CaptionLine {
+        segments: segs,
+        action,
+    })
+}
+
+fn fetch_intent(scan_start: i64) -> crate::core::Intent {
+    crate::core::Intent::FetchScan {
+        scan_start,
+        elevation_filter: None,
     }
 }
 
@@ -505,6 +719,577 @@ pub(crate) fn derive_canvas_caption(
 pub(crate) fn cutout_lon_range_deg(center_lat: f64, range_km: f64) -> f64 {
     let lat_correction = center_lat.to_radians().cos();
     range_km / KM_PER_DEGREE / lat_correction
+}
+
+// ---------------------------------------------------------------------------
+// Quiet canvas: the overlay view-model (one-instrument §7)
+// ---------------------------------------------------------------------------
+
+/// Ring spacing: a ring every 50 km, the major (hover-labeled) ones every
+/// 100 km.
+pub(crate) const RING_STEP_KM: f64 = 50.0;
+/// Major ring spacing; hover a major ring for its range.
+pub(crate) const RING_LABEL_STEP_KM: f64 = 100.0;
+/// How close (screen px) the cursor must be to a ring to hover it.
+pub(crate) const RING_HOVER_PX: f32 = 5.0;
+
+/// The product's maximum range: what the coverage ring and the mosaic
+/// cutout draw at. Reflectivity (and its clutter-filter power) reaches the
+/// long-range surveillance cut; Doppler and dual-pol moments stop at 300 km.
+pub(crate) fn product_max_range_km(product: crate::core::RadarProduct) -> f64 {
+    use crate::core::RadarProduct::*;
+    match product {
+        Reflectivity | ClutterFilterPower => 460.0,
+        Velocity
+        | SpectrumWidth
+        | DifferentialReflectivity
+        | CorrelationCoefficient
+        | DifferentialPhase => 300.0,
+    }
+}
+
+/// Every circle the canvas draws around the site, in km, from one place so
+/// the 2D rings, the edge ring, the coverage ring, the mosaic cutout and the
+/// 3D drape agree ("the rings agree").
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct RingGeometry {
+    /// The data's real range: the edge ring, the GPU disc, the 3D drape.
+    pub data_km: f64,
+    /// The product's maximum range: the coverage ring and the mosaic cutout.
+    pub coverage_km: f64,
+    /// Range rings inside the data range, `(km, major)`.
+    pub rings: Vec<(f64, bool)>,
+}
+
+/// Ring geometry for `product`, with the on-screen sweep's range when there
+/// is data (`None` falls back to the product's maximum range, so the rings
+/// still show where data will be).
+pub(crate) fn ring_geometry(
+    product: crate::core::RadarProduct,
+    data_range_km: Option<f64>,
+) -> RingGeometry {
+    let coverage_km = product_max_range_km(product);
+    let data_km = data_range_km
+        .filter(|r| r.is_finite() && *r > 0.0)
+        .unwrap_or(coverage_km);
+    let mut rings = Vec::new();
+    let mut km = RING_STEP_KM;
+    // The last ring before the edge; the edge itself is the edge ring.
+    while km < data_km - 1.0 {
+        let major = (km % RING_LABEL_STEP_KM).abs() < 1e-6;
+        rings.push((km, major));
+        km += RING_STEP_KM;
+    }
+    RingGeometry {
+        data_km,
+        coverage_km,
+        rings,
+    }
+}
+
+/// The major ring under the cursor, for its hover label ("200 km"): the
+/// cursor's distance from the site is within [`RING_HOVER_PX`] of a major
+/// ring, or of the edge ring.
+pub(crate) fn hovered_ring_km(
+    rings: &RingGeometry,
+    cursor_dist_px: f32,
+    px_per_km: f32,
+) -> Option<f64> {
+    if !(px_per_km.is_finite() && px_per_km > 0.0) {
+        return None;
+    }
+    rings
+        .rings
+        .iter()
+        .filter(|(_, major)| *major)
+        .map(|(km, _)| *km)
+        .chain(std::iter::once(rings.data_km))
+        .find(|km| ((*km as f32) * px_per_km - cursor_dist_px).abs() <= RING_HOVER_PX)
+}
+
+/// A ring's hover label: `200 km`.
+pub(crate) fn ring_label(km: f64) -> String {
+    format!("{km:.0} km")
+}
+
+/// The sweep marks in Rays (§7): a faint white start line, a solid white
+/// data edge, a dashed red now line, and the edge ring split at the data
+/// edge — no text on the map.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct SweepMarks {
+    /// Where the new sweep started (degrees).
+    pub start_az: f32,
+    /// The data edge: the newest radial drawn (degrees).
+    pub edge_az: f32,
+    /// Between sweeps: the held position from the last sweep, drawn faint.
+    pub stale: bool,
+    /// Where the antenna probably is (projected) — the dashed red now line.
+    /// Live only.
+    pub now_az: Option<f32>,
+    /// Each received chunk's last azimuth except the newest (live).
+    pub chunk_az: Vec<f32>,
+    /// The data edge's collection time, for the edge ring's hover (actual in
+    /// live; the playhead in archive, where the reveal follows it).
+    pub edge_time: Option<f64>,
+}
+
+/// Everything [`CanvasOverlayVm::build`] reads.
+pub(crate) struct CanvasOverlayInputs<'a> {
+    pub product: crate::core::RadarProduct,
+    /// The on-screen sweep's range when the GPU holds data.
+    pub data_range_km: Option<f64>,
+    /// `(edge_az, start_az)` of the sweep reveal this frame, if any.
+    pub sweep: Option<(f32, f32)>,
+    /// The sweep position is held from the last sweep (between sweeps).
+    pub stale: bool,
+    /// Rays is animating this frame (lines draw only then).
+    pub show_lines: bool,
+    /// A live stream feeds the canvas.
+    pub live: bool,
+    /// The live model's estimated antenna azimuth.
+    pub antenna_az: Option<f32>,
+    /// The live cut's chunk last-azimuths, oldest first.
+    pub chunk_last_az: &'a [f32],
+    /// The live cut's newest chunk end time.
+    pub live_edge_time: Option<f64>,
+    pub playhead_secs: f64,
+    pub fallbacks: CanvasFallbacks,
+}
+
+/// What the canvas overlays draw this frame. The shell only paints it.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct CanvasOverlayVm {
+    pub rings: RingGeometry,
+    /// Rays' marks; `None` in Frames or with no reveal.
+    pub sweep: Option<SweepMarks>,
+    /// Row 2's fallback: the data edge's time, painted inside the canvas.
+    /// `None` unless [`CanvasFallbacks::edge_label`] is on.
+    pub edge_label: Option<f64>,
+}
+
+impl CanvasOverlayVm {
+    pub(crate) fn build(i: &CanvasOverlayInputs<'_>) -> Self {
+        let rings = ring_geometry(i.product, i.data_range_km);
+        let sweep = match (i.sweep, i.show_lines) {
+            (Some((edge_az, start_az)), true) => Some(SweepMarks {
+                start_az,
+                edge_az,
+                stale: i.stale,
+                now_az: if i.live { i.antenna_az } else { None },
+                chunk_az: if i.live {
+                    i.chunk_last_az
+                        .iter()
+                        .take(i.chunk_last_az.len().saturating_sub(1))
+                        .copied()
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+                edge_time: if i.stale {
+                    None
+                } else if i.live {
+                    i.live_edge_time
+                } else {
+                    Some(i.playhead_secs)
+                },
+            }),
+            _ => None,
+        };
+        let edge_label = if i.fallbacks.edge_label {
+            sweep.as_ref().and_then(|s| s.edge_time)
+        } else {
+            None
+        };
+        Self {
+            rings,
+            sweep,
+            edge_label,
+        }
+    }
+}
+
+/// Hovering the edge ring reads the data edge's time and age (§7: "hover the
+/// ring for the edge time and age"): `edge 11:21:57 · 18 s old`.
+pub(crate) fn edge_hover_text(
+    edge_time: f64,
+    now: f64,
+    clock: &dyn crate::core::session::Clock,
+) -> String {
+    format!(
+        "edge {} · {}",
+        clock.hms(edge_time),
+        crate::core::session::format_age(now - edge_time)
+    )
+}
+
+/// The desaturated wedge's tooltip (answers row 10: unchanged, with a
+/// tooltip), when the cursor sits on it: inside the data disc, in the
+/// previous sweep's region, while age desaturation runs.
+pub(crate) fn faded_wedge_hint(
+    desaturating: bool,
+    sweep: Option<(f32, f32)>,
+    cursor_az: f32,
+    cursor_km: f64,
+    data_km: f64,
+) -> Option<&'static str> {
+    (desaturating && cursor_km < data_km && polar_in_prev_region(cursor_az, sweep))
+        .then_some("Faded: the previous sweep, older than the new one")
+}
+
+/// Where row 2's fallback edge label sits: on the data edge at `edge_az`,
+/// pulled inward so a `w`×`h` label stays inside `bounds` (`min_x, min_y,
+/// max_x, max_y`). Returns the label's top-left corner.
+pub(crate) fn edge_label_pos(
+    center: (f32, f32),
+    radius_px: f32,
+    edge_az: f32,
+    size: (f32, f32),
+    bounds: (f32, f32, f32, f32),
+) -> (f32, f32) {
+    let a = (edge_az - 90.0).to_radians();
+    let (x, y) = (
+        center.0 + radius_px * a.cos(),
+        center.1 + radius_px * a.sin(),
+    );
+    let (w, h) = size;
+    let (min_x, min_y, max_x, max_y) = bounds;
+    let left = (x - w / 2.0).clamp(min_x, (max_x - w).max(min_x));
+    let top = (y - h / 2.0).clamp(min_y, (max_y - h).max(min_y));
+    (left, top)
+}
+
+// ---------------------------------------------------------------------------
+// Fallbacks for the two removals (answers page, "The canvas, change by
+// change", rows 1 and 2)
+// ---------------------------------------------------------------------------
+
+/// The two canvas removals Daniel may want back, each with the cheap
+/// fallback the answers page names. Both ship off ([`CANVAS_FALLBACKS`]);
+/// flipping one brings it back with no other change.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) struct CanvasFallbacks {
+    /// Row 1, the info box: a one-line stamp top-left on a scrim —
+    /// `KTLX · REF · 0.5° · 11:21:57` — with the previous sweep's time as a
+    /// second line in Rays.
+    pub frame_stamp: bool,
+    /// Row 2, the donut labels: one label at the data edge, time only, kept
+    /// inside the canvas.
+    pub edge_label: bool,
+}
+
+/// What this build ships: the info box and the donut labels are out.
+pub(crate) const CANVAS_FALLBACKS: CanvasFallbacks = CanvasFallbacks {
+    frame_stamp: false,
+    edge_label: false,
+};
+
+/// Row 1's fallback stamp.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct FrameStamp {
+    /// `KTLX · REF · 0.5° · 11:21:57`
+    pub line: String,
+    /// `previous 11:17:02` — Rays, with a previous sweep under the new one.
+    pub previous: Option<String>,
+}
+
+/// The fallback stamp, or `None` when the fallback is off or nothing is on
+/// screen. The frame facts are the session's; the stamp derives nothing.
+pub(crate) fn frame_stamp(
+    fallbacks: CanvasFallbacks,
+    site_id: &str,
+    product: crate::core::RadarProduct,
+    frame: Option<&crate::core::session::FrameFact>,
+    previous_mid: Option<f64>,
+    rays: bool,
+    clock: &dyn crate::core::session::Clock,
+) -> Option<FrameStamp> {
+    if !fallbacks.frame_stamp {
+        return None;
+    }
+    let f = frame?;
+    Some(FrameStamp {
+        line: format!(
+            "{} · {} · {:.1}° · {}",
+            site_id.to_uppercase(),
+            product.short_code(),
+            f.elevation_deg,
+            clock.hms(f.time_secs)
+        ),
+        previous: previous_mid
+            .filter(|_| rays)
+            .map(|t| format!("previous {}", clock.hms(t))),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Legend (one-instrument §7: titled with the unit, on a scrim)
+// ---------------------------------------------------------------------------
+
+/// The radar legend: the product's name and unit as its title, and the
+/// tick labels along the bar.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct LegendVm {
+    /// `Reflectivity · dBZ`
+    pub title: String,
+    /// `(fraction from the bottom, label)`, bottom to top.
+    pub ticks: Vec<(f32, String)>,
+}
+
+/// The legend for `product` over its color table's `(min, max)` range.
+pub(crate) fn legend_vm(product: crate::core::RadarProduct, range: (f32, f32)) -> LegendVm {
+    let (min_val, max_val) = range;
+    let span = max_val - min_val;
+    let step = if span > 200.0 {
+        60.0
+    } else if span > 60.0 {
+        10.0
+    } else if span > 10.0 {
+        5.0
+    } else if span > 2.0 {
+        1.0
+    } else {
+        0.2
+    };
+    let mut ticks = Vec::new();
+    if span > 0.0 {
+        let mut i = (min_val / step - 1e-4).ceil() as i64;
+        loop {
+            let val = i as f32 * step;
+            if val > max_val + 1e-4 {
+                break;
+            }
+            let label = if step < 1.0 {
+                format!("{val:.1}")
+            } else {
+                format!("{val:.0}")
+            };
+            ticks.push(((val - min_val) / span, label));
+            i += 1;
+        }
+    }
+    LegendVm {
+        title: format!("{} · {}", product.label(), product.unit()),
+        ticks,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scale bar (one-instrument §7: on a scrim, bottom-left)
+// ---------------------------------------------------------------------------
+
+/// The scale bar's target width; each bar snaps to a round value no wider.
+pub(crate) const SCALE_BAR_TARGET_PX: f32 = 120.0;
+const KM_TO_MI: f64 = 0.621371;
+
+/// The two stacked scale bars: km over miles.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct ScaleBarVm {
+    pub km_px: f32,
+    pub km_label: String,
+    pub mi_px: f32,
+    pub mi_label: String,
+}
+
+/// Snap both bars to a 1/2/5 × 10^n value no wider than
+/// [`SCALE_BAR_TARGET_PX`], given the map's km per screen pixel.
+pub(crate) fn scale_bar_vm(km_per_px: f64) -> Option<ScaleBarVm> {
+    if !(km_per_px.is_finite() && km_per_px > 0.0) {
+        return None;
+    }
+    let target_km = SCALE_BAR_TARGET_PX as f64 * km_per_px;
+    let nice_km = nice_round(target_km);
+    let nice_mi = nice_round(target_km * KM_TO_MI);
+    Some(ScaleBarVm {
+        km_px: (nice_km / km_per_px) as f32,
+        km_label: format_km(nice_km),
+        mi_px: (nice_mi / KM_TO_MI / km_per_px) as f32,
+        mi_label: format_mi(nice_mi),
+    })
+}
+
+/// Great-circle distance in km (R = 6371).
+pub(crate) fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let r = 6371.0;
+    let dlat = (lat2 - lat1).to_radians();
+    let dlon = (lon2 - lon1).to_radians();
+    let a = (dlat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().asin();
+    r * c
+}
+
+/// Snap to a 1/2/5 × 10^n round number not exceeding `target`.
+pub(crate) fn nice_round(target: f64) -> f64 {
+    if !target.is_finite() || target <= 0.0 {
+        return 0.0;
+    }
+    let mag = 10f64.powf(target.log10().floor());
+    let frac = target / mag;
+    let nice = if frac >= 5.0 {
+        5.0
+    } else if frac >= 2.0 {
+        2.0
+    } else {
+        1.0
+    };
+    nice * mag
+}
+
+fn format_km(km: f64) -> String {
+    if km >= 1.0 {
+        format!("{:.0} km", km)
+    } else if km >= 0.1 {
+        format!("{:.1} km", km)
+    } else {
+        format!("{:.0} m", km * 1000.0)
+    }
+}
+
+fn format_mi(mi: f64) -> String {
+    if mi >= 1.0 {
+        format!("{:.0} mi", mi)
+    } else if mi >= 0.1 {
+        format!("{:.1} mi", mi)
+    } else {
+        format!("{:.0} ft", mi * 5280.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Layer legends (one-instrument §7: "legends for every colored layer")
+// ---------------------------------------------------------------------------
+
+/// The mosaic's palette steps (dBZ) for its stamp's legend: NWS base
+/// reflectivity, which the MRMS WMS layer is drawn in.
+pub(crate) const MOSAIC_LEGEND_DBZ: [f32; 15] = [
+    5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0, 70.0, 75.0,
+];
+
+/// The mosaic legend's end labels: `5` … `75 dBZ`.
+pub(crate) fn mosaic_legend_ends() -> (String, String) {
+    let first = MOSAIC_LEGEND_DBZ[0];
+    let last = MOSAIC_LEGEND_DBZ[MOSAIC_LEGEND_DBZ.len() - 1];
+    (format!("{first:.0}"), format!("{last:.0} dBZ"))
+}
+
+/// The mPING legend: the categories of the reports drawn at the playhead,
+/// in a fixed order so the legend does not reshuffle as reports come and go.
+pub(crate) fn mping_legend(
+    reports: &[crate::mping::StormReport],
+    playback_secs: f64,
+) -> Vec<(crate::mping::ReportCategory, &'static str)> {
+    use crate::mping::ReportCategory::*;
+    [
+        Tornado,
+        Hail,
+        WindDamage,
+        Flood,
+        RainSnow,
+        ReducedVisibility,
+        Other,
+    ]
+    .into_iter()
+    .filter(|cat| {
+        reports
+            .iter()
+            .any(|r| r.category == *cat && r.visible_at(playback_secs))
+    })
+    .map(|cat| (cat, cat.label()))
+    .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Picking (one-instrument §7: hover states and a cursor; sites click only
+// when the Sites layer is on)
+// ---------------------------------------------------------------------------
+
+/// What the nearest marks under the cursor are, hit-tested by the shell
+/// against the projection (pixel radii).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct PickCandidates {
+    /// Another NEXRAD site's marker: `(id, lat, lon)`.
+    pub site: Option<(&'static str, f64, f64)>,
+    /// An mPING report's marker id.
+    pub mping: Option<i64>,
+    /// The alert polygon under the cursor (severity tie-break already
+    /// applied): `(id, event)`.
+    pub alert: Option<(String, String)>,
+}
+
+/// Which pickable layers are drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PickLayers {
+    pub sites: bool,
+    pub mping: bool,
+    /// Either alert class is on and live overlays apply at the playhead.
+    pub alerts: bool,
+}
+
+/// The map object a click picks and a hover highlights.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum MapPick {
+    Site {
+        id: &'static str,
+        lat: f64,
+        lon: f64,
+    },
+    Mping(i64),
+    Alert {
+        id: String,
+        event: String,
+    },
+}
+
+impl MapPick {
+    /// What a click on it does.
+    pub(crate) fn intent(&self) -> crate::core::Intent {
+        use crate::core::diagnostics::DiagnosticsIntent;
+        match self {
+            MapPick::Site { id, lat, lon } => crate::core::Intent::SelectSite {
+                site_id: id.to_string(),
+                lat: *lat,
+                lon: *lon,
+            },
+            MapPick::Mping(id) => {
+                crate::core::Intent::Diagnostics(DiagnosticsIntent::SelectMpingReport(*id))
+            }
+            MapPick::Alert { id, .. } => {
+                crate::core::Intent::Diagnostics(DiagnosticsIntent::SelectAlert(id.clone()))
+            }
+        }
+    }
+
+    /// The hover label beside the cursor: the site's ID, or the alert's
+    /// event. A report's marker needs none (its popover is one click away).
+    pub(crate) fn hover_label(&self) -> Option<String> {
+        match self {
+            MapPick::Site { id, .. } => Some(format!("{id} · switch site")),
+            MapPick::Mping(_) => None,
+            MapPick::Alert { event, .. } => Some(event.clone()),
+        }
+    }
+}
+
+/// Decide the pick. Point marks sit on top of alert polygons, so sites and
+/// reports win over alerts; a mark only picks while its layer is drawn — a
+/// click near an invisible site does nothing, as it looks like it should.
+pub(crate) fn decide_map_pick(c: PickCandidates, layers: PickLayers) -> Option<MapPick> {
+    if layers.sites {
+        if let Some((id, lat, lon)) = c.site {
+            return Some(MapPick::Site { id, lat, lon });
+        }
+    }
+    if layers.mping {
+        if let Some(id) = c.mping {
+            return Some(MapPick::Mping(id));
+        }
+    }
+    if layers.alerts {
+        if let Some((id, event)) = c.alert {
+            return Some(MapPick::Alert { id, event });
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -820,30 +1605,6 @@ mod coverage_tests {
         assert!(!sweep_animation_effective(Micro, true, Some(1), Some(4)));
         assert!(!sweep_animation_effective(Micro, true, Some(1), None));
     }
-
-    // --- live_sweep_tag --------------------------------------------------------
-
-    #[wasm_bindgen_test]
-    fn live_sweep_tag_names_what_the_canvas_shows() {
-        assert_eq!(live_sweep_tag(false, true, 2, Some(3)), "streaming 2/3");
-        assert_eq!(live_sweep_tag(true, true, 2, Some(3)), "collecting 2/3");
-        assert_eq!(live_sweep_tag(true, true, 1, None), "collecting");
-        assert_eq!(live_sweep_tag(true, false, 3, Some(3)), "live");
-        assert_eq!(live_sweep_tag(false, false, 0, None), "live");
-    }
-
-    #[wasm_bindgen_test]
-    fn live_tag_only_on_the_live_volume() {
-        let live = crate::data::ScanKey::from_secs("KMTX", 1_000);
-        let earlier = crate::data::ScanKey::from_secs("KMTX", 700);
-        assert!(displays_live_volume(true, Some(&live), Some(&live)));
-        // A settled sweep of an earlier volume, played by a loop to now.
-        assert!(!displays_live_volume(true, Some(&earlier), Some(&live)));
-        assert!(!displays_live_volume(false, Some(&live), Some(&live)));
-        assert!(!displays_live_volume(true, None, None));
-    }
-
-    // --- data_age_desaturation_effective ---------------------------------------
 
     #[wasm_bindgen_test]
     fn data_age_desaturation_requires_effective_sweep_animation() {
@@ -1186,79 +1947,687 @@ mod coverage_tests {
 #[cfg(test)]
 mod caption_tests {
     use super::*;
+    use crate::core::{DisplayedSweep, RadarTimeline, Scan, SweepIdentity};
+    use crate::data::ScanKey;
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    // A displayed frame [100, 200], midpoint 150.
-    fn frame() -> Option<(f64, f64, f64)> {
-        Some((100.0, 200.0, 150.0))
+    fn sweep(elev_num: u8, start: f64, end: f64) -> Sweep {
+        Sweep {
+            start_time: start,
+            end_time: end,
+            elevation: 0.5,
+            elevation_number: elev_num,
+            start_azimuth: 0.0,
+            radials: Vec::new(),
+            cached_products: vec!["reflectivity".to_string()],
+        }
+    }
+
+    fn scan(start: f64, end: f64, sweeps: Vec<Sweep>) -> Scan {
+        Scan {
+            start_time: start,
+            end_time: end,
+            key_timestamp: start,
+            vcp: 9999,
+            vcp_pattern: None,
+            sweeps,
+            completeness: None,
+            cached_sweep_count: None,
+            planned_sweep_count: None,
+        }
+    }
+
+    fn shown(scan_start: f64, elev: u8, start: f64, end: f64) -> DisplayedSweep {
+        DisplayedSweep {
+            identity: SweepIdentity::new(
+                ScanKey::from_secs_f64("KTLX", scan_start),
+                elev,
+                "reflectivity",
+            ),
+            start_time: start,
+            end_time: end,
+            elevation_deg: 0.5,
+        }
     }
 
     #[wasm_bindgen_test]
     fn caption_defaults_to_none() {
         assert_eq!(CanvasCaption::default(), CanvasCaption::None);
-    }
-
-    #[wasm_bindgen_test]
-    fn caption_suppressed_while_attached() {
-        // Live owns the canvas while attached — never caption, even with a
-        // drifted playhead and no covering scan.
         assert_eq!(
-            derive_canvas_caption(true, frame(), 9999.0, false, false),
-            CanvasCaption::None
-        );
-        // Also suppressed on a blank canvas while attached.
-        assert_eq!(
-            derive_canvas_caption(true, None, 9999.0, false, true),
-            CanvasCaption::None
+            CaptionContext::default().frame_step_secs,
+            DEFAULT_FRAME_STEP_SECS
         );
     }
 
     #[wasm_bindgen_test]
-    fn caption_none_when_scan_covers_playhead() {
-        // A frame is held and a scan covers the playhead: the resolver/render
-        // path is repainting, so no discrepancy.
+    fn a_fixed_tilt_frame_is_one_volume_apart() {
+        let tl = RadarTimeline {
+            scans: vec![
+                scan(0.0, 270.0, vec![sweep(1, 0.0, 20.0), sweep(2, 20.0, 40.0)]),
+                scan(280.0, 560.0, vec![sweep(1, 280.0, 300.0)]),
+            ],
+        };
+        // The gap to the next volume's start.
+        let d = shown(0.0, 1, 0.0, 20.0);
+        assert!((frame_step_secs(&tl, &d, false) - 280.0).abs() < 1e-9);
+        // The newest volume is never shorter than the one before it.
+        let d = shown(280.0, 1, 280.0, 300.0);
+        assert!((frame_step_secs(&tl, &d, false) - 280.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_revisited_elevation_number_shortens_the_step() {
+        let tl = RadarTimeline {
+            scans: vec![scan(
+                0.0,
+                300.0,
+                vec![sweep(1, 0.0, 20.0), sweep(1, 150.0, 170.0)],
+            )],
+        };
+        let d = shown(0.0, 1, 0.0, 20.0);
+        assert!((frame_step_secs(&tl, &d, false) - 150.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn latest_steps_one_sweep_floored_at_a_minute() {
+        let tl = RadarTimeline { scans: Vec::new() };
         assert_eq!(
-            derive_canvas_caption(false, frame(), 180.0, true, false),
-            CanvasCaption::None
+            frame_step_secs(&tl, &shown(0.0, 1, 0.0, 20.0), true),
+            MIN_FRAME_STEP_SECS
+        );
+        assert_eq!(frame_step_secs(&tl, &shown(0.0, 1, 0.0, 90.0), true), 90.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn an_unknown_volume_uses_the_default_step() {
+        let tl = RadarTimeline { scans: Vec::new() };
+        assert_eq!(
+            frame_step_secs(&tl, &shown(0.0, 1, 0.0, 20.0), false),
+            DEFAULT_FRAME_STEP_SECS
+        );
+    }
+}
+
+#[cfg(test)]
+mod scale_bar_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn nice_round_snaps_down() {
+        assert_eq!(nice_round(120.0), 100.0);
+        assert_eq!(nice_round(80.0), 50.0);
+        assert_eq!(nice_round(30.0), 20.0);
+        assert_eq!(nice_round(15.0), 10.0);
+        assert_eq!(nice_round(7.0), 5.0);
+        assert_eq!(nice_round(3.0), 2.0);
+        assert_eq!(nice_round(1.5), 1.0);
+        assert_eq!(nice_round(0.7), 0.5);
+    }
+
+    #[wasm_bindgen_test]
+    fn nice_round_handles_edges() {
+        assert_eq!(nice_round(0.0), 0.0);
+        assert_eq!(nice_round(-1.0), 0.0);
+        assert_eq!(nice_round(f64::NAN), 0.0);
+    }
+    // ---- haversine_km ----
+
+    #[wasm_bindgen_test]
+    fn haversine_zero_distance_is_zero() {
+        let d = haversine_km(40.0, -100.0, 40.0, -100.0);
+        assert!(d.abs() < 1e-9, "got {}", d);
+    }
+
+    #[wasm_bindgen_test]
+    fn haversine_one_degree_lon_at_equator() {
+        // One degree of longitude at the equator ~= 111.195 km
+        // (R=6371, c = 1deg in rad).
+        let d = haversine_km(0.0, 0.0, 0.0, 1.0);
+        assert!((d - 111.195).abs() < 0.05, "got {}", d);
+    }
+
+    #[wasm_bindgen_test]
+    fn haversine_one_degree_lat() {
+        // One degree of latitude ~= 111.195 km anywhere.
+        let d = haversine_km(10.0, -50.0, 11.0, -50.0);
+        assert!((d - 111.195).abs() < 0.05, "got {}", d);
+    }
+
+    #[wasm_bindgen_test]
+    fn haversine_is_symmetric() {
+        let ab = haversine_km(35.0, -97.0, 36.0, -96.0);
+        let ba = haversine_km(36.0, -96.0, 35.0, -97.0);
+        assert!((ab - ba).abs() < 1e-9, "ab={} ba={}", ab, ba);
+    }
+
+    #[wasm_bindgen_test]
+    fn haversine_lon_shrinks_with_latitude() {
+        // A degree of longitude covers less ground far from the equator.
+        let near_equator = haversine_km(0.0, 0.0, 0.0, 1.0);
+        let high_lat = haversine_km(60.0, 0.0, 60.0, 1.0);
+        assert!(
+            high_lat < near_equator,
+            "high={} eq={}",
+            high_lat,
+            near_equator
+        );
+        // cos(60deg) = 0.5, so roughly half.
+        assert!(
+            (high_lat - near_equator * 0.5).abs() < 0.1,
+            "got {}",
+            high_lat
+        );
+    }
+
+    // ---- nice_round (cases distinct from the existing mod tests) ----
+
+    #[wasm_bindgen_test]
+    fn nice_round_large_magnitude() {
+        assert!((nice_round(1234.0) - 1000.0).abs() < 1e-9);
+        assert!((nice_round(5500.0) - 5000.0).abs() < 1e-9);
+        assert!((nice_round(2999.0) - 2000.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn nice_round_exact_boundaries_snap_to_self() {
+        assert!((nice_round(5.0) - 5.0).abs() < 1e-9);
+        assert!((nice_round(2.0) - 2.0).abs() < 1e-9);
+        assert!((nice_round(1.0) - 1.0).abs() < 1e-9);
+        assert!((nice_round(100.0) - 100.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn nice_round_just_below_boundary_steps_down() {
+        // 4.9 -> 2 (frac < 5 but >= 2), 1.9 -> 1 (frac < 2)
+        assert!((nice_round(4.9) - 2.0).abs() < 1e-9);
+        assert!((nice_round(1.9) - 1.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn nice_round_infinite_is_zero() {
+        assert!(nice_round(f64::INFINITY) == 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn nice_round_never_exceeds_target() {
+        for &t in &[3.7_f64, 19.0, 88.0, 0.34, 640.0] {
+            let n = nice_round(t);
+            assert!(n <= t + 1e-9, "nice {} exceeds target {}", n, t);
+            assert!(n > 0.0, "nice {} not positive for {}", n, t);
+        }
+    }
+
+    // ---- format_km ----
+
+    #[wasm_bindgen_test]
+    fn format_km_whole_km() {
+        assert!(format_km(100.0) == "100 km");
+        assert!(format_km(5.0) == "5 km");
+        assert!(format_km(1.0) == "1 km");
+    }
+
+    #[wasm_bindgen_test]
+    fn format_km_sub_km_decimal() {
+        // [0.1, 1.0) -> one decimal of km
+        assert!(format_km(0.5) == "0.5 km");
+        assert!(format_km(0.2) == "0.2 km");
+    }
+
+    #[wasm_bindgen_test]
+    fn format_km_meters() {
+        // < 0.1 km -> meters
+        assert!(format_km(0.05) == "50 m");
+        assert!(format_km(0.02) == "20 m");
+    }
+
+    // ---- format_mi ----
+
+    #[wasm_bindgen_test]
+    fn format_mi_whole_miles() {
+        assert!(format_mi(50.0) == "50 mi");
+        assert!(format_mi(2.0) == "2 mi");
+        assert!(format_mi(1.0) == "1 mi");
+    }
+
+    #[wasm_bindgen_test]
+    fn format_mi_sub_mile_decimal() {
+        // [0.1, 1.0) -> one decimal of mi
+        assert!(format_mi(0.5) == "0.5 mi");
+        assert!(format_mi(0.2) == "0.2 mi");
+    }
+
+    #[wasm_bindgen_test]
+    fn format_mi_feet() {
+        // < 0.1 mi -> feet (mi * 5280)
+        assert!(format_mi(0.05) == "264 ft");
+        assert!(format_mi(0.01) == "53 ft");
+    }
+
+    #[wasm_bindgen_test]
+    fn scale_bar_snaps_both_bars() {
+        // 1 km/px: 120 km target -> 100 km bar (100 px); 74.6 mi -> 50 mi.
+        let vm = scale_bar_vm(1.0).unwrap();
+        assert_eq!(vm.km_label, "100 km");
+        assert!((vm.km_px - 100.0).abs() < 1e-3);
+        assert_eq!(vm.mi_label, "50 mi");
+        assert!((vm.mi_px - 80.467).abs() < 0.01, "{}", vm.mi_px);
+        assert!(scale_bar_vm(0.0).is_none());
+        assert!(scale_bar_vm(f64::NAN).is_none());
+    }
+}
+
+#[cfg(test)]
+mod legend_tests {
+    use super::*;
+    use crate::core::RadarProduct;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn legend_is_titled_with_the_unit() {
+        let vm = legend_vm(RadarProduct::Reflectivity, (-30.0, 80.0));
+        assert_eq!(vm.title, "Reflectivity · dBZ");
+        // 110 dBZ of span → a tick every 10.
+        assert_eq!(vm.ticks.first().map(|t| t.1.as_str()), Some("-30"));
+        assert_eq!(vm.ticks.last().map(|t| t.1.as_str()), Some("80"));
+        assert_eq!(vm.ticks.len(), 12);
+        assert!(vm.ticks.first().unwrap().0.abs() < 1e-6);
+        assert!((vm.ticks.last().unwrap().0 - 1.0).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn narrow_ranges_get_decimal_ticks() {
+        let vm = legend_vm(RadarProduct::CorrelationCoefficient, (0.2, 1.05));
+        assert!(vm.ticks.iter().all(|(_, l)| l.contains('.')));
+        assert_eq!(vm.ticks.first().map(|t| t.1.as_str()), Some("0.2"));
+    }
+
+    #[wasm_bindgen_test]
+    fn an_empty_range_has_no_ticks() {
+        assert!(legend_vm(RadarProduct::Velocity, (5.0, 5.0))
+            .ticks
+            .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+    use crate::core::session::{Clock, FrameFact};
+    use crate::core::RadarProduct;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    struct Utc;
+    impl Clock for Utc {
+        fn hms(&self, ts: f64) -> String {
+            let s = (ts.floor() as i64).rem_euclid(86_400);
+            format!("{:02}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)
+        }
+        fn hm(&self, ts: f64) -> String {
+            let s = (ts.floor() as i64).rem_euclid(86_400);
+            format!("{:02}:{:02}", s / 3600, (s / 60) % 60)
+        }
+        fn day(&self, _ts: f64) -> (i32, u32, u32) {
+            (2026, 10, 15)
+        }
+    }
+
+    fn fact() -> FrameFact {
+        FrameFact {
+            time_secs: (11 * 3600 + 21 * 60 + 57) as f64,
+            end_secs: (11 * 3600 + 22 * 60 + 7) as f64,
+            elevation_deg: 0.5,
+            product: "reflectivity".to_string(),
+            age_secs: 120.0,
+            partial: None,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn the_info_box_and_the_edge_labels_ship_off() {
+        assert_eq!(CANVAS_FALLBACKS, CanvasFallbacks::default());
+        let f = fact();
+        assert_eq!(
+            frame_stamp(
+                CANVAS_FALLBACKS,
+                "ktlx",
+                RadarProduct::Reflectivity,
+                Some(&f),
+                None,
+                false,
+                &Utc
+            ),
+            None
         );
     }
 
     #[wasm_bindgen_test]
-    fn caption_discrepancy_fetching_vs_no_data() {
-        // Held frame, playhead drifted past it, no covering scan, fetch in
-        // flight → "fetching" discrepancy carrying the displayed midpoint and
-        // the playhead.
+    fn the_stamp_fallback_reads_one_line() {
+        let on = CanvasFallbacks {
+            frame_stamp: true,
+            ..CanvasFallbacks::default()
+        };
+        let f = fact();
+        let prev = Some((11 * 3600 + 17 * 60 + 2) as f64);
+        let s = frame_stamp(
+            on,
+            "ktlx",
+            RadarProduct::Reflectivity,
+            Some(&f),
+            prev,
+            true,
+            &Utc,
+        )
+        .unwrap();
+        assert_eq!(s.line, "KTLX · REF · 0.5° · 11:21:57");
+        assert_eq!(s.previous.as_deref(), Some("previous 11:17:02"));
+        // Frames: no previous line. No frame: no stamp.
+        let s = frame_stamp(
+            on,
+            "ktlx",
+            RadarProduct::Reflectivity,
+            Some(&f),
+            prev,
+            false,
+            &Utc,
+        )
+        .unwrap();
+        assert_eq!(s.previous, None);
         assert_eq!(
-            derive_canvas_caption(false, frame(), 700.0, false, true),
-            CanvasCaption::Discrepancy {
-                showing: 150.0,
-                target: 700.0,
-                fetching: true,
+            frame_stamp(
+                on,
+                "ktlx",
+                RadarProduct::Reflectivity,
+                None,
+                prev,
+                true,
+                &Utc
+            ),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+    use crate::core::RadarProduct;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn inputs(sweep: Option<(f32, f32)>) -> CanvasOverlayInputs<'static> {
+        CanvasOverlayInputs {
+            product: RadarProduct::Reflectivity,
+            data_range_km: Some(460.0),
+            sweep,
+            stale: false,
+            show_lines: true,
+            live: false,
+            antenna_az: None,
+            chunk_last_az: &[],
+            live_edge_time: None,
+            playhead_secs: 1_000.0,
+            fallbacks: CanvasFallbacks::default(),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn rings_stop_at_the_data_range() {
+        let g = ring_geometry(RadarProduct::Reflectivity, Some(230.0));
+        assert_eq!(g.data_km, 230.0);
+        assert_eq!(g.coverage_km, 460.0);
+        let kms: Vec<f64> = g.rings.iter().map(|r| r.0).collect();
+        assert_eq!(kms, vec![50.0, 100.0, 150.0, 200.0]);
+        assert_eq!(
+            g.rings
+                .iter()
+                .filter(|r| r.1)
+                .map(|r| r.0)
+                .collect::<Vec<_>>(),
+            vec![100.0, 200.0]
+        );
+        // A ring exactly at the edge is the edge ring, not a range ring.
+        let g = ring_geometry(RadarProduct::Reflectivity, Some(300.0));
+        assert_eq!(g.rings.last().map(|r| r.0), Some(250.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn with_no_data_the_rings_reach_the_product_range() {
+        let g = ring_geometry(RadarProduct::Velocity, None);
+        assert_eq!(g.data_km, 300.0);
+        assert_eq!(g.coverage_km, 300.0);
+        assert_eq!(
+            ring_geometry(RadarProduct::Reflectivity, Some(0.0)).data_km,
+            460.0
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn the_coverage_ring_and_cutout_share_the_product_range() {
+        assert_eq!(product_max_range_km(RadarProduct::Reflectivity), 460.0);
+        assert_eq!(
+            product_max_range_km(RadarProduct::CorrelationCoefficient),
+            300.0
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn hovering_a_major_ring_names_its_range() {
+        let g = ring_geometry(RadarProduct::Reflectivity, Some(460.0));
+        // 1 px per km: the 200 km ring sits at 200 px.
+        assert_eq!(hovered_ring_km(&g, 203.0, 1.0), Some(200.0));
+        assert_eq!(hovered_ring_km(&g, 150.0, 1.0), None); // a minor ring
+        assert_eq!(hovered_ring_km(&g, 458.0, 1.0), Some(460.0)); // the edge
+        assert_eq!(hovered_ring_km(&g, 200.0, 0.0), None);
+        assert_eq!(ring_label(200.0), "200 km");
+    }
+
+    #[wasm_bindgen_test]
+    fn rays_draws_white_lines_and_a_now_line_only_while_live() {
+        let vm = CanvasOverlayVm::build(&inputs(Some((90.0, 10.0))));
+        let s = vm.sweep.unwrap();
+        assert_eq!((s.edge_az, s.start_az), (90.0, 10.0));
+        assert_eq!(s.now_az, None);
+        // Archive: the edge follows the playhead.
+        assert_eq!(s.edge_time, Some(1_000.0));
+
+        let chunks = [30.0, 60.0, 90.0];
+        let mut i = inputs(Some((90.0, 10.0)));
+        i.live = true;
+        i.antenna_az = Some(120.0);
+        i.chunk_last_az = &chunks;
+        i.live_edge_time = Some(990.0);
+        let s = CanvasOverlayVm::build(&i).sweep.unwrap();
+        assert_eq!(s.now_az, Some(120.0));
+        // Every chunk boundary but the newest (that one is the data edge).
+        assert_eq!(s.chunk_az, vec![30.0, 60.0]);
+        assert_eq!(s.edge_time, Some(990.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn frames_and_held_positions() {
+        let mut i = inputs(Some((90.0, 10.0)));
+        i.show_lines = false;
+        assert!(CanvasOverlayVm::build(&i).sweep.is_none());
+        assert!(CanvasOverlayVm::build(&inputs(None)).sweep.is_none());
+        let mut i = inputs(Some((90.0, 10.0)));
+        i.stale = true;
+        let s = CanvasOverlayVm::build(&i).sweep.unwrap();
+        assert!(s.stale);
+        assert_eq!(s.edge_time, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_edge_label_is_a_fallback() {
+        assert_eq!(
+            CanvasOverlayVm::build(&inputs(Some((90.0, 10.0)))).edge_label,
+            None
+        );
+        let mut i = inputs(Some((90.0, 10.0)));
+        i.fallbacks.edge_label = true;
+        assert_eq!(CanvasOverlayVm::build(&i).edge_label, Some(1_000.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn the_edge_label_stays_inside_the_canvas() {
+        // Edge due east, far outside a 100×100 canvas.
+        let (x, y) = edge_label_pos(
+            (50.0, 50.0),
+            500.0,
+            90.0,
+            (40.0, 10.0),
+            (0.0, 0.0, 100.0, 100.0),
+        );
+        assert_eq!((x, y), (60.0, 45.0));
+        let (x, _) = edge_label_pos(
+            (50.0, 50.0),
+            500.0,
+            270.0,
+            (40.0, 10.0),
+            (0.0, 0.0, 100.0, 100.0),
+        );
+        assert_eq!(x, 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_faded_wedge_explains_itself() {
+        let sweep = Some((90.0, 0.0));
+        assert!(faded_wedge_hint(true, sweep, 200.0, 50.0, 460.0).is_some());
+        assert!(faded_wedge_hint(true, sweep, 45.0, 50.0, 460.0).is_none());
+        assert!(faded_wedge_hint(false, sweep, 200.0, 50.0, 460.0).is_none());
+        assert!(faded_wedge_hint(true, sweep, 200.0, 470.0, 460.0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::*;
+    use crate::core::diagnostics::DiagnosticsIntent;
+    use crate::core::Intent;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn all() -> PickCandidates {
+        PickCandidates {
+            site: Some(("KFDR", 34.3, -98.9)),
+            mping: Some(7),
+            alert: Some(("a1".to_string(), "Tornado Warning".to_string())),
+        }
+    }
+
+    const ON: PickLayers = PickLayers {
+        sites: true,
+        mping: true,
+        alerts: true,
+    };
+
+    #[wasm_bindgen_test]
+    fn a_hidden_site_never_picks() {
+        let layers = PickLayers { sites: false, ..ON };
+        assert_eq!(decide_map_pick(all(), layers), Some(MapPick::Mping(7)));
+        let only_site = PickCandidates {
+            site: all().site,
+            ..PickCandidates::default()
+        };
+        assert_eq!(decide_map_pick(only_site, layers), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn point_marks_win_over_alert_polygons() {
+        assert!(matches!(
+            decide_map_pick(all(), ON),
+            Some(MapPick::Site { id: "KFDR", .. })
+        ));
+        let no_site = PickCandidates {
+            site: None,
+            ..all()
+        };
+        assert_eq!(
+            decide_map_pick(no_site.clone(), ON),
+            Some(MapPick::Mping(7))
+        );
+        let alert_only = PickCandidates {
+            mping: None,
+            ..no_site
+        };
+        assert!(matches!(
+            decide_map_pick(alert_only.clone(), ON),
+            Some(MapPick::Alert { .. })
+        ));
+        let off = PickLayers {
+            alerts: false,
+            ..ON
+        };
+        assert_eq!(decide_map_pick(alert_only, off), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_pick_carries_its_click_and_its_hover() {
+        let site = decide_map_pick(all(), ON).unwrap();
+        assert_eq!(
+            site.intent(),
+            Intent::SelectSite {
+                site_id: "KFDR".to_string(),
+                lat: 34.3,
+                lon: -98.9,
             }
         );
-        // Same but nothing is being fetched → "no data" discrepancy.
+        assert_eq!(site.hover_label().as_deref(), Some("KFDR · switch site"));
         assert_eq!(
-            derive_canvas_caption(false, frame(), 700.0, false, false),
-            CanvasCaption::Discrepancy {
-                showing: 150.0,
-                target: 700.0,
-                fetching: false,
-            }
+            MapPick::Mping(7).intent(),
+            Intent::Diagnostics(DiagnosticsIntent::SelectMpingReport(7))
         );
+        assert_eq!(MapPick::Mping(7).hover_label(), None);
+        let alert = MapPick::Alert {
+            id: "a1".to_string(),
+            event: "Tornado Warning".to_string(),
+        };
+        assert_eq!(alert.hover_label().as_deref(), Some("Tornado Warning"));
+    }
+}
+
+#[cfg(test)]
+mod layer_legend_tests {
+    use super::*;
+    use crate::mping::{ReportCategory, StormReport};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn report(category: ReportCategory, obtime_ms: f64) -> StormReport {
+        StormReport {
+            id: 1,
+            obtime_ms,
+            category,
+            description: String::new(),
+            lat: 35.0,
+            lon: -97.0,
+        }
     }
 
     #[wasm_bindgen_test]
-    fn caption_blank_canvas_acquiring_hint() {
-        // No frame on screen + a fetch covering the playhead → the legacy
-        // centered "Acquiring data…" hint.
+    fn mping_legend_lists_drawn_categories_in_a_fixed_order() {
+        let reports = [
+            report(ReportCategory::RainSnow, 1_000_000.0),
+            report(ReportCategory::Tornado, 1_000_000.0),
+            report(ReportCategory::Hail, 1_000_000.0),
+            // Hail again: listed once.
+            report(ReportCategory::Hail, 1_000_000.0),
+        ];
+        let legend: Vec<_> = mping_legend(&reports, 1_000.0)
+            .into_iter()
+            .map(|l| l.1)
+            .collect();
+        assert_eq!(legend, vec!["Tornado", "Hail", "Rain / Snow"]);
+    }
+
+    #[wasm_bindgen_test]
+    fn reports_after_the_playhead_are_not_in_the_legend() {
+        let reports = [report(ReportCategory::Flood, 5_000_000.0)];
+        assert!(mping_legend(&reports, 1_000.0).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn mosaic_legend_spans_its_palette() {
         assert_eq!(
-            derive_canvas_caption(false, None, 700.0, false, true),
-            CanvasCaption::Acquiring
-        );
-        // No frame and nothing fetching → no caption (a plain empty canvas).
-        assert_eq!(
-            derive_canvas_caption(false, None, 700.0, false, false),
-            CanvasCaption::None
+            mosaic_legend_ends(),
+            ("5".to_string(), "75 dBZ".to_string())
         );
     }
 }
