@@ -89,7 +89,7 @@ fn draw_mobile_top_bar(
     let (inset_top, _inset_right, _inset_bottom, _inset_left) = super::safe_area_insets();
 
     let panel_fill = ctx.global_style().visuals.panel_fill;
-    let accent_color = crate::ui::theme::mode_color(live.app_mode);
+    let accent_color = crate::ui::theme::mode_color(live.session.app_mode);
 
     // Zero inner-margin frame so the content sits as high as possible —
     // egui's default top-panel frame adds a couple of pixels of padding on
@@ -126,7 +126,7 @@ fn draw_mobile_top_bar(
                 ui.separator();
 
                 // Compact mode badge (Idle / Archive / Live).
-                let mode = live.app_mode;
+                let mode = live.session.app_mode;
                 let icon = match mode {
                     AppMode::Idle => egui_phosphor::regular::PAUSE_CIRCLE,
                     AppMode::Archive => egui_phosphor::regular::ARCHIVE_BOX,

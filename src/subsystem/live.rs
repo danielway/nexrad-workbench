@@ -1,9 +1,9 @@
-//! Live subsystem: real-time NEXRAD streaming and the top-level
-//! app-mode derivation that flows from it.
+//! Live subsystem: real-time NEXRAD streaming and the per-frame session
+//! view-model that flows from it.
 //!
 //! Owns the worker-driven [`RealtimeChannel`] plus the live-streaming
 //! state machine ([`LiveModeState`]) and its per-frame derivations
-//! ([`LiveRadarModel`], [`AppMode`]). Folding these together replaces
+//! ([`LiveRadarModel`], [`SessionVm`]). Folding these together replaces
 //! four scattered fields on [`AppState`] (one source-of-truth + two
 //! derived models + the channel) with a single owner whose responsibility
 //! ("is the app streaming, and if so what is the data state?") is
@@ -14,12 +14,12 @@
 //! same snapshot for that frame.
 
 use crate::core::projection::{new_shared_engine, Projection, SharedProjectionEngine};
+use crate::core::session::{LiveCut, SessionInputs, SessionVm};
 use crate::core::PlaybackState;
 use crate::core::RadarTimeline;
 use crate::core::{ElevationSelection, StreamingFilter};
 use crate::core::{ExpectedSweep, LiveModeState, LiveRadarModel};
 use crate::nexrad::RealtimeChannel;
-use crate::state::AppMode;
 
 /// Inputs the per-frame `refresh` call reads from outside the
 /// subsystem. Kept explicit so [`Live`] doesn't take a back-reference
@@ -35,6 +35,10 @@ pub(crate) struct LiveRefreshInputs<'a> {
     /// Current elevation selection — compared against the plan filter so a
     /// just-changed cut cannot keep the previous sweep's stall.
     pub elevation_selection: &'a ElevationSelection,
+    /// What is on the GPU (the session's frame fact).
+    pub displayed: Option<&'a crate::core::DisplayedSweep>,
+    /// This frame's canvas honesty decision (from the render loop).
+    pub canvas_caption: crate::core::canvas::CanvasCaption,
 }
 
 /// Owner of the real-time streaming pipeline and the derived
@@ -51,10 +55,6 @@ pub(crate) struct Live {
     /// `mode_state.compute_model(now)` at the start of every frame so
     /// UI consumers within one frame see a consistent picture.
     pub radar_model: LiveRadarModel,
-    /// Per-frame top-level app mode (Idle / Archive / Live), derived
-    /// from `mode_state.is_active()` + whether a scan exists at the
-    /// playback cursor.
-    pub app_mode: AppMode,
     /// The single, main-thread-shared projection engine. The streaming loop
     /// holds a clone and feeds it observations/listings while reading sleep
     /// targets; UI consumers read this same instance. One source of truth for
@@ -64,10 +64,15 @@ pub(crate) struct Live {
     /// Consumers read the plan (countdown, next-target) and live-scan from here
     /// instead of a copy written back onto `LiveModeState`.
     pub frame_projection: Option<Projection>,
-    /// This frame's live-status view-model — the single snapshot every live
-    /// surface (LIVE button, activity chip, now-cap, mode badge, mobile)
-    /// projects from. Rebuilt at the end of [`Live::refresh`].
+    /// This frame's stream measurements — an input to `session`. Rebuilt in
+    /// [`Live::refresh`].
     pub frame_status: crate::core::LiveStatus,
+    /// This frame's session view-model: the four facts (stream, playhead,
+    /// selection, frame) and the words every status surface prints — the
+    /// selection chip, the now cap, the age pill, the activity line, the
+    /// canvas caption, and the legacy mode word. Rebuilt last in
+    /// [`Live::refresh`]; surfaces read it and derive nothing of their own.
+    pub session: SessionVm,
 }
 
 impl Live {
@@ -76,10 +81,10 @@ impl Live {
             channel,
             mode_state: LiveModeState::default(),
             radar_model: LiveRadarModel::default(),
-            app_mode: AppMode::default(),
             engine: new_shared_engine(),
             frame_projection: None,
             frame_status: crate::core::LiveStatus::default(),
+            session: SessionVm::default(),
         }
     }
 
@@ -170,7 +175,7 @@ impl Live {
             .and_then(|p| p.next_available_in_secs(now))
     }
 
-    /// Recompute the derived `radar_model` and `app_mode` for this
+    /// Recompute the derived `radar_model`, the stream status and the session view-model for this
     /// frame.
     ///
     /// Call once at the start of each UI frame so all consumers see
@@ -202,15 +207,6 @@ impl Live {
             None
         };
         self.radar_model = self.mode_state.compute_model(now, live_scan);
-        let playhead_live = inputs.playback.is_pinned() || inputs.playback.is_live_range();
-        self.app_mode = crate::state::derive_app_mode(
-            self.mode_state.is_active(),
-            playhead_live,
-            inputs
-                .radar_timeline
-                .find_scan_at_timestamp(inputs.playback.playback_position())
-                .is_some(),
-        );
         // Last: the status snapshot reads the projection adopted above.
         let active_filter = StreamingFilter::from(inputs.elevation_selection);
         let mut expected_sweep = self
@@ -236,9 +232,42 @@ impl Live {
             mode_state: &self.mode_state,
             countdown_secs: self.countdown_remaining_secs(now),
             expected_sweep,
-            tethered: playhead_live,
-            playback_position_secs: inputs.playback.playback_position(),
             now_secs: now,
+        });
+        // The cut the stream is filling, for the session's partial-frame and
+        // "receiving 2.4° · 3 of 6" facts.
+        let live_cut = match (
+            self.mode_state.current_volume.as_ref(),
+            self.radar_model.active_sweep.as_ref(),
+        ) {
+            (Some(volume), Some(sweep)) => Some(LiveCut {
+                scan_key: volume.scan_key.clone(),
+                elevation_number: sweep.elevation_number,
+                elevation_angle: self
+                    .radar_model
+                    .volume
+                    .as_ref()
+                    .and_then(|v| v.target_elevation_angle(sweep.elevation_number))
+                    .or(self.radar_model.frame_now.elevation_angle),
+                chunks_received: sweep.chunks.len() as u32,
+                chunks_expected: sweep.chunks_expected,
+            }),
+            _ => None,
+        };
+        self.session = SessionVm::build(SessionInputs {
+            now: inputs.now,
+            live_status: &self.frame_status,
+            live_phase: self.mode_state.phase,
+            last_exit: self.mode_state.last_exit_reason,
+            selection: inputs.playback.selection,
+            playback_position_secs: inputs.playback.playback_position(),
+            displayed: inputs.displayed,
+            live_cut,
+            scan_at_playhead: inputs
+                .radar_timeline
+                .find_scan_at_timestamp(inputs.playback.playback_position())
+                .is_some(),
+            canvas_caption: inputs.canvas_caption,
         });
     }
 }
@@ -261,7 +290,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn new_starts_idle_and_unprojected() {
         let l = live();
-        assert_eq!(l.app_mode, crate::state::AppMode::Idle);
+        assert_eq!(l.session.app_mode, crate::state::AppMode::Idle);
         assert!(l.frame_projection.is_none());
         assert!(!l.mode_state.is_active());
         assert_eq!(l.mode_state.phase, LivePhase::Idle);

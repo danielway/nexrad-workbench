@@ -176,14 +176,6 @@ pub(crate) enum StreamActivity {
     Stalled,
 }
 
-impl StreamActivity {
-    /// Whether the chip should animate. Only true while data is actually
-    /// moving, so motion means exactly one thing.
-    pub(crate) fn is_animated(&self) -> bool {
-        matches!(self, StreamActivity::Connecting | StreamActivity::Receiving)
-    }
-}
-
 /// Derive the stream's activity from the live phase, connect elapsed
 /// time, and — while waiting — the projected next eligible sweep. Pure.
 pub(crate) fn derive_stream_activity(
@@ -1029,16 +1021,6 @@ mod tests {
         let hit = ExpectedSweep::from_plan(&plan, StreamingFilter::All).unwrap();
         assert_eq!(hit.elevation_number, None);
         assert_eq!(hit.label(), "next volume");
-    }
-
-    #[wasm_bindgen_test]
-    fn only_moving_data_animates() {
-        // Motion in the chip must mean exactly one thing.
-        assert!(StreamActivity::Receiving.is_animated());
-        assert!(StreamActivity::Connecting.is_animated());
-        assert!(!StreamActivity::Waiting.is_animated());
-        assert!(!StreamActivity::Stalled.is_animated());
-        assert!(!StreamActivity::Off.is_animated());
     }
 
     #[wasm_bindgen_test]

@@ -311,8 +311,12 @@ cross-cutting facts panels need: `frame_now_secs`, `visible_bounds`,
 `data_is_live`, `effective_sweep_animation`. Richer per-feature view-models
 (e.g. `DiagnosticsVm`) are built the same way.
 
-**`AppMode`** (`Idle` / `Archive` / `Live`) is *derived* each frame from live
-state and drives the favicon color + title prefix.
+**`SessionVm`** (`core::session`) is built once per frame at the end of
+`Live::refresh` from four facts — stream, playhead, selection, frame — and
+holds the words every status surface prints (selection chip, now cap, age
+pill, activity line, canvas caption). The legacy **`AppMode`** (`Idle` /
+`Archive` / `Live`) is one of its projections and drives the favicon color +
+title prefix.
 
 ---
 
@@ -349,7 +353,7 @@ flowchart TB
         d1 --> d2 --> d3 --> d4 --> d5 --> d6
     end
     subgraph s5["⑤ FRAME SNAPSHOT"]
-        e1["live.refresh → LiveRadarModel + AppMode"]
+        e1["live.refresh → LiveRadarModel + SessionVm"]
         e2["refresh_mobile_mode · drain GPS · favicon"]
         e3["Derived::for_frame (2nd snapshot)"]
         e1 --> e2 --> e3

@@ -17,7 +17,8 @@
 //! Red is reserved exclusively for this concept: muted red ([`NOW_IDLE`]) as
 //! an invitation, bright pulsing red ([`LIVE_ACTIVE`]) while live.
 
-use crate::core::{Intent, LiveStatus, LiveTether};
+use crate::core::session::{NowCap, SessionVm};
+use crate::core::Intent;
 use crate::state::AppState;
 use crate::ui::theme;
 use crate::ui::theme::timeline::{LIVE_ACTIVE, NOW_IDLE};
@@ -37,30 +38,22 @@ pub(super) fn render_now_affordance(
     let overlay_rect = &frame.rects.overlay;
     let now_ts = frame.now_secs;
     let now_x = frame.ts_to_x(now_ts);
-    let status = live.frame_status;
+    let session = &live.session;
     // Pulse only while data is genuinely moving (connecting/receiving), so
     // motion means exactly one thing; a merely-tethered wait holds steady.
-    let pulse = if status.activity.is_animated() {
+    let pulse = if session.stream.is_animated() {
         live.mode_state.pulse_alpha()
     } else {
         0.0
     };
 
     if now_x >= overlay_rect.left() && now_x <= overlay_rect.right() {
-        render_inline_now(ui, painter, state, overlay_rect, now_x, &status, pulse)
+        render_inline_now(ui, painter, state, overlay_rect, now_x, session, pulse)
     } else {
         // "Now" is off-screen — pin a "jump to live" chip to the nearest edge,
         // pointing back toward now.
         let on_left = now_x < overlay_rect.left();
-        render_edge_chip(
-            ui,
-            painter,
-            state,
-            overlay_rect,
-            status.tether,
-            pulse,
-            on_left,
-        )
+        render_edge_chip(ui, painter, state, overlay_rect, session, pulse, on_left)
     }
 }
 
@@ -72,11 +65,11 @@ fn render_inline_now(
     state: &mut AppState,
     overlay_rect: &Rect,
     now_x: f32,
-    status: &LiveStatus,
+    session: &SessionVm,
     pulse: f32,
 ) -> Option<Rect> {
-    let live_state = status.tether;
-    let is_live = live_state.is_streaming();
+    let cap = session.now_cap;
+    let is_live = session.stream.is_running();
     let base = if is_live { LIVE_ACTIVE } else { NOW_IDLE };
 
     // Faint wash over the "future" region (right of now) so the live edge —
@@ -111,24 +104,17 @@ fn render_inline_now(
     // The cap — the clickable handle. Always present when now is in view, so
     // the affordance is glanceable and its hit target no longer depends on an
     // invisible, zoom-dependent band.
-    let label = match live_state {
-        // While waiting for the next chunk the cap carries its countdown
-        // ("◉ LIVE · 12s") — glanceable proof the stream is alive.
-        LiveTether::Tethered => match status.cap_suffix() {
-            Some(suffix) => format!("{} LIVE {suffix}", egui_phosphor::regular::BROADCAST),
-            None => format!("{} LIVE", egui_phosphor::regular::BROADCAST),
-        },
-        LiveTether::Detached => format!("{} REJOIN", egui_phosphor::regular::BROADCAST),
-        LiveTether::None => format!("{} GO LIVE", egui_phosphor::regular::BROADCAST),
-    };
+    // The cap's word is the session's; the countdown lives on the activity
+    // line, so the cap stays a two-word pill.
+    let label = format!("{} {}", egui_phosphor::regular::BROADCAST, cap.label());
     let cap_rect = cap_geometry(painter, overlay_rect, now_x, &label);
 
     let resp = ui
         .interact(cap_rect, ui.id().with("now_live_cap"), Sense::click())
-        .on_hover_text(match live_state {
-            LiveTether::Tethered => "Streaming live — click to stop",
-            LiveTether::Detached => "Stream running in background — click to rejoin live",
-            LiveTether::None => "Stream live from now",
+        .on_hover_text(match cap {
+            NowCap::Live if is_live => "Streaming live — click to stop",
+            NowCap::Rejoin => "Stream running in background — click to rejoin live",
+            NowCap::Live | NowCap::GoLive => "Stream live from now",
         });
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -138,14 +124,7 @@ fn render_inline_now(
     draw_cap(painter, cap_rect, &label, fill);
 
     if resp.clicked() {
-        state.push_command(match live_state {
-            LiveTether::Tethered => {
-                Intent::StopLive(crate::core::transport::LiveStopPlacement::LiveEdge)
-            }
-            // Instant re-pin — the stream never stopped.
-            LiveTether::Detached => Intent::ReturnToLive,
-            LiveTether::None => Intent::GoLive,
-        });
+        state.push_command(session.now_cap_intent());
     }
 
     Some(cap_rect)
@@ -159,11 +138,11 @@ fn render_edge_chip(
     painter: &Painter,
     state: &mut AppState,
     overlay_rect: &Rect,
-    live_state: LiveTether,
+    session: &SessionVm,
     pulse: f32,
     on_left: bool,
 ) -> Option<Rect> {
-    let is_live = live_state.is_streaming();
+    let is_live = session.stream.is_running();
     let base = if is_live { LIVE_ACTIVE } else { NOW_IDLE };
     let label = if on_left {
         format!(
@@ -192,9 +171,10 @@ fn render_edge_chip(
 
     let resp = ui
         .interact(chip_rect, ui.id().with("now_live_chip"), Sense::click())
-        .on_hover_text(match live_state {
-            LiveTether::Detached => "Stream running — jump back to live",
-            _ => "Jump to now and stream live",
+        .on_hover_text(if session.now_cap == NowCap::Rejoin {
+            "Stream running — jump back to live"
+        } else {
+            "Jump to now and stream live"
         });
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -216,10 +196,8 @@ fn render_edge_chip(
         // the archive. Instant when a background stream is already running.
         // Intents drain in order, so the centering lands before the attach.
         state.push_command(Intent::CenterTimelineOnNow);
-        match live_state {
-            LiveTether::Detached => state.push_command(Intent::ReturnToLive),
-            LiveTether::None => state.push_command(Intent::GoLive),
-            LiveTether::Tethered => {}
+        if let Some(intent) = session.now_edge_chip_intent() {
+            state.push_command(intent);
         }
     }
 

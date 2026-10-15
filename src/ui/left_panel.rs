@@ -67,7 +67,7 @@ fn render_radar_operations_section(
     // Top-down and side views side-by-side. The "future data" sector only
     // makes sense while the playhead tracks the live edge — a detached
     // background stream renders the archive state under the cursor.
-    let is_live = live.app_mode == crate::state::AppMode::Live;
+    let is_live = live.session.app_mode == crate::state::AppMode::Live;
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.label(RichText::new("Azimuth").small());

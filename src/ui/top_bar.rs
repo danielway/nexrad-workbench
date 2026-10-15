@@ -2,7 +2,7 @@
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use super::overflow_menu::overflow_menu;
-use super::time_format::{format_clock_12h, format_updated_ago, Compaction};
+use super::time_format::{format_clock_12h, Compaction};
 use crate::alerts::event_color;
 use crate::core::ErrorContext;
 use crate::core::Intent;
@@ -63,7 +63,7 @@ fn draw_top_bar(
     egui::Panel::top("mode_accent")
         .resizable(false)
         .exact_size(3.0)
-        .frame(Frame::NONE.fill(crate::ui::theme::mode_color(live.app_mode)))
+        .frame(Frame::NONE.fill(crate::ui::theme::mode_color(live.session.app_mode)))
         .show(root_ui, |ui| {
             ui.allocate_space(ui.available_size());
         });
@@ -152,7 +152,7 @@ fn draw_top_bar(
                 // text with chunk counts/countdown). Suppressed below the full
                 // tier: it's transient and would crowd the narrow bar.
                 if state.width_tier >= WidthTier::Full
-                    && live.app_mode != AppMode::Live
+                    && live.session.app_mode != AppMode::Live
                     && !state.status_message.is_empty()
                 {
                     // Auto-dismiss / fade decided by the pure core.
@@ -320,14 +320,10 @@ fn render_primary_readout(ui: &mut egui::Ui, state: &mut AppState, live: &crate:
             }
         });
 
-    // Data-age trust signal at the live edge (spec §5/§11.3). Only while
-    // tethered (attached + streaming, i.e. AppMode::Live); archive browsing
-    // lets the timestamp itself carry the meaning.
-    if live.app_mode == AppMode::Live {
-        if let Some(end) = state.viz_state.displayed.as_ref().map(|d| d.end_time) {
-            let age = (state.frame_now.secs() - end).max(0.0);
-            ui.label(RichText::new(format_updated_ago(age)).size(12.0).color(dim));
-        }
+    // The age pill (one-instrument §2): the frame's age, only while the
+    // selection is pinned to now; at a time the timestamp carries the meaning.
+    if let Some(pill) = &live.session.age_pill {
+        ui.label(RichText::new(&pill.text).size(12.0).color(dim));
     }
 }
 
@@ -780,7 +776,7 @@ fn format_age(age_ms: f64) -> String {
 /// dilute rather than clarify. While Live, the pill pulses and trails
 /// the stream's `LiveStatus` detail text.
 pub(super) fn render_mode_badge(ui: &mut egui::Ui, live: &crate::subsystem::Live) {
-    let mode = live.app_mode;
+    let mode = live.session.app_mode;
     let color = crate::ui::theme::mode_color(mode);
 
     let icon_str = match mode {
@@ -829,7 +825,7 @@ pub(super) fn render_mode_badge(ui: &mut egui::Ui, live: &crate::subsystem::Live
     // Live-only trailing detail: what the stream is doing right now, from
     // this frame's `LiveStatus` snapshot (single source for all surfaces).
     if mode == AppMode::Live {
-        if let Some(detail) = live.frame_status.detail_text() {
+        if let Some(detail) = &live.session.activity_chip {
             ui.label(RichText::new(detail).size(12.0).color(theme::TEXT_DIM));
         }
     }
