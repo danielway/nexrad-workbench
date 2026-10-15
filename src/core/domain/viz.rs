@@ -4,7 +4,7 @@
 use crate::data::ScanKey;
 
 /// Available radar products for display.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum RadarProduct {
     #[default]
     Reflectivity,

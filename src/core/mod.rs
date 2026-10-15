@@ -55,6 +55,8 @@ pub(crate) mod timeline_geometry;
 pub(crate) mod timeline_interaction;
 pub(crate) mod timeline_view;
 pub(crate) mod timing;
+pub(crate) mod toast;
+pub(crate) mod top_bar;
 pub(crate) mod transport;
 pub(crate) mod volume_plan;
 pub(crate) mod worker_decoded;

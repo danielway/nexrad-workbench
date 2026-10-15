@@ -97,6 +97,31 @@ impl crate::core::session::Clock for ZoneClock {
     }
 }
 
+/// The chosen zone's abbreviation at `ts`: "UTC", or the browser's short
+/// local name ("CDT", "GMT+2"). The top bar shows it once, after the frame
+/// time (one-instrument §4); every other clock inherits it.
+pub(crate) fn zone_label(ts: f64, use_local: bool) -> String {
+    use wasm_bindgen::JsValue;
+
+    if !use_local {
+        return "UTC".to_string();
+    }
+    let date = js_sys::Date::new(&JsValue::from_f64(ts * 1000.0));
+    let opts = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &opts,
+        &JsValue::from_str("timeZoneName"),
+        &JsValue::from_str("short"),
+    );
+    let s: String = js_sys::Date::to_locale_time_string_with_options(&date, "en-US", &opts).into();
+    // "11:21:57 AM CDT" → "CDT".
+    s.rsplit(' ')
+        .next()
+        .filter(|z| !z.is_empty() && !z.contains(':'))
+        .unwrap_or("local")
+        .to_string()
+}
+
 impl crate::core::time_field::ZoneCalendar for ZoneClock {
     fn to_unix(&self, date: chrono::NaiveDate, time: chrono::NaiveTime) -> Option<f64> {
         use chrono::{Datelike, Timelike};

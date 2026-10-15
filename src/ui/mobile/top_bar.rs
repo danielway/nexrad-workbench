@@ -1,22 +1,18 @@
-//! Compact mobile top bar.
-//!
-//! Replaces the desktop top bar on mobile: drops the sidebar toggles, help
-//! button, and view-mode switcher (all irrelevant on mobile), and trims to
-//! the essentials: mode badge, site chip, alerts, worker error banner, and
-//! a small version stamp in the top-right. The app-mode accent is painted
-//! as a 2px colored line at the bottom edge of the bar (the border between
-//! the bar and the canvas) rather than as a separate stripe at the very
-//! top — the top edge sits under the iOS status bar / notch on real
-//! devices, where a thin stripe is either obscured or crowded against OS
-//! icons.
+//! Compact mobile top bar (one-instrument §13): the same instrument at
+//! 390 px. The site, the frame time with its zone and the age pill, the
+//! alerts chip as a count, and the activity chip — all read from the same
+//! [`crate::core::top_bar::TopBarVm`] as the desktop bar. No mode badge, no
+//! mode-colored line and no version stamp (the version lives in the desktop
+//! bar's ⋯ › About).
 
 use super::super::layout::{Layer, LayerKind, LayoutCtx};
-use crate::state::{AppMode, AppState};
+use super::super::top_bar::{alerts_chip, emit, readout_pill, worker_error};
+use crate::core::top_bar::{TopBarIntent, TopBarVm};
+use crate::state::AppState;
 use crate::ui::theme;
 use eframe::egui::{self, Align, Frame, Layout, Margin, RichText};
 
 const TOP_BAR_CONTENT_HEIGHT: f32 = 44.0;
-const ACCENT_THICKNESS: f32 = 2.0;
 
 pub(in crate::ui) struct MobileTopBarLayer;
 
@@ -34,53 +30,44 @@ impl Layer for MobileTopBarLayer {
         !ctx.chrome.mobile_auto_hide.hidden
     }
     fn render(&self, ctx: &mut LayoutCtx) {
-        draw_mobile_top_bar(
-            ctx.root_ui,
-            ctx.state,
-            ctx.live,
-            ctx.diagnostics,
-            ctx.derived,
-            ctx.diagnostics_vm,
-            ctx.activity_vm,
-            ctx.chrome,
-        );
+        draw_mobile_top_bar(ctx.root_ui, ctx.top_bar_vm, ctx.activity_vm, ctx.state);
     }
 }
 
-/// Compact displayed-frame time + tilt for the mobile bar. Bare 12-hour clock
-/// (no seconds/zone — the bar is narrow); tap toggles local/UTC. Shows a muted
-/// placeholder until a frame is on screen.
-fn render_mobile_time_readout(ui: &mut egui::Ui, state: &mut AppState) {
-    use super::super::time_format::{format_clock_12h, Compaction};
-
-    ui.add_space(6.0);
-    match state.viz_state.displayed_midpoint_secs() {
-        Some(mid) => {
-            let t = format_clock_12h(mid, state.use_local_time, Compaction::Bare);
-            let label = format!("{t} · {}", state.viz_state.elevation);
-            if ui
-                .add(egui::Button::new(RichText::new(label).size(13.0).strong()).frame(false))
-                .clicked()
-            {
-                state.use_local_time = !state.use_local_time;
-            }
-        }
-        None => {
-            ui.label(RichText::new("--:--").size(13.0).color(theme::TEXT_FAINT));
-        }
+/// The frame time and zone; a tap toggles local / UTC.
+fn mobile_readout(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
+    let r = &vm.readout;
+    let color = if r.has_frame {
+        theme::TEXT
+    } else {
+        theme::TEXT_FAINT
+    };
+    let spacing = ui.spacing().item_spacing.x;
+    ui.spacing_mut().item_spacing.x = 4.0;
+    let mut tapped = ui
+        .add(egui::Button::new(theme::readout(&r.time).color(color)).frame(false))
+        .clicked();
+    tapped |= ui
+        .add(
+            egui::Button::new(
+                RichText::new(&r.zone)
+                    .size(theme::CAPTION)
+                    .color(theme::TEXT_DIM),
+            )
+            .frame(false),
+        )
+        .clicked();
+    ui.spacing_mut().item_spacing.x = spacing;
+    if tapped {
+        emit(state, TopBarIntent::ToggleTimeZone);
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn draw_mobile_top_bar(
     root_ui: &mut egui::Ui,
-    state: &mut AppState,
-    live: &crate::subsystem::Live,
-    diagnostics: &crate::subsystem::Diagnostics,
-    derived: &crate::subsystem::Derived,
-    diagnostics_vm: &crate::core::diagnostics::DiagnosticsVm,
+    vm: &TopBarVm,
     activity_vm: &crate::core::activity::ActivityVm,
-    chrome: &mut crate::subsystem::Chrome,
+    state: &mut AppState,
 ) {
     let ctx = root_ui.ctx().clone();
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
@@ -89,14 +76,13 @@ fn draw_mobile_top_bar(
     let (inset_top, _inset_right, _inset_bottom, _inset_left) = super::safe_area_insets();
 
     let panel_fill = ctx.global_style().visuals.panel_fill;
-    let accent_color = crate::ui::theme::mode_color(live.session.app_mode);
 
     // Zero inner-margin frame so the content sits as high as possible —
     // egui's default top-panel frame adds a couple of pixels of padding on
     // every side, which is noticeable below the iOS status bar.
     let frame = Frame::NONE.fill(panel_fill).inner_margin(Margin::ZERO);
 
-    egui::Panel::top("mobile_top_bar")
+    let response = egui::Panel::top("mobile_top_bar")
         .resizable(false)
         .exact_size(inset_top + TOP_BAR_CONTENT_HEIGHT)
         .frame(frame)
@@ -105,121 +91,40 @@ fn draw_mobile_top_bar(
                 ui.add_space(inset_top);
             }
 
-            let panel_rect = ui.max_rect();
-
             ui.horizontal_centered(|ui| {
                 ui.add_space(8.0);
 
-                // Site chip — primary control, tapping opens the site modal.
-                let site_label = format!(
-                    "{} {}",
-                    egui_phosphor::regular::MAP_PIN,
-                    state.viz_state.site_id
-                );
+                // Site — tapping opens the site dialog.
                 if ui
-                    .button(RichText::new(&site_label).size(14.0).strong())
+                    .button(
+                        RichText::new(format!(
+                            "{} {}",
+                            vm.site.id,
+                            egui_phosphor::regular::CARET_DOWN
+                        ))
+                        .strong(),
+                    )
                     .clicked()
                 {
-                    chrome.site_modal_open = true;
+                    emit(state, TopBarIntent::OpenSitePicker);
                 }
 
-                ui.separator();
+                mobile_readout(ui, vm, state);
+                if let Some(pill) = &vm.pill {
+                    readout_pill(ui, pill);
+                }
+                alerts_chip(ui, &vm.alerts, state, true);
 
-                // Compact mode badge (Idle / Archive / Live).
-                let mode = live.session.app_mode;
-                let icon = match mode {
-                    AppMode::Idle => egui_phosphor::regular::PAUSE_CIRCLE,
-                    AppMode::Archive => egui_phosphor::regular::ARCHIVE_BOX,
-                    AppMode::Live => egui_phosphor::regular::BROADCAST,
-                };
-                ui.label(RichText::new(icon).size(14.0).color(accent_color));
-
-                // Primary displayed-frame time + tilt (spec §5/§11.1), compact
-                // for the narrow bar. Formatted live from the frame's actual
-                // collection time; tap toggles local/UTC (spec §11.4).
-                render_mobile_time_readout(ui, state);
-
-                // Alerts chip (reuses the desktop helper).
-                super::super::top_bar::render_alerts_chip(
-                    ui,
-                    state,
-                    diagnostics,
-                    derived,
-                    diagnostics_vm,
-                    chrome,
-                );
-
-                // Worker error banner — critical, must be visible on mobile too.
-                if let Some(ref error_msg) = state.worker_init_error {
-                    let error_color = theme::legacy::ERROR;
-                    ui.label(
-                        RichText::new(egui_phosphor::regular::WARNING)
-                            .size(14.0)
-                            .color(error_color),
-                    );
-                    ui.label(RichText::new(error_msg).size(11.0).color(error_color));
-                    if ui
-                        .small_button(RichText::new("Retry").size(11.0).color(error_color))
-                        .clicked()
-                    {
-                        state.push_command(crate::core::Intent::RetryWorker);
-                    }
+                // Worker error — critical, must be visible on mobile too.
+                if let Some(err) = &vm.worker_error {
+                    worker_error(ui, err, state);
                 }
 
-                // Version stamp — right-aligned. Useful for cross-referencing
-                // a deployed build against git history when reporting bugs.
-                // Tap to toggle between truncated (fits the bar) and full
-                // (shows the complete hash / version string).
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_space(8.0);
-
-                    let expanded_id = egui::Id::new("mobile_top_bar_version_expanded");
-                    let expanded: bool =
-                        ui.ctx().data(|d| d.get_temp(expanded_id).unwrap_or(false));
-
-                    const MAX_LEN: usize = 18;
-                    let version = env!("NEXRAD_VERSION");
-                    let display = if !expanded && version.len() > MAX_LEN {
-                        let mut truncated = String::with_capacity(MAX_LEN + 3);
-                        for (i, ch) in version.char_indices() {
-                            if i >= MAX_LEN {
-                                break;
-                            }
-                            truncated.push(ch);
-                        }
-                        truncated.push('\u{2026}');
-                        truncated
-                    } else {
-                        version.to_string()
-                    };
-
-                    let response = ui.add(
-                        egui::Button::new(
-                            RichText::new(display).size(10.0).color(theme::TEXT_FAINT),
-                        )
-                        .frame(false),
-                    );
-                    if response.clicked() {
-                        ui.ctx().data_mut(|d| d.insert_temp(expanded_id, !expanded));
-                    }
-
-                    // Acquiring indicator (spec §5 status chip, mobile home):
-                    // a compact "↓ N" / failure tick that opens the queue
-                    // sheet. Hidden when idle. Left of the version stamp.
                     ui.add_space(8.0);
                     super::super::activity_chip::render_activity_chip(ui, activity_vm, state, 12.0);
                 });
             });
-
-            // Paint the app-mode accent as a thin border along the bottom
-            // edge of the panel, separating it from the canvas below.
-            let y = panel_rect.bottom() - ACCENT_THICKNESS * 0.5;
-            ui.painter().line_segment(
-                [
-                    egui::pos2(panel_rect.left(), y),
-                    egui::pos2(panel_rect.right(), y),
-                ],
-                egui::Stroke::new(ACCENT_THICKNESS, accent_color),
-            );
         });
+    super::super::toast::set_anchor(&ctx, response.response.rect.bottom());
 }
