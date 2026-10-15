@@ -61,8 +61,9 @@ pub(crate) struct CommandOutcome {
 /// Deliberately narrow: everything a state-only handler can reach is listed
 /// here, and everything listed here is reachable without a browser. That is
 /// what lets [`dispatch_state_only`] be driven from a headless test fixture.
-/// The GPU, the worker pool, the persistence manager, the modals and the
-/// timeline inventory are absent because no state-only arm touches them.
+/// The GPU, the worker pool, the persistence manager and the modals are
+/// absent because no state-only arm touches them; the timeline inventory is
+/// lent read-only, for stepping.
 pub(crate) struct DispatchState<'a> {
     pub state: &'a mut state::AppState,
     pub playback: &'a mut subsystem::Playback,
@@ -70,6 +71,8 @@ pub(crate) struct DispatchState<'a> {
     pub live: &'a mut subsystem::Live,
     pub diagnostics: &'a mut subsystem::Diagnostics,
     pub chrome: &'a mut subsystem::Chrome,
+    /// Read-only: the frames a step can land on.
+    pub timeline: &'a subsystem::Timeline,
 }
 
 /// Handle the intents that are pure state transitions. Returns `Some(intent)`
@@ -110,6 +113,35 @@ pub(crate) fn dispatch_state_only(
             {
                 // Arm the bulk fetch for the new range (selection = the fetch).
                 s.state.selection_just_finalized = s.playback.state.selection_range();
+            }
+        }
+
+        Intent::Seek { ts, gesture } => {
+            s.transport(|env, slices| crate::core::transport::reduce_seek(env, slices, ts, gesture))
+        }
+        Intent::Step { dir, unit } => s.step(dir, unit),
+        Intent::SetLoopPoint(edge) => {
+            let selected = s.transport_with(|env, slices| {
+                crate::core::transport::reduce_loop_point(env, slices, edge)
+            });
+            if selected {
+                // Arm the bulk fetch for the new range (selection = the fetch).
+                s.state.selection_just_finalized = s.playback.state.selection_range();
+            }
+        }
+        Intent::SetLoopStyle(style) => {
+            crate::core::transport::set_loop_style(&mut s.playback.state, style)
+        }
+        Intent::SetSpeed(speed) => {
+            crate::core::transport::reduce_set_speed(&mut s.playback.state, speed)
+        }
+        Intent::StepSpeed { faster } => {
+            crate::core::transport::reduce_step_speed(&mut s.playback.state, faster)
+        }
+        Intent::SaveSelectionAsEvent => {
+            if s.playback.state.selection_range().is_some() {
+                s.chrome.event_modal_open = true;
+                s.chrome.event_modal_editing_id = None;
             }
         }
 
@@ -213,10 +245,22 @@ impl DispatchState<'_> {
             crate::core::transport::TransportSlices<'_>,
         ) -> crate::core::transport::TransportActions,
     ) {
-        let actions = reduce(
+        self.transport_with(|env, slices| (reduce(env, slices), ()));
+    }
+
+    /// [`Self::transport`] for a reducer that also returns a value.
+    fn transport_with<R>(
+        &mut self,
+        reduce: impl FnOnce(
+            &crate::core::transport::TransportEnv,
+            crate::core::transport::TransportSlices<'_>,
+        ) -> (crate::core::transport::TransportActions, R),
+    ) -> R {
+        let (actions, out) = reduce(
             &crate::core::transport::TransportEnv {
                 now_secs: self.state.frame_now.secs(),
                 pause_stream_while_reviewing: self.state.pause_stream_while_reviewing,
+                frame_secs: self.playback.state.median_frame_spacing(),
             },
             crate::core::transport::TransportSlices {
                 live_mode: &mut self.live.mode_state,
@@ -230,6 +274,32 @@ impl DispatchState<'_> {
         if let Some(msg) = actions.status_message {
             self.state.status_message = msg;
         }
+        out
+    }
+
+    /// Step through the frames of the selected tilt (any tilt for Latest), or
+    /// through whole volumes for a volume step and in volumetric 3D, where a
+    /// frame is a scan.
+    fn step(
+        &mut self,
+        dir: crate::core::transport::StepDir,
+        unit: crate::core::transport::StepUnit,
+    ) {
+        let viz = &self.state.viz_state;
+        let volumetric = viz.volume_3d_enabled && viz.view_mode() == crate::geo::ViewMode::Globe3D;
+        let tilt = match viz.elevation_selection {
+            crate::core::ElevationSelection::Fixed {
+                elevation_number, ..
+            } => Some(elevation_number),
+            crate::core::ElevationSelection::Latest => None,
+        };
+        let timeline = self.timeline;
+        let index = crate::core::transport::ScanFrames {
+            scans: &timeline.scans,
+            tilt,
+            volumes: volumetric || unit == crate::core::transport::StepUnit::Volume,
+        };
+        self.transport(|env, slices| crate::core::transport::reduce_step(env, slices, &index, dir));
     }
 
     /// Place the next distance-tool endpoint at `(lat, lon)`. Which endpoint
@@ -431,6 +501,7 @@ impl WorkbenchApp {
                 live: &mut self.live,
                 diagnostics: &mut self.diagnostics,
                 chrome: &mut self.chrome,
+                timeline: &self.timeline,
             };
             dispatch_state_only(cmd, &mut bundle, outcome)
         };
@@ -495,6 +566,13 @@ impl WorkbenchApp {
             | Intent::ClearLoop
             | Intent::StopLooping
             | Intent::SelectRange { .. }
+            | Intent::Seek { .. }
+            | Intent::Step { .. }
+            | Intent::SetLoopPoint(_)
+            | Intent::SetLoopStyle(_)
+            | Intent::SetSpeed(_)
+            | Intent::StepSpeed { .. }
+            | Intent::SaveSelectionAsEvent
             | Intent::SetPlayMode(_)
             | Intent::PauseQueue
             | Intent::ResumeQueue
@@ -747,6 +825,7 @@ mod dispatch_tests {
         live: crate::subsystem::Live,
         diagnostics: crate::subsystem::Diagnostics,
         chrome: crate::subsystem::Chrome,
+        timeline: crate::subsystem::Timeline,
         outcome: CommandOutcome,
     }
 
@@ -759,6 +838,7 @@ mod dispatch_tests {
                 live: crate::subsystem::Live::new(crate::nexrad::RealtimeChannel::new()),
                 diagnostics: crate::subsystem::Diagnostics::new(),
                 chrome: crate::subsystem::Chrome::new(),
+                timeline: crate::subsystem::Timeline::default(),
                 outcome: CommandOutcome::default(),
             }
         }
@@ -773,6 +853,7 @@ mod dispatch_tests {
                 live: &mut self.live,
                 diagnostics: &mut self.diagnostics,
                 chrome: &mut self.chrome,
+                timeline: &self.timeline,
             };
             dispatch_state_only(intent, &mut bundle, &mut self.outcome)
         }
@@ -859,6 +940,19 @@ mod dispatch_tests {
                 to_live: false,
             },
             Intent::SetPlayMode(crate::core::PlaybackMode::Micro),
+            Intent::Seek {
+                ts: 150.0,
+                gesture: crate::core::transport::SeekGesture::Press,
+            },
+            Intent::Step {
+                dir: crate::core::transport::StepDir::Back,
+                unit: crate::core::transport::StepUnit::Frame,
+            },
+            Intent::SetLoopPoint(crate::core::transport::LoopEdge::In),
+            Intent::SetLoopStyle(crate::core::LoopMode::Once),
+            Intent::SetSpeed(crate::core::PlaybackSpeed::Double),
+            Intent::StepSpeed { faster: true },
+            Intent::SaveSelectionAsEvent,
             Intent::PauseQueue,
             Intent::ResumeQueue,
             Intent::RetryFailed(1),
@@ -876,7 +970,7 @@ mod dispatch_tests {
             },
             Intent::SetGeoLayer(GeoLayer::Cities, false),
         ];
-        assert_eq!(state_only.len(), 17);
+        assert_eq!(state_only.len(), 24);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -1281,6 +1375,69 @@ mod dispatch_tests {
             f.playback.state.selection,
             crate::core::Selection::Point { live: false }
         );
+    }
+
+    /// "Save as event" opens the event dialog only when there is a range to
+    /// save.
+    #[wasm_bindgen_test]
+    fn save_selection_as_event_needs_a_range() {
+        let mut f = Fixture::new();
+        f.apply(Intent::SaveSelectionAsEvent);
+        assert!(!f.chrome.event_modal_open);
+
+        assert!(f.playback.state.select_range(100.0, 400.0, false));
+        f.chrome.event_modal_editing_id = Some(7);
+        f.apply(Intent::SaveSelectionAsEvent);
+        assert!(f.chrome.event_modal_open);
+        assert_eq!(f.chrome.event_modal_editing_id, None, "a new event");
+    }
+
+    /// I then O at two playhead positions loops the span between them and
+    /// arms its fetch; the loop style sticks to the range.
+    #[wasm_bindgen_test]
+    fn in_out_and_loop_style_reach_the_transport() {
+        use crate::core::transport::{LoopEdge, SeekGesture};
+        let mut f = Fixture::new();
+        f.state.frame_now = FrameNow(10_000.0);
+        f.apply(Intent::Seek {
+            ts: 1_000.0,
+            gesture: SeekGesture::Press,
+        });
+        f.apply(Intent::SetLoopPoint(LoopEdge::In));
+        assert_eq!(f.state.selection_just_finalized, None);
+        f.apply(Intent::Seek {
+            ts: 2_000.0,
+            gesture: SeekGesture::Press,
+        });
+        f.apply(Intent::SetLoopPoint(LoopEdge::Out));
+        assert_eq!(f.playback.state.playback_bounds(), Some((1_000.0, 2_000.0)));
+        assert_eq!(f.state.selection_just_finalized, Some((1_000.0, 2_000.0)));
+
+        f.apply(Intent::SetLoopStyle(crate::core::LoopMode::PingPong));
+        assert_eq!(
+            f.playback.state.time_model.loop_mode,
+            crate::core::LoopMode::PingPong
+        );
+    }
+
+    /// A step with no frames known still moves (a gap is never a dead end),
+    /// and pauses.
+    #[wasm_bindgen_test]
+    fn step_moves_through_a_gap_and_pauses() {
+        use crate::core::transport::{SeekGesture, StepDir, StepUnit};
+        let mut f = Fixture::new();
+        f.state.frame_now = FrameNow(10_000.0);
+        f.apply(Intent::Seek {
+            ts: 5_000.0,
+            gesture: SeekGesture::Press,
+        });
+        f.playback.state.playing = true;
+        f.apply(Intent::Step {
+            dir: StepDir::Back,
+            unit: StepUnit::Frame,
+        });
+        assert!(f.playback.state.playback_position() < 5_000.0);
+        assert!(!f.playback.state.playing);
     }
 
     // ---- canvas / overlays --------------------------------------------

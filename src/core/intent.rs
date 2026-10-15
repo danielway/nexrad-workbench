@@ -10,7 +10,8 @@
 //! original command set. (Formerly `crate::core::Intent`; the definition moved
 //! here so the contract's vocabulary lives in the core.)
 
-use crate::core::{GeoLayer, LoopPreset, OperationId, PlaybackMode};
+use crate::core::transport::{LoopEdge, SeekGesture, StepDir, StepUnit};
+use crate::core::{GeoLayer, LoopMode, LoopPreset, OperationId, PlaybackMode, PlaybackSpeed};
 
 /// Intents dispatched by UI code and consumed by the main update loop.
 ///
@@ -56,6 +57,27 @@ pub(crate) enum Intent {
     /// Select a range: attached to the live edge when `to_live` and a stream
     /// runs, otherwise fixed (see [`crate::core::transport::select_range`]).
     SelectRange { start: f64, end: f64, to_live: bool },
+    /// Move the playhead to `ts` (the timeline, the playhead clock). Keeps a
+    /// range it lands inside; a scrub pauses. Decided by
+    /// [`crate::core::transport::reduce_seek`].
+    Seek { ts: f64, gesture: SeekGesture },
+    /// Step one frame or volume (the step buttons, ← →, Shift+← →, the
+    /// phone's jog buttons), wrapping only inside a range. Decided by
+    /// [`crate::core::transport::reduce_step`].
+    Step { dir: StepDir, unit: StepUnit },
+    /// Put the range's in (I) or out (O) point at the playhead. Decided by
+    /// [`crate::core::transport::reduce_loop_point`].
+    SetLoopPoint(LoopEdge),
+    /// Choose how a range loops (the chip menu's loop style).
+    SetLoopStyle(LoopMode),
+    /// Choose a playback speed (the transport's speed menu). A no-op while
+    /// pinned to now in Rays.
+    SetSpeed(PlaybackSpeed),
+    /// One speed rung faster or slower ([ / ]).
+    StepSpeed { faster: bool },
+    /// Open the event dialog for the selected range (the chip menu's "Save
+    /// as event"). A no-op without a range.
+    SaveSelectionAsEvent,
     /// Choose how playback advances: Frames (whole sweeps at an fps) or Rays
     /// (continuous time at a realtime multiple). Independent of zoom.
     SetPlayMode(PlaybackMode),
