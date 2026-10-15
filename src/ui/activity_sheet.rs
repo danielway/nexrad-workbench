@@ -16,14 +16,16 @@
 //! identically on desktop and mobile via the shared modal set — mobile has no
 //! bottom panel, so a side drawer wouldn't reach it.
 
+use super::dialog::Dialog;
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::activity::{
     ActivityDetailVm, ActivityRow, ActivityStage, ActivityState, ActivityVm, NetworkRow, RowStatus,
 };
+use crate::core::dialogs::DialogId;
 use crate::core::Intent;
 use crate::state::{format_bytes, AppState};
 use crate::ui::theme;
-use eframe::egui::{self, RichText, ScrollArea, Vec2};
+use eframe::egui::{self, RichText, ScrollArea};
 use egui_phosphor::regular as icons;
 
 pub(super) struct ActivitySheetLayer;
@@ -68,46 +70,35 @@ fn draw_activity_sheet(
     vm: &ActivityVm,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    if super::modal_helper::modal_backdrop(ctx, "activity_sheet_backdrop", 150) {
-        chrome.activity_sheet_open = false;
-        return;
-    }
+    let max_h = ctx.input(|i| i.viewport_rect().height()) * 0.7;
+    let out = Dialog::new(DialogId::ActivitySheet, "Activity").show(ctx, |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("activity_sheet_scroll")
+            .max_height(max_h)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                render_header(ui, state, vm);
+                ui.add_space(4.0);
+                render_stage_strip(ui, vm);
 
-    egui::Window::new(format!("{} Activity", icons::DOWNLOAD_SIMPLE))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .default_width(440.0)
-        .max_height(ctx.input(|i| i.viewport_rect().height()) * 0.8)
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            ui.set_min_width(380.0);
+                ui.separator();
+                render_operation_list(ui, state, vm);
 
-            render_header(ui, state, vm);
-            ui.add_space(4.0);
-            render_stage_strip(ui, vm);
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(4.0);
+                render_policy_section(ui, state);
 
-            ui.separator();
-            render_operation_list(ui, state, vm);
-
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(4.0);
-            render_policy_section(ui, state);
-
-            ui.add_space(6.0);
-            ui.separator();
-            render_details(ui, state, vm, chrome);
-
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        chrome.activity_sheet_open = false;
-                    }
-                });
+                ui.add_space(6.0);
+                ui.separator();
+                render_details(ui, state, vm, chrome);
             });
-        });
+    });
+    if out.close {
+        state.push_command(crate::core::Intent::Dialog(
+            crate::core::dialogs::DialogIntent::Close(DialogId::ActivitySheet),
+        ));
+    }
 }
 
 /// Headline + throughput + queue controls.

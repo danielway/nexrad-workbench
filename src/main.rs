@@ -372,10 +372,13 @@ fn apply_url_params(
                 state.viz_state.center_lat = site.lat;
                 state.viz_state.center_lon = site.lon;
                 state.viz_state.camera.center_on(site.lat, site.lon);
-                // Not a first visit — modal starts in SiteList mode if reopened
+                state.recent_sites = vec![site.id.to_string()];
             }
         } else {
+            // First visit: the site picker opens and cannot be dismissed
+            // until a site is chosen (any pick clears `site_required`).
             chrome.site_modal_open = true;
+            chrome.site_required = true;
         }
     }
 
@@ -476,7 +479,6 @@ impl WorkbenchApp {
             &playback.state,
             loaded_mping_api_key.clone(),
         );
-        let has_preferred_site = state.preferred_site.is_some();
 
         // Create decode worker pool (offloads heavy NEXRAD work to parallel
         // Web Workers so the download → decompress → store pipeline can fan
@@ -556,7 +558,7 @@ impl WorkbenchApp {
                 initial_site_id,
                 initial_prefs,
             ),
-            modals: ui::ModalStates::new(has_preferred_site),
+            modals: ui::ModalStates::new(),
             diagnostics: {
                 let mut diag = subsystem::Diagnostics::new();
                 // Apply the persisted mPING API key (loaded from prefs at
@@ -1009,7 +1011,7 @@ impl eframe::App for WorkbenchApp {
         // opens pending in the same frame the button was pressed.
         if self.state.is_mobile && self.chrome.mobile_geolocate_requested {
             self.chrome.mobile_geolocate_requested = false;
-            self.begin_site_geolocation(ctx);
+            self.begin_site_geolocation(ctx, true);
         }
 
         // 19b. Resolve mobile chrome auto-hide for this frame (spec §13 phone:
@@ -1062,6 +1064,11 @@ impl eframe::App for WorkbenchApp {
         // Top-bar view-model: what is on screen, in the bar's words.
         let top_bar_vm = self.build_top_bar_vm(&diagnostics_vm, &derived);
 
+        // Dialog stack (one-instrument §12): bring the open-dialog order in
+        // step with this frame's flags before anything renders, so the
+        // layers, the shortcut gate and Escape all read the same stack.
+        app::dialogs::sync_dialogs(&mut self.chrome, &self.diagnostics);
+
         let is_mobile = self.state.is_mobile;
         let mut layout_ctx = ui::LayoutCtx {
             ctx,
@@ -1080,6 +1087,20 @@ impl eframe::App for WorkbenchApp {
             modals: &mut self.modals,
         };
         ui::render_layout(is_mobile, &mut layout_ctx);
+
+        // Restack the dialog windows when the stack changed, then route an
+        // Escape no widget claimed (the time field claims it while editing)
+        // to the top dialog.
+        if self.chrome.dialogs.take_changed() {
+            ui::dialog::restack(ctx, &self.chrome.dialogs);
+        }
+        if !self.chrome.dialogs.is_empty()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.state
+                .push_command(core::Intent::Dialog(core::dialogs::DialogIntent::Escape));
+            ctx.request_repaint();
+        }
 
         // 21. RENDER (canvas): GPU-based radar rendering in the CentralPanel.
         ui::render_canvas_with_geo(

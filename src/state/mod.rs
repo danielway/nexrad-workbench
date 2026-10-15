@@ -175,6 +175,10 @@ pub(crate) struct AppState {
     /// has already completed the first-visit flow and this site should be used
     /// as the default on future visits.
     pub preferred_site: Option<String>,
+    /// Sites picked this session, most recent first (the site picker's
+    /// Recent group; [`crate::core::site_picker::push_recent`]). Session-only
+    /// until preferences carry it.
+    pub recent_sites: Vec<String>,
     /// Storage settings (quota, eviction targets).
     pub storage_settings: StorageSettings,
     /// User override for mobile mode. `None` = auto (default), `Some(true)` =

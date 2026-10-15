@@ -45,7 +45,6 @@ pub(crate) const PANEL: Color32 = Color32::from_rgb(12, 16, 22);
 /// Surface 2 — raised: fields, chips, dialogs and scrims over the map.
 pub(crate) const RAISED: Color32 = Color32::from_rgb(20, 26, 35);
 /// Surface 3 — hover and pressed.
-#[allow(dead_code)] // Hover states arrive with the dialogs and panel PRs.
 pub(crate) const HOVER: Color32 = Color32::from_rgb(28, 36, 48);
 
 // ── Greys for text and dividers ────────────────────────────────────────────
@@ -111,14 +110,10 @@ pub(crate) mod legacy {
     /// buttons. Becomes [`super::SELECTED`] for selected controls and words
     /// for busy work (top bar / transport / panel PRs).
     pub(crate) const ACTIVE_BLUE: Color32 = Color32::from_rgb(100, 180, 255);
-    /// Filled primary-button blue (dialogs PR: one button component).
-    pub(crate) const BUTTON_BLUE: Color32 = Color32::from_rgb(65, 125, 200);
     /// Success / "on device" / completed green. Becomes nothing in chrome.
     pub(crate) const SUCCESS: Color32 = Color32::from_rgb(100, 200, 100);
     /// Failure and form-error red. Becomes the ⚠ glyph in text color.
     pub(crate) const ERROR: Color32 = Color32::from_rgb(255, 100, 100);
-    /// Filled destructive-button red. Becomes an outlined button (dialogs PR).
-    pub(crate) const DESTRUCTIVE: Color32 = Color32::from_rgb(200, 60, 60);
     /// Stalled / degraded / caution orange. Stalled becomes a hollow red dot
     /// plus the word.
     pub(crate) const WARN: Color32 = Color32::from_rgb(255, 170, 50);
@@ -135,6 +130,32 @@ pub(crate) mod legacy {
     /// Dark red outline of the failure triangle on a frame cell. Failure
     /// becomes a ⚠ mark (timeline marks PR).
     pub(crate) const ERROR_DEEP: Color32 = Color32::from_rgb(120, 30, 30);
+}
+
+/// Dialogs and popovers (§12): one frame, one primary, one destructive.
+/// Chrome is grey, so the primary is a filled neutral and the destructive
+/// button is outlined in text color — never red, which means *now*.
+pub(crate) mod dialog {
+    use super::{alpha, Color32, HOVER, LINE, MAP, PANEL, RAISED, TEXT};
+
+    /// The dialog / popover surface.
+    pub(crate) const SURFACE: Color32 = RAISED;
+    /// The frame's hairline.
+    pub(crate) const EDGE: Color32 = LINE;
+    /// Corner radius of the frame.
+    pub(crate) const RADIUS: u8 = 6;
+    /// The dim over the map behind a dialog (one strength for all).
+    pub(crate) fn backdrop() -> Color32 {
+        alpha(MAP, 150)
+    }
+    /// The primary button's fill.
+    pub(crate) const PRIMARY_FILL: Color32 = TEXT;
+    /// The primary button's label.
+    pub(crate) const PRIMARY_TEXT: Color32 = PANEL;
+    /// A secondary button's fill.
+    pub(crate) const SECONDARY_FILL: Color32 = HOVER;
+    /// The destructive button's outline and label.
+    pub(crate) const DESTRUCTIVE: Color32 = TEXT;
 }
 
 /// Map marks drawn over the radar (sites, location, rings, compass).
@@ -610,6 +631,17 @@ mod tests {
             assert!(g.size().x > 0.0);
         }
         ctx.end_pass().textures_delta.clear();
+    }
+
+    #[wasm_bindgen_test]
+    fn dialog_tokens_follow_the_grammar() {
+        // Destructive is not red: red means now.
+        assert!(dialog::DESTRUCTIVE != NOW && dialog::DESTRUCTIVE != NOW_IDLE);
+        let [r, g, b, _] = dialog::DESTRUCTIVE.to_array();
+        assert!(r.abs_diff(g) < 30 && g.abs_diff(b) < 30, "a grey");
+        // The primary reads against its own label.
+        assert!(dialog::PRIMARY_FILL.r() > dialog::PRIMARY_TEXT.r() + 150);
+        assert!(dialog::backdrop().a() < 255);
     }
 
     #[wasm_bindgen_test]

@@ -60,7 +60,8 @@ fn draw_bottom_panel(
     // now-line cap / the `L` key, not the spacebar.
     let space_pressed = ctx.input(|i| i.key_pressed(egui::Key::Space) && !i.modifiers.any());
     let has_focus = ctx.memory(|m| m.focused().is_some());
-    if space_pressed && !has_focus {
+    // Suppressed under a dialog or popover (core::dialogs).
+    if space_pressed && !has_focus && chrome.dialogs.allows(None) {
         state.push_command(crate::core::Intent::TogglePlayPause);
     }
 

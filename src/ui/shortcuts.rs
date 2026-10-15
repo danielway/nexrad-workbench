@@ -15,6 +15,7 @@
 //! and live-mode interactions there don't generalize; its entry in the
 //! help overlay still lives here so users see the full set in one place.
 
+use crate::core::dialogs::{DialogId, DialogIntent, OwnedShortcut};
 use crate::core::transport::{LoopEdge, StepDir, StepUnit};
 use crate::core::RadarProduct;
 use crate::geo::ViewMode;
@@ -66,6 +67,9 @@ type HandlerFn = fn(
 /// A one-shot keyboard shortcut definition.
 struct OneShotShortcut {
     section: &'static str,
+    /// The dialog that owns this shortcut, so it still fires while that
+    /// dialog is on top (`None`: suppressed under any dialog).
+    owned: Option<OwnedShortcut>,
     /// Display label for the key combo as it appears in the help overlay
     /// (e.g. "Ctrl+L", "?", "1").
     key_label: &'static str,
@@ -105,6 +109,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     // ---- Playback ---------------------------------------------------
     OneShotShortcut {
         section: SECTION_PLAYBACK,
+        owned: None,
         key_label: "←/→",
         description: "Frame step (prev / next)",
         pressed: |i| no_mods(i, egui::Key::ArrowLeft) || no_mods(i, egui::Key::ArrowRight),
@@ -113,6 +118,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
+        owned: None,
         key_label: "Shift+←/→",
         description: "Scan step (prev / next volume)",
         pressed: |i| {
@@ -124,6 +130,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
+        owned: None,
         key_label: "[ / ]",
         description: "Speed down / up",
         pressed: |i| no_mods(i, egui::Key::OpenBracket) || no_mods(i, egui::Key::CloseBracket),
@@ -132,6 +139,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
+        owned: None,
         key_label: "+ / −",
         description: "Zoom timeline (in / out)",
         // Equals carries the unshifted "+" key on most layouts; accept both the
@@ -148,6 +156,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
+        owned: None,
         key_label: "I",
         description: "Set loop in-point at playhead",
         pressed: |i| no_mods(i, egui::Key::I),
@@ -156,6 +165,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
+        owned: None,
         key_label: "O",
         description: "Set loop out-point at playhead",
         pressed: |i| no_mods(i, egui::Key::O),
@@ -164,6 +174,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
+        owned: None,
         key_label: "L",
         description: "Go live (re-tether)",
         pressed: |i| no_mods(i, egui::Key::L),
@@ -172,6 +183,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
+        owned: None,
         key_label: "Shift+L",
         description: "Stop live stream",
         pressed: |i| i.modifiers.shift_only() && i.key_pressed(egui::Key::L),
@@ -180,6 +192,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
+        owned: None,
         key_label: "P",
         description: "Cycle product",
         pressed: |i| no_mods(i, egui::Key::P),
@@ -188,6 +201,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
+        owned: None,
         key_label: "E",
         description: "Cycle elevation up (2D)",
         pressed: |i| no_mods(i, egui::Key::E),
@@ -197,6 +211,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
+        owned: None,
         key_label: "S",
         description: "Open site selection (2D)",
         pressed: |i| no_mods(i, egui::Key::S),
@@ -207,6 +222,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     // ---- View modes -------------------------------------------------
     OneShotShortcut {
         section: SECTION_VIEW,
+        owned: None,
         key_label: "1",
         description: "2D top-down mode",
         pressed: |i| no_mods(i, egui::Key::Num1),
@@ -217,6 +233,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_VIEW,
+        owned: None,
         key_label: "2",
         description: "3D globe mode",
         pressed: |i| no_mods(i, egui::Key::Num2),
@@ -227,6 +244,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_VIEW,
+        owned: None,
         key_label: "T",
         description: "Toggle 2D / 3D view",
         pressed: |i| no_mods(i, egui::Key::T),
@@ -238,6 +256,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     // ---- Camera -----------------------------------------------------
     OneShotShortcut {
         section: SECTION_CAMERA,
+        owned: None,
         key_label: "R",
         description: "Reset camera to default",
         pressed: |i| no_mods(i, egui::Key::R),
@@ -246,6 +265,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_CAMERA,
+        owned: None,
         key_label: "F",
         description: "Focus on radar site",
         pressed: |i| no_mods(i, egui::Key::F),
@@ -254,6 +274,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_CAMERA,
+        owned: None,
         key_label: "N",
         description: "Align North up (3D)",
         pressed: |i| no_mods(i, egui::Key::N),
@@ -265,6 +286,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     // ---- General ----------------------------------------------------
     OneShotShortcut {
         section: SECTION_GENERAL,
+        owned: Some(OwnedShortcut::ToggleHelp),
         key_label: "?",
         description: "Toggle this help overlay",
         // ? requires Shift+/ on most layouts; some keyboards send Questionmark directly.
@@ -279,6 +301,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_GENERAL,
+        owned: None,
         key_label: "Ctrl+Shift+A",
         description: "Toggle Basic / Advanced controls",
         pressed: |i| i.key_pressed(egui::Key::A) && i.modifiers.command && i.modifiers.shift,
@@ -319,7 +342,7 @@ const HELD_KEY_DOCS: &[HelpEntry] = &[
     HelpEntry {
         section: SECTION_GENERAL,
         key_label: "Esc",
-        description: "Close open modal / overlay",
+        description: "Close the top dialog (shortcuts pause while one is open)",
     },
 ];
 
@@ -347,8 +370,10 @@ pub(crate) fn handle_shortcuts(
 
     // Registry-driven one-shot shortcuts: each entry's `pressed` predicate
     // is checked against the current frame's input; matches run the handler.
+    // Under a dialog or popover only the shortcuts the top one owns fire
+    // (core::dialogs); Escape is routed to the stack separately.
     for sc in ONE_SHOT_SHORTCUTS {
-        if !(sc.enabled)(state) {
+        if !(sc.enabled)(state) || !chrome.dialogs.allows(sc.owned) {
             continue;
         }
         if ctx.input(sc.pressed) {
@@ -358,7 +383,9 @@ pub(crate) fn handle_shortcuts(
 
     // Continuous WASD/arrows movement. Structurally different from
     // one-shot dispatch (integrates dt, multi-key combinations).
-    handle_continuous_movement(ctx, state, playback);
+    if chrome.dialogs.allows(None) {
+        handle_continuous_movement(ctx, state, playback);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -701,50 +728,29 @@ impl super::layout::Layer for ShortcutsHelpLayer {
         ctx.chrome.shortcuts_help_visible
     }
     fn render(&self, ctx: &mut super::layout::LayoutCtx) {
-        draw_shortcuts_help(ctx.ctx, ctx.state, ctx.chrome);
+        draw_shortcuts_help(ctx.ctx, ctx.state);
     }
 }
 
-fn draw_shortcuts_help(
-    ctx: &egui::Context,
-    _state: &mut AppState,
-    chrome: &mut crate::subsystem::Chrome,
-) {
-    // Close on Escape (checked here because the overlay area may consume the key
-    // event before handle_shortcuts sees it)
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        chrome.shortcuts_help_visible = false;
-        return;
-    }
-
-    let popup_id = egui::Id::new("shortcuts_help_overlay");
-
-    egui::Area::new(popup_id)
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+fn draw_shortcuts_help(ctx: &egui::Context, state: &mut AppState) {
+    let out = super::dialog::Dialog::new(DialogId::ShortcutsHelp, "Keyboard shortcuts")
+        .subtitle("Shortcuts pause while a dialog is open; ? closes this one")
         .show(ctx, |ui| {
-            egui::Frame::popup(ui.style())
-                .inner_margin(16.0)
+            let max_h = ctx.input(|i| i.viewport_rect().height()) * 0.65;
+            egui::ScrollArea::vertical()
+                .max_height(max_h)
+                .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    ui.set_min_width(320.0);
-                    ui.set_max_width(420.0);
-
-                    ui.horizontal(|ui| {
-                        ui.heading("Keyboard Shortcuts");
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button(egui_phosphor::regular::X).clicked() {
-                                chrome.shortcuts_help_visible = false;
-                            }
-                        });
-                    });
-
-                    ui.separator();
-
                     for section in SECTION_ORDER {
                         render_help_section(ui, section);
                     }
                 });
         });
+    if out.close {
+        state.push_command(crate::core::Intent::Dialog(DialogIntent::Close(
+            DialogId::ShortcutsHelp,
+        )));
+    }
 }
 
 fn render_help_section(ui: &mut egui::Ui, section: &'static str) {

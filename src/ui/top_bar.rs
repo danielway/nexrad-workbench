@@ -176,7 +176,11 @@ fn site_picker(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState, show_city
         Some(city) => format!("{} · {city} — change site", vm.site.id),
         None => format!("{} — change site", vm.site.id),
     };
-    if ui.button(job).on_hover_text(hover).clicked() {
+    let response = ui.button(job).on_hover_text(hover);
+    // The site picker anchors under this control.
+    let rect = response.rect;
+    ui.data_mut(|d| d.insert_temp(super::site_modal::anchor_id(), rect));
+    if response.clicked() {
         emit(state, TopBarIntent::OpenSitePicker);
     }
 }

@@ -21,8 +21,11 @@ use crate::core::{GeoLayer, LoopMode, LoopPreset, OperationId, PlaybackMode, Pla
 pub(crate) enum Intent {
     /// Refresh the timeline from the cache. Optionally auto-position the cursor.
     RefreshTimeline { auto_position: bool },
-    /// Clear the record cache.
+    /// Ask to clear the record cache: opens the destructive confirmation
+    /// ([`crate::core::dialogs::Confirm::ClearCache`]).
     ClearCache,
+    /// Clear the record cache now (the confirmation was accepted).
+    ClearCacheNow,
     /// Start live/real-time streaming. The plumbing-level "open a stream"
     /// intent used by boot/deep-link paths; the user-facing GO LIVE button is
     /// [`Intent::GoLive`].
@@ -83,8 +86,15 @@ pub(crate) enum Intent {
     SetPlayMode(PlaybackMode),
     /// Check and run eviction after a storage operation.
     CheckEviction,
-    /// Reset local settings and preferences while preserving saved events, then reload.
+    /// Ask to reset settings: opens the destructive confirmation
+    /// ([`crate::core::dialogs::Confirm::ResetSettings`]). The Storage
+    /// section still raises `Chrome::reset_settings_modal_open` (folded into
+    /// the same confirmation) until it moves to this intent.
+    #[cfg_attr(not(test), allow(dead_code))]
     ResetSettings,
+    /// Reset local settings and preferences while preserving saved events,
+    /// then reload (the confirmation was accepted).
+    ResetSettingsNow,
     /// Pause the acquisition queue.
     PauseQueue,
     /// Resume the acquisition queue.
@@ -152,4 +162,11 @@ pub(crate) enum Intent {
     SetGeoLayer(GeoLayer, bool),
     /// A top-bar picker, toggle or the toast under it (one-instrument §9).
     TopBar(crate::core::top_bar::TopBarIntent),
+    /// A dialog intent: Escape, close, confirm, the event dialog's writes
+    /// (one-instrument §12, [`crate::core::dialogs`]).
+    Dialog(crate::core::dialogs::DialogIntent),
+    /// "Loop from here → now" on the scan inspector: a range from this scan
+    /// start to now, the playhead at the scan. Closes the inspector only when
+    /// the range was made.
+    LoopFromScan(f64),
 }

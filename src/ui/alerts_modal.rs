@@ -8,22 +8,20 @@
 //!  * **Detail modal** — shows full alert information (headline, severity,
 //!    area, effective/expires times, description, instructions).
 //!
-//! Both follow the existing `modal_backdrop` + anchored `egui::Window` pattern
-//! used by `site_modal`, `event_modal`, etc.
+//! Both are the one dialog component ([`super::dialog::Dialog`]). They read
+//! as one dialog: the detail opened from the list has a back arrow, and
+//! Escape returns to the list (the stack closes the detail first).
 
+use super::dialog::{self, Dialog, Width};
 use super::layout::{Layer, LayerKind, LayoutCtx};
-use super::modal_helper::modal_backdrop;
 use crate::alerts::{event_color, Alert};
 use crate::core::diagnostics::{DiagnosticsIntent, DiagnosticsVm};
+use crate::core::dialogs::{DialogId, DialogIntent};
 use crate::core::Intent;
 use crate::state::AppState;
 use crate::ui::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, ScrollArea, Vec2};
 
-const LIST_SIZE: Vec2 = Vec2::new(520.0, 560.0);
-const DETAIL_SIZE: Vec2 = Vec2::new(560.0, 600.0);
-const MODAL_GUTTER: f32 = 8.0;
-const WINDOW_CHROME: Vec2 = Vec2::new(16.0, 40.0);
 const ALERT_ROW_HEIGHT: f32 = 68.0;
 
 pub(super) struct AlertsModalsLayer;
@@ -53,24 +51,13 @@ fn render_list_modal(
     vm: &DiagnosticsVm,
     derived: &crate::subsystem::Derived,
 ) {
-    if modal_backdrop(ctx, "alerts_list_backdrop", 140) {
-        state.push_command(Intent::Diagnostics(DiagnosticsIntent::CloseAlertList));
-        return;
-    }
-
     // The severity-sorted visible-alert list is the view-model; no recompute here.
     let visible = &vm.visible_alerts;
-    let (bounds, size) = modal_geometry(ctx, LIST_SIZE);
+    let list_h = (ctx.input(|i| i.viewport_rect().height()) * 0.6).max(160.0);
 
-    egui::Window::new("Active Alerts in View")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(size)
-        .constrain_to(bounds)
-        .order(egui::Order::Foreground)
+    let out = Dialog::new(DialogId::AlertsList, "Alerts in view")
+        .width(Width::Wide)
         .show(ctx, |ui| {
-            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(format!(
@@ -97,9 +84,6 @@ fn render_list_modal(
                     .on_hover_text("When the NWS alerts feed was last read");
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Close").clicked() {
-                        state.push_command(Intent::Diagnostics(DiagnosticsIntent::CloseAlertList));
-                    }
                     if ui
                         .small_button(RichText::new(format!(
                             "{} Refresh",
@@ -126,10 +110,9 @@ fn render_list_modal(
                 return;
             }
 
-            let body_height = ui.available_height().max(0.0);
             ScrollArea::vertical()
                 .id_salt("alerts_list_scroll")
-                .max_height(body_height)
+                .max_height(list_h)
                 .auto_shrink([false, false])
                 .show_rows(ui, ALERT_ROW_HEIGHT, visible.len(), |ui, rows| {
                     let rows_rect = ui.max_rect();
@@ -140,6 +123,9 @@ fn render_list_modal(
                     }
                 });
         });
+    if out.close {
+        state.push_command(Intent::Dialog(DialogIntent::Close(DialogId::AlertsList)));
+    }
 }
 
 fn render_detail_modal(
@@ -147,11 +133,6 @@ fn render_detail_modal(
     state: &mut AppState,
     diagnostics: &crate::subsystem::Diagnostics,
 ) {
-    if modal_backdrop(ctx, "alerts_detail_backdrop", 160) {
-        state.push_command(Intent::Diagnostics(DiagnosticsIntent::ClearAlertSelection));
-        return;
-    }
-
     let alert: &Alert = match diagnostics
         .alerts
         .selected_alert_id
@@ -165,23 +146,34 @@ fn render_detail_modal(
             return;
         }
     };
-    let (bounds, size) = modal_geometry(ctx, DETAIL_SIZE);
+    let from_list = diagnostics.alerts.list_modal_open;
+    let in_2d = state.viz_state.view_mode() == crate::geo::ViewMode::Flat2D;
+    let body_height = (ctx.input(|i| i.viewport_rect().height()) * 0.6).max(160.0);
 
-    egui::Window::new("Alert details")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(size)
-        .constrain_to(bounds)
-        .order(egui::Order::Foreground)
+    let out = Dialog::new(DialogId::AlertDetail, &alert.event)
+        .width(Width::Wide)
         .show(ctx, |ui| {
-            // Reserve the footer, then let every data-provided text field scroll
-            // so unusually long alerts cannot push actions outside the viewport.
-            let body_height = (ui.available_height() - 46.0).max(0.0);
+            if from_list
+                && ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(format!(
+                                "{} All alerts",
+                                egui_phosphor::regular::ARROW_LEFT
+                            ))
+                            .color(theme::TEXT_DIM),
+                        )
+                        .frame(false),
+                    )
+                    .on_hover_text("Back to the list (Esc)")
+                    .clicked()
+            {
+                state.push_command(Intent::Diagnostics(DiagnosticsIntent::ClearAlertSelection));
+            }
             ScrollArea::vertical()
                 .id_salt(("alert_detail_scroll", &alert.id))
                 .max_height(body_height)
-                .auto_shrink([false, false])
+                .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal_wrapped(|ui| {
@@ -202,8 +194,6 @@ fn render_detail_modal(
                         }
                     });
 
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(&alert.event).size(16.0).strong());
                     if !alert.headline.is_empty() {
                         ui.add_space(4.0);
                         ui.label(RichText::new(&alert.headline).size(13.0).strong());
@@ -234,7 +224,7 @@ fn render_detail_modal(
                             RichText::new("Instructions")
                                 .strong()
                                 .size(12.0)
-                                .color(theme::legacy::CAUTION),
+                                .color(theme::TEXT),
                         );
                         ui.label(
                             RichText::new(&alert.instruction)
@@ -244,31 +234,27 @@ fn render_detail_modal(
                     }
                 });
 
-            ui.add_space(4.0);
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui
-                    .button(RichText::new(format!(
-                        "{} Show on map",
-                        egui_phosphor::regular::MAP_PIN_LINE
-                    )))
-                    .on_hover_text("Center the 2D map on the alert and enable the alerts overlay")
+            // "Show on map" centers the 2D map, so it is offered only in 2D.
+            if in_2d {
+                dialog::footer(ui, |ui| {
+                    if dialog::primary(
+                        ui,
+                        &format!("{} Show on map", egui_phosphor::regular::MAP_PIN_LINE),
+                    )
+                    .on_hover_text("Center the map on the alert and turn on the alerts overlay")
                     .clicked()
-                {
-                    // The handler centers the view, enables the class layer, and
-                    // closes this modal — all via the pure `compute_alert_focus`.
-                    state.push_command(Intent::ShowAlertOnMap(alert.id.clone()));
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        state.push_command(Intent::Diagnostics(
-                            DiagnosticsIntent::ClearAlertSelection,
-                        ));
+                    {
+                        // The handler centers the view, enables the class
+                        // layer, and closes this dialog — all via the pure
+                        // `compute_alert_focus`.
+                        state.push_command(Intent::ShowAlertOnMap(alert.id.clone()));
                     }
                 });
-            });
+            }
         });
+    if out.close {
+        state.push_command(Intent::Dialog(DialogIntent::Close(DialogId::AlertDetail)));
+    }
 }
 
 fn render_alert_row(
@@ -400,48 +386,6 @@ fn render_timing_meta(ui: &mut egui::Ui, alert: &Alert, use_local_time: bool) {
     }
 }
 
-fn modal_geometry(ctx: &egui::Context, desired: Vec2) -> (Rect, Vec2) {
-    modal_geometry_for_viewport(
-        ctx.content_rect(),
-        super::mobile::safe_area_insets(),
-        desired,
-    )
-}
-
-fn modal_geometry_for_viewport(
-    viewport: Rect,
-    insets: (f32, f32, f32, f32),
-    desired: Vec2,
-) -> (Rect, Vec2) {
-    let (top, right, bottom, left) = insets;
-    let (left, right) = bounded_margins(
-        viewport.width(),
-        left.max(0.0) + MODAL_GUTTER,
-        right.max(0.0) + MODAL_GUTTER,
-    );
-    let (top, bottom) = bounded_margins(
-        viewport.height(),
-        top.max(0.0) + MODAL_GUTTER,
-        bottom.max(0.0) + MODAL_GUTTER,
-    );
-    let bounds = Rect::from_min_max(
-        Pos2::new(viewport.left() + left, viewport.top() + top),
-        Pos2::new(viewport.right() - right, viewport.bottom() - bottom),
-    );
-    let available_content = (bounds.size() - WINDOW_CHROME).max(Vec2::ZERO);
-    (bounds, desired.min(available_content))
-}
-
-fn bounded_margins(length: f32, before: f32, after: f32) -> (f32, f32) {
-    let total = before + after;
-    if total > length && total > 0.0 {
-        let scale = length.max(0.0) / total;
-        (before * scale, after * scale)
-    } else {
-        (before, after)
-    }
-}
-
 fn event_dot(ui: &mut egui::Ui, event: &str) {
     let (r, g, b) = event_color(event);
     let color = Color32::from_rgb(r, g, b);
@@ -514,54 +458,6 @@ fn format_relative(now_secs: f64, ts_secs: f64) -> String {
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
-
-    #[wasm_bindgen_test]
-    fn desktop_modal_keeps_desired_content_size() {
-        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0));
-        let (_, size) = modal_geometry_for_viewport(viewport, (0.0, 0.0, 0.0, 0.0), DETAIL_SIZE);
-        assert_eq!(size, DETAIL_SIZE);
-    }
-
-    #[wasm_bindgen_test]
-    fn phone_modal_fits_inside_gutter_and_window_chrome() {
-        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(390.0, 844.0));
-        let (bounds, size) =
-            modal_geometry_for_viewport(viewport, (0.0, 0.0, 0.0, 0.0), DETAIL_SIZE);
-        assert_eq!(
-            bounds,
-            Rect::from_min_max(Pos2::new(8.0, 8.0), Pos2::new(382.0, 836.0))
-        );
-        assert!(size.x + WINDOW_CHROME.x <= bounds.width());
-        assert!(size.y + WINDOW_CHROME.y <= bounds.height());
-    }
-
-    #[wasm_bindgen_test]
-    fn landscape_modal_caps_height() {
-        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(844.0, 390.0));
-        let (bounds, size) =
-            modal_geometry_for_viewport(viewport, (0.0, 0.0, 0.0, 0.0), DETAIL_SIZE);
-        assert_eq!(size.y, bounds.height() - WINDOW_CHROME.y);
-    }
-
-    #[wasm_bindgen_test]
-    fn safe_area_insets_reduce_modal_bounds() {
-        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(390.0, 844.0));
-        let (bounds, _) =
-            modal_geometry_for_viewport(viewport, (47.0, 0.0, 34.0, 0.0), DETAIL_SIZE);
-        assert_eq!(bounds.top(), 55.0);
-        assert_eq!(bounds.bottom(), 802.0);
-    }
-
-    #[wasm_bindgen_test]
-    fn tiny_viewport_never_produces_negative_geometry() {
-        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(10.0, 10.0));
-        let (bounds, size) =
-            modal_geometry_for_viewport(viewport, (20.0, 20.0, 20.0, 20.0), DETAIL_SIZE);
-        assert!(bounds.width() >= 0.0);
-        assert!(bounds.height() >= 0.0);
-        assert!(size.x >= 0.0);
-        assert!(size.y >= 0.0);
-    }
 
     #[wasm_bindgen_test]
     fn virtual_alert_card_borders_do_not_overlap() {

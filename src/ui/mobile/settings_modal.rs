@@ -50,7 +50,7 @@ fn draw_mobile_settings_modal(
     derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    if super::super::modal_helper::modal_backdrop(ctx, "mobile_settings_backdrop", 160) {
+    if super::super::modal_helper::modal_backdrop(ctx, "mobile_settings_backdrop") {
         chrome.mobile_settings_open = false;
         return;
     }

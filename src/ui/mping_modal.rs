@@ -7,8 +7,10 @@
 //! recent fetch error verbatim so a CORS or auth problem is immediately
 //! visible rather than silently leaving the layer empty.
 
+use super::dialog::{self, Dialog};
+use crate::core::dialogs::DialogId;
 use crate::ui::theme;
-use eframe::egui::{self, RichText, Vec2};
+use eframe::egui::{self, RichText};
 
 /// Persistent UI state for the mPING settings modal — kept outside
 /// `AppState` because it holds a transient text-edit buffer that should
@@ -67,51 +69,34 @@ fn draw_mping_modal(
         return;
     }
 
-    if super::modal_helper::modal_backdrop(ctx, "mping_modal_backdrop", 180) {
-        state.push_command(Intent::Diagnostics(DiagnosticsIntent::CloseMpingSettings));
-        modal_state.seeded = false;
-        return;
-    }
-
     if !modal_state.seeded {
         modal_state.key_input = diagnostics.mping.api_key.clone().unwrap_or_default();
         modal_state.seeded = true;
     }
 
-    egui::Window::new("mPING Storm Reports")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(420.0, 0.0))
-        .order(egui::Order::Foreground)
+    let close_intent = Intent::Dialog(crate::core::dialogs::DialogIntent::Close(
+        crate::core::dialogs::DialogId::Mping,
+    ));
+    let out = Dialog::new(DialogId::Mping, "mPING storm reports")
+        .subtitle("Crowd-sourced reports from NSSL / OU")
         .show(ctx, |ui| {
-            ui.add_space(6.0);
-
             ui.label(
                 RichText::new(
-                    "mPING is a crowd-sourced weather report service from NSSL/OU. \
-                     Reports submitted by volunteer observers are shown as colored \
-                     markers near the active radar.",
+                    "Reports submitted by volunteer observers show as markers \
+                     near the active radar.",
                 )
-                .small(),
+                .color(theme::TEXT_DIM),
             );
-
-            ui.add_space(8.0);
-
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Get a key:").small());
+                ui.label(RichText::new("Get a key:").color(theme::TEXT_DIM));
                 ui.hyperlink_to(
-                    RichText::new("mping.ou.edu/registration").small(),
+                    "mping.ou.edu/registration",
                     "https://mping.ou.edu/registration/",
                 );
             });
 
             ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(8.0);
-
-            ui.label(RichText::new("API key").strong());
-            ui.add_space(2.0);
+            dialog::group_heading(ui, "API key");
             ui.add(
                 // two-way binding: the egui widget owns this value while the user edits it.
                 egui::TextEdit::singleline(&mut modal_state.key_input)
@@ -119,18 +104,15 @@ fn draw_mping_modal(
                     .desired_width(f32::INFINITY)
                     .hint_text("Paste your mPING API token"),
             );
-
             ui.add_space(8.0);
 
-            // Status block — most recent fetch outcome.
-            if let Some(err) = diagnostics.mping.last_error.as_deref() {
-                ui.label(
-                    RichText::new(format!("\u{26A0} {}", err))
-                        .small()
-                        .color(theme::legacy::ERROR),
-                );
+            // Status line — the most recent fetch outcome. Failure is the ⚠
+            // glyph in text color (red means now).
+            let status = if let Some(err) = diagnostics.mping.last_error.as_deref() {
+                RichText::new(format!("{} {}", egui_phosphor::regular::WARNING, err))
+                    .color(theme::TEXT)
             } else if diagnostics.mping.fetch_in_flight {
-                ui.label(RichText::new("Fetching reports\u{2026}").small().weak());
+                RichText::new("Fetching reports\u{2026}").color(theme::TEXT_DIM)
             } else if diagnostics.mping.last_success_ms > 0.0 {
                 // Count only reports visible at the current playhead — the
                 // marker layer hides any observed after the rendered time.
@@ -146,66 +128,44 @@ fn draw_mping_modal(
                 } else {
                     String::new()
                 };
-                ui.label(
-                    RichText::new(format!("\u{2713} {} report(s) loaded{}", n, extra))
-                        .small()
-                        .color(theme::legacy::SUCCESS),
-                );
+                RichText::new(format!("{} report(s) loaded{}", n, extra)).color(theme::TEXT_DIM)
             } else if diagnostics.mping.api_key.is_some() {
-                ui.label(
-                    RichText::new("Layer is enabled but no fetch has run yet.")
-                        .small()
-                        .weak(),
-                );
+                RichText::new("Key saved; reports load while the layer is on.")
+                    .color(theme::TEXT_DIM)
             } else {
-                ui.label(
-                    RichText::new("Save a key to enable the layer.")
-                        .small()
-                        .weak(),
-                );
-            }
+                RichText::new("Save a key to enable the layer.").color(theme::TEXT_DIM)
+            };
+            ui.label(status.size(theme::CAPTION));
 
-            ui.add_space(12.0);
-            ui.separator();
-            ui.add_space(8.0);
-
-            ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
-                    state.push_command(Intent::Diagnostics(DiagnosticsIntent::CloseMpingSettings));
+            dialog::footer(ui, |ui| {
+                if dialog::primary(ui, "Save").clicked() {
+                    let trimmed = modal_state.key_input.trim();
+                    let new_key = if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    };
+                    // The reducer guards on key change, clears the error,
+                    // requests invalidation, and closes the modal.
+                    state.push_command(Intent::Diagnostics(DiagnosticsIntent::SaveMpingApiKey(
+                        new_key,
+                    )));
                     modal_state.seeded = false;
                 }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let trimmed = modal_state.key_input.trim();
-                    let save_btn = ui.add(
-                        egui::Button::new(RichText::new("Save").color(theme::TEXT))
-                            .fill(theme::legacy::BUTTON_BLUE),
-                    );
-                    if save_btn.clicked() {
-                        let new_key = if trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(trimmed.to_string())
-                        };
-                        // The reducer guards on key change, clears the error,
-                        // requests invalidation, and closes the modal.
-                        state.push_command(Intent::Diagnostics(
-                            DiagnosticsIntent::SaveMpingApiKey(new_key),
-                        ));
-                        modal_state.seeded = false;
-                    }
-
-                    if diagnostics.mping.api_key.is_some()
-                        && ui
-                            .button(RichText::new("Clear").color(theme::legacy::ERROR))
-                            .clicked()
-                    {
-                        state.push_command(Intent::Diagnostics(DiagnosticsIntent::ClearMpingKey));
-                        modal_state.key_input.clear();
-                    }
-                });
+                if dialog::secondary(ui, "Cancel").clicked() {
+                    state.push_command(close_intent.clone());
+                    modal_state.seeded = false;
+                }
+                if diagnostics.mping.api_key.is_some()
+                    && dialog::secondary(ui, "Clear key").clicked()
+                {
+                    state.push_command(Intent::Diagnostics(DiagnosticsIntent::ClearMpingKey));
+                    modal_state.key_input.clear();
+                }
             });
-
-            ui.add_space(4.0);
         });
+    if out.close {
+        state.push_command(close_intent);
+        modal_state.seeded = false;
+    }
 }

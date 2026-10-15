@@ -198,6 +198,18 @@ pub(crate) fn dispatch_state_only(
         // ---- Top bar ------------------------------------------------
         Intent::TopBar(intent) => s.top_bar(intent),
 
+        // ---- Dialogs (one-instrument §12) ---------------------------
+        // Clear cache and reset are destructive: the request opens the
+        // confirmation, whose button sends the `*Now` intent to the shell.
+        Intent::ClearCache => s.dialog(crate::core::dialogs::DialogIntent::RequestConfirm(
+            crate::core::dialogs::Confirm::ClearCache,
+        )),
+        Intent::ResetSettings => s.dialog(crate::core::dialogs::DialogIntent::RequestConfirm(
+            crate::core::dialogs::Confirm::ResetSettings,
+        )),
+        Intent::Dialog(intent) => s.dialog(intent),
+        Intent::LoopFromScan(scan_start) => s.loop_from_scan(scan_start),
+
         // ---- Needs the shell --------------------------------------
         // Listed explicitly (not `_`) so a new intent forces a decision
         // about which half of the partition owns it. The reason each one
@@ -206,8 +218,8 @@ pub(crate) fn dispatch_state_only(
         //   OpenExternalUrl ... web_sys window.open
         //   LocateMeForSite ... browser geolocation
         //   SubmitZip ......... network geocode lookup
-        //   ClearCache ........ IDB clear + GPU texture wipe
-        //   ResetSettings ..... localStorage reset + reload
+        //   ClearCacheNow ..... IDB clear + GPU texture wipe
+        //   ResetSettingsNow .. localStorage reset + reload
         //   CheckEviction ..... spawn_local IDB eviction
         //   RefreshTimeline ... IDB cache-load channel (needs egui ctx)
         //   StartLive ......... opens the realtime stream (needs egui ctx)
@@ -220,8 +232,8 @@ pub(crate) fn dispatch_state_only(
         | Intent::OpenExternalUrl(_)
         | Intent::LocateMeForSite
         | Intent::SubmitZip(_)
-        | Intent::ClearCache
-        | Intent::ResetSettings
+        | Intent::ClearCacheNow
+        | Intent::ResetSettingsNow
         | Intent::CheckEviction
         | Intent::RefreshTimeline { .. }
         | Intent::StartLive
@@ -568,8 +580,8 @@ impl WorkbenchApp {
             }
 
             // ---- Storage lifecycle ------------------------------------
-            Intent::ClearCache => self.handle_clear_cache(ctx),
-            Intent::ResetSettings => self.handle_reset_settings(),
+            Intent::ClearCacheNow => self.handle_clear_cache(ctx),
+            Intent::ResetSettingsNow => self.handle_reset_settings(),
             Intent::CheckEviction => self.handle_check_eviction(ctx),
 
             // ---- Timeline ---------------------------------------------
@@ -629,7 +641,11 @@ impl WorkbenchApp {
             | Intent::ShowAlertOnMap(_)
             | Intent::PlaceDistancePoint { .. }
             | Intent::SetGeoLayer(..)
-            | Intent::TopBar(_) => {
+            | Intent::TopBar(_)
+            | Intent::ClearCache
+            | Intent::ResetSettings
+            | Intent::Dialog(_)
+            | Intent::LoopFromScan(_) => {
                 unreachable!("state-only intent was not consumed by dispatch_state_only")
             }
         }
@@ -642,6 +658,24 @@ impl WorkbenchApp {
     /// marker click) routes here through [`Intent::SelectSite`], so this is the
     /// single place a site change happens.
     fn apply_site_selection(&mut self, site_id: &str, lat: f64, lon: f64) {
+        // Every pick — list, search, zip, location or map — completes the
+        // first visit and ends "Pick on map" (restoring the Sites layer).
+        self.chrome.site_required = false;
+        if let Some(was_on) = self.chrome.site_map_pick.take() {
+            self.state.layer_state.geo.nexrad_sites = was_on;
+        }
+        crate::core::site_picker::push_recent(&mut self.state.recent_sites, site_id);
+        self.state.preferred_site = Some(site_id.to_string());
+        self.chrome.site_modal_open = false;
+        if site_id == self.state.viz_state.site_id {
+            // Picking the current site is allowed (a first visit can keep the
+            // default site); nothing to retarget, but a deferred boot tether
+            // still starts.
+            if std::mem::take(&mut self.state.start_live_on_site_select) {
+                self.state.push_command(crate::core::Intent::StartLive);
+            }
+            return;
+        }
         self.state.viz_state.site_id = site_id.to_string();
         self.state.viz_state.center_lat = lat;
         self.state.viz_state.center_lon = lon;
@@ -719,7 +753,7 @@ impl WorkbenchApp {
             self.acquisition.request_ledger.clear();
         } else {
             // Cache loader is busy; replay the request on the next frame.
-            self.state.push_command(crate::core::Intent::ClearCache);
+            self.state.push_command(crate::core::Intent::ClearCacheNow);
         }
     }
 
@@ -1017,8 +1051,12 @@ mod dispatch_tests {
             },
             Intent::SetGeoLayer(GeoLayer::Cities, false),
             Intent::TopBar(TopBarIntent::ToggleTimeZone),
+            Intent::ClearCache,
+            Intent::ResetSettings,
+            Intent::Dialog(crate::core::dialogs::DialogIntent::Escape),
+            Intent::LoopFromScan(1_000.0),
         ];
-        assert_eq!(state_only.len(), 25);
+        assert_eq!(state_only.len(), 29);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -1044,8 +1082,8 @@ mod dispatch_tests {
             Intent::OpenExternalUrl("https://example.com/changelog"),
             Intent::LocateMeForSite,
             Intent::SubmitZip("50309".to_string()),
-            Intent::ClearCache,
-            Intent::ResetSettings,
+            Intent::ClearCacheNow,
+            Intent::ResetSettingsNow,
             Intent::CheckEviction,
             Intent::RefreshTimeline {
                 auto_position: true,
@@ -1350,6 +1388,178 @@ mod dispatch_tests {
             crate::geo::ViewMode::Flat2D,
         )));
         assert_eq!(f.state.viz_state.view_mode(), crate::geo::ViewMode::Flat2D);
+    }
+
+    // ---- dialogs ------------------------------------------------------
+
+    fn drain(f: &mut Fixture) -> Vec<Intent> {
+        f.state.drain_commands()
+    }
+
+    /// Escape closes only the top entry: the alert detail first, then the
+    /// list under it.
+    #[wasm_bindgen_test]
+    fn escape_closes_the_top_dialog_only() {
+        use crate::core::dialogs::DialogIntent;
+        let mut f = Fixture::new();
+        f.diagnostics.alerts.list_modal_open = true;
+        crate::app::dialogs::sync_dialogs(&mut f.chrome, &f.diagnostics);
+        f.diagnostics.alerts.selected_alert_id = Some("a1".into());
+        f.apply(Intent::Dialog(DialogIntent::Escape));
+        assert!(f.diagnostics.alerts.selected_alert_id.is_none());
+        assert!(f.diagnostics.alerts.list_modal_open);
+        f.apply(Intent::Dialog(DialogIntent::Escape));
+        assert!(!f.diagnostics.alerts.list_modal_open);
+        assert!(f.chrome.dialogs.is_empty());
+    }
+
+    /// The first-visit site picker survives Escape and its close mark; a
+    /// pick clears the requirement.
+    #[wasm_bindgen_test]
+    fn the_required_site_picker_cannot_be_dismissed() {
+        use crate::core::dialogs::{DialogId, DialogIntent};
+        let mut f = Fixture::new();
+        f.chrome.site_modal_open = true;
+        f.chrome.site_required = true;
+        f.apply(Intent::Dialog(DialogIntent::Escape));
+        f.apply(Intent::Dialog(DialogIntent::Close(DialogId::SitePicker)));
+        assert!(f.chrome.site_modal_open);
+        f.chrome.site_required = false;
+        f.apply(Intent::Dialog(DialogIntent::Escape));
+        assert!(!f.chrome.site_modal_open);
+    }
+
+    /// Clear cache asks first; confirming sends the shell intent, cancelling
+    /// sends nothing.
+    #[wasm_bindgen_test]
+    fn clear_cache_goes_through_the_confirmation() {
+        use crate::core::dialogs::{Confirm, DialogId, DialogIntent};
+        let mut f = Fixture::new();
+        f.apply(Intent::ClearCache);
+        assert_eq!(f.chrome.confirm, Some(Confirm::ClearCache));
+        assert_eq!(f.chrome.dialogs.top(), Some(DialogId::Confirm));
+        assert!(drain(&mut f).is_empty());
+        f.apply(Intent::Dialog(DialogIntent::Confirm));
+        assert_eq!(f.chrome.confirm, None);
+        assert_eq!(drain(&mut f), vec![Intent::ClearCacheNow]);
+
+        f.apply(Intent::ResetSettings);
+        f.apply(Intent::Dialog(DialogIntent::Escape));
+        assert_eq!(f.chrome.confirm, None);
+        assert!(drain(&mut f).is_empty());
+    }
+
+    /// The Storage section's legacy flag opens the shared confirmation.
+    #[wasm_bindgen_test]
+    fn the_reset_flag_opens_the_confirmation() {
+        let mut f = Fixture::new();
+        f.chrome.reset_settings_modal_open = true;
+        crate::app::dialogs::sync_dialogs(&mut f.chrome, &f.diagnostics);
+        assert!(!f.chrome.reset_settings_modal_open);
+        assert_eq!(
+            f.chrome.confirm,
+            Some(crate::core::dialogs::Confirm::ResetSettings)
+        );
+    }
+
+    /// Deleting an event confirms over the event dialog; Escape returns to
+    /// the dialog, confirming deletes and closes both.
+    #[wasm_bindgen_test]
+    fn delete_event_confirms_over_the_event_dialog() {
+        use crate::core::dialogs::{Confirm, DialogId, DialogIntent};
+        let mut f = Fixture::new();
+        f.state
+            .saved_events
+            .add("Derecho".into(), "KDMX".into(), 1.0, 2.0);
+        let id = f.state.saved_events.events[0].id;
+        f.chrome.event_modal_open = true;
+        f.chrome.event_modal_editing_id = Some(id);
+        f.apply(Intent::Dialog(DialogIntent::RequestConfirm(
+            Confirm::DeleteEvent(id),
+        )));
+        assert_eq!(f.chrome.dialogs.top(), Some(DialogId::Confirm));
+        f.apply(Intent::Dialog(DialogIntent::Escape));
+        assert!(f.chrome.event_modal_open);
+        assert_eq!(f.state.saved_events.events.len(), 1);
+
+        f.apply(Intent::Dialog(DialogIntent::RequestConfirm(
+            Confirm::DeleteEvent(id),
+        )));
+        f.apply(Intent::Dialog(DialogIntent::Confirm));
+        for intent in drain(&mut f) {
+            f.apply(intent);
+        }
+        assert!(f.state.saved_events.events.is_empty());
+        assert!(!f.chrome.event_modal_open);
+    }
+
+    /// Saving validates in the core and closes the dialog; an invalid save
+    /// leaves it open.
+    #[wasm_bindgen_test]
+    fn save_event_validates_and_closes() {
+        use crate::core::dialogs::DialogIntent;
+        let mut f = Fixture::new();
+        f.chrome.event_modal_open = true;
+        let save = |name: &str, start: f64, end: f64| {
+            Intent::Dialog(DialogIntent::SaveEvent {
+                editing: None,
+                name: name.into(),
+                site_id: "KDMX".into(),
+                start,
+                end,
+            })
+        };
+        f.apply(save("x", 5.0, 1.0));
+        assert!(f.chrome.event_modal_open);
+        assert!(f.state.saved_events.events.is_empty());
+        f.apply(save(" Derecho ", 1.0, 5.0));
+        assert!(!f.chrome.event_modal_open);
+        assert_eq!(f.state.saved_events.events[0].name, "Derecho");
+    }
+
+    /// Pick on map turns the Sites layer on and closes the picker; Escape
+    /// restores the layer.
+    #[wasm_bindgen_test]
+    fn pick_on_map_restores_the_sites_layer_on_cancel() {
+        use crate::core::dialogs::{DialogId, DialogIntent};
+        let mut f = Fixture::new();
+        f.chrome.site_modal_open = true;
+        f.state.layer_state.geo.nexrad_sites = false;
+        f.apply(Intent::Dialog(DialogIntent::PickSiteOnMap));
+        assert!(f.state.layer_state.geo.nexrad_sites);
+        assert!(!f.chrome.site_modal_open);
+        assert_eq!(f.chrome.dialogs.top(), Some(DialogId::PickSiteOnMap));
+        f.apply(Intent::Dialog(DialogIntent::Escape));
+        assert!(!f.state.layer_state.geo.nexrad_sites);
+        assert!(f.chrome.dialogs.is_empty());
+    }
+
+    /// Loop from a scan more than 7 days back fails with a toast and keeps
+    /// the inspector open.
+    #[wasm_bindgen_test]
+    fn loop_from_an_old_scan_says_why_and_keeps_the_inspector() {
+        let mut f = Fixture::new();
+        f.state.frame_now = FrameNow(20.0 * 86_400.0);
+        f.chrome.scan_inspector = Some(1_000.0);
+        f.apply(Intent::LoopFromScan(1_000.0));
+        assert_eq!(f.chrome.scan_inspector, Some(1_000.0));
+        assert!(f.toast().is_some_and(|t| t.contains("7 days")));
+    }
+
+    /// Loop from a recent scan makes the range to now, puts the playhead at
+    /// the scan and closes the inspector.
+    #[wasm_bindgen_test]
+    fn loop_from_a_recent_scan_loops_to_now_and_closes_the_inspector() {
+        let mut f = Fixture::new();
+        f.state.frame_now = FrameNow(10_000.0);
+        f.chrome.scan_inspector = Some(7_000.0);
+        f.apply(Intent::LoopFromScan(7_000.0));
+        assert_eq!(f.chrome.scan_inspector, None);
+        assert_eq!(
+            f.playback.state.selection_range(),
+            Some((7_000.0, 10_000.0))
+        );
+        assert_eq!(f.playback.state.playback_position(), 7_000.0);
     }
 
     #[wasm_bindgen_test]

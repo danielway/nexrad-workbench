@@ -23,7 +23,11 @@ pub(super) fn render_datetime_picker_popup(
         return;
     }
 
-    if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+    // Claim Escape so the dialog stack does not also close the sheet under it.
+    if ui
+        .ctx()
+        .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
         picker.close();
         return;
     }
