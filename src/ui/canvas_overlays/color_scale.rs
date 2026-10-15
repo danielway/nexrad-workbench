@@ -1,7 +1,9 @@
 //! Vertical color scale legend displayed on the right edge of the canvas.
 //!
 //! Builds a 1024-entry LUT matching the GPU shader's color mapping, then
-//! renders it as a gradient bar with tick marks and unit labels.
+//! paints it as a gradient bar on a scrim, titled with the product and unit
+//! (one-instrument §7). Title and ticks are the core's
+//! [`crate::core::canvas::legend_vm`].
 
 use crate::ui::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
@@ -53,16 +55,41 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::core::Radar
         data
     };
 
-    let bar_width = 16.0f32;
-    let margin = 14.0f32;
-    let top_margin = 20.0f32;
-    let bottom_margin = 20.0f32;
-    let bar_height = (rect.height() - top_margin - bottom_margin).clamp(100.0, 320.0);
+    let vm = crate::core::canvas::legend_vm(*product, (min_val, max_val));
 
-    let bar_left = rect.right() - margin - bar_width;
-    let bar_top = rect.top() + top_margin;
+    let bar_width = 14.0f32;
+    let margin = 12.0f32;
+    let pad = 6.0f32;
+    let title_h = 16.0f32;
+    let tick_w = 30.0f32;
+    let bar_height =
+        (rect.height() - 2.0 * margin - title_h - 2.0 * pad - 20.0).clamp(100.0, 300.0);
 
     let painter = ui.painter();
+    let title_font = egui::FontId::proportional(theme::CAPTION);
+    let title = painter.layout_no_wrap(vm.title.clone(), title_font, theme::TEXT_DIM);
+
+    // The scrim: title over a bar with its ticks to the left.
+    let width = (tick_w + 4.0 + bar_width).max(title.size().x) + pad * 2.0;
+    let scrim = Rect::from_min_size(
+        Pos2::new(rect.right() - margin - width, rect.top() + margin),
+        Vec2::new(width, pad + title_h + bar_height + pad + 4.0),
+    );
+    painter.rect(
+        scrim,
+        4.0,
+        theme::map::scrim(),
+        Stroke::new(1.0_f32, theme::map::scrim_edge()),
+        StrokeKind::Inside,
+    );
+    painter.galley(
+        Pos2::new(scrim.right() - pad - title.size().x, scrim.top() + pad),
+        title,
+        theme::TEXT_DIM,
+    );
+
+    let bar_left = scrim.right() - pad - bar_width;
+    let bar_top = scrim.top() + pad + title_h + 4.0;
     let lut_size = 1024usize;
 
     // Draw the color bar as horizontal slices (bottom = low, top = high)
@@ -81,7 +108,6 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::core::Radar
         painter.rect_filled(slice_rect, 0.0, Color32::from_rgba_unmultiplied(r, g, b, a));
     }
 
-    // Outline
     let bar_rect = Rect::from_min_size(
         Pos2::new(bar_left, bar_top),
         Vec2::new(bar_width, bar_height),
@@ -93,54 +119,19 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::core::Radar
         StrokeKind::Outside,
     );
 
-    // Tick labels
-    let range = max_val - min_val;
-    let tick_step = if range > 200.0 {
-        60.0
-    } else if range > 60.0 {
-        10.0
-    } else if range > 10.0 {
-        5.0
-    } else if range > 2.0 {
-        1.0
-    } else {
-        0.2
-    };
-
     let label_x = bar_left - 4.0;
-    let mut val = (min_val / tick_step).ceil() * tick_step;
-    while val <= max_val {
-        let frac = (val - min_val) / range;
+    for (frac, label) in &vm.ticks {
         let y = bar_top + bar_height * (1.0 - frac);
-
-        // Tick line
         painter.line_segment(
             [Pos2::new(bar_left - 3.0, y), Pos2::new(bar_left, y)],
             Stroke::new(1.0_f32, theme::alpha(theme::TEXT_DIM, 200)),
         );
-
-        // Label
-        let label = if tick_step < 1.0 {
-            format!("{:.1}", val)
-        } else {
-            format!("{:.0}", val)
-        };
         painter.text(
             Pos2::new(label_x, y),
             egui::Align2::RIGHT_CENTER,
             label,
             egui::FontId::monospace(10.0),
-            theme::alpha(theme::TEXT_DIM, 220),
+            theme::TEXT_DIM,
         );
-        val += tick_step;
     }
-
-    // Unit label at top
-    painter.text(
-        Pos2::new(bar_left + bar_width * 0.5, bar_top - 6.0),
-        egui::Align2::CENTER_BOTTOM,
-        product.unit(),
-        egui::FontId::monospace(10.0),
-        theme::alpha(theme::TEXT_DIM, 200),
-    );
 }

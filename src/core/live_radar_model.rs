@@ -93,9 +93,6 @@ pub(crate) struct LiveSweepModel {
     /// Elevation number being collected.
     pub elevation_number: u8,
 
-    /// Radials received so far for this elevation.
-    pub radials_received: u32,
-
     /// Azimuth range of actual received data (first_az, last_az).
     pub data_azimuth_range: Option<(f32, f32)>,
 
@@ -198,7 +195,6 @@ impl LiveModeState {
             let chunks_expected = sweep.map(|s| s.chunks_in_sweep as u32).filter(|&c| c > 0);
             Some(LiveSweepModel {
                 elevation_number: elev,
-                radials_received: p.in_progress_radials.unwrap_or(0),
                 data_azimuth_range: self.live_data_azimuth_range,
                 chunks,
                 chunks_expected,
@@ -454,7 +450,6 @@ mod coverage_tests {
         let model = s.compute_model(1001.0, Some(sp));
         let active_sweep = model.active_sweep.expect("active sweep");
         assert_eq!(active_sweep.elevation_number, 2);
-        assert_eq!(active_sweep.radials_received, 61);
         // chunks_expected = chunks_in_sweep (5) as u32, kept because > 0.
         assert_eq!(active_sweep.chunks_expected, Some(5));
         // Two chunk boundaries copied through.

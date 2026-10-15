@@ -39,7 +39,9 @@
 //! the surfaces that print a clock take a [`Clock`]; everything else is a
 //! finished string here.
 
-use crate::core::canvas::CanvasCaption;
+use crate::core::canvas::{
+    caption_line, decide_canvas_caption, CanvasCaption, CaptionContext, CaptionLine,
+};
 use crate::core::live_status::LiveStatus;
 use crate::core::selection_chip::ChipLabel;
 use crate::core::transport::LiveStopPlacement;
@@ -283,8 +285,10 @@ pub(crate) struct SessionInputs<'a> {
     pub live_cut: Option<LiveCut>,
     /// A cached scan lies under the playhead (legacy [`AppMode`] only).
     pub scan_at_playhead: bool,
-    /// The canvas honesty decision from the render loop.
-    pub canvas_caption: CanvasCaption,
+    /// What the render loop knows about the frame and the playhead (one
+    /// frame's length, a render in flight, downloads, the wanted tilt) — the
+    /// caption rule reads it beside the frame and playhead facts.
+    pub caption_context: CaptionContext,
 }
 
 /// One session, four facts, five surfaces. Rebuilt once per frame.
@@ -309,7 +313,9 @@ pub(crate) struct SessionVm {
     pub activity_chip: Option<String>,
     /// Hover sentence for the stream-health line.
     pub activity_hover: Option<&'static str>,
-    /// Clock text via [`SessionVm::canvas_caption_text`].
+    /// The canvas caption, decided by the one caption rule
+    /// ([`decide_canvas_caption`]). Words via
+    /// [`SessionVm::canvas_caption_line`].
     pub canvas_caption: CanvasCaption,
 
     /// Legacy mode word for the badge, favicon and tab title.
@@ -406,6 +412,14 @@ impl SessionVm {
             }),
             _ => None,
         };
+        let canvas_caption = decide_canvas_caption(
+            frame.as_ref(),
+            playhead,
+            now,
+            stream.is_running(),
+            inputs.live_cut.as_ref().and_then(|c| c.elevation_angle),
+            &inputs.caption_context,
+        );
         let activity_chip = stream_line(stream, status, inputs.live_cut.as_ref(), now);
         let activity_hover = stream_hover(stream, status);
         let app_mode = if stream.is_running() && selection_pinned {
@@ -427,7 +441,7 @@ impl SessionVm {
             age_pill,
             activity_chip,
             activity_hover,
-            canvas_caption: inputs.canvas_caption,
+            canvas_caption,
             app_mode,
         }
     }
@@ -472,28 +486,20 @@ impl SessionVm {
         }
     }
 
-    /// The canvas caption's words, or `None` when the frame and the playhead
-    /// agree.
+    /// The canvas caption, segment by segment (§7 forms), or `None` when
+    /// the frame and the playhead agree.
+    pub(crate) fn canvas_caption_line(&self, clock: &dyn Clock) -> Option<CaptionLine> {
+        caption_line(
+            &self.canvas_caption,
+            self.playhead == Playhead::PinnedToNow,
+            clock,
+        )
+    }
+
+    /// The canvas caption's words as one string.
+    #[cfg(test)]
     pub(crate) fn canvas_caption_text(&self, clock: &dyn Clock) -> Option<String> {
-        match self.canvas_caption {
-            CanvasCaption::None => None,
-            CanvasCaption::Acquiring => Some(match self.playhead {
-                Playhead::AtTime { ts, .. } => {
-                    format!("no frame yet · downloading {}", clock.hms(ts))
-                }
-                Playhead::PinnedToNow => "no frame yet · downloading".to_string(),
-            }),
-            CanvasCaption::Discrepancy {
-                showing,
-                target,
-                fetching,
-            } => Some(format!(
-                "showing {} · playhead {} · {}",
-                clock.hms(showing),
-                clock.hms(target),
-                if fetching { "downloading" } else { "no data" }
-            )),
-        }
+        self.canvas_caption_line(clock).map(|l| l.text())
     }
 }
 
@@ -649,6 +655,7 @@ fn stream_hover(stream: Stream, status: &LiveStatus) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::canvas::CaptionRole;
     use crate::core::domain::playback::RangeSelection;
     use crate::core::{ExpectedSweep, SweepIdentity};
     use crate::data::UnixMillis;
@@ -760,7 +767,7 @@ mod tests {
         displayed: Option<&'a DisplayedSweep>,
         live_cut: Option<LiveCut>,
         scan_at_playhead: bool,
-        caption: CanvasCaption,
+        caption: CaptionContext,
     }
 
     impl<'a> S<'a> {
@@ -776,7 +783,7 @@ mod tests {
                 displayed: None,
                 live_cut: None,
                 scan_at_playhead: false,
-                caption: CanvasCaption::None,
+                caption: CaptionContext::default(),
             }
         }
 
@@ -803,7 +810,7 @@ mod tests {
                 displayed: self.displayed,
                 live_cut: self.live_cut.clone(),
                 scan_at_playhead: self.scan_at_playhead,
-                canvas_caption: self.caption,
+                caption_context: self.caption,
             })
         }
     }
@@ -1048,19 +1055,20 @@ mod tests {
         assert_eq!(vm.app_mode, AppMode::Archive);
     }
 
-    /// D · Detached into a gap (inventory 36): the caption names both clocks.
-    /// The design's §7 form continues "· 0.5° at 11:30 is downloading"; the
-    /// session has no tilt for the gap yet, so it says "downloading".
+    /// D · Detached into a gap (inventory 36): the caption names both clocks
+    /// and what is coming, in the §7 form.
     #[wasm_bindgen_test]
     fn moment_d_detached_into_a_gap_captions_both_clocks() {
         let f = frame(t(11, 29, 1), 1, 0.5);
         let mut s = S::at(t(11, 36, 22)).streaming(waiting(120.0, None));
         s.playhead = t(11, 30, 49);
         s.displayed = Some(&f);
-        s.caption = CanvasCaption::Discrepancy {
-            showing: t(11, 28, 51),
-            target: t(11, 30, 49),
-            fetching: true,
+        // SAILS revisits 0.5° every ~90 s; a download covers the playhead.
+        s.caption = CaptionContext {
+            frame_step_secs: 90.0,
+            fetch_covers_playhead: true,
+            wanted_tilt_deg: Some(0.5),
+            ..CaptionContext::default()
         };
         let vm = s.vm();
         assert_eq!(Utc.hms(vm.frame.as_ref().unwrap().time_secs), "11:28:51");
@@ -1069,7 +1077,7 @@ mod tests {
         assert_eq!(vm.now_cap.label(), "REJOIN");
         assert_eq!(
             vm.canvas_caption_text(&Utc).as_deref(),
-            Some("showing 11:28:51 · playhead 11:30:49 · downloading")
+            Some("showing 11:28:51 · playhead 11:30:49 · 0.5° at 11:30 is downloading")
         );
     }
 
@@ -1204,23 +1212,168 @@ mod tests {
         assert_eq!(chip(&s.vm()), "At 12:00:05 · 0:00 behind");
     }
 
+    // ── The caption rule (§7) ───────────────────────────────────────────
+
+    fn tilt(step: f64) -> CaptionContext {
+        CaptionContext {
+            frame_step_secs: step,
+            wanted_tilt_deg: Some(0.5),
+            ..CaptionContext::default()
+        }
+    }
+
     #[wasm_bindgen_test]
-    fn blank_canvas_and_no_data_captions() {
+    fn a_blank_map_always_says_why() {
         let mut s = S::at(t(12, 0, 0));
         s.playhead = t(11, 21, 49);
-        s.caption = CanvasCaption::Acquiring;
+        s.caption = CaptionContext {
+            fetch_covers_playhead: true,
+            ..tilt(300.0)
+        };
         assert_eq!(
             s.vm().canvas_caption_text(&Utc).as_deref(),
             Some("no frame yet · downloading 11:21:49")
         );
-        s.caption = CanvasCaption::Discrepancy {
-            showing: t(11, 28, 51),
-            target: t(11, 30, 49),
-            fetching: false,
+
+        // Nothing coming, but the archive lists the scan: offer to fetch it.
+        s.playhead = t(11, 30, 0);
+        s.caption = CaptionContext {
+            fetchable_scan_start: Some(t(11, 28, 0) as i64),
+            ..tilt(300.0)
+        };
+        let vm = s.vm();
+        let line = vm.canvas_caption_line(&Utc).unwrap();
+        assert_eq!(line.text(), "no 0.5° data at 11:30 · fetch");
+        assert_eq!(
+            line.action,
+            Some(Intent::FetchScan {
+                scan_start: t(11, 28, 0) as i64,
+                elevation_filter: None,
+            })
+        );
+        assert!(line
+            .segments
+            .iter()
+            .any(|(w, r)| w == "fetch" && *r == CaptionRole::Action));
+
+        // Nothing listed either.
+        s.caption = tilt(300.0);
+        assert_eq!(
+            s.vm().canvas_caption_text(&Utc).as_deref(),
+            Some("no 0.5° data at 11:30")
+        );
+
+        // Pinned with a stream: the frame is on its way.
+        let mut s = S::at(t(12, 0, 0)).streaming(waiting(30.0, None));
+        s.selection = PINNED;
+        s.live_cut = Some(cut(5, 4.0, 1, 6));
+        s.caption = tilt(300.0);
+        assert_eq!(
+            s.vm().canvas_caption_text(&Utc).as_deref(),
+            Some("no frame yet · waiting for 0.5° (antenna on 4.0°)")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn within_one_frame_there_is_no_caption() {
+        let f = frame(t(11, 0, 0), 1, 0.5);
+        let mut s = S::at(t(12, 0, 0));
+        s.displayed = Some(&f);
+        s.caption = tilt(300.0);
+        // Inside the frame, and up to one step past its end.
+        for playhead in [t(10, 59, 50), t(11, 0, 0), t(11, 5, 0)] {
+            s.playhead = playhead;
+            assert_eq!(s.vm().canvas_caption, CanvasCaption::None, "{playhead}");
+        }
+        // One second past one frame: the clocks disagree.
+        s.playhead = t(11, 5, 1);
+        assert_eq!(
+            s.vm().canvas_caption_text(&Utc).as_deref(),
+            Some("showing 10:59:50 · playhead 11:05:01 · no 0.5° at 11:05")
+        );
+    }
+
+    /// The old rule let a 15-minute lookback count as coverage, so a
+    /// 9-minute gap went unsaid (§inv 7.4). One frame is the yardstick now.
+    #[wasm_bindgen_test]
+    fn a_nine_minute_gap_inside_the_lookback_is_said() {
+        let f = frame(t(11, 8, 18), 1, 0.5);
+        let mut s = S::at(t(12, 0, 0));
+        s.playhead = t(11, 17, 43);
+        s.displayed = Some(&f);
+        s.caption = tilt(300.0);
+        assert!(matches!(
+            s.vm().canvas_caption,
+            CanvasCaption::Discrepancy { .. }
+        ));
+    }
+
+    /// Pinned or not: a pinned frame later than one step says what the stream
+    /// is waiting for.
+    #[wasm_bindgen_test]
+    fn pinned_to_now_captions_a_late_frame() {
+        let f = frame(t(11, 10, 0), 1, 0.5);
+        let mut s = S::at(t(11, 20, 0)).streaming(waiting(30.0, None));
+        s.selection = PINNED;
+        s.displayed = Some(&f);
+        s.live_cut = Some(cut(6, 4.0, 2, 6));
+        s.caption = tilt(300.0);
+        let vm = s.vm();
+        assert_eq!(
+            vm.canvas_caption_text(&Utc).as_deref(),
+            Some("showing 11:09:50 · playhead 11:20:00 · waiting for 0.5° (antenna on 4.0°)")
+        );
+        // The playhead's time is now: its segment says so for the shell's red.
+        let line = vm.canvas_caption_line(&Utc).unwrap();
+        assert!(line
+            .segments
+            .iter()
+            .any(|(_, r)| *r == CaptionRole::Playhead { pinned: true }));
+        assert!(line.segments.iter().any(|(_, r)| *r == CaptionRole::Frame));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_frame_after_the_playhead_is_said_too() {
+        let f = frame(t(11, 30, 0), 1, 0.5);
+        let mut s = S::at(t(12, 0, 0));
+        s.playhead = t(11, 0, 0);
+        s.displayed = Some(&f);
+        s.caption = CaptionContext {
+            wanted_tilt_deg: None,
+            ..tilt(300.0)
         };
         assert_eq!(
             s.vm().canvas_caption_text(&Utc).as_deref(),
-            Some("showing 11:28:51 · playhead 11:30:49 · no data")
+            Some("showing 11:29:50 · playhead 11:00:00 · no data at 11:00")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_render_in_flight_is_not_a_disagreement() {
+        let f = frame(t(11, 0, 0), 1, 0.5);
+        let mut s = S::at(t(12, 0, 0));
+        s.playhead = t(11, 30, 0);
+        s.displayed = Some(&f);
+        s.caption = CaptionContext {
+            render_pending: true,
+            ..tilt(300.0)
+        };
+        assert_eq!(s.vm().canvas_caption, CanvasCaption::None);
+        s.displayed = None;
+        assert_eq!(s.vm().canvas_caption, CanvasCaption::None);
+    }
+
+    #[wasm_bindgen_test]
+    fn volume_rendering_pinned_says_why_it_waits() {
+        let mut s = S::at(t(12, 0, 0)).streaming(receiving());
+        s.selection = PINNED;
+        s.caption = CaptionContext {
+            volume_waiting: true,
+            ..tilt(300.0)
+        };
+        assert_eq!(
+            s.vm().canvas_caption_text(&Utc).as_deref(),
+            Some("waiting for the volume to complete · volume rendering needs every tilt")
         );
     }
 

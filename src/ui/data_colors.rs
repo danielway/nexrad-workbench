@@ -22,6 +22,34 @@ pub(crate) fn mping_fill(category: ReportCategory) -> Color32 {
     }
 }
 
+/// The national mosaic's palette (NWS base reflectivity, which the MRMS WMS
+/// layer is drawn in), for the legend on its stamp: the color of the 5 dBZ
+/// band starting at `dbz`.
+pub(crate) fn mosaic_reflectivity(dbz: f32) -> Color32 {
+    const BANDS: [(f32, Color32); 15] = [
+        (5.0, Color32::from_rgb(4, 233, 231)),
+        (10.0, Color32::from_rgb(1, 159, 244)),
+        (15.0, Color32::from_rgb(3, 0, 244)),
+        (20.0, Color32::from_rgb(2, 253, 2)),
+        (25.0, Color32::from_rgb(1, 197, 1)),
+        (30.0, Color32::from_rgb(0, 142, 0)),
+        (35.0, Color32::from_rgb(253, 248, 2)),
+        (40.0, Color32::from_rgb(229, 188, 0)),
+        (45.0, Color32::from_rgb(253, 149, 0)),
+        (50.0, Color32::from_rgb(253, 0, 0)),
+        (55.0, Color32::from_rgb(212, 0, 0)),
+        (60.0, Color32::from_rgb(188, 0, 0)),
+        (65.0, Color32::from_rgb(248, 0, 253)),
+        (70.0, Color32::from_rgb(152, 84, 198)),
+        (75.0, Color32::from_rgb(253, 253, 253)),
+    ];
+    BANDS
+        .iter()
+        .rev()
+        .find(|(lo, _)| dbz >= *lo)
+        .map_or(BANDS[0].1, |(_, c)| *c)
+}
+
 /// Storm-cell outline color by its maximum reflectivity (dBZ).
 pub(crate) fn storm_cell(max_dbz: f32) -> Color32 {
     if max_dbz >= 60.0 {

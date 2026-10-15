@@ -37,8 +37,8 @@ pub(crate) struct LiveRefreshInputs<'a> {
     pub elevation_selection: &'a ElevationSelection,
     /// What is on the GPU (the session's frame fact).
     pub displayed: Option<&'a crate::core::DisplayedSweep>,
-    /// This frame's canvas honesty decision (from the render loop).
-    pub canvas_caption: crate::core::canvas::CanvasCaption,
+    /// What the render loop knows for this frame's caption rule.
+    pub caption_context: crate::core::canvas::CaptionContext,
 }
 
 /// Owner of the real-time streaming pipeline and the derived
@@ -270,7 +270,7 @@ impl Live {
                 .radar_timeline
                 .find_scan_at_timestamp(inputs.playback.playback_position())
                 .is_some(),
-            canvas_caption: inputs.canvas_caption,
+            caption_context: inputs.caption_context,
         });
     }
 }

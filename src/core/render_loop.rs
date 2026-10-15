@@ -22,16 +22,16 @@
 //! Decision content they compose rather than re-implement:
 //! [`crate::core::render::decide_prefetch_next_elevation`] (prefetch window +
 //! target), [`crate::core::playback_manager::build_elevation_list`] (VCP
-//! elevation roster), and [`crate::core::canvas::derive_canvas_caption`]
-//! (honesty caption).
+//! elevation roster), and [`crate::core::canvas::frame_step_secs`] (the
+//! caption context the session's caption rule reads).
 //!
 //! Pattern exemplar: [`crate::core::worker_ingest`] (Env/Slices/Actions reducer
 //! executed by the shell in field order).
 
-use crate::core::canvas::{derive_canvas_caption, CanvasCaption};
+use crate::core::canvas::{frame_step_secs, CaptionContext};
 use crate::core::{
     DisplayedSweep, ElevationSelection, MacroFrameInputs, PlaybackMode, PlaybackState,
-    RadarProduct, RadarTimeline, RebuildCause, SweepIdentity,
+    RadarProduct, RadarTimeline, RebuildCause, ScanBoundary, SweepIdentity,
 };
 use crate::data::ScanKey;
 
@@ -333,6 +333,15 @@ pub(crate) struct FrameFollowupEnv<'a> {
     pub has_worker: bool,
     /// `viz_state.product`.
     pub product: RadarProduct,
+    /// `viz_state.site_id`.
+    pub site_id: &'a str,
+    /// `viz_state.elevation_selection`.
+    pub elevation_selection: &'a ElevationSelection,
+    /// The combined 3D volume predicate (see [`AdvancePlaybackEnv`]).
+    pub volume_3d_active: bool,
+    /// Archive listing boundaries (`timeline.shadow_scan_boundaries`): scans
+    /// the archive has, cached or not.
+    pub archive_boundaries: &'a [ScanBoundary],
     /// `viz_state.displayed`, re-read post-effects.
     pub displayed: Option<&'a DisplayedSweep>,
     /// `render.coordinator.scan_key()`, re-read post-effects.
@@ -367,8 +376,9 @@ pub(crate) struct PrefetchSweep {
 pub(crate) struct FrameFollowup {
     /// Prefetch log + `set_last_render` + `render_direct`.
     pub prefetch: Option<PrefetchSweep>,
-    /// Assign `viz_state.canvas_caption` (recomputed every frame).
-    pub canvas_caption: CanvasCaption,
+    /// Assign `viz_state.caption_context` (recomputed every frame) — what
+    /// the session's caption rule reads beside its frame and playhead facts.
+    pub caption_context: CaptionContext,
 }
 
 /// Whether an archive fetch covering `playback_secs` is in flight or being
@@ -445,33 +455,51 @@ pub(crate) fn decide_prefetch_and_caption(
         }
     }
 
-    // Canvas honesty caption (spec §11.2). Derived here where the displayed
-    // identity, playhead, and download-progress ranges are all in scope. The
-    // live partial path owns the canvas while the playhead is attached
-    // (pinned/lookback), so the caption is suppressed there — but a detached
-    // background stream resolves the cached frame at the cursor, so the
-    // caption applies just like ordinary archive browsing.
+    // Caption context (§7): the facts the session's caption rule needs that
+    // only the timeline knows — how long one frame is, whether the frame the
+    // playhead calls for is cached but not yet on the GPU, what is
+    // downloading, and what the archive lists at the playhead.
     let pos = playback.playback_position();
-    let attached = playback.is_pinned() || playback.is_live_range();
-    let displayed = env
-        .displayed
-        .map(|d| (d.start_time, d.end_time, (d.start_time + d.end_time) / 2.0));
-    let scan_covers_playhead = timeline
-        .find_recent_scan(pos, env.max_scan_age_secs)
-        .is_some();
+    let pinned_live = env.live_active && playback.is_pinned();
+    let render_pending = !pinned_live
+        && crate::core::playback_manager::resolve_active_sweep_target(
+            env.site_id,
+            pos,
+            env.elevation_selection,
+            env.product,
+            timeline,
+            env.max_scan_age_secs,
+        )
+        .is_some_and(|target| env.displayed.map(|d| &d.identity) != Some(&target));
     let fetch_covers_playhead = position_is_being_acquired(
         pos,
         env.active_download_ranges,
         env.in_flight_download_ranges,
         env.pending_download_ranges,
     );
-    followup.canvas_caption = derive_canvas_caption(
-        attached,
-        displayed,
-        pos,
-        scan_covers_playhead,
+    let cached_at_playhead = timeline.find_scan_at_timestamp(pos).is_some();
+    let fetchable_scan_start = (!cached_at_playhead)
+        .then(|| {
+            env.archive_boundaries
+                .iter()
+                .find(|b| (b.start as f64) <= pos && pos < b.end as f64)
+                .map(|b| b.start)
+        })
+        .flatten();
+    followup.caption_context = CaptionContext {
+        frame_step_secs: env
+            .displayed
+            .map(|d| frame_step_secs(timeline, d, env.elevation_selection.is_auto()))
+            .unwrap_or(crate::core::canvas::DEFAULT_FRAME_STEP_SECS),
+        render_pending,
         fetch_covers_playhead,
-    );
+        wanted_tilt_deg: match env.elevation_selection {
+            ElevationSelection::Fixed { angle, .. } => Some(*angle),
+            ElevationSelection::Latest => None,
+        },
+        fetchable_scan_start,
+        volume_waiting: env.volume_3d_active && env.live_active && playback.is_pinned(),
+    };
 
     followup
 }
@@ -479,7 +507,6 @@ pub(crate) fn decide_prefetch_and_caption(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::canvas::CanvasCaption;
     use crate::core::{PlaybackMode, RadarTimeline, Scan, Sweep};
     use crate::data::{ExtractedVcp, ExtractedVcpElevation};
     use wasm_bindgen_test::wasm_bindgen_test;
@@ -562,11 +589,20 @@ mod tests {
         }
     }
 
+    const FIXED_1: ElevationSelection = ElevationSelection::Fixed {
+        elevation_number: 1,
+        angle: 0.5,
+    };
+
     fn base_followup_env<'a>() -> FrameFollowupEnv<'a> {
         FrameFollowupEnv {
             live_active: false,
             has_worker: true,
             product: RadarProduct::Reflectivity,
+            site_id: "KDMX",
+            elevation_selection: &FIXED_1,
+            volume_3d_active: false,
+            archive_boundaries: &[],
             displayed: None,
             coordinator_scan_key: None,
             active_download_ranges: &[],
@@ -1033,8 +1069,8 @@ mod tests {
         assert_eq!(p.identity.elevation_number, 2);
         assert_eq!(p.identity.product, "reflectivity");
         assert!((p.lead_secs - 0.2).abs() < 1e-9);
-        // In-window playhead with a covering scan → no caption.
-        assert_eq!(f.canvas_caption, CanvasCaption::None);
+        // The displayed frame is the one the playhead calls for.
+        assert!(!f.caption_context.render_pending);
     }
 
     // (16) Every gate suppresses the prefetch: paused, live, macro mode,
@@ -1127,10 +1163,10 @@ mod tests {
 
     // ── canvas caption (follow-up decision) ─────────────────────────────────
 
-    // (18) Held frame + playhead drifted into a gap → discrepancy caption;
-    // `fetching` reflects the download ghost ranges.
+    // (18) The caption context reports downloads covering the playhead and
+    // the archive's listed scan at an uncached playhead.
     #[wasm_bindgen_test]
-    fn caption_discrepancy_with_and_without_fetch() {
+    fn caption_context_downloads_and_fetchable_scan() {
         let empty = RadarTimeline { scans: Vec::new() };
         let displayed = displayed_sweep(1, 100.0, 200.0);
         let fx = Fx::at(700.0, PlaybackMode::Micro);
@@ -1138,64 +1174,59 @@ mod tests {
         let mut env = base_followup_env();
         env.displayed = Some(&displayed);
         env.in_flight_download_ranges = &[(650, 750)];
-        let f = fx.followup(env, &empty);
-        assert_eq!(
-            f.canvas_caption,
-            CanvasCaption::Discrepancy {
-                showing: 150.0,
-                target: 700.0,
-                fetching: true,
-            }
-        );
+        let c = fx.followup(env, &empty).caption_context;
+        assert!(c.fetch_covers_playhead);
+        assert_eq!(c.wanted_tilt_deg, Some(0.5));
+        assert!(!c.render_pending);
 
+        let listed = [ScanBoundary {
+            start: 600,
+            end: 900,
+        }];
         let mut env = base_followup_env();
         env.displayed = Some(&displayed);
-        let f = fx.followup(env, &empty);
-        assert_eq!(
-            f.canvas_caption,
-            CanvasCaption::Discrepancy {
-                showing: 150.0,
-                target: 700.0,
-                fetching: false,
-            }
-        );
+        env.archive_boundaries = &listed;
+        let c = fx.followup(env, &empty).caption_context;
+        assert!(!c.fetch_covers_playhead);
+        assert_eq!(c.fetchable_scan_start, Some(600));
     }
 
-    // (19) Blank canvas + a pending fetch covering the playhead → the
-    // "Acquiring…" hint; covered playhead → no caption at all.
+    // (19) A cached frame the playhead calls for that is not yet displayed
+    // is a render in flight; the displayed one is not.
     #[wasm_bindgen_test]
-    fn caption_acquiring_and_covered_cases() {
-        let empty = RadarTimeline { scans: Vec::new() };
-        let fx = Fx::at(700.0, PlaybackMode::Micro);
-        let mut env = base_followup_env();
-        env.pending_download_ranges = &[(600, 800)];
-        let f = fx.followup(env, &empty);
-        assert_eq!(f.canvas_caption, CanvasCaption::Acquiring);
-
-        // A scan covering the playhead → None even with a held frame.
+    fn caption_context_render_pending() {
         let tl = two_scan_timeline();
-        let displayed = displayed_sweep(1, 2000.0, 2010.0);
         let fx = Fx::at(2005.0, PlaybackMode::Micro);
+        let old = displayed_sweep(1, 1000.0, 1010.0);
         let mut env = base_followup_env();
-        env.displayed = Some(&displayed);
-        let f = fx.followup(env, &tl);
-        assert_eq!(f.canvas_caption, CanvasCaption::None);
+        env.displayed = Some(&old);
+        assert!(fx.followup(env, &tl).caption_context.render_pending);
+
+        let current = displayed_sweep(1, 2000.0, 2010.0);
+        let mut env = base_followup_env();
+        env.displayed = Some(&current);
+        let c = fx.followup(env, &tl).caption_context;
+        assert!(!c.render_pending);
+        // A cached scan sits at the playhead: nothing to offer to fetch.
+        assert_eq!(c.fetchable_scan_start, None);
+        // One frame of 0.5° is one volume (1000 s apart, one visit each).
+        assert!(
+            (c.frame_step_secs - 300.0).abs() < 1e-9,
+            "{}",
+            c.frame_step_secs
+        );
     }
 
-    // (20) Attached playhead (pinned live) suppresses the caption even with
-    // a drifted held frame and no covering scan.
+    // (20) 3D volume rendering while pinned waits for the volume.
     #[wasm_bindgen_test]
-    fn caption_suppressed_while_pinned_live() {
+    fn caption_context_volume_waiting_while_pinned_live() {
         let empty = RadarTimeline { scans: Vec::new() };
-        let displayed = displayed_sweep(1, 100.0, 200.0);
         let mut fx = Fx::at(700.0, PlaybackMode::Micro);
         fx.playback.enter_pinned_live(700.0);
-
         let mut env = base_followup_env();
         env.live_active = true;
-        env.displayed = Some(&displayed);
-        let f = fx.followup(env, &empty);
-        assert_eq!(f.canvas_caption, CanvasCaption::None);
+        env.volume_3d_active = true;
+        assert!(fx.followup(env, &empty).caption_context.volume_waiting);
     }
 
     // (21) The acquisition-coverage predicate chains all three ghost-range

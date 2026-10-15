@@ -81,6 +81,21 @@ fn render_list_modal(
                     .size(13.0)
                     .color(theme::TEXT_DIM),
                 );
+                // The feed's last check, moved off the canvas (§7): each
+                // row's dot is the event's map color, so the list is the
+                // alert layer's legend.
+                if let Some(checked) = vm.alerts_last_checked_secs {
+                    use crate::core::session::Clock;
+                    let clock = crate::ui::time_format::ZoneClock {
+                        use_local: state.use_local_time,
+                    };
+                    ui.label(
+                        RichText::new(format!("· checked {}", clock.hm(checked)))
+                            .size(13.0)
+                            .color(theme::TEXT_FAINT),
+                    )
+                    .on_hover_text("When the NWS alerts feed was last read");
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("Close").clicked() {
                         state.push_command(Intent::Diagnostics(DiagnosticsIntent::CloseAlertList));
