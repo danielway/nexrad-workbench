@@ -1057,6 +1057,35 @@ pub(crate) fn range_marks(
     })
 }
 
+/// A half-placed range: I (or O) pressed once. Drawn as one handle at the
+/// parked point and a faint bar to the playhead, where the other key would
+/// put the second end (one-instrument §5 "Ranges").
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HalfRange {
+    /// The parked end.
+    pub anchor: f64,
+    /// Where the bar runs to: the playhead.
+    pub toward: f64,
+}
+
+/// The half range for a parked selection drag (`PlaybackState::drag` with
+/// `in_progress: false`, as `(a, b)`). Nothing while a full range exists or
+/// a drag is still being drawn.
+pub(crate) fn half_range(
+    parked: Option<(f64, f64)>,
+    has_range: bool,
+    playhead: f64,
+) -> Option<HalfRange> {
+    if has_range {
+        return None;
+    }
+    let (a, _) = parked?;
+    a.is_finite().then_some(HalfRange {
+        anchor: a,
+        toward: playhead,
+    })
+}
+
 /// Which edge of the strip an off-screen mark points out of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EdgeSide {
@@ -2404,6 +2433,15 @@ mod marks_tests {
         let m = range_marks(Some((100.0, 400.0)), true, true, 700.0, cost).unwrap();
         assert_eq!((m.end, m.end_handle), (400.0, RangeEndHandle::Fixed));
         assert!(range_marks(None, true, false, 700.0, cost).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn a_parked_in_point_draws_a_half_range_to_the_playhead() {
+        let h = half_range(Some((100.0, 100.0)), false, 160.0).unwrap();
+        assert_eq!((h.anchor, h.toward), (100.0, 160.0));
+        // Once both ends exist it is a range, not a half range.
+        assert!(half_range(Some((100.0, 100.0)), true, 160.0).is_none());
+        assert!(half_range(None, false, 160.0).is_none());
     }
 
     #[wasm_bindgen_test]

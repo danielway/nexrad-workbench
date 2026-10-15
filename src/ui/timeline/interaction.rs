@@ -22,11 +22,13 @@
 //! [`crate::core::resolve_gesture`], a pure function with unit tests. This
 //! module only collects raw pointer facts and performs the resulting mutation.
 //!
-//! Every seek path detaches the playhead first (`live.detach_playhead`, which
-//! keeps the stream ingesting) so `set_playback_position`'s Free-mode assert
-//! holds.
+//! What a seek does is [`crate::core::transport::reduce_seek`]: a press is
+//! `Intent::Seek { gesture: Press }`, a scrub runs the same reducer
+//! synchronously through `Live::seek` (a direct-manipulation gesture must not
+//! trail the pointer by a frame).
 
-use crate::core::{clamp_view_start, resolve_gesture, StripGesture, StripInput};
+use crate::core::transport::SeekGesture;
+use crate::core::{clamp_view_start, resolve_gesture, Intent, StripGesture, StripInput};
 use crate::state::AppState;
 use eframe::egui::{self, PointerButton, Rect};
 
@@ -116,19 +118,30 @@ pub(super) fn handle_timeline_interaction(
         }
 
         // -- Press-seek and drag-scrub ---------------------------------------
+        // What a seek does (keep a range it lands in, keep a parked I point,
+        // detach from now, pause on a scrub) is core::transport::reduce_seek.
+        // A press is an intent; a scrub runs the same reducer synchronously
+        // so the playhead keeps up with the pointer.
         StripGesture::Seek => {
-            // The first frame of a scrub pauses playback (so the playhead stays
-            // where the user puts it) and detaches the tether.
-            if input.primary_drag_started {
-                playback.state.playing = false;
-                live.detach_playhead(
-                    &mut playback.state,
-                    state.frame_now.secs(),
-                    state.pause_stream_while_reviewing,
-                );
-            }
             if let Some(pos) = pointer_pos {
-                seek_to(state, live, playback, frame.x_to_ts(pos.x));
+                let ts = frame.x_to_ts(pos.x);
+                if input.primary_dragging || input.primary_drag_started {
+                    let status = live.seek(
+                        &mut playback.state,
+                        state.frame_now.secs(),
+                        state.pause_stream_while_reviewing,
+                        ts,
+                        SeekGesture::Scrub,
+                    );
+                    if let Some(msg) = status {
+                        state.status_message = msg;
+                    }
+                } else {
+                    state.push_command(Intent::Seek {
+                        ts,
+                        gesture: SeekGesture::Press,
+                    });
+                }
             }
             outcome.scrubbing = input.primary_dragging;
         }
@@ -209,27 +222,6 @@ fn open_inspector_at(
     } else {
         // No scan there — surface a tiny hint instead of silently doing nothing.
         state.status_message = "No scan to inspect at that time".to_string();
-    }
-}
-
-/// Seek the playhead to `ts`, detaching the tether first so the Free-mode
-/// invariant on `set_playback_position` holds. Selection survival: a seek
-/// *inside* the selection keeps the loop bounds; a seek outside clears it.
-fn seek_to(
-    state: &mut AppState,
-    live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
-    ts: f64,
-) {
-    live.detach_playhead(
-        &mut playback.state,
-        state.frame_now.secs(),
-        state.pause_stream_while_reviewing,
-    );
-    let inside = playback.state.selection_contains(ts);
-    playback.state.set_playback_position(ts);
-    if !inside {
-        playback.state.clear_selection();
     }
 }
 

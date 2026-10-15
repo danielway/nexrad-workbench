@@ -12,7 +12,9 @@
 use crate::core::selection_strip::{
     drag_anchor, drag_point, grab_at, intent_for, release, StripGrab, StripRelease,
 };
-use crate::core::timeline_view::{range_marks, RangeCost, RangeEndHandle, RangeMarks};
+use crate::core::timeline_view::{
+    half_range, range_marks, HalfRange, RangeCost, RangeEndHandle, RangeMarks,
+};
 use crate::state::AppState;
 use crate::ui::theme::timeline as tl_colors;
 use eframe::egui::{self, Pos2, Rect, Sense, Stroke};
@@ -136,7 +138,25 @@ pub(super) fn render_selection_strip(
         now,
         RangeCost::default(),
     );
-    paint_range(&painter, frame, rect, marks.as_ref(), response.hovered());
+    let half = half_range(
+        playback
+            .state
+            .drag
+            .filter(|d| !d.in_progress)
+            .map(|d| (d.a, d.b)),
+        marks.is_some(),
+        playback.state.playback_position(),
+    );
+    if let Some(h) = half {
+        paint_half_range(&painter, frame, rect, h);
+    }
+    paint_range(
+        &painter,
+        frame,
+        rect,
+        marks.as_ref(),
+        response.hovered() && half.is_none(),
+    );
 }
 
 /// Push the intent a release maps to (and say why when a range is refused).
@@ -210,5 +230,33 @@ fn paint_range(
                 );
             }
         }
+    }
+}
+
+/// A half-placed range: one amber handle at the parked point and a faint
+/// amber bar to the playhead, where the second key would land.
+fn paint_half_range(
+    painter: &egui::Painter,
+    frame: &super::TimelineFrame<'_>,
+    rect: Rect,
+    h: HalfRange,
+) {
+    let (ax, px) = (frame.ts_to_x(h.anchor), frame.ts_to_x(h.toward));
+    let cy = rect.center().y;
+    let (x0, x1) = (ax.min(px).max(rect.left()), ax.max(px).min(rect.right()));
+    if x1 > x0 {
+        painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(x0, cy - BAR_H / 2.0),
+                Pos2::new(x1, cy + BAR_H / 2.0),
+            ),
+            0.0,
+            tl_colors::RANGE.gamma_multiply(0.45),
+        );
+    }
+    if ax >= rect.left() - HANDLE_W && ax <= rect.right() + HANDLE_W {
+        let tab =
+            Rect::from_center_size(Pos2::new(ax, cy), egui::vec2(HANDLE_W, rect.height() - 2.0));
+        painter.rect_filled(tab, 2.0, tl_colors::RANGE);
     }
 }

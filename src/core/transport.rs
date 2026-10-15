@@ -183,8 +183,6 @@ pub(crate) fn select_range(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SeekGesture {
     /// A press on the timeline: seeks and keeps playing.
-    #[allow(dead_code)]
-    // The timeline's press-seek routes here with the timeline-marks change.
     Press,
     /// A drag along the timeline: pauses so the playhead stays put.
     Scrub,
