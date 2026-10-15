@@ -557,7 +557,6 @@ pub(crate) fn fold(available: f32, w: &TopBarWidths) -> TopBarFold {
 mod tests {
     use super::*;
     use crate::alerts::AlertSeverity;
-    use crate::core::canvas::CanvasCaption;
     use crate::core::domain::playback::RangeSelection;
     use crate::core::live_status::LiveStatus;
     use crate::core::session::SessionInputs;
@@ -613,7 +612,7 @@ mod tests {
             displayed: frame,
             live_cut: None,
             scan_at_playhead: frame.is_some(),
-            canvas_caption: CanvasCaption::None,
+            caption_context: crate::core::canvas::CaptionContext::default(),
             loop_mode: crate::core::LoopMode::Loop,
         })
     }

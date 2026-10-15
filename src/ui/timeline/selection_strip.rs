@@ -162,10 +162,10 @@ pub(super) fn render_selection_strip(
 /// Push the intent a release maps to (and say why when a range is refused).
 fn finish(state: &mut AppState, rel: StripRelease, range: Option<(f64, f64)>) {
     if rel == StripRelease::TooLong {
-        state.status_message = format!(
-            "Range too long — zoom in and select at most {} days",
+        state.toasts.notice(format!(
+            "Range too long — select at most {} days",
             (crate::core::MAX_SELECTION_SPAN_SECS / 86_400.0) as i64
-        );
+        ));
     }
     if let Some(intent) = intent_for(rel, range.is_some()) {
         state.push_command(intent);

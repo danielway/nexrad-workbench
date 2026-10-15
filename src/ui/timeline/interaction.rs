@@ -134,7 +134,7 @@ pub(super) fn handle_timeline_interaction(
                         SeekGesture::Scrub,
                     );
                     if let Some(msg) = status {
-                        state.status_message = msg;
+                        state.toasts.notice(msg);
                     }
                 } else {
                     state.push_command(Intent::Seek {
@@ -221,7 +221,7 @@ fn open_inspector_at(
         chrome.scan_inspector = Some(scan_start);
     } else {
         // No scan there — surface a tiny hint instead of silently doing nothing.
-        state.status_message = "No scan to inspect at that time".to_string();
+        state.toasts.notice("No scan to inspect at that time");
     }
 }
 
