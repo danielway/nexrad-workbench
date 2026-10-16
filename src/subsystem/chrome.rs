@@ -33,6 +33,13 @@ pub(crate) struct Chrome {
     pub right_sidebar_visible: bool,
     /// The panel's open tab (one-instrument §8).
     pub rail_tab: crate::core::panels::RailTab,
+    /// The chrome this frame's viewport gets (one-instrument §13): the
+    /// desktop panels, or the phone's, with the sheet on the right in
+    /// landscape. Decided by [`crate::core::phone::device_layout`].
+    pub device_layout: crate::core::phone::DeviceLayout,
+    /// The browser reports a coarse primary pointer, read once at start-up
+    /// so a phone gets the phone layout before its first touch.
+    pub coarse_pointer: bool,
     /// Whether the keyboard shortcut help overlay is open.
     pub shortcuts_help_visible: bool,
     /// Whether the site selection modal is open.

@@ -454,6 +454,7 @@ impl WorkbenchApp {
             state: bootstrapped_playback,
         };
         let mut chrome = subsystem::Chrome::new();
+        chrome.coarse_pointer = ui::coarse_pointer();
 
         let url_params = state::url_state::parse_from_url();
         apply_url_params(&url_params, &mut state, &mut playback, &mut chrome);
@@ -1019,7 +1020,9 @@ impl eframe::App for WorkbenchApp {
             displayed: self.state.viz_state.displayed.as_ref(),
             caption_context: self.state.viz_state.caption_context,
         });
-        self.state.refresh_mobile_mode(ctx);
+        self.chrome.device_layout = self
+            .state
+            .refresh_mobile_mode(ctx, self.chrome.coarse_pointer);
 
         // Drain GPS-overlay async results before panels render so the
         // "My Location" checkbox sees coords/error on the same frame the

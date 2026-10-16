@@ -117,6 +117,27 @@ fn any_overlay_open(
         || diagnostics.alerts.selected_alert_id.is_some()
 }
 
+/// Whether the browser's primary pointer is coarse (a finger), from
+/// `matchMedia("(pointer: coarse)")`. A browser fact, read once at start-up
+/// and handed to the core's layout rule.
+pub(crate) fn coarse_pointer() -> bool {
+    use wasm_bindgen::{JsCast, JsValue};
+    let global: JsValue = js_sys::global().into();
+    let Ok(f) = js_sys::Reflect::get(&global, &"matchMedia".into()) else {
+        return false;
+    };
+    let Some(f) = f.dyn_ref::<js_sys::Function>() else {
+        return false;
+    };
+    let Ok(list) = f.call1(&global, &"(pointer: coarse)".into()) else {
+        return false;
+    };
+    js_sys::Reflect::get(&list, &"matches".into())
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 /// iOS safe-area insets in CSS pixels: `(top, right, bottom, left)`.
 ///
 /// Non-zero only when installed as a home-screen PWA on a device that

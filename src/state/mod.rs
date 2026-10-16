@@ -419,20 +419,30 @@ impl AppState {
         self.commands.drain(..).collect()
     }
 
-    /// Refresh the mobile-mode flag for this frame.
-    ///
-    /// Auto mode: `width < 600px` plus either a sticky "touch has been seen"
-    /// flag or `width < 500px` (so a very narrow desktop window also switches
-    /// without needing a touch event). A user override in `mobile_override`
-    /// takes precedence.
-    pub(crate) fn refresh_mobile_mode(&mut self, ctx: &eframe::egui::Context) {
-        let width = ctx.content_rect().width();
+    /// Refresh the device layout for this frame from the pure rule
+    /// ([`crate::core::phone::device_layout`]): a phone's short side with a
+    /// finger (seen, or a coarse pointer) keeps the phone layout in either
+    /// orientation; a narrow window gets it without one. A user override in
+    /// `mobile_override` takes precedence. Returns the layout.
+    pub(crate) fn refresh_mobile_mode(
+        &mut self,
+        ctx: &eframe::egui::Context,
+        coarse_pointer: bool,
+    ) -> crate::core::phone::DeviceLayout {
+        let rect = ctx.content_rect();
+        let width = rect.width();
         let touch_now = ctx.input(|i| i.any_touches() || i.multi_touch().is_some());
         if touch_now {
             self.touch_seen_ever = true;
         }
-        let auto = width < 600.0 && (self.touch_seen_ever || width < 500.0);
-        self.is_mobile = self.mobile_override.unwrap_or(auto);
+        let layout = crate::core::phone::device_layout(crate::core::phone::LayoutInputs {
+            width,
+            height: rect.height(),
+            touch_seen: self.touch_seen_ever,
+            coarse_pointer,
+            forced: self.mobile_override,
+        });
+        self.is_mobile = layout.is_phone();
 
         // Desktop width tier — used by the top/bottom bars to fold low-priority
         // controls into overflow menus before they collide. Only meaningful when
@@ -446,15 +456,15 @@ impl AppState {
             WidthTier::Cramped
         };
 
-        // Mobile v1 is 2D-only. If the user was in globe mode on desktop and
-        // the layout flipped to mobile (browser resize, forced override),
-        // snap back to 2D rather than leaving them in a view they have no
-        // controls for.
+        // The phone is 2D-only: a 3D link (or a resize into the phone layout)
+        // opens in 2D, with one line saying so.
         if self.is_mobile && !self.viz_state.is_2d() {
             self.viz_state
                 .camera
                 .switch_to_flat_2d(crate::geo::Flat2DState::default());
+            self.toasts.notice(crate::core::phone::NO_3D_NOTICE);
         }
+        layout
     }
 
     /// Whether sweep animation (Rays mode's beam line and progressive

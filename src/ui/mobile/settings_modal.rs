@@ -55,18 +55,24 @@ fn draw_mobile_settings_modal(
         return;
     }
 
+    // A bottom sheet in portrait, on the right in landscape (core::phone).
     let viewport = ctx.input(|i| i.viewport_rect());
-    // The modal takes most of the viewport — leaves a small gutter on each
-    // side so the backdrop edge is still tappable as a dismiss affordance.
-    let modal_w = (viewport.width() - 16.0).max(240.0);
-    let modal_h = (viewport.height() * 0.78).clamp(360.0, viewport.height() - 40.0);
+    let sheet = crate::core::phone::sheet_rect(
+        viewport.width(),
+        viewport.height(),
+        chrome.device_layout.is_landscape_phone(),
+        super::safe_area_insets(),
+    );
+    // The window's frame adds its margins around the content size.
+    let margin = ctx.global_style().spacing.window_margin;
+    let inner = Vec2::new(sheet.w - margin.sum().x, sheet.h - margin.sum().y);
 
     egui::Window::new("Settings")
         .title_bar(false)
         .collapsible(false)
         .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(modal_w, modal_h))
+        .fixed_pos(egui::pos2(sheet.x, sheet.y))
+        .fixed_size(inner)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             render_header(ui, state, chrome);
