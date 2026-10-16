@@ -217,31 +217,6 @@ pub(crate) enum WidthTier {
     Full,
 }
 
-/// Tabs in the mobile settings modal. Order matches the tab strip layout.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MobileSettingsTab {
-    #[default]
-    Playback,
-    Product,
-    Layers,
-    More,
-}
-
-impl MobileSettingsTab {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Playback => "Playback",
-            Self::Product => "Product",
-            Self::Layers => "Layers",
-            Self::More => "More",
-        }
-    }
-
-    pub(crate) fn all() -> [Self; 4] {
-        [Self::Playback, Self::Product, Self::Layers, Self::More]
-    }
-}
-
 /// Bootstrap output from [`AppState::new`].
 ///
 /// Carries values that are loaded from persistence at construction time
@@ -433,31 +408,6 @@ impl AppState {
 mod coverage_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
-
-    // ---- MobileSettingsTab ----
-
-    #[wasm_bindgen_test]
-    fn mobile_settings_tab_labels() {
-        assert_eq!(MobileSettingsTab::Playback.label(), "Playback");
-        assert_eq!(MobileSettingsTab::Product.label(), "Product");
-        assert_eq!(MobileSettingsTab::Layers.label(), "Layers");
-        assert_eq!(MobileSettingsTab::More.label(), "More");
-    }
-
-    #[wasm_bindgen_test]
-    fn mobile_settings_tab_all_order() {
-        let all = MobileSettingsTab::all();
-        assert_eq!(all.len(), 4);
-        assert_eq!(all[0], MobileSettingsTab::Playback);
-        assert_eq!(all[1], MobileSettingsTab::Product);
-        assert_eq!(all[2], MobileSettingsTab::Layers);
-        assert_eq!(all[3], MobileSettingsTab::More);
-    }
-
-    #[wasm_bindgen_test]
-    fn mobile_settings_tab_default_is_playback() {
-        assert_eq!(MobileSettingsTab::default(), MobileSettingsTab::Playback);
-    }
 
     // ---- WidthTier ----
 

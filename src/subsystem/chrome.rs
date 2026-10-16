@@ -80,11 +80,9 @@ pub(crate) struct Chrome {
     pub event_modal_open: bool,
     /// Event ID being edited (`None` = creating new).
     pub event_modal_editing_id: Option<u64>,
-    /// Whether the mobile settings modal (opened from the bottom-bar
-    /// ellipsis) is currently visible.
+    /// Whether the phone's sheet (the rail's tabs, opened from the
+    /// transport row) is open. Its tab is [`Self::rail_tab`].
     pub mobile_settings_open: bool,
-    /// Active tab inside the mobile settings modal.
-    pub mobile_settings_tab: super::super::state::MobileSettingsTab,
     /// Latched when the mobile bottom-bar location button is tapped.
     /// The main update loop consumes this flag and kicks off
     /// geolocation against `SiteModalState`.

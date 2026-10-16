@@ -1074,12 +1074,7 @@ impl eframe::App for WorkbenchApp {
         // and the canvas agree. A press on hidden chrome reveals it and the
         // canvas swallows that press instead of panning. Inert on desktop.
         if self.state.is_mobile {
-            ui::resolve_mobile_auto_hide(
-                ctx,
-                &self.playback,
-                &mut self.chrome,
-                self.modals.datetime.open,
-            );
+            ui::resolve_mobile_auto_hide(ctx, &self.playback, &mut self.chrome);
         } else {
             self.chrome.mobile_auto_hide.reset_visible();
             self.chrome.last_canvas = None;

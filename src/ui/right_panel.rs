@@ -8,8 +8,8 @@
 //! Events the saved events, Settings storage, data saving, time zone, the
 //! keyboard map, developer mode and reset.
 //!
-//! The section functions are also the phone sheet's bodies
-//! (`ui::mobile::settings_modal`) until the phone adopts the rail's tabs.
+//! The tab functions are also the phone sheet's tabs
+//! (`ui::mobile::settings_modal`), so every control exists on both devices.
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::ladder::VolumeLadder;
@@ -34,8 +34,6 @@ impl Layer for RightPanelLayer {
         40
     }
     fn render(&self, ctx: &mut LayoutCtx) {
-        let mping_reports = &ctx.diagnostics.mping.reports;
-        let playback_secs = ctx.playback.state.playback_position();
         if ctx.chrome.right_sidebar_visible {
             egui::Panel::right("panel_body")
                 .resizable(true)
@@ -49,10 +47,16 @@ impl Layer for RightPanelLayer {
                     title_row(ui, tab);
                     ScrollArea::vertical().show(ui, |ui| match tab {
                         RailTab::View => {
-                            view_tab(ui, ctx.state, ctx.top_bar_vm, ctx.ladder_vm);
+                            view_tab(
+                                ui,
+                                ctx.state,
+                                ctx.top_bar_vm,
+                                ctx.ladder_vm,
+                                &super::ladder::DESKTOP,
+                            );
                         }
                         RailTab::Layers => {
-                            render_layers_section(
+                            layers_tab(
                                 ui,
                                 ctx.state,
                                 ctx.diagnostics,
@@ -60,9 +64,6 @@ impl Layer for RightPanelLayer {
                                 ctx.derived,
                                 ctx.chrome,
                             );
-                            ui.add_space(8.0);
-                            mping_legend(ui, ctx.state, mping_reports, playback_secs);
-                            render_rendering_section(ui, ctx.state, ctx.playback, ctx.chrome);
                         }
                         RailTab::Events => {
                             render_events_section(
@@ -203,9 +204,17 @@ fn section(ui: &mut egui::Ui, title: &str) {
 
 // ── View ───────────────────────────────────────────────────────────────────
 
-fn view_tab(ui: &mut egui::Ui, state: &mut AppState, top_bar: &TopBarVm, ladder: &VolumeLadder) {
+/// The View tab: the product row and the tilt ladder (and volume rendering
+/// in 3D). The phone's sheet draws it too, with the ladder at touch size.
+pub(super) fn view_tab(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    top_bar: &TopBarVm,
+    ladder: &VolumeLadder,
+    look: &super::ladder::LadderLook,
+) {
     section(ui, "Product");
-    product_row(ui, state, top_bar);
+    product_row(ui, state, top_bar, look.product_h);
     ui.label(
         RichText::new(&top_bar.product.name)
             .size(theme::CAPTION)
@@ -214,13 +223,13 @@ fn view_tab(ui: &mut egui::Ui, state: &mut AppState, top_bar: &TopBarVm, ladder:
     section(ui, "Tilt");
     super::ladder::header(ui, ladder);
     ui.add_space(4.0);
-    super::ladder::ladder(ui, ladder, state);
+    super::ladder::ladder(ui, ladder, state, look);
     render_volume_section(ui, state);
 }
 
 /// The segmented product row: one button per product, the chosen one in the
 /// selected color.
-fn product_row(ui: &mut egui::Ui, state: &mut AppState, top_bar: &TopBarVm) {
+fn product_row(ui: &mut egui::Ui, state: &mut AppState, top_bar: &TopBarVm, min_h: f32) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         for row in &top_bar.product.rows {
@@ -233,7 +242,11 @@ fn product_row(ui: &mut egui::Ui, state: &mut AppState, top_bar: &TopBarVm) {
                     theme::TEXT_DIM
                 });
             if ui
-                .add(egui::Button::new(text).selected(row.selected))
+                .add(
+                    egui::Button::new(text)
+                        .selected(row.selected)
+                        .min_size(egui::vec2(min_h, min_h)),
+                )
                 .on_hover_text(&row.label)
                 .clicked()
                 && !row.selected
@@ -242,52 +255,6 @@ fn product_row(ui: &mut egui::Ui, state: &mut AppState, top_bar: &TopBarVm) {
             }
         }
     });
-}
-
-/// The phone sheet's product body: the product row and the one tilt list as
-/// a list (the phone has no ladder yet).
-pub(super) fn render_product_section(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    timeline: &crate::subsystem::Timeline,
-    live: &crate::subsystem::Live,
-    playback: &crate::subsystem::Playback,
-) {
-    let product = state.viz_state.product;
-    ui.horizontal_wrapped(|ui| {
-        for p in crate::core::RadarProduct::all() {
-            if ui.selectable_label(*p == product, p.short_code()).clicked() && *p != product {
-                state.push_command(Intent::TopBar(TopBarIntent::SetProduct(*p)));
-            }
-        }
-    });
-    ui.separator();
-    let entries = state.current_elevation_list(
-        &playback.state,
-        &timeline.scans,
-        live.radar_model
-            .volume
-            .as_ref()
-            .and_then(|v| v.vcp_pattern.as_ref()),
-    );
-    let rows =
-        crate::core::ladder::tilt_rows(&state.viz_state.elevation_selection, &entries, product);
-    for row in rows {
-        let resp = ui.horizontal(|ui| {
-            let r = ui.selectable_label(row.selected, &row.label);
-            if let Some(note) = &row.note {
-                ui.label(
-                    RichText::new(note)
-                        .size(theme::CAPTION)
-                        .color(theme::TEXT_FAINT),
-                );
-            }
-            r
-        });
-        if resp.inner.on_hover_text(&row.hover).clicked() {
-            state.push_command(Intent::TopBar(TopBarIntent::SetTilt(row.pick)));
-        }
-    }
 }
 
 fn render_volume_section(ui: &mut egui::Ui, state: &mut AppState) {
@@ -310,6 +277,27 @@ fn render_volume_section(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 // ── Layers ─────────────────────────────────────────────────────────────────
+
+/// The Layers tab: map, live and analysis layers, the mPING legend and
+/// rendering. Shared by the panel and the phone's sheet.
+pub(super) fn layers_tab(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    diagnostics: &crate::subsystem::Diagnostics,
+    playback: &crate::subsystem::Playback,
+    derived: &crate::subsystem::Derived,
+    chrome: &mut crate::subsystem::Chrome,
+) {
+    render_layers_section(ui, state, diagnostics, playback, derived, chrome);
+    ui.add_space(8.0);
+    mping_legend(
+        ui,
+        state,
+        &diagnostics.mping.reports,
+        playback.state.playback_position(),
+    );
+    render_rendering_section(ui, state, playback, chrome);
+}
 
 /// One map-overlay checkbox.
 ///
@@ -685,7 +673,14 @@ fn format_event_time(ts: f64, use_local: bool) -> String {
 
 // ── Settings ───────────────────────────────────────────────────────────────
 
-fn settings_tab(ui: &mut egui::Ui, state: &mut AppState, chrome: &mut crate::subsystem::Chrome) {
+/// The Settings tab. The phone has no keyboard map and keeps developer
+/// depth to the URL flag (one-instrument answers, "What the phone cannot
+/// do"), so those rows are desktop only.
+pub(super) fn settings_tab(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
+) {
     render_storage_section(ui, state, chrome);
 
     section(ui, "Time zone");
@@ -701,12 +696,14 @@ fn settings_tab(ui: &mut egui::Ui, state: &mut AppState, chrome: &mut crate::sub
         }
     });
 
-    section(ui, "Keyboard");
-    if ui
-        .button(format!("{}  Keyboard map", icons::KEYBOARD))
-        .clicked()
-    {
-        state.push_command(Intent::TopBar(TopBarIntent::ToggleShortcutsHelp));
+    if !state.is_mobile {
+        section(ui, "Keyboard");
+        if ui
+            .button(format!("{}  Keyboard map", icons::KEYBOARD))
+            .clicked()
+        {
+            state.push_command(Intent::TopBar(TopBarIntent::ToggleShortcutsHelp));
+        }
     }
 
     section(ui, "Controls");
@@ -718,12 +715,14 @@ fn settings_tab(ui: &mut egui::Ui, state: &mut AppState, chrome: &mut crate::sub
     {
         state.push_command(Intent::TopBar(TopBarIntent::SetAdvanced(advanced)));
     }
-    ui.checkbox(&mut state.dev_mode, "Developer mode")
-        .on_hover_text(
-            "Add deep diagnostics — per-phase timings, worker queue depth, \
-             FPS, and cross-origin isolation — to the activity sheet's Details \
-             section. Adds ?dev=true to the URL when enabled.",
-        );
+    if !state.is_mobile {
+        ui.checkbox(&mut state.dev_mode, "Developer mode")
+            .on_hover_text(
+                "Add deep diagnostics — per-phase timings, worker queue depth, \
+                 FPS, and cross-origin isolation — to the activity sheet's Details \
+                 section. Adds ?dev=true to the URL when enabled.",
+            );
+    }
 
     ui.add_space(8.0);
     if ui

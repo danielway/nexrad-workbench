@@ -14,7 +14,7 @@
 
 use crate::core::transport::StepDir;
 use crate::core::PlaybackMode;
-use crate::state::{AppState, MobileSettingsTab};
+use crate::state::AppState;
 use eframe::egui::{self, RichText};
 
 const TRANSPORT_BAR_HEIGHT: f32 = 48.0;
@@ -197,10 +197,8 @@ fn render_transport_row(
                 .on_hover_text("More controls")
                 .clicked()
             {
-                chrome.mobile_settings_open = !settings_open;
-                if chrome.mobile_settings_open {
-                    chrome.mobile_settings_tab = MobileSettingsTab::default();
-                }
+                // Opens on the rail's tab; the sheet's backdrop owns closing.
+                chrome.mobile_settings_open = true;
             }
 
             if ui

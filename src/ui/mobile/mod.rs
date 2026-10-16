@@ -23,7 +23,6 @@ pub(crate) fn resolve_mobile_auto_hide(
     ctx: &eframe::egui::Context,
     playback: &crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
-    picker_open: bool,
 ) {
     let (now, pressed, gesture_active) = ctx.input(|i| {
         (
@@ -33,8 +32,7 @@ pub(crate) fn resolve_mobile_auto_hide(
         )
     });
     // An open dialog, the sheet, or any menu or combo box keeps the chrome.
-    let menu_open =
-        !chrome.dialogs.is_empty() || picker_open || eframe::egui::Popup::is_any_open(ctx);
+    let menu_open = !chrome.dialogs.is_empty() || eframe::egui::Popup::is_any_open(ctx);
     let out = chrome
         .mobile_auto_hide
         .step(crate::core::phone::AutoHideInputs {
