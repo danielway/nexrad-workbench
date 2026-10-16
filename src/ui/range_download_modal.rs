@@ -3,14 +3,16 @@
 //! Selecting a range arms a bulk fetch of every scan in it ("selection = the
 //! fetch"). Short spans download silently; a span longer than
 //! [`crate::SELECTION_BULK_CONFIRM_SECS`] routes here first so the user can
-//! confirm a potentially large download. Cancel keeps the selection as loop
-//! bounds but downloads nothing; Download Anyway arms the fetch pump.
+//! confirm a potentially large download. Not now keeps the selection as loop
+//! bounds but downloads nothing; Download arms the fetch pump.
 
+use super::dialog::{self, Dialog, Width};
 use super::layout::{Layer, LayerKind, LayoutCtx};
+use crate::core::dialogs::DialogId;
 use crate::subsystem::acquisition::SelectionFetchTarget;
 use crate::subsystem::{Acquisition, Chrome};
 use crate::ui::theme;
-use eframe::egui::{self, RichText, Vec2};
+use eframe::egui::{self, RichText};
 
 pub(super) struct RangeDownloadModalLayer;
 
@@ -25,21 +27,16 @@ impl Layer for RangeDownloadModalLayer {
         ctx.chrome.range_download_modal.is_some()
     }
     fn render(&self, ctx: &mut LayoutCtx) {
-        draw_range_download_modal(ctx.ctx, ctx.acquisition, ctx.chrome);
+        draw_range_download_modal(ctx.ctx, ctx.state, ctx.acquisition, ctx.chrome);
     }
 }
 
 fn draw_range_download_modal(
     ctx: &egui::Context,
+    state: &mut crate::state::AppState,
     acquisition: &mut Acquisition,
     chrome: &mut Chrome,
 ) {
-    // Backdrop click / Escape = Cancel (selection stays as bounds, no download).
-    if super::modal_helper::modal_backdrop(ctx, "range_download_backdrop", 180) {
-        chrome.range_download_modal = None;
-        return;
-    }
-
     let Some((start, end)) = chrome.range_download_modal else {
         return;
     };
@@ -50,60 +47,45 @@ fn draw_range_download_modal(
         .ceil()
         .max(1.0) as u64;
     let est_bytes = count.saturating_mul(crate::AVG_SCAN_BYTES);
-    let est_mb = est_bytes as f64 / (1024.0 * 1024.0);
     let hours = dur / 3600.0;
 
-    egui::Window::new("Download selected range?")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(380.0, 0.0))
-        .order(egui::Order::Foreground)
+    let mut download = false;
+    let mut cancel = false;
+    let out = Dialog::new(DialogId::RangeDownload, "Download this range?")
+        .subtitle(format!("{hours:.1} hours selected"))
+        .width(Width::Narrow)
         .show(ctx, |ui| {
-            ui.add_space(8.0);
-
-            ui.label(RichText::new("This selection spans a long time range:").strong());
-
-            ui.add_space(8.0);
-
-            ui.label(format!("  \u{2022} Duration: {hours:.1} hours"));
-            ui.label(format!(
-                "  \u{2022} Estimated download: ~{count} scans (~{est_mb:.0} MB)"
-            ));
-
-            ui.add_space(8.0);
-
-            ui.label(
-                RichText::new("Cancel keeps the selection for looping without downloading.")
-                    .weak()
-                    .italics(),
+            dialog::bullet(
+                ui,
+                &format!(
+                    "About {count} scans, roughly {}",
+                    crate::state::format_bytes(est_bytes)
+                ),
+                theme::TEXT,
             );
-
-            ui.add_space(12.0);
-            ui.separator();
             ui.add_space(8.0);
-
-            ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
-                    chrome.range_download_modal = None;
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let confirm = ui.add(
-                        egui::Button::new(RichText::new("Download Anyway").color(theme::TEXT))
-                            .fill(theme::legacy::BUTTON_BLUE),
-                    );
-                    if confirm.clicked() {
-                        if let Some(range) = chrome.range_download_modal.take() {
-                            acquisition.selection_fetch_target = Some(SelectionFetchTarget {
-                                range,
-                                armed_at_secs: crate::core::TimeModel::wall_clock_time(),
-                            });
-                        }
-                    }
-                });
+            ui.label(
+                RichText::new("Not now keeps the range as a loop without downloading.")
+                    .size(theme::CAPTION)
+                    .color(theme::TEXT_DIM),
+            );
+            dialog::footer(ui, |ui| {
+                download = dialog::primary(ui, "Download").clicked();
+                cancel = dialog::secondary(ui, "Not now").clicked();
             });
-
-            ui.add_space(4.0);
         });
+
+    if download {
+        if let Some(range) = chrome.range_download_modal.take() {
+            acquisition.selection_fetch_target = Some(SelectionFetchTarget {
+                range,
+                armed_at_secs: crate::core::TimeModel::wall_clock_time(),
+            });
+        }
+    } else if cancel || out.close {
+        // Not now / Esc / click outside: the selection stays as loop bounds.
+        state.push_command(crate::core::Intent::Dialog(
+            crate::core::dialogs::DialogIntent::Close(DialogId::RangeDownload),
+        ));
+    }
 }

@@ -1,11 +1,19 @@
-//! Confirmation modal for restoring the default settings.
+//! The destructive confirmation (§12): one pattern for clear cache, reset
+//! settings and delete event. It lists exactly what will be deleted and what
+//! stays, with an outlined destructive button. The words are the core's
+//! ([`crate::core::dialogs::confirm_vm`]); confirming emits
+//! [`DialogIntent::Confirm`].
 //!
-//! Clears localStorage while retaining saved events, then reloads the page.
+//! (The file keeps its old name so the layout registry is unchanged; the
+//! layer renders whichever confirmation `Chrome::confirm` holds.)
 
+use super::dialog::{self, Dialog, Width};
 use super::layout::{Layer, LayerKind, LayoutCtx};
-use crate::state::AppState;
+use crate::core::dialogs::{confirm_vm, ConfirmFacts, DialogId, DialogIntent};
+use crate::core::Intent;
+use crate::state::{format_bytes, AppState};
 use crate::ui::theme;
-use eframe::egui::{self, RichText, Vec2};
+use eframe::egui::{self, RichText};
 
 pub(super) struct ResetSettingsModalLayer;
 
@@ -17,71 +25,73 @@ impl Layer for ResetSettingsModalLayer {
         30
     }
     fn visible(&self, ctx: &LayoutCtx) -> bool {
-        ctx.chrome.reset_settings_modal_open
+        ctx.chrome.confirm.is_some()
     }
     fn render(&self, ctx: &mut LayoutCtx) {
-        draw_reset_settings_modal(ctx.ctx, ctx.state, ctx.chrome);
+        if let Some(confirm) = ctx.chrome.confirm {
+            draw_confirm(ctx.ctx, ctx.state, confirm);
+        }
     }
 }
 
-fn draw_reset_settings_modal(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    chrome: &mut crate::subsystem::Chrome,
-) {
-    if super::modal_helper::modal_backdrop(ctx, "reset_settings_modal_backdrop", 180) {
-        chrome.reset_settings_modal_open = false;
-        return;
+fn facts(state: &AppState, confirm: crate::core::dialogs::Confirm) -> ConfirmFacts {
+    let event = match confirm {
+        crate::core::dialogs::Confirm::DeleteEvent(id) => state
+            .saved_events
+            .events
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| (e.name.clone(), e.site_id.clone(), e.start_time, e.end_time)),
+        _ => None,
+    };
+    ConfirmFacts {
+        cache_bytes: state.session_stats.cache_size_bytes,
+        saved_events: state.saved_events.events.len(),
+        event,
     }
+}
 
-    // Modal window
-    egui::Window::new("Reset Settings")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(340.0, 0.0))
-        .order(egui::Order::Foreground)
+fn draw_confirm(ctx: &egui::Context, state: &mut AppState, confirm: crate::core::dialogs::Confirm) {
+    let clock = crate::ui::time_format::ZoneClock {
+        use_local: state.use_local_time,
+    };
+    let vm = confirm_vm(
+        confirm,
+        &facts(state, confirm),
+        format_bytes,
+        &clock,
+        state.frame_now.secs(),
+    );
+    let mut cancel = false;
+    let mut confirmed = false;
+    let out = Dialog::new(DialogId::Confirm, &vm.title)
+        .width(Width::Narrow)
         .show(ctx, |ui| {
+            dialog::group_heading(ui, "Deletes");
+            for line in &vm.deletes {
+                dialog::bullet(ui, line, theme::TEXT);
+            }
             ui.add_space(8.0);
-
-            ui.label(
-                RichText::new("Restore all settings and preferences to their defaults?").strong(),
-            );
-
-            ui.add_space(8.0);
-
-            ui.label("  \u{2022} Settings and preferences");
-            ui.label("  \u{2022} Saved events and cached radar data will be kept");
-
-            ui.add_space(8.0);
-
-            ui.label(
-                RichText::new("The page will reload after resetting settings.")
-                    .weak()
-                    .italics(),
-            );
-
-            ui.add_space(12.0);
-            ui.separator();
-            ui.add_space(8.0);
-
-            ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
-                    chrome.reset_settings_modal_open = false;
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let reset_btn = ui.add(
-                        egui::Button::new(RichText::new("Reset Settings").color(theme::TEXT))
-                            .fill(theme::legacy::DESTRUCTIVE),
-                    );
-                    if reset_btn.clicked() {
-                        chrome.reset_settings_modal_open = false;
-                        state.push_command(crate::core::Intent::ResetSettings);
-                    }
-                });
+            dialog::group_heading(ui, "Keeps");
+            for line in &vm.keeps {
+                dialog::bullet(ui, line, theme::TEXT_DIM);
+            }
+            if let Some(note) = &vm.note {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(note)
+                        .size(theme::CAPTION)
+                        .color(theme::TEXT_DIM),
+                );
+            }
+            dialog::footer(ui, |ui| {
+                confirmed = dialog::destructive(ui, &vm.action).clicked();
+                cancel = dialog::secondary(ui, "Cancel").clicked();
             });
-
-            ui.add_space(4.0);
         });
+    if confirmed {
+        state.push_command(Intent::Dialog(DialogIntent::Confirm));
+    } else if cancel || out.close {
+        state.push_command(Intent::Dialog(DialogIntent::Close(DialogId::Confirm)));
+    }
 }
