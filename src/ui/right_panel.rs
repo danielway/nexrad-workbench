@@ -723,7 +723,7 @@ fn settings_tab(ui: &mut egui::Ui, state: &mut AppState, chrome: &mut crate::sub
         .on_hover_text("Restore default settings while keeping saved events and cached data")
         .clicked()
     {
-        chrome.reset_settings_modal_open = true;
+        state.push_command(Intent::ResetSettings);
     }
 }
 

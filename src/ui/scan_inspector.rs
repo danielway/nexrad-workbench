@@ -1,4 +1,5 @@
-//! Scan inspector (spec §5, §6.3, §12): the per-scan volume breakdown.
+//! Scan inspector (spec §5, §6.3, §12): the per-scan volume breakdown, as a
+//! popover anchored where the scan was right-clicked / long-pressed.
 //!
 //! Opened by right-click (desktop) or long-press (touch) on a scan container.
 //! Lists *every* sweep of the inspected volume — all tilts, including SAILS /
@@ -12,14 +13,16 @@
 //! subsystems each frame (cheap; the view borrows the cache) and finds the
 //! container whose `key_secs` matches the stored scan-start.
 
+use super::dialog::{self, Popover};
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use super::timeline::format_timestamp_full;
+use crate::core::dialogs::{DialogId, DialogIntent};
 use crate::core::Intent;
 use crate::core::{FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView};
 use crate::state::{format_bytes, AppState};
 use crate::subsystem::{Acquisition, Chrome, Live, Playback, Timeline};
 use crate::ui::theme;
-use eframe::egui::{self, Color32, RichText, ScrollArea, Vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, RichText, ScrollArea, Vec2};
 use egui_phosphor::regular as icons;
 
 pub(super) struct ScanInspectorLayer;
@@ -62,20 +65,35 @@ fn estimated_sweep_bytes() -> u64 {
     (crate::AVG_SCAN_BYTES / 10).max(1)
 }
 
+/// Where the inspector is anchored: the pointer at the right-click / long
+/// press that opened it, remembered per inspected scan (egui memory — it is
+/// a screen position, the shell's fact).
+fn anchor_for(ctx: &egui::Context, scan_start: f64) -> Rect {
+    let id = egui::Id::new("scan_inspector_anchor");
+    let stored: Option<(f64, Pos2)> = ctx.data(|d| d.get_temp(id));
+    let pos = match stored {
+        Some((s, pos)) if s == scan_start => pos,
+        _ => {
+            let pos = ctx
+                .input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()))
+                .unwrap_or_else(|| ctx.input(|i| i.viewport_rect()).center());
+            ctx.data_mut(|d| d.insert_temp(id, (scan_start, pos)));
+            pos
+        }
+    };
+    Rect::from_center_size(pos, Vec2::ZERO)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_scan_inspector(
     ctx: &egui::Context,
     state: &mut AppState,
     timeline: &Timeline,
     live: &mut Live,
-    playback: &mut Playback,
+    _playback: &mut Playback,
     acquisition: &Acquisition,
     chrome: &mut Chrome,
 ) {
-    if super::modal_helper::modal_backdrop(ctx, "scan_inspector_backdrop", 150) {
-        chrome.scan_inspector = None;
-        return;
-    }
     let Some(scan_start) = chrome.scan_inspector else {
         return;
     };
@@ -129,91 +147,68 @@ fn draw_scan_inspector(
         .cloned();
 
     let use_local = state.use_local_time;
-    let now_secs = state.frame_now.secs();
-    let mut close = false;
-    let mut loop_from_here = false;
+    let (title, subtitle) = match container.as_ref() {
+        Some(c) => (format_timestamp_full(c.key_secs, use_local), header_line(c)),
+        None => ("Scan".to_string(), "No longer in view".to_string()),
+    };
 
-    egui::Window::new(format!("{} Scan inspector", icons::STACK))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .default_width(440.0)
-        .max_height(ctx.input(|i| i.viewport_rect().height()) * 0.85)
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            ui.set_min_width(380.0);
-
+    let out = Popover::new(DialogId::ScanInspector, anchor_for(ctx, scan_start))
+        .title(&title)
+        .subtitle(subtitle)
+        .show(ctx, |ui, room| {
             let Some(container) = container.as_ref() else {
                 ui.label(
-                    RichText::new("That scan is no longer in view.")
-                        .size(12.0)
-                        .italics()
-                        .color(super::theme::TEXT_FAINT),
+                    RichText::new("That scan is no longer on the timeline.").color(theme::TEXT_DIM),
                 );
-                ui.add_space(8.0);
-                if ui.button("Close").clicked() {
-                    close = true;
-                }
                 return;
             };
+            render_sweep_table(ui, state, container, scan_start, (room - 70.0).max(80.0));
 
-            render_header(ui, container, use_local);
-            ui.separator();
-            render_sweep_table(ui, state, container, scan_start);
-            ui.add_space(6.0);
-            ui.separator();
-            ui.add_space(4.0);
-
-            // Actions row: fetch whole scan + loop from here.
-            ui.horizontal(|ui| {
-                let any_missing = container
+            // Actions: fetch the whole volume, loop from here to now.
+            dialog::footer(ui, |ui| {
+                if dialog::primary(
+                    ui,
+                    &format!("{} Loop from here \u{2192} now", icons::REPEAT),
+                )
+                .on_hover_text("A loop from this scan up to now")
+                .clicked()
+                {
+                    state.push_command(Intent::LoopFromScan(scan_start));
+                }
+                let missing = container
                     .cells
                     .iter()
-                    .any(|c| matches!(c.state, FrameCellState::Available | FrameCellState::Failed));
-                if (any_missing || container.is_available)
-                    && ui
-                        .button(format!("{} Fetch whole scan", icons::DOWNLOAD_SIMPLE))
-                        .on_hover_text("Download the full volume (all tilts)")
-                        .clicked()
+                    .filter(|c| {
+                        matches!(c.state, FrameCellState::Available | FrameCellState::Failed)
+                    })
+                    .count();
+                if (missing > 0 || container.is_available)
+                    && dialog::secondary(
+                        ui,
+                        &format!(
+                            "{} Fetch volume (~{})",
+                            icons::DOWNLOAD_SIMPLE,
+                            format_bytes(estimated_sweep_bytes() * missing.max(1) as u64)
+                        ),
+                    )
+                    .on_hover_text("Download every cut of this volume not on this device")
+                    .clicked()
                 {
                     state.push_command(Intent::FetchScan {
                         scan_start: scan_start.round() as i64,
                         elevation_filter: None,
                     });
                 }
-
-                if ui
-                    .button(format!("{} Loop from here", icons::REPEAT))
-                    .on_hover_text("Create a loop from this scan up to now")
-                    .clicked()
-                {
-                    loop_from_here = true;
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        close = true;
-                    }
-                });
             });
         });
-
-    // Apply deferred actions (after the closure releases its borrows).
-    if loop_from_here {
-        apply_loop_from_here(live, playback, state, scan_start, now_secs);
-        close = true;
-    }
-    if close {
-        chrome.scan_inspector = None;
+    if out.close {
+        state.push_command(Intent::Dialog(DialogIntent::Close(DialogId::ScanInspector)));
     }
 }
 
-/// Scan-level header: time span, VCP, and the cached/total tilt count (spec
-/// §6.3 "carries the complete breakdown").
-fn render_header(ui: &mut egui::Ui, container: &ScanContainer, use_local: bool) {
-    let title = format_timestamp_full(container.key_secs, use_local);
-    ui.label(RichText::new(title).strong().size(13.0));
-
+/// The quiet line under the inspector's title: VCP and the cut count on
+/// device (the ladder's words).
+fn header_line(container: &ScanContainer) -> String {
     let total = container.cells.len();
     let cached = container
         .cells
@@ -221,32 +216,24 @@ fn render_header(ui: &mut egui::Ui, container: &ScanContainer, use_local: bool) 
         .filter(|c| c.state == FrameCellState::Cached)
         .count();
     let vcp = if container.vcp == 0 {
-        "VCP —".to_string()
+        "VCP \u{2014}".to_string()
     } else {
         format!("VCP {}", container.vcp)
     };
     let live_tag = if container.is_live { " · live" } else { "" };
-    ui.label(
-        RichText::new(format!(
-            "{vcp} · {cached}/{total} tilts on device{live_tag}"
-        ))
-        .size(11.0)
-        .color(super::theme::TEXT_FAINT),
-    );
+    format!("{vcp} · {cached}/{total} cuts on device{live_tag}")
 }
 
-/// One row per sweep (all tilts, SAILS/MRLE revisits included), sorted by
-/// collection time. Each row: tilt number + angle, cache-state pill, size, and
-/// either chunk progress (in-flight live) or a tap-to-fetch button (available).
+/// One row per cut (SAILS / MRLE revisits included), in collection order:
+/// the angle as the ladder writes it, the state as a mark and a word, and a
+/// fetch, chunk count or size. The cut on screen has the white outline.
 fn render_sweep_table(
     ui: &mut egui::Ui,
     state: &mut AppState,
     container: &ScanContainer,
     scan_start: f64,
+    max_height: f32,
 ) {
-    let value_color = super::theme::TEXT_DIM;
-    let label_color = super::theme::TEXT_FAINT;
-
     let mut cells: Vec<&FrameCell> = container.cells.iter().collect();
     cells.sort_by(|a, b| {
         a.start_secs
@@ -256,57 +243,48 @@ fn render_sweep_table(
 
     ScrollArea::vertical()
         .auto_shrink([false, true])
-        .max_height(320.0)
+        .max_height(max_height)
         .show(ui, |ui| {
             if cells.is_empty() {
                 ui.label(
-                    RichText::new("No sweep structure known for this scan yet.")
-                        .size(11.0)
-                        .italics()
-                        .color(label_color),
+                    RichText::new("No cut structure known for this scan yet.")
+                        .color(theme::TEXT_DIM),
                 );
                 return;
             }
             for cell in cells {
-                ui.horizontal(|ui| {
-                    // Tilt number + angle.
-                    let tilt = if cell.elevation_number == 0 {
-                        "tilt —".to_string()
+                let row = ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    let angle = if cell.elevation_angle > 0.0 {
+                        format!("{:.1}\u{00b0}", cell.elevation_angle)
                     } else {
-                        format!("tilt {}", cell.elevation_number)
+                        "\u{2014}".to_string()
                     };
                     ui.label(
-                        RichText::new(tilt)
-                            .size(11.0)
+                        RichText::new(angle)
                             .monospace()
-                            .color(value_color),
-                    );
-                    if cell.elevation_angle > 0.0 {
-                        ui.label(
-                            RichText::new(format!("{:.1}\u{00b0}", cell.elevation_angle))
-                                .size(11.0)
-                                .color(label_color),
-                        );
-                    }
-                    if cell.is_active {
-                        ui.label(
-                            RichText::new("\u{25c9}")
-                                .size(11.0)
-                                .color(super::theme::timeline::ACTIVE_SWEEP),
-                        )
-                        .on_hover_text("Currently displayed");
-                    }
+                            .size(theme::READOUT)
+                            .color(theme::TEXT),
+                    )
+                    .on_hover_text(format!("Cut {}", cell.elevation_number));
 
-                    // State pill + (estimated) size.
-                    let (state_label, state_color) = cell_state_display(cell.state);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        match cell.state {
+                    let (mark, word, color) = cell_state_display(cell.state);
+                    ui.label(RichText::new(mark).color(color));
+                    ui.label(
+                        RichText::new(word)
+                            .size(theme::CAPTION)
+                            .color(theme::TEXT_DIM),
+                    );
+
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| match cell.state {
                             FrameCellState::Available | FrameCellState::Failed => {
-                                // Tap-to-fetch this single tilt
-                                // (elevation-filtered scan fetch).
-                                let label =
-                                    format!("{} Fetch", egui_phosphor::regular::DOWNLOAD_SIMPLE);
-                                if ui.small_button(label).clicked() {
+                                if ui
+                                    .small_button(format!("{} Fetch", icons::DOWNLOAD_SIMPLE))
+                                    .on_hover_text("Download this cut")
+                                    .clicked()
+                                {
                                     state.push_command(Intent::FetchScan {
                                         scan_start: scan_start.round() as i64,
                                         elevation_filter: Some(cell.elevation_number),
@@ -314,25 +292,19 @@ fn render_sweep_table(
                                 }
                             }
                             FrameCellState::InFlight => {
-                                if let Some(chunks) = &cell.chunks {
-                                    if chunks.chunks_expected > 0 {
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "chunk {}/{}",
-                                                chunks.chunks_received.min(chunks.chunks_expected),
-                                                chunks.chunks_expected
-                                            ))
-                                            .size(10.0)
-                                            .color(super::theme::acquisition::ACTIVE),
-                                        );
-                                    } else {
-                                        ui.label(
-                                            RichText::new("downloading")
-                                                .size(10.0)
-                                                .italics()
-                                                .color(super::theme::acquisition::ACTIVE),
-                                        );
-                                    }
+                                if let Some(chunks) =
+                                    cell.chunks.as_ref().filter(|c| c.chunks_expected > 0)
+                                {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "chunk {}/{}",
+                                            chunks.chunks_received.min(chunks.chunks_expected),
+                                            chunks.chunks_expected
+                                        ))
+                                        .monospace()
+                                        .size(theme::CAPTION)
+                                        .color(theme::TEXT_DIM),
+                                    );
                                 }
                             }
                             FrameCellState::Cached => {
@@ -341,66 +313,40 @@ fn render_sweep_table(
                                         "~{}",
                                         format_bytes(estimated_sweep_bytes())
                                     ))
-                                    .size(10.0)
-                                    .color(label_color),
+                                    .monospace()
+                                    .size(theme::CAPTION)
+                                    .color(theme::TEXT_FAINT),
                                 );
                             }
                             _ => {}
-                        }
-                        ui.label(
-                            RichText::new(state_label)
-                                .size(10.0)
-                                .strong()
-                                .color(state_color),
-                        );
-                    });
+                        },
+                    );
                 });
+                if cell.is_active {
+                    // The white outline: this cut is the one on screen.
+                    ui.painter().rect_stroke(
+                        row.response.rect.expand(1.0),
+                        egui::CornerRadius::same(3),
+                        egui::Stroke::new(1.0, theme::SEEN),
+                        egui::StrokeKind::Inside,
+                    );
+                    row.response.on_hover_text("On screen");
+                }
             }
         });
 }
 
-/// A grayscale-distinguishable label + accent for a cell state (the accent is
-/// secondary; the word carries the meaning for accessibility).
-fn cell_state_display(state: FrameCellState) -> (&'static str, Color32) {
-    // Neutral gray for the non-accent states (in archive / expected); accent
-    // colors only for the states that carry one (red = failure).
-    let neutral = theme::TEXT_DIM;
+/// A cell state's mark, word and mark color — the strip's grammar: slate
+/// fill for on device, hollow for in the archive, a tilde for expected, the
+/// ⚠ glyph in text color for a failure (red means now).
+fn cell_state_display(state: FrameCellState) -> (&'static str, &'static str, Color32) {
     match state {
-        FrameCellState::Cached => ("on device", super::theme::acquisition::COMPLETED),
-        FrameCellState::Available => ("in archive", neutral),
-        FrameCellState::InFlight => ("downloading", super::theme::acquisition::ACTIVE),
-        FrameCellState::Queued => ("queued", super::theme::acquisition::QUEUED),
-        FrameCellState::Projected => ("expected", neutral),
-        FrameCellState::Failed => ("failed", super::theme::acquisition::FAILED),
-    }
-}
-
-/// "Loop from here" (spec §12): a loop spanning this scan up to now. While
-/// streaming it is a live range that slides forward with new data; otherwise
-/// a fixed range. The playhead starts at the scan.
-fn apply_loop_from_here(
-    live: &mut Live,
-    playback: &mut Playback,
-    state: &mut AppState,
-    scan_start: f64,
-    now_secs: f64,
-) {
-    let selected = live.select_range(
-        &mut playback.state,
-        scan_start,
-        now_secs,
-        true,
-        state.frame_now.secs(),
-        state.pause_stream_while_reviewing,
-    );
-    if !selected {
-        return;
-    }
-    playback.state.seek_within_range(scan_start);
-    // Arm the bulk fetch for the selected span (selection = the fetch), the
-    // same one-shot the strip's selection gesture uses.
-    if let Some(range) = playback.state.selection_range() {
-        state.selection_just_finalized = Some(range);
+        FrameCellState::Cached => (icons::RECORD, "on device", theme::ON_DEVICE),
+        FrameCellState::Available => (icons::CIRCLE, "in archive", theme::TEXT_DIM),
+        FrameCellState::InFlight => (icons::CIRCLE_HALF, "downloading", theme::ON_DEVICE),
+        FrameCellState::Queued => (icons::CIRCLE_DASHED, "queued", theme::TEXT_DIM),
+        FrameCellState::Projected => ("~", "expected", theme::TEXT_FAINT),
+        FrameCellState::Failed => (icons::WARNING, "failed", theme::TEXT),
     }
 }
 
@@ -429,8 +375,8 @@ mod tests {
             FrameCellState::Projected,
             FrameCellState::Failed,
         ] {
-            let (label, _) = cell_state_display(s);
-            assert!(!label.is_empty());
+            let (mark, word, _) = cell_state_display(s);
+            assert!(!mark.is_empty() && !word.is_empty());
         }
     }
 }

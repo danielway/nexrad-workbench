@@ -14,6 +14,7 @@
 //! deltas if needed and would otherwise bloat the clipboard payload.
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
+use crate::core::dialogs::DialogId;
 use crate::core::timing::{AnchorSource, IntervalCase, PhysicsBreakdown, SchedulerPath};
 use crate::core::{
     BucketKey, ChunkArrivalStat, ForecastTimingLabel, SweepForecast, SweepStatus,
@@ -37,7 +38,7 @@ impl Layer for VcpForecastModalLayer {
         ctx.chrome.vcp_forecast_open
     }
     fn render(&self, ctx: &mut LayoutCtx) {
-        draw_vcp_forecast_modal(ctx.ctx, ctx.state, ctx.live, ctx.chrome);
+        draw_vcp_forecast_modal(ctx.ctx, ctx.state, ctx.live);
     }
 }
 
@@ -45,13 +46,7 @@ fn draw_vcp_forecast_modal(
     ctx: &egui::Context,
     state: &mut AppState,
     live: &crate::subsystem::Live,
-    chrome: &mut crate::subsystem::Chrome,
 ) {
-    if super::modal_helper::modal_backdrop(ctx, "vcp_forecast_backdrop", 160) {
-        chrome.vcp_forecast_open = false;
-        return;
-    }
-
     let site_id = state.viz_state.site_id.clone();
     let (snap_opt, arrivals) = {
         let eng = live.engine.borrow();
@@ -76,12 +71,9 @@ fn draw_vcp_forecast_modal(
         }
     };
 
-    egui::Window::new("VCP forecast diagnostics")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(940.0, 580.0))
-        .order(egui::Order::Foreground)
+    let out = super::dialog::Dialog::new(DialogId::VcpForecast, "VCP forecast diagnostics")
+        .subtitle(format!("{site_id} · predicted vs. observed per elevation"))
+        .width(super::dialog::Width::Full)
         .show(ctx, |ui| match snap_opt {
             None => {
                 ui.add_space(8.0);
@@ -99,15 +91,16 @@ fn draw_vcp_forecast_modal(
                     .size(11.0)
                     .color(theme::TEXT_FAINT),
                 );
-                ui.add_space(8.0);
-                if ui.button("Close").clicked() {
-                    chrome.vcp_forecast_open = false;
-                }
             }
             Some(snap) => {
-                render_snapshot(ui, ctx, &snap, &arrivals, &site_id, state, chrome);
+                render_snapshot(ui, ctx, &snap, &arrivals, &site_id, state);
             }
         });
+    if out.close {
+        state.push_command(crate::core::Intent::Dialog(
+            crate::core::dialogs::DialogIntent::Close(DialogId::VcpForecast),
+        ));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -118,7 +111,6 @@ fn render_snapshot(
     arrivals: &[ChunkArrivalStat],
     site_id: &str,
     state: &mut AppState,
-    chrome: &mut crate::subsystem::Chrome,
 ) {
     let label_color = theme::TEXT_FAINT;
     let value_color = theme::TEXT_DIM;
@@ -609,11 +601,6 @@ fn render_snapshot(
             ctx.copy_text(text);
             state.status_message = "Forecast diagnostics copied to clipboard".to_string();
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Close").clicked() {
-                chrome.vcp_forecast_open = false;
-            }
-        });
     });
 }
 

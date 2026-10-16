@@ -24,8 +24,10 @@
 
 pub(crate) mod acquisition;
 pub(crate) mod activity;
+pub(crate) mod activity_index;
 pub(crate) mod canvas;
 pub(crate) mod diagnostics;
+pub(crate) mod dialogs;
 pub(crate) mod domain;
 pub(crate) mod effect;
 pub(crate) mod geo_labels;
@@ -49,6 +51,7 @@ pub(crate) mod render_loop;
 pub(crate) mod selection_chip;
 pub(crate) mod selection_strip;
 pub(crate) mod session;
+pub(crate) mod site_picker;
 pub(crate) mod storm_activity;
 pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;

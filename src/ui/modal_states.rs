@@ -229,8 +229,8 @@ pub(crate) fn looks_like_timestamp(s: &str) -> bool {
 
 /// Owns all transient modal UI state held outside [`crate::state::AppState`].
 pub(crate) struct ModalStates {
-    /// Site-selection modal: search filter, async location queue, and
-    /// the welcome/list/zip view mode.
+    /// Site picker: the search field, the Near you lookup and its async
+    /// location queue.
     pub site: SiteModalState,
     /// Event create/edit modal: form fields for name, site, time range.
     pub event: EventModalState,
@@ -242,17 +242,9 @@ pub(crate) struct ModalStates {
 
 impl ModalStates {
     /// Construct a fresh set of modal states.
-    ///
-    /// `has_preferred_site` controls the site modal's first-visit
-    /// welcome verbiage — `true` for returning users (shorter "change
-    /// site" heading), `false` for the first visit.
-    pub(crate) fn new(has_preferred_site: bool) -> Self {
-        let mut site = SiteModalState::default();
-        if has_preferred_site {
-            site.is_first_visit = false;
-        }
+    pub(crate) fn new() -> Self {
         Self {
-            site,
+            site: SiteModalState::default(),
             event: EventModalState::default(),
             mping: MpingModalState::default(),
             datetime: DateTimePickerState::default(),
@@ -266,44 +258,22 @@ mod coverage_tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     #[wasm_bindgen_test]
-    fn new_with_preferred_site_marks_not_first_visit() {
-        let states = ModalStates::new(true);
-        assert!(!states.site.is_first_visit);
-    }
-
-    #[wasm_bindgen_test]
-    fn new_without_preferred_site_keeps_first_visit() {
-        let states = ModalStates::new(false);
-        assert!(states.site.is_first_visit);
-    }
-
-    #[wasm_bindgen_test]
-    fn new_site_mode_defaults_to_welcome() {
-        // SiteModalMode lacks Debug; compare via PartialEq through assert!.
-        let states = ModalStates::new(false);
-        assert!(states.site.mode == crate::ui::site_modal::SiteModalMode::Welcome);
-        let states2 = ModalStates::new(true);
-        assert!(states2.site.mode == crate::ui::site_modal::SiteModalMode::Welcome);
-    }
-
-    #[wasm_bindgen_test]
-    fn new_site_form_fields_start_empty() {
-        let states = ModalStates::new(true);
-        assert_eq!(states.site.filter, "");
-        assert_eq!(states.site.zip_input, "");
-        assert!(states.site.error_message.is_none());
+    fn new_site_picker_starts_empty_and_idle() {
+        let states = ModalStates::new();
+        assert_eq!(states.site.query, "");
+        assert!(states.site.near == crate::core::site_picker::NearYou::Idle);
     }
 
     #[wasm_bindgen_test]
     fn new_event_modal_starts_with_empty_name() {
-        let states = ModalStates::new(false);
+        let states = ModalStates::new();
         assert_eq!(states.event.name, "");
         assert_eq!(states.event.site_id, "");
     }
 
     #[wasm_bindgen_test]
     fn new_mping_modal_starts_with_empty_key_input() {
-        let states = ModalStates::new(true);
+        let states = ModalStates::new();
         assert_eq!(states.mping.key_input, "");
     }
 }

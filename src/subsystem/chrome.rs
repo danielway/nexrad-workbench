@@ -37,8 +37,18 @@ pub(crate) struct Chrome {
     pub shortcuts_help_visible: bool,
     /// Whether the site selection modal is open.
     pub site_modal_open: bool,
-    /// Whether the reset-settings confirmation modal is open.
-    pub reset_settings_modal_open: bool,
+    /// The destructive confirmation on screen, if any (one-instrument §12).
+    pub confirm: Option<crate::core::dialogs::Confirm>,
+    /// The open dialogs and popovers in stacking order: what Escape closes
+    /// and whether global shortcuts fire. Synced from the flags each frame.
+    pub dialogs: crate::core::dialogs::DialogStack,
+    /// No site has been chosen yet (first visit): the site picker cannot be
+    /// dismissed. Cleared by every site pick — list, search, zip, location
+    /// or map.
+    pub site_required: bool,
+    /// "Pick on map" is armed: the Sites layer is on until a site is clicked.
+    /// Holds whether the layer was on before, to restore it.
+    pub site_map_pick: Option<bool>,
     /// When set, the range-download confirm modal is open and carries the
     /// pending `(start, end)` selection range to bulk-download on confirm.
     /// `Some` doubles as the open flag; the range is the modal's own snapshot,

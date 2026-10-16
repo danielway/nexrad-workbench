@@ -24,6 +24,7 @@ mod canvas_data_probe;
 mod canvas_interaction;
 mod canvas_overlays;
 mod data_colors;
+pub(crate) mod dialog;
 mod event_modal;
 mod ladder;
 mod layout;

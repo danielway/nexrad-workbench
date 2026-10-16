@@ -269,10 +269,17 @@ cached scans.
   tall ones. Zoomed in to scans, each volume is drawn by its own size from
   the same listing, so a tall day keeps showing which hours held the echo,
   and hovering a volume names its time and size.
-  The overview lists the days it shows (the 48 h default included), a few
-  at a time once it stops moving, when it spans at most ~400 days; wider
-  views show the days already known. Each day is stored, so it's listed
-  once. Days the radar recorded nothing show as a red line.
+  Day sizes come from a precomputed index: a nightly GitHub Action lists
+  every site's days and publishes one small file per site (daily volume
+  count, mean size and format; ~70 KB gzipped for the whole era) beside
+  the app on GitHub Pages. The app reads a site's file once per session
+  (kept in IndexedDB, revalidated by ETag), so bars appear at any zoom for
+  one request. Only the days the index lacks (the last day or two, gaps
+  while it backfills) are listed live, a few at a time once the overview
+  stops moving, and, zoomed in to scans, the days in view, for their
+  per-volume sizes. Without an index (dev builds) every day is listed live
+  as before. Listed days are stored, so each is listed once. Days the
+  radar recorded nothing show as a red line.
 
 ### 5.6 Saved events (bookmarks)
 

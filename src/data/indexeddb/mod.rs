@@ -26,7 +26,7 @@
 //!   IDB request callbacks, so IndexedDB serializes same-scan mutations across
 //!   workers and tabs without awaiting inside the readwrite transaction.
 
-use crate::data::day_activity::DayActivity;
+use crate::data::day_activity::{ActivityIndexRecord, DayActivity};
 use crate::data::keys::*;
 use js_sys::{Array, ArrayBuffer, Uint8Array};
 use std::cell::RefCell;
@@ -152,7 +152,7 @@ impl StorageQuotaEstimate {
 }
 
 /// Current database schema version.
-pub(super) const DATABASE_VERSION: u32 = 7;
+pub(super) const DATABASE_VERSION: u32 = 8;
 
 /// Database name.
 const DATABASE_NAME: &str = "nexrad-workbench";
@@ -168,12 +168,17 @@ pub(super) const STORE_SCAN_TOUCHES: &str = "scan_touches";
 /// bars ([`crate::data::DayActivity`]). Added in v7; only the main thread
 /// reads or writes it, and nothing else in a transaction touches it.
 pub(super) const STORE_DAY_ACTIVITY: &str = "day_activity";
+/// Each site's published storm-activity index file as last fetched, with
+/// its ETag ([`crate::data::ActivityIndexRecord`]), keyed by site id. Added
+/// in v8; main thread only, like `day_activity`.
+pub(super) const STORE_ACTIVITY_INDEX: &str = "activity_index";
 /// Every store the current schema has.
-pub(super) const ALL_STORES: [&str; 4] = [
+pub(super) const ALL_STORES: [&str; 5] = [
     STORE_SWEEPS,
     STORE_SCAN_INDEX,
     STORE_SCAN_TOUCHES,
     STORE_DAY_ACTIVITY,
+    STORE_ACTIVITY_INDEX,
 ];
 
 /// Minimum interval between in-memory touch deduplications. Limits how often
@@ -1141,6 +1146,46 @@ impl IndexedDbStore {
         Ok(deserialize_js_array(&Array::from(&result)))
     }
 
+    /// The cached copy of `site`'s activity index, if any.
+    pub async fn activity_index(
+        &self,
+        site: &SiteId,
+    ) -> Result<Option<ActivityIndexRecord>, DataError> {
+        self.ensure_open().await?;
+        let key = JsValue::from_str(&site.0);
+        let result = self
+            .read(STORE_ACTIVITY_INDEX, |store| store.get(&key))
+            .await?;
+        from_js_value_opt(&result)
+    }
+
+    /// Cache (or replace) a site's activity index.
+    pub async fn put_activity_index(&self, record: &ActivityIndexRecord) -> Result<(), DataError> {
+        self.ensure_open().await?;
+        let value = to_js_value(record)?;
+        let key = JsValue::from_str(&record.site.0);
+        self.write_tx(&[STORE_ACTIVITY_INDEX], |wtx| {
+            wtx.object_store(STORE_ACTIVITY_INDEX)?
+                .put_with_key(&value, &key)
+                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Drop a site's cached activity index.
+    pub async fn delete_activity_index(&self, site: &SiteId) -> Result<(), DataError> {
+        self.ensure_open().await?;
+        let key = JsValue::from_str(&site.0);
+        self.write_tx(&[STORE_ACTIVITY_INDEX], |wtx| {
+            wtx.object_store(STORE_ACTIVITY_INDEX)?
+                .delete(&key)
+                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+            Ok(())
+        })
+        .await
+    }
+
     /// Clears all data from all stores.
     ///
     /// Preserves schema and version — does not call `deleteDatabase`, which
@@ -1159,6 +1204,9 @@ impl IndexedDbStore {
                 .clear()
                 .map_err(|e| DataError::RequestFailed(js_err(e)))?;
             wtx.object_store(STORE_DAY_ACTIVITY)?
+                .clear()
+                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+            wtx.object_store(STORE_ACTIVITY_INDEX)?
                 .clear()
                 .map_err(|e| DataError::RequestFailed(js_err(e)))?;
             Ok(())
