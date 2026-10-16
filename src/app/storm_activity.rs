@@ -1,10 +1,11 @@
 //! Shell for the overview's storm activity: reads a site's stored day
-//! summaries once, lists the days the overview shows (nearest
+//! summaries and its published index once, lists the days the overview
+//! shows that neither covers (nearest
 //! the middle first, a few at a time, once the overview stops moving), and
 //! stores what comes back. Every decision is in
 //! [`crate::core::storm_activity`]; this only runs it.
 
-use crate::core::storm_activity::{day_start_of, ActivityWindow};
+use crate::core::storm_activity::{day_start_of, needs_scans, ActivityWindow};
 use crate::data::SiteId;
 use crate::nexrad::acquisition::activity_listing::ActivityMessage;
 use eframe::egui;
@@ -25,8 +26,12 @@ impl crate::WorkbenchApp {
         }
         let acq = &mut self.acquisition;
         if acq.activity_fetcher.begin_load(&site) {
-            acq.activity_channel
-                .load(ctx.clone(), acq.coordinator.facade().clone(), site.clone());
+            acq.activity_channel.load(
+                ctx.clone(),
+                acq.coordinator.download_channel.stats(),
+                acq.coordinator.facade().clone(),
+                site.clone(),
+            );
             return;
         }
 
@@ -35,8 +40,16 @@ impl crate::WorkbenchApp {
         if self.playback.state.timeline_width_px <= 0.0 {
             return;
         }
+        // Zoomed in to volumes, days the index covers still need listing.
+        let need_scans = needs_scans(self.playback.state.timeline_width_px, ov.span);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (&site.0, day_start_of(ov.start), day_start_of(ov.end())).hash(&mut hasher);
+        (
+            &site.0,
+            day_start_of(ov.start),
+            day_start_of(ov.end()),
+            need_scans,
+        )
+            .hash(&mut hasher);
         if !acq
             .activity_settle
             .poll(hasher.finish(), now_ms, ACTIVITY_SETTLE_MS)
@@ -49,6 +62,7 @@ impl crate::WorkbenchApp {
             end: ov.end(),
             era_start: crate::core::NEXRAD_ARCHIVE_START_SECS,
             now_secs: self.state.frame_now.secs(),
+            need_scans,
         };
         let days = acq
             .activity_fetcher
@@ -65,9 +79,20 @@ impl crate::WorkbenchApp {
         let mut listed = Vec::new();
         while let Some(message) = self.acquisition.activity_channel.try_recv() {
             match message {
-                ActivityMessage::Loaded { site, days } => {
-                    log::debug!("Read {} stored activity days for {}", days.len(), site);
+                ActivityMessage::Loaded {
+                    site,
+                    days,
+                    index_days,
+                } => {
+                    let stored = days.len();
                     self.timeline.activity.insert_many(days);
+                    let indexed = self.timeline.activity.insert_index(index_days);
+                    log::debug!(
+                        "Read {} stored and {} indexed activity days for {}",
+                        stored,
+                        indexed,
+                        site
+                    );
                     self.acquisition.activity_fetcher.finish_load(&site);
                 }
                 ActivityMessage::Listed {

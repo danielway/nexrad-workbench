@@ -22,11 +22,11 @@ pub struct NexradSite {
 }
 
 impl NexradSite {
-    /// Returns a display label for the site (e.g., "KDMX - Des Moines, IA")
-    pub fn display_label(&self) -> String {
+    /// The site's place, as the site picker shows it (e.g. "Des Moines, IA").
+    pub fn place(&self) -> String {
         match self.state {
-            Some(state) => format!("{} - {}, {}", self.id, title_case(self.name), state),
-            None => format!("{} - {}", self.id, title_case(self.name)),
+            Some(state) => format!("{}, {}", title_case(self.name), state),
+            None => title_case(self.name),
         }
     }
 }
@@ -1729,7 +1729,7 @@ pub fn nearest_site(lat: f64, lon: f64) -> Option<&'static NexradSite> {
 }
 
 /// Haversine distance between two lat/lon points in kilometers.
-fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+pub fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let r = 6371.0; // Earth radius in km
     let dlat = (lat2 - lat1).to_radians();
     let dlon = (lon2 - lon1).to_radians();
@@ -1790,26 +1790,26 @@ mod coverage_tests {
         assert_eq!(title_case("aBcDeF"), "Abcdef");
     }
 
-    // ---- display_label ----
+    // ---- place ----
 
     #[wasm_bindgen_test]
-    fn display_label_with_state() {
+    fn place_with_state() {
         let site = get_site("KDMX").unwrap();
-        assert_eq!(site.display_label(), "KDMX - Des Moines, IA");
+        assert_eq!(site.place(), "Des Moines, IA");
     }
 
     #[wasm_bindgen_test]
-    fn display_label_without_state_omits_comma_state() {
+    fn place_without_state_omits_comma_state() {
         // International site with state == None.
         let site = get_site("RKJK").unwrap();
         assert_eq!(site.state, None);
-        assert_eq!(site.display_label(), "RKJK - Kunsan Ab");
+        assert_eq!(site.place(), "Kunsan Ab");
     }
 
     #[wasm_bindgen_test]
-    fn display_label_multiword_name() {
+    fn place_multiword_name() {
         let site = get_site("KAKQ").unwrap();
-        assert_eq!(site.display_label(), "KAKQ - Norfolk Richmond, VA");
+        assert_eq!(site.place(), "Norfolk Richmond, VA");
     }
 
     // ---- get_site ----

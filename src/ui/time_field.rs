@@ -93,10 +93,12 @@ pub(crate) fn time_field(
                 state.store(ui.ctx(), edit_id);
             }
         }
-        let (enter, escape) = ui.input(|i| {
+        // Escape cancels the edit and is claimed, so the dialog the field
+        // sits in stays open (the stack only sees an unclaimed Escape).
+        let (enter, escape) = ui.input_mut(|i| {
             (
                 i.key_pressed(egui::Key::Enter),
-                i.key_pressed(egui::Key::Escape),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
             )
         });
         if escape {

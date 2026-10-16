@@ -7,8 +7,9 @@
 //!    -management surface: availability lookups, timeline listings, size
 //!    accounting, wipe, and quota-driven eviction (the policy itself is the
 //!    pure [`decide_eviction`]). It owns no radar-data write path by design.
-//!    Its one write is the storm-activity day summaries, which live in their
-//!    own store that the worker never touches, so they can't race ingest.
+//!    Its only writes are the storm-activity day summaries and index copies,
+//!    which live in their own stores that the worker never touches, so they
+//!    can't race ingest.
 //! 2. **`WORKER_IDB`** (a thread-local `IndexedDbStore` in
 //!    `nexrad::decode::worker_api`) — the worker's own handle. Ingest writes
 //!    (`upsert_scan`) and sweep-blob reads happen there, against a connection
@@ -21,7 +22,7 @@
 //! was previously named `DataFacade`, which implied it fronted all database
 //! traffic; it never did.
 
-use crate::data::day_activity::DayActivity;
+use crate::data::day_activity::{ActivityIndexRecord, DayActivity};
 use crate::data::indexeddb::{DataError, IndexedDbStore};
 use crate::data::keys::*;
 use crate::data::quota::{decide_eviction, QuotaPolicy};
@@ -97,6 +98,21 @@ impl MainThreadStore {
     /// Stores storm-activity day summaries, replacing any for the same days.
     pub async fn put_day_activity(&self, days: &[DayActivity]) -> CacheResult<()> {
         self.store.put_day_activity(days).await
+    }
+
+    /// The cached copy of `site`'s storm-activity index, if any.
+    pub async fn activity_index(&self, site: &SiteId) -> CacheResult<Option<ActivityIndexRecord>> {
+        self.store.activity_index(site).await
+    }
+
+    /// Caches a site's storm-activity index, replacing the previous copy.
+    pub async fn put_activity_index(&self, record: &ActivityIndexRecord) -> CacheResult<()> {
+        self.store.put_activity_index(record).await
+    }
+
+    /// Drops a site's cached storm-activity index.
+    pub async fn delete_activity_index(&self, site: &SiteId) -> CacheResult<()> {
+        self.store.delete_activity_index(site).await
     }
 
     /// Gets total cache size.

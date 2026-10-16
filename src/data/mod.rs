@@ -22,7 +22,8 @@
 //! ├── sweeps       - Pre-computed sweep blobs (binary, GPU-ready)
 //! ├── scan_index   - Per-scan metadata with completeness tracking
 //! ├── scan_touches - Per-scan last-access timestamps (LRU eviction)
-//! └── day_activity - Per-site-day archive listing summaries (storm activity)
+//! ├── day_activity - Per-site-day archive listing summaries (storm activity)
+//! └── activity_index - Each site's published storm-activity index, as fetched
 //! ```
 
 pub mod blob_format;
@@ -37,11 +38,11 @@ pub mod vcp;
 pub mod vcp_timing;
 
 // Re-export static site data
-pub use sites::{all_sites_sorted, get_site, nearest_site, NEXRAD_SITES};
+pub use sites::{get_site, nearest_site, NEXRAD_SITES};
 
 // Re-export cache types
 pub use blob_format::*;
-pub use day_activity::DayActivity;
+pub use day_activity::{ActivityIndexRecord, DayActivity};
 pub use facade::*;
 pub use keys::*;
 pub use live_anchor::*;

@@ -107,7 +107,10 @@ impl WorkbenchApp {
                         self.state.auto_position_on_timeline_load = false;
                         let ts = self.playback.state.playback_position();
                         let in_any_range = ranges.iter().any(|r| r.contains(ts));
-                        if !in_any_range {
+                        // A live playhead follows now; repositioning it would
+                        // trip the seek-while-live guard (first-visit pick
+                        // with a warm cache).
+                        if !in_any_range && !self.playback.state.selection.is_live() {
                             self.playback.state.set_playback_position(most_recent_end);
                             self.playback.state.center_view_on(most_recent_end);
                         }
