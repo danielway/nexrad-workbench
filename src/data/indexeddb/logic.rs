@@ -8,8 +8,9 @@ use crate::data::keys::{ElevationUpload, ScanHeader, ScanIndexEntry, ScanKey, Un
 use std::collections::{BTreeSet, HashMap};
 
 /// The oldest schema version whose stores the current one keeps as they
-/// are. v7 only added `day_activity`, so upgrading from v6 keeps the cached
-/// radar data; anything older is wiped and rebuilt.
+/// are. v7 only added `day_activity` and v8 only `activity_index`, so
+/// upgrading from v6 keeps the cached radar data; anything older is wiped
+/// and rebuilt.
 pub(super) const OLDEST_KEPT_VERSION: u32 = 6;
 
 /// Whether an upgrade from `old_version` keeps the existing stores (and only

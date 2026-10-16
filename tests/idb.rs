@@ -34,7 +34,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use nexrad_workbench::data::day_activity::DayActivity;
+use nexrad_workbench::data::day_activity::{ActivityIndexRecord, DayActivity};
 use nexrad_workbench::data::indexeddb::IndexedDbStore;
 use nexrad_workbench::data::keys::{
     ElevationUpload, ProductBlob, ScanHeader, ScanKey, SiteId, SweepDataKey, SweepTiming,
@@ -932,6 +932,36 @@ async fn day_activity_round_trips_per_site_and_clears() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[wasm_bindgen_test]
+async fn activity_index_copies_replace_delete_and_clear() {
+    let store = fresh_store();
+    store.open().await.unwrap();
+    let site = SiteId::new("KTBW");
+    assert_eq!(store.activity_index(&site).await.unwrap(), None);
+    let record = |etag: &str| ActivityIndexRecord {
+        site: site.clone(),
+        etag: Some(etag.to_string()),
+        body: format!("{{\"v\":1,\"etag\":\"{etag}\"}}"),
+    };
+    store.put_activity_index(&record("a")).await.unwrap();
+    store.put_activity_index(&record("b")).await.unwrap();
+    assert_eq!(
+        store.activity_index(&site).await.unwrap(),
+        Some(record("b"))
+    );
+    assert_eq!(
+        store.activity_index(&SiteId::new("KMLB")).await.unwrap(),
+        None
+    );
+
+    store.delete_activity_index(&site).await.unwrap();
+    assert_eq!(store.activity_index(&site).await.unwrap(), None);
+
+    store.put_activity_index(&record("c")).await.unwrap();
+    store.clear_all().await.unwrap();
+    assert_eq!(store.activity_index(&site).await.unwrap(), None);
 }
 
 /// Wait for a raw IDB request to succeed and return its result.

@@ -18,11 +18,18 @@
 //! day (or volume) sits near the floor and its biggest near the top, so the
 //! days that stand out in what's on screen are the tall ones.
 //!
+//! Most days come from the published index (`core::activity_index`): one
+//! file per site, built nightly, with every finished day's count and mean
+//! size but no per-volume sizes. The fetch plan only lists the days it
+//! doesn't cover, and, zoomed in to volumes, the days it has no per-volume
+//! sizes for ([`needs_scans`]).
+//!
 //! Everything here is pure: parsing the listing, summarizing a day, the
 //! [`ActivityBook`] of known days and its heights, and the fetch plan
 //! ([`ActivityFetcher`]). The shell (`app::storm_activity`) runs the
 //! requests and the IndexedDB reads and writes.
 
+use crate::core::overview::{detail_for, OverviewDetail};
 use crate::data::{DayActivity, SiteId};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -176,14 +183,41 @@ pub(crate) fn summarize_day(
     }
 }
 
+/// The earliest `fetched_at_ms` at which a listing of the day starting at
+/// `day_start` is final. Index days carry it, since the index only holds
+/// days that had ended that long before it was built.
+pub(crate) fn final_fetched_at_ms(day_start: i64) -> i64 {
+    (day_start + DAY_SECS) * 1000 + FINAL_AFTER_DAY_END_MS
+}
+
+/// Whether a summary was taken after its day had finished arriving.
+pub(crate) fn is_final(day: &DayActivity) -> bool {
+    day.fetched_at_ms >= final_fetched_at_ms(day.day_start)
+}
+
 /// Whether a stored summary can stand for its day, or the day should be
-/// listed again (it was fetched before the day finished arriving, and that
-/// was a while ago, or it was stored without per-volume sizes).
-pub(crate) fn is_fresh(day: &DayActivity, now_ms: i64) -> bool {
-    let day_end_ms = (day.day_start + DAY_SECS) * 1000;
-    day.has_scans
-        && (day.fetched_at_ms >= day_end_ms + FINAL_AFTER_DAY_END_MS
-            || now_ms - day.fetched_at_ms < OPEN_DAY_TTL_MS)
+/// listed again: it was fetched before the day finished arriving and that
+/// was a while ago, or the view draws volumes (`need_scans`) and it has no
+/// per-volume sizes (an index day, or a record stored before they were
+/// kept).
+pub(crate) fn is_fresh(day: &DayActivity, now_ms: i64, need_scans: bool) -> bool {
+    (day.has_scans || !need_scans)
+        && (is_final(day) || now_ms - day.fetched_at_ms < OPEN_DAY_TTL_MS)
+}
+
+/// Whether the overview, `lane_px` wide across `span_secs`, draws each
+/// volume ([`OverviewDetail::Scans`]) and so needs per-volume sizes, which
+/// only a live listing has. Wider views draw day bars, which the index
+/// alone fills.
+pub(crate) fn needs_scans(lane_px: f64, span_secs: f64) -> bool {
+    span_secs > 0.0 && lane_px > 0.0 && detail_for(lane_px / span_secs) == OverviewDetail::Scans
+}
+
+/// Whether an index day should take the place of what the book holds for
+/// that day. Index days are final, so they replace anything but a final
+/// live listing with per-volume sizes, which knows more.
+pub(crate) fn index_replaces(existing: Option<&DayActivity>) -> bool {
+    existing.is_none_or(|known| !(known.has_scans && is_final(known)))
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +414,9 @@ pub(crate) struct ActivityWindow {
     /// The archive's first day; nothing before it is listed.
     pub era_start: f64,
     pub now_secs: f64,
+    /// Whether the view draws volumes ([`needs_scans`]), so days without
+    /// per-volume sizes are listed too.
+    pub need_scans: bool,
 }
 
 impl ActivityWindow {
@@ -423,6 +460,19 @@ impl ActivityBook {
             let baseline = baseline_bytes(&format, &means);
             self.baselines.insert((site, format), baseline);
         }
+    }
+
+    /// Add a site's index days ([`crate::core::activity_index::parse_index`]),
+    /// keeping any final live listing that has per-volume sizes
+    /// ([`index_replaces`]). Returns how many were taken.
+    pub(crate) fn insert_index(&mut self, days: impl IntoIterator<Item = DayActivity>) -> usize {
+        let fresh: Vec<DayActivity> = days
+            .into_iter()
+            .filter(|d| index_replaces(self.day(&d.site, d.day_start)))
+            .collect();
+        let taken = fresh.len();
+        self.insert_many(fresh);
+        taken
     }
 
     /// The summary for the day starting at `day_start`, if known.
@@ -596,7 +646,8 @@ impl ActivityFetcher {
     }
 
     /// The days to list next for `site` across `[start, end)`, nearest the
-    /// middle first: days that aren't known (or are stale), aren't in flight
+    /// middle first: days that aren't known (or are stale, or lack the
+    /// per-volume sizes a zoomed-in view needs), aren't in flight
     /// and aren't backing off, within the in-flight limit. Nothing until the
     /// site's stored days are read. A window wider than
     /// [`MAX_AUTO_FETCH_DAYS`] (years) keeps listing in the background on a
@@ -636,7 +687,7 @@ impl ActivityFetcher {
                         .is_none_or(|until| now_ms >= *until)
                     && book
                         .day(site, *day)
-                        .is_none_or(|known| !is_fresh(known, now_ms as i64))
+                        .is_none_or(|known| !is_fresh(known, now_ms as i64, window.need_scans))
             })
             .collect();
         wanted.sort_by(|a, b| {
@@ -680,6 +731,16 @@ mod tests {
             end,
             era_start,
             now_secs,
+            need_scans: false,
+        }
+    }
+
+    /// An index day: final, without per-volume sizes.
+    fn index_day(day_start: i64, mean_bytes: u64) -> DayActivity {
+        DayActivity {
+            fetched_at_ms: final_fetched_at_ms(day_start),
+            has_scans: false,
+            ..day(day_start, mean_bytes, "V06")
         }
     }
 
@@ -736,11 +797,15 @@ mod tests {
         let end_ms = (OCT_9_2024 + DAY_SECS) * 1000;
         let mut d = day(OCT_9_2024, 5_000_000, "V06");
         d.fetched_at_ms = end_ms + 4 * 3600 * 1000;
-        assert!(is_fresh(&d, end_ms + 400 * 86_400_000));
+        assert!(is_final(&d));
+        assert!(is_fresh(&d, end_ms + 400 * 86_400_000, true));
 
         d.fetched_at_ms = end_ms - 3600 * 1000; // listed while the day ran
-        assert!(is_fresh(&d, d.fetched_at_ms + 60_000));
-        assert!(!is_fresh(&d, d.fetched_at_ms + 11 * 60_000));
+        assert!(!is_final(&d));
+        assert!(is_fresh(&d, d.fetched_at_ms + 60_000, true));
+        assert!(!is_fresh(&d, d.fetched_at_ms + 11 * 60_000, true));
+        assert!(!is_fresh(&d, d.fetched_at_ms + 11 * 60_000, false));
+        assert!(final_fetched_at_ms(OCT_9_2024) == end_ms + 3 * 3600 * 1000);
     }
 
     #[wasm_bindgen_test]
@@ -994,11 +1059,122 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn a_day_stored_without_volume_sizes_is_listed_again() {
+    fn a_day_without_volume_sizes_is_listed_again_only_zoomed_in() {
         let mut d = day(OCT_9_2024, 5_000_000, "V06");
-        assert!(is_fresh(&d, 2e12 as i64));
+        assert!(is_fresh(&d, 2e12 as i64, true));
         d.has_scans = false;
-        assert!(!is_fresh(&d, 2e12 as i64));
+        assert!(is_fresh(&d, 2e12 as i64, false));
+        assert!(!is_fresh(&d, 2e12 as i64, true));
+    }
+
+    #[wasm_bindgen_test]
+    fn volumes_are_needed_only_where_the_overview_draws_them() {
+        let h = 3600.0;
+        // A 1000 px lane across two days draws volumes; across a year, bars.
+        assert!(needs_scans(1000.0, 48.0 * h));
+        assert!(!needs_scans(1000.0, 365.0 * 24.0 * h));
+        // The same rule the overview draws by.
+        for span in [6.0 * h, 3.0 * 24.0 * h, 20.0 * 24.0 * h, 60.0 * 24.0 * h] {
+            assert_eq!(
+                needs_scans(800.0, span),
+                detail_for(800.0 / span) == OverviewDetail::Scans
+            );
+        }
+        // Not measured yet: nothing drawn, nothing needed.
+        assert!(!needs_scans(0.0, 48.0 * h));
+        assert!(!needs_scans(1000.0, 0.0));
+    }
+
+    fn loaded_fetcher() -> ActivityFetcher {
+        let mut fetcher = ActivityFetcher::default();
+        fetcher.begin_load(&site());
+        fetcher.finish_load(&site());
+        fetcher
+    }
+
+    #[wasm_bindgen_test]
+    fn a_window_the_index_covers_plans_nothing() {
+        let fetcher = loaded_fetcher();
+        let mut book = ActivityBook::default();
+        // Thirty years of index days, the view across all of them.
+        let first = OCT_9_2024 - 30 * 365 * DAY_SECS;
+        let days: Vec<DayActivity> = (0..=30 * 365)
+            .map(|i| index_day(first + i * DAY_SECS, 4_000_000))
+            .collect();
+        assert_eq!(book.insert_index(days), 30 * 365 + 1);
+        let now = (OCT_9_2024 + 2 * DAY_SECS) as f64;
+        let w = window(first as f64, (OCT_9_2024 + DAY_SECS) as f64, 0.0, now);
+        assert!(fetcher.plan(&book, &site(), &w, now * 1000.0).is_empty());
+        // A week of it, still drawn as day bars: nothing either.
+        let w = window(
+            (OCT_9_2024 - 6 * DAY_SECS) as f64,
+            (OCT_9_2024 + DAY_SECS) as f64,
+            0.0,
+            now,
+        );
+        assert!(fetcher.plan(&book, &site(), &w, now * 1000.0).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_index_leaves_its_gaps_and_the_newest_days_to_listing() {
+        let fetcher = loaded_fetcher();
+        let mut book = ActivityBook::default();
+        // Indexed through OCT_9_2024 except a gap two days before it.
+        book.insert_index(
+            (0..10)
+                .filter(|i| *i != 2)
+                .map(|i| index_day(OCT_9_2024 - i * DAY_SECS, 4_000_000)),
+        );
+        let now = (OCT_9_2024 + DAY_SECS + DAY_SECS / 2) as f64;
+        let w = window((OCT_9_2024 - 9 * DAY_SECS) as f64, now + 3600.0, 0.0, now);
+        let mut plan = fetcher.plan(&book, &site(), &w, now * 1000.0);
+        plan.sort_unstable();
+        assert_eq!(plan, vec![OCT_9_2024 - 2 * DAY_SECS, OCT_9_2024 + DAY_SECS]);
+    }
+
+    #[wasm_bindgen_test]
+    fn zoomed_in_index_days_are_listed_for_their_volumes() {
+        let fetcher = loaded_fetcher();
+        let mut book = ActivityBook::default();
+        book.insert_index([
+            index_day(OCT_9_2024, 21_000_000),
+            index_day(OCT_9_2024 + DAY_SECS, 4_000_000),
+        ]);
+        let now = 2e9;
+        let mut w = window(
+            OCT_9_2024 as f64,
+            (OCT_9_2024 + 2 * DAY_SECS) as f64,
+            0.0,
+            now,
+        );
+        assert!(fetcher.plan(&book, &site(), &w, now * 1000.0).is_empty());
+        w.need_scans = true;
+        let mut plan = fetcher.plan(&book, &site(), &w, now * 1000.0);
+        plan.sort_unstable();
+        assert_eq!(plan, vec![OCT_9_2024, OCT_9_2024 + DAY_SECS]);
+
+        // Once listed (with volumes), the index doesn't take them back.
+        let mut listed = day(OCT_9_2024, 21_500_000, "V06");
+        listed.scan_secs = vec![0];
+        listed.scan_bytes = vec![21_500_000];
+        book.insert_many([listed.clone()]);
+        assert_eq!(book.insert_index([index_day(OCT_9_2024, 21_000_000)]), 0);
+        assert_eq!(book.day(&site(), OCT_9_2024), Some(&listed));
+        let plan = fetcher.plan(&book, &site(), &w, now * 1000.0);
+        assert_eq!(plan, vec![OCT_9_2024 + DAY_SECS]);
+    }
+
+    #[wasm_bindgen_test]
+    fn index_days_replace_all_but_final_listings_with_volumes() {
+        assert!(index_replaces(None));
+        // A day listed while it ran, or a record without volume sizes.
+        let mut open = day(OCT_9_2024, 5_000_000, "V06");
+        open.fetched_at_ms = OCT_9_2024 * 1000;
+        assert!(index_replaces(Some(&open)));
+        let mut bare = day(OCT_9_2024, 5_000_000, "V06");
+        bare.has_scans = false;
+        assert!(index_replaces(Some(&bare)));
+        assert!(!index_replaces(Some(&day(OCT_9_2024, 5_000_000, "V06"))));
     }
 
     #[wasm_bindgen_test]

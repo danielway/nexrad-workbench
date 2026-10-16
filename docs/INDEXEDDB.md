@@ -25,6 +25,7 @@ by string.
 | `scan_index`   | `SITE\|SCAN_MS`                     | `ScanIndexEntry` (structured-cloned via `serde-wasm-bindgen`)    |
 | `scan_touches` | `SITE\|SCAN_MS`                     | Unix-millisecond timestamp (stored as a JS number); seeded by a scan's first `upsert_scan` and bumped on each render |
 | `day_activity` | `SITE\|DAY_START_SECS`              | `DayActivity` (one site-day's volume count, mean file size and per-volume sizes, for the overview's storm-activity heights; see §2d) |
+| `activity_index` | `SITE`                            | `ActivityIndexRecord` (the site's published storm-activity index file as last fetched, with its ETag; see §2e) |
 
 Schema upgrades are **destructive** unless they only add stores:
 `onupgradeneeded` deletes every existing object store and recreates them
@@ -32,8 +33,8 @@ when upgrading from a version older than `logic::OLDEST_KEPT_VERSION`
 (6), and otherwise only creates the stores that are missing. The cache is
 treated as ephemeral, so a breaking change can still wipe it (raise
 `OLDEST_KEPT_VERSION` to the new version), which is what lets us evolve the
-binary blob layout freely. v7 only added `day_activity`, so upgrading from
-v6 keeps every cached scan.
+binary blob layout freely. v7 only added `day_activity` and v8 only
+`activity_index`, so upgrading from v6 keeps every cached scan.
 
 ## 2. Payload contents
 
@@ -154,13 +155,27 @@ site-day's archive listing reduced to its volume count, mean compressed
 size, the volumes' format suffix (`V06`, `V03`, or empty before 2008),
 when it was listed, and each volume's start (seconds into the day) and
 size as two parallel arrays (`scan_secs`, `scan_bytes`, flagged by
-`has_scans`; records without them are listed again).
+`has_scans`; a final record without them is listed again only when the
+overview zooms in far enough to draw volumes).
 `core::storm_activity` turns it into bar and per-volume heights.
 
 Only the main thread reads and writes it (`MainThreadStore::
 day_activity_for_site` / `put_day_activity`). No transaction touches it
 together with another store, so it can't race ingest. `clear_all` empties
 it with the rest; eviction ignores it (a record is ~2 KB, so 400 days is under 1 MB).
+
+### 2e. `activity_index` value: `ActivityIndexRecord`
+
+Defined in [`src/data/day_activity.rs`](../src/data/day_activity.rs): a
+site's `activity-index/<SITE>.json` file (built nightly by
+`tools/activity_index/`, published on gh-pages) exactly as served, with the
+response's `ETag`. The shell reads it before fetching the file, revalidates
+with `If-None-Match`, and on a 304 parses the cached copy; a new file
+replaces it and a 404 deletes it (`core::activity_index::resolve_index`
+decides which). Each read and write is its own transaction, read first, so
+nothing awaits inside a readwrite transaction. One record per site visited,
+~150 KB each; `clear_all` empties it, eviction ignores it. The days it holds
+are not copied into `day_activity`.
 
 ## 3. Why three stores
 
