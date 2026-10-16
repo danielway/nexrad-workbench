@@ -23,14 +23,17 @@ impl Layer for MobileTopBarLayer {
     fn z_order(&self) -> i32 {
         10
     }
-    fn visible(&self, ctx: &LayoutCtx) -> bool {
-        // Auto-hide in lockstep with the bottom chrome so the whole shell
-        // reveals/hides together (spec §13). The decision is resolved once per
-        // frame into `mobile_auto_hide.hidden` (see `main.rs`).
-        !ctx.chrome.mobile_auto_hide.hidden
-    }
     fn render(&self, ctx: &mut LayoutCtx) {
-        draw_mobile_top_bar(ctx.root_ui, ctx.top_bar_vm, ctx.activity_vm, ctx.state);
+        // Slides away with the bottom chrome while playback runs (§13): the
+        // decision is `chrome.mobile_auto_hide`, resolved once per frame.
+        let shown = !ctx.chrome.mobile_auto_hide.hidden;
+        draw_mobile_top_bar(
+            ctx.root_ui,
+            shown,
+            ctx.top_bar_vm,
+            ctx.activity_vm,
+            ctx.state,
+        );
     }
 }
 
@@ -65,6 +68,7 @@ fn mobile_readout(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
 
 fn draw_mobile_top_bar(
     root_ui: &mut egui::Ui,
+    shown: bool,
     vm: &TopBarVm,
     activity_vm: &crate::core::activity::ActivityVm,
     state: &mut AppState,
@@ -82,11 +86,15 @@ fn draw_mobile_top_bar(
     // every side, which is noticeable below the iOS status bar.
     let frame = Frame::NONE.fill(panel_fill).inner_margin(Margin::ZERO);
 
+    // `show_collapsible` slides the bar in and out over egui's 200 ms
+    // animation (core::phone::CHROME_SLIDE_SECS).
+    root_ui.style_mut().animation_time = crate::core::phone::CHROME_SLIDE_SECS;
+    let mut expanded = shown;
     let response = egui::Panel::top("mobile_top_bar")
         .resizable(false)
         .exact_size(inset_top + TOP_BAR_CONTENT_HEIGHT)
         .frame(frame)
-        .show(root_ui, |ui| {
+        .show_collapsible(root_ui, &mut expanded, |ui| {
             if inset_top > 0.0 {
                 ui.add_space(inset_top);
             }
@@ -126,5 +134,6 @@ fn draw_mobile_top_bar(
                 });
             });
         });
-    super::super::toast::set_anchor(&ctx, response.response.rect.bottom());
+    let anchor = response.map_or(inset_top, |r| r.response.rect.bottom());
+    super::super::toast::set_anchor(&ctx, anchor);
 }

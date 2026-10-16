@@ -8,6 +8,10 @@
 //!   keep the phone layout, with the sheet on the right.
 //! - **Where the sheet sits** ([`sheet_rect`]): a bottom sheet in portrait,
 //!   on the right in landscape, inside the safe area.
+//! - **When the chrome hides** ([`ChromeAutoHide::step`]): after 5 s of
+//!   playback without a touch, never on the first tether, never under a
+//!   menu or a finger; and how the map holds still while it slides
+//!   ([`hold_map_still`]).
 //! - **What the phone cannot show**: 3D ([`NO_3D_NOTICE`]).
 //!
 //! All pure; `ui::mobile` draws what these return.
@@ -123,6 +127,121 @@ pub(crate) fn sheet_rect(width: f32, height: f32, landscape: bool, insets: Inset
     }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Chrome auto-hide
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Seconds of playback without a touch before the chrome hides.
+pub(crate) const CHROME_IDLE_HIDE_SECS: f64 = 5.0;
+
+/// The chrome's slide, in seconds (egui's panel animation runs this long).
+pub(crate) const CHROME_SLIDE_SECS: f32 = 0.2;
+
+/// One frame's facts for the auto-hide decision.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct AutoHideInputs {
+    /// The frame clock, in seconds.
+    pub now: f64,
+    /// Archive or loop playback is advancing.
+    pub playing: bool,
+    /// The playhead is pinned to now.
+    pub pinned: bool,
+    /// A dialog, the sheet or a menu is open: the chrome stays.
+    pub menu_open: bool,
+    /// A finger (or button) is down: the chrome stays.
+    pub gesture_active: bool,
+    /// A press began this frame, anywhere.
+    pub pressed: bool,
+}
+
+/// What the shell does with the chrome this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct AutoHideOut {
+    /// Draw the chrome (it slides in or out when this changes).
+    pub visible: bool,
+    /// This frame's press revealed the chrome: the map must not also pan.
+    pub swallow_press: bool,
+    /// Ask for a frame this many seconds from now, when the chrome would
+    /// hide; `None` when nothing is counting down.
+    pub recheck_after_secs: Option<f64>,
+}
+
+/// The auto-hide's memory between frames. Lives on the chrome subsystem.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct ChromeAutoHide {
+    /// When playback last started or the user last pressed.
+    last_interaction: f64,
+    /// Playback was running on the last frame.
+    was_playback: bool,
+    /// The playhead has left the boot tether at least once.
+    left_first_tether: bool,
+    /// The chrome is hidden, as decided this frame.
+    pub hidden: bool,
+    /// This frame's press revealed the chrome (read by the canvas).
+    pub revealed_this_frame: bool,
+}
+
+impl ChromeAutoHide {
+    /// Decide this frame. The chrome hides only while playback runs, after
+    /// [`CHROME_IDLE_HIDE_SECS`] with no press. Playback is archive or loop
+    /// playback, or a tether to now the user asked for: the app opens
+    /// tethered, and that first tether never hides the chrome. The idle
+    /// clock starts when playback starts, so the chrome never vanishes the
+    /// moment Play is pressed. Any press resets it; a press on hidden chrome
+    /// reveals it and is swallowed; an open menu or a finger keeps it.
+    pub(crate) fn step(&mut self, i: AutoHideInputs) -> AutoHideOut {
+        if !i.pinned {
+            self.left_first_tether = true;
+        }
+        let playback = i.playing || (i.pinned && self.left_first_tether);
+        let reveal = self.hidden && i.pressed;
+        if (playback && !self.was_playback) || i.pressed {
+            self.last_interaction = i.now;
+        }
+        self.was_playback = playback;
+
+        let idle = i.now - self.last_interaction;
+        let held = i.menu_open || i.gesture_active;
+        let hide = playback && !held && idle >= CHROME_IDLE_HIDE_SECS;
+        self.hidden = hide;
+        self.revealed_this_frame = reveal;
+        AutoHideOut {
+            visible: !hide,
+            swallow_press: reveal,
+            recheck_after_secs: (playback && !hide && !held)
+                .then(|| (CHROME_IDLE_HIDE_SECS - idle).max(0.0)),
+        }
+    }
+
+    /// The phone layout is not on screen: nothing hides, nothing is
+    /// swallowed.
+    pub(crate) fn reset_visible(&mut self) {
+        self.hidden = false;
+        self.revealed_this_frame = false;
+    }
+}
+
+/// The canvas's frame: its center and the viewport it sits in, in points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CanvasFrame {
+    pub center: (f32, f32),
+    pub viewport: (f32, f32),
+}
+
+/// How far to move the map's pan so it holds still while the chrome slides.
+/// The map is centered on the canvas, so a canvas that grows when the chrome
+/// hides would carry the map with it; shifting the pan by the opposite of the
+/// center's move keeps every point of the map where it was. A changed
+/// viewport (a rotation, a resize) is a new layout, not a slide: no shift.
+pub(crate) fn hold_map_still(prev: Option<CanvasFrame>, now: CanvasFrame) -> (f32, f32) {
+    match prev {
+        Some(p) if p.viewport == now.viewport => {
+            (p.center.0 - now.center.0, p.center.1 - now.center.1)
+        }
+        _ => (0.0, 0.0),
+    }
+}
+
 /// The one line a 3D link gets on the phone, which opens it in 2D.
 pub(crate) const NO_3D_NOTICE: &str = "3D isn't available on the phone yet, so this opens in 2D";
 
@@ -214,6 +333,122 @@ mod tests {
         // A small landscape phone keeps the minimum width.
         let small = sheet_rect(568.0, 320.0, true, (0.0, 0.0, 0.0, 0.0));
         assert_eq!(small.w, SHEET_LANDSCAPE_MIN_W);
+    }
+
+    fn frame(now: f64, playing: bool, pinned: bool) -> AutoHideInputs {
+        AutoHideInputs {
+            now,
+            playing,
+            pinned,
+            ..Default::default()
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn the_first_tether_never_hides_the_chrome() {
+        let mut h = ChromeAutoHide::default();
+        for t in 0..60 {
+            let out = h.step(frame(t as f64, false, true));
+            assert!(out.visible, "visible at {t} s on the boot tether");
+            assert_eq!(out.recheck_after_secs, None);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn playback_hides_the_chrome_after_five_seconds_not_at_once() {
+        let mut h = ChromeAutoHide::default();
+        // Paused for a long while, then Play at t = 100.
+        assert!(h.step(frame(10.0, false, false)).visible);
+        let out = h.step(frame(100.0, true, false));
+        assert!(out.visible, "the idle clock starts at Play");
+        assert_eq!(out.recheck_after_secs, Some(CHROME_IDLE_HIDE_SECS));
+        assert!(h.step(frame(104.9, true, false)).visible);
+        let out = h.step(frame(105.0, true, false));
+        assert!(!out.visible);
+        assert!(h.hidden);
+        assert_eq!(out.recheck_after_secs, None);
+        // Pausing brings it back.
+        assert!(h.step(frame(106.0, false, false)).visible);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_tether_the_user_asks_for_counts_as_playback() {
+        let mut h = ChromeAutoHide::default();
+        h.step(frame(0.0, false, true)); // boot tether
+        h.step(frame(5.0, false, false)); // the user detaches
+        h.step(frame(20.0, false, true)); // and goes live again
+        assert!(h.step(frame(24.0, false, true)).visible);
+        assert!(!h.step(frame(25.0, false, true)).visible);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_press_reveals_hidden_chrome_and_is_swallowed() {
+        let mut h = ChromeAutoHide::default();
+        h.step(frame(0.0, true, false));
+        assert!(!h.step(frame(6.0, true, false)).visible);
+        let out = h.step(AutoHideInputs {
+            pressed: true,
+            ..frame(7.0, true, false)
+        });
+        assert!(out.visible);
+        assert!(out.swallow_press);
+        assert!(h.revealed_this_frame);
+        // The next frame is an ordinary one, and the clock restarted at 7 s.
+        let out = h.step(frame(11.9, true, false));
+        assert!(out.visible && !out.swallow_press);
+        assert!(!h.step(frame(12.0, true, false)).visible);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_press_on_visible_chrome_resets_the_timer_without_swallowing() {
+        let mut h = ChromeAutoHide::default();
+        h.step(frame(0.0, true, false));
+        let out = h.step(AutoHideInputs {
+            pressed: true,
+            ..frame(4.0, true, false)
+        });
+        assert!(out.visible && !out.swallow_press);
+        assert!(h.step(frame(8.0, true, false)).visible);
+        assert!(!h.step(frame(9.0, true, false)).visible);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_menu_or_a_finger_keeps_the_chrome() {
+        let mut h = ChromeAutoHide::default();
+        h.step(frame(0.0, true, false));
+        let menu = h.step(AutoHideInputs {
+            menu_open: true,
+            ..frame(30.0, true, false)
+        });
+        assert!(menu.visible);
+        assert_eq!(menu.recheck_after_secs, None);
+        let finger = h.step(AutoHideInputs {
+            gesture_active: true,
+            ..frame(31.0, true, false)
+        });
+        assert!(finger.visible);
+        // Let go and nothing holds it.
+        assert!(!h.step(frame(32.0, true, false)).visible);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_map_holds_still_while_the_chrome_slides_but_not_on_rotation() {
+        let a = CanvasFrame {
+            center: (195.0, 400.0),
+            viewport: (390.0, 844.0),
+        };
+        // The chrome slid away: the canvas grew and its center moved 20 px.
+        let b = CanvasFrame {
+            center: (195.0, 420.0),
+            ..a
+        };
+        assert_eq!(hold_map_still(Some(a), b), (0.0, -20.0));
+        assert_eq!(hold_map_still(None, b), (0.0, 0.0));
+        let rotated = CanvasFrame {
+            center: (422.0, 195.0),
+            viewport: (844.0, 390.0),
+        };
+        assert_eq!(hold_map_still(Some(a), rotated), (0.0, 0.0));
     }
 
     #[wasm_bindgen_test]

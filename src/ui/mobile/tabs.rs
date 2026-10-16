@@ -29,14 +29,6 @@ impl super::super::layout::Layer for MobileChromeLayer {
     fn z_order(&self) -> i32 {
         20
     }
-    fn visible(&self, ctx: &super::super::layout::LayoutCtx) -> bool {
-        // Auto-hide during playback (spec §13): when hidden the panel isn't
-        // dispatched at all, so the canvas reclaims its space (full-bleed). The
-        // hide decision is resolved once per frame (before layout) into
-        // `mobile_auto_hide.hidden`; reading it here keeps the top bar, bottom
-        // chrome, and canvas reveal-tap perfectly in lockstep.
-        !ctx.chrome.mobile_auto_hide.hidden
-    }
     fn render(&self, ctx: &mut super::super::layout::LayoutCtx) {
         draw_mobile_chrome(
             ctx.root_ui,
@@ -57,39 +49,35 @@ fn draw_mobile_chrome(
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    let ctx = root_ui.ctx().clone();
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
     // under the home indicator reservation. Pad the transport row below so the
     // controls don't sit flush with the bottom edge of the screen.
     let (_t, _r, inset_bottom, _l) = super::safe_area_insets();
 
+    // Both panels slide away together while playback runs (§13); the
+    // decision is `chrome.mobile_auto_hide`, resolved once per frame. A press
+    // anywhere resets its clock, so using the transport keeps it up.
+    let shown = !chrome.mobile_auto_hide.hidden;
+
+    root_ui.style_mut().animation_time = crate::core::phone::CHROME_SLIDE_SECS;
     // Bottommost — the condensed transport row.
-    let transport = egui::Panel::bottom("mobile_transport_bar")
+    let mut expanded = shown;
+    egui::Panel::bottom("mobile_transport_bar")
         .resizable(false)
         .exact_size(TRANSPORT_BAR_HEIGHT + inset_bottom)
-        .show(root_ui, |ui| {
+        .show_collapsible(root_ui, &mut expanded, |ui| {
             render_transport_row(ui, state, timeline, live, playback, chrome);
         });
 
     // Scrubber — sits just above the transport row.
-    let scrubber = egui::Panel::bottom("mobile_scrubber")
+    let mut expanded = shown;
+    egui::Panel::bottom("mobile_scrubber")
         .resizable(false)
         .exact_size(SCRUBBER_AREA_HEIGHT)
-        .show(root_ui, |ui| {
+        .show_collapsible(root_ui, &mut expanded, |ui| {
             ui.add_space(2.0);
             super::scrubber::render_scrubber(ui, state, timeline, live, playback, chrome);
         });
-
-    // Touching the chrome keeps it on: bump the auto-hide idle timer whenever a
-    // pointer is down over either bottom panel, so using the transport/scrubber
-    // doesn't let it slide away mid-interaction (and resets the idle window when
-    // the touch lifts). The `gesture_active` guard holds it up during the press;
-    // this is what extends the window afterward.
-    let pressed_chrome = ctx.input(|i| i.pointer.any_down())
-        && (transport.response.contains_pointer() || scrubber.response.contains_pointer());
-    if pressed_chrome {
-        chrome.mobile_auto_hide.touch(ctx.input(|i| i.time));
-    }
 }
 
 /// The condensed transport row. Left cluster is the spec's directly-visible

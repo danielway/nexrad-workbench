@@ -102,6 +102,22 @@ pub(crate) fn render_canvas_with_geo(
             }
             ViewMode::Flat2D => {
                 // --- Existing flat 2D path ---
+                // On the phone the map holds still while the chrome slides
+                // (core::phone::hold_map_still): shift the pan by the
+                // opposite of the canvas center's move.
+                if state.is_mobile {
+                    let viewport = ctx.input(|i| i.viewport_rect()).size();
+                    let now = crate::core::phone::CanvasFrame {
+                        center: (rect.center().x, rect.center().y),
+                        viewport: (viewport.x, viewport.y),
+                    };
+                    let (dx, dy) = crate::core::phone::hold_map_still(chrome.last_canvas, now);
+                    chrome.last_canvas = Some(now);
+                    if dx != 0.0 || dy != 0.0 {
+                        let pan = state.viz_state.pan_offset();
+                        state.viz_state.set_pan_offset(pan + egui::vec2(dx, dy));
+                    }
+                }
                 let mut projection =
                     MapProjection::new(state.viz_state.center_lat, state.viz_state.center_lon);
                 projection.update(state.viz_state.zoom(), state.viz_state.pan_offset(), rect);

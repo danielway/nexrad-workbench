@@ -89,11 +89,13 @@ pub(crate) struct Chrome {
     /// The main update loop consumes this flag and kicks off
     /// geolocation against `SiteModalState`.
     pub mobile_geolocate_requested: bool,
-    /// Mobile chrome auto-hide bookkeeping (spec §13 phone: chrome auto-hides
-    /// during playback, tap to reveal). The mobile layout reads this each frame
-    /// to decide whether to draw the top bar / bottom chrome; the canvas updates
-    /// it on a reveal tap. Inert on desktop (desktop chrome never auto-hides).
-    pub mobile_auto_hide: super::super::state::MobileChromeAutoHide,
+    /// The phone chrome's auto-hide (one-instrument §13), decided by
+    /// [`crate::core::phone::ChromeAutoHide::step`] once a frame before the
+    /// layout, and read by the phone bars and the canvas. Inert on desktop.
+    pub mobile_auto_hide: crate::core::phone::ChromeAutoHide,
+    /// The canvas's frame on the last phone frame, so the map can hold still
+    /// while the chrome slides ([`crate::core::phone::hold_map_still`]).
+    pub last_canvas: Option<crate::core::phone::CanvasFrame>,
 }
 
 impl Chrome {
