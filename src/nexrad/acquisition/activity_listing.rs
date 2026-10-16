@@ -6,11 +6,20 @@
 //! `list_files_with_sizes`, this issues the same S3 `ListObjectsV2` request
 //! itself and parses it with [`crate::core::storm_activity::parse_s3_listing`].
 //!
+//! Before any listing, a site's published activity index is read once per
+//! session from the app's own origin (`activity-index/<SITE>.json`, see
+//! [`crate::core::activity_index`]): its cached copy comes out of
+//! IndexedDB, is revalidated with `If-None-Match`, and a new copy replaces
+//! it. Without an index (404, a dev server) the days are listed as before.
+//!
 //! Results come back over a channel polled each frame, like the download
 //! channel. Stored summaries are read and written through the
 //! [`MainThreadStore`].
 
 use super::download::NetworkStats;
+use crate::core::activity_index::{
+    index_path, resolve_index, revalidation_tag, IndexOutcome, IndexResponse,
+};
 use crate::core::storm_activity::{parse_s3_listing, summarize_day};
 use crate::data::{DayActivity, MainThreadStore, SiteId};
 use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
@@ -24,10 +33,12 @@ const ARCHIVE_BUCKET_URL: &str = "https://unidata-nexrad-level2.s3.amazonaws.com
 
 /// A finished activity request.
 pub(crate) enum ActivityMessage {
-    /// A site's stored day summaries (empty when the read failed).
+    /// A site's stored day summaries (empty when the read failed), and its
+    /// published index's days (empty without an index).
     Loaded {
         site: SiteId,
         days: Vec<DayActivity>,
+        index_days: Vec<DayActivity>,
     },
     /// One day's listing, summarized, or why it failed.
     Listed {
@@ -51,8 +62,14 @@ impl Default for ActivityChannel {
 }
 
 impl ActivityChannel {
-    /// Read `site`'s stored day summaries.
-    pub(crate) fn load(&self, ctx: egui::Context, store: MainThreadStore, site: SiteId) {
+    /// Read `site`'s stored day summaries and its published index.
+    pub(crate) fn load(
+        &self,
+        ctx: egui::Context,
+        stats: NetworkStats,
+        store: MainThreadStore,
+        site: SiteId,
+    ) {
         let sender = self.sender.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let days = match store.day_activity_for_site(&site).await {
@@ -62,7 +79,12 @@ impl ActivityChannel {
                     Vec::new()
                 }
             };
-            let _ = sender.send(ActivityMessage::Loaded { site, days });
+            let index_days = load_index(&stats, &store, &site).await;
+            let _ = sender.send(ActivityMessage::Loaded {
+                site,
+                days,
+                index_days,
+            });
             ctx.request_repaint();
         });
     }
@@ -105,6 +127,88 @@ impl ActivityChannel {
     /// A finished request, if any.
     pub(crate) fn try_recv(&self) -> Option<ActivityMessage> {
         self.receiver.try_recv().ok()
+    }
+}
+
+/// The site's index days: the cached copy, revalidated against the
+/// published file, with the cache updated as [`resolve_index`] decides.
+/// Each IndexedDB step is its own transaction, finished before the next.
+async fn load_index(
+    stats: &NetworkStats,
+    store: &MainThreadStore,
+    site: &SiteId,
+) -> Vec<DayActivity> {
+    let cached = store.activity_index(site).await.unwrap_or_else(|e| {
+        log::debug!(
+            "Reading the cached activity index for {} failed: {}",
+            site,
+            e
+        );
+        None
+    });
+    let Some(path) = page_path().map(|p| index_path(&p, site)) else {
+        return resolve_index(site, cached, IndexResponse::Failed).days;
+    };
+    stats.request_started();
+    let response = fetch_index(&path, revalidation_tag(cached.as_ref())).await;
+    stats.request_completed(0);
+    let IndexOutcome { days, save, forget } = resolve_index(site, cached, response);
+    if let Some(record) = save {
+        if let Err(e) = store.put_activity_index(&record).await {
+            log::warn!("Caching the activity index for {} failed: {}", site, e);
+        }
+    } else if forget {
+        let _ = store.delete_activity_index(site).await;
+    }
+    log::debug!("Activity index for {}: {} days", site, days.len());
+    days
+}
+
+/// The page's path (`/nexrad-workbench/` in production), to find the index
+/// beside it.
+fn page_path() -> Option<String> {
+    web_sys::window()?.location().pathname().ok()
+}
+
+/// GET the index file, conditionally on `etag`.
+async fn fetch_index(path: &str, etag: Option<&str>) -> IndexResponse {
+    let Some(window) = web_sys::window() else {
+        return IndexResponse::Failed;
+    };
+    let headers = web_sys::Headers::new().ok();
+    if let (Some(headers), Some(etag)) = (&headers, etag) {
+        let _ = headers.set("If-None-Match", etag);
+    }
+    let init = web_sys::RequestInit::new();
+    init.set_method("GET");
+    if let Some(headers) = &headers {
+        init.set_headers(headers);
+    }
+    let Ok(request) = web_sys::Request::new_with_str_and_init(path, &init) else {
+        return IndexResponse::Failed;
+    };
+    let response: web_sys::Response = match JsFuture::from(window.fetch_with_request(&request))
+        .await
+        .ok()
+        .and_then(|v| v.dyn_into().ok())
+    {
+        Some(r) => r,
+        None => return IndexResponse::Failed,
+    };
+    match response.status() {
+        304 => IndexResponse::NotModified,
+        404 => IndexResponse::NotFound,
+        200 => {
+            let etag = response.headers().get("ETag").ok().flatten();
+            let Ok(text) = response.text() else {
+                return IndexResponse::Failed;
+            };
+            match JsFuture::from(text).await.ok().and_then(|v| v.as_string()) {
+                Some(body) => IndexResponse::Fetched { body, etag },
+                None => IndexResponse::Failed,
+            }
+        }
+        _ => IndexResponse::Failed,
     }
 }
 

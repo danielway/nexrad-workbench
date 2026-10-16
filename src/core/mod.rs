@@ -24,6 +24,7 @@
 
 pub(crate) mod acquisition;
 pub(crate) mod activity;
+pub(crate) mod activity_index;
 pub(crate) mod canvas;
 pub(crate) mod diagnostics;
 pub(crate) mod domain;

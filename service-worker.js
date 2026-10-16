@@ -150,6 +150,14 @@ async function handleFetch(request) {
     }
   }
 
+  // The storm-activity index (activity-index/<SITE>.json) changes nightly
+  // under a fixed name, and the app revalidates it itself with
+  // If-None-Match and keeps its own copy in IndexedDB. Pass it straight
+  // through: cache-first would pin the first copy forever.
+  if (isSameOrigin(request) && new URL(request.url).pathname.includes('/activity-index/')) {
+    return fetchAndReport(request);
+  }
+
   // Other same-origin assets (WASM, hashed JS, icons, manifest): cache-first,
   // runtime-cache on miss. Hashed filenames from Trunk make this safe — a
   // new build produces new filenames, so the cache never serves stale code.

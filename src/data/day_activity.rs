@@ -43,6 +43,18 @@ pub struct DayActivity {
     pub scan_bytes: Vec<u32>,
 }
 
+/// A site's published storm-activity index file, as last fetched: kept in
+/// IndexedDB so a session revalidates it with `If-None-Match` instead of
+/// downloading it again (see `core::activity_index`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActivityIndexRecord {
+    pub site: SiteId,
+    /// The response's `ETag`, if it sent one.
+    pub etag: Option<String>,
+    /// The file as served.
+    pub body: String,
+}
+
 impl DayActivity {
     /// The record's IndexedDB key, `"SITE|day_start"`. Shares the
     /// `"SITE|"` prefix scheme, so [`SiteId::idb_prefix_bounds`] reads one
