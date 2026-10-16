@@ -396,6 +396,12 @@ pub(crate) fn render_canvas_with_geo(
                         chunk_last_az: &chunk_last_az,
                         live_edge_time: active_sweep
                             .and_then(|s| s.chunk_time_spans.last().map(|&(_, end, _)| end)),
+                        offscreen_cut: crate::core::canvas::offscreen_live_cut(
+                            playback.state.playback_mode() == crate::core::PlaybackMode::Macro,
+                            state.viz_state.elevation_selection.elevation_number(),
+                            live.radar_model.collecting_elevation(),
+                            active_sweep.and_then(|s| s.data_azimuth_range),
+                        ),
                         playhead_secs: playback.state.playback_position(),
                         fallbacks: crate::core::canvas::CANVAS_FALLBACKS,
                     },

@@ -83,6 +83,34 @@ pub(crate) fn live_compositing_azimuth_range(
     data_azimuth_range
 }
 
+/// The live cut the antenna is collecting while a fixed tilt that is *not*
+/// that cut is on screen. Its partial data never composites over the image
+/// ([`live_compositing_azimuth_range`]), but its marks still draw, so the
+/// canvas shows where the antenna is whichever tilt is picked, as the ladder
+/// and the timeline do.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct OffscreenCut {
+    /// Where the live cut started and its newest radial (degrees).
+    pub first_az: f32,
+    pub last_az: f32,
+}
+
+/// The live cut to mark on the canvas when it is not the tilt on screen:
+/// the exact complement of [`live_compositing_azimuth_range`] in Rays.
+pub(crate) fn offscreen_live_cut(
+    whole_sweeps_only: bool,
+    selected_elevation: Option<u8>,
+    active_elevation: Option<u8>,
+    data_azimuth_range: Option<(f32, f32)>,
+) -> Option<OffscreenCut> {
+    if whole_sweeps_only || displayed_elevation_is_collecting(selected_elevation, active_elevation)
+    {
+        return None;
+    }
+    let (first_az, last_az) = data_azimuth_range?;
+    Some(OffscreenCut { first_az, last_az })
+}
+
 /// Interpolate the rotating sweep-line azimuth within `sweep` at playback time
 /// `ts`, returning `(current_az, start_az)` in degrees, or `None` if the sweep
 /// has no positive duration.
@@ -831,6 +859,10 @@ pub(crate) struct SweepMarks {
     /// The data edge's collection time, for the edge ring's hover (actual in
     /// live; the playhead in archive, where the reveal follows it).
     pub edge_time: Option<f64>,
+    /// The marks are the live cut on another tilt than the one on screen:
+    /// drawn in grey over a whole edge ring, because none of that cut is in
+    /// the picture.
+    pub offscreen: bool,
 }
 
 /// Everything [`CanvasOverlayVm::build`] reads.
@@ -852,6 +884,8 @@ pub(crate) struct CanvasOverlayInputs<'a> {
     pub chunk_last_az: &'a [f32],
     /// The live cut's newest chunk end time.
     pub live_edge_time: Option<f64>,
+    /// The live cut when it is not the tilt on screen ([`offscreen_live_cut`]).
+    pub offscreen_cut: Option<OffscreenCut>,
     pub playhead_secs: f64,
     pub fallbacks: CanvasFallbacks,
 }
@@ -870,21 +904,30 @@ pub(crate) struct CanvasOverlayVm {
 impl CanvasOverlayVm {
     pub(crate) fn build(i: &CanvasOverlayInputs<'_>) -> Self {
         let rings = ring_geometry(i.product, i.data_range_km);
-        let sweep = match (i.sweep, i.show_lines) {
-            (Some((edge_az, start_az)), true) => Some(SweepMarks {
+        let live_chunks = || -> Vec<f32> {
+            i.chunk_last_az
+                .iter()
+                .take(i.chunk_last_az.len().saturating_sub(1))
+                .copied()
+                .collect()
+        };
+        let sweep = match (i.sweep, i.show_lines, i.offscreen_cut) {
+            // The antenna is on another tilt: mark its cut all the same.
+            (None, true, Some(cut)) if i.live => Some(SweepMarks {
+                start_az: cut.first_az,
+                edge_az: cut.last_az,
+                stale: false,
+                now_az: i.antenna_az,
+                chunk_az: live_chunks(),
+                edge_time: i.live_edge_time,
+                offscreen: true,
+            }),
+            (Some((edge_az, start_az)), true, _) => Some(SweepMarks {
                 start_az,
                 edge_az,
                 stale: i.stale,
                 now_az: if i.live { i.antenna_az } else { None },
-                chunk_az: if i.live {
-                    i.chunk_last_az
-                        .iter()
-                        .take(i.chunk_last_az.len().saturating_sub(1))
-                        .copied()
-                        .collect()
-                } else {
-                    Vec::new()
-                },
+                chunk_az: if i.live { live_chunks() } else { Vec::new() },
                 edge_time: if i.stale {
                     None
                 } else if i.live {
@@ -892,11 +935,15 @@ impl CanvasOverlayVm {
                 } else {
                     Some(i.playhead_secs)
                 },
+                offscreen: false,
             }),
             _ => None,
         };
         let edge_label = if i.fallbacks.edge_label {
-            sweep.as_ref().and_then(|s| s.edge_time)
+            sweep
+                .as_ref()
+                .filter(|s| !s.offscreen)
+                .and_then(|s| s.edge_time)
         } else {
             None
         };
@@ -1029,8 +1076,12 @@ pub(crate) fn frame_stamp(
 /// tick labels along the bar.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct LegendVm {
-    /// `Reflectivity · dBZ`
-    pub title: String,
+    /// The short caption over the bar: the unit (`dBZ`), or the product's
+    /// code for a unitless product (`CC`). Short so the bar, not its
+    /// caption, sets the legend's width.
+    pub caption: &'static str,
+    /// The full name on hover: `Reflectivity · dBZ`.
+    pub hover: String,
     /// `(fraction from the bottom, label)`, bottom to top.
     pub ticks: Vec<(f32, String)>,
 }
@@ -1067,8 +1118,18 @@ pub(crate) fn legend_vm(product: crate::core::RadarProduct, range: (f32, f32)) -
             i += 1;
         }
     }
+    let unit = product.unit();
     LegendVm {
-        title: format!("{} · {}", product.label(), product.unit()),
+        caption: if unit.is_empty() {
+            product.short_code()
+        } else {
+            unit
+        },
+        hover: if unit.is_empty() {
+            product.label().to_string()
+        } else {
+            format!("{} · {unit}", product.label())
+        },
         ticks,
     }
 }
@@ -2226,7 +2287,8 @@ mod legend_tests {
     #[wasm_bindgen_test]
     fn legend_is_titled_with_the_unit() {
         let vm = legend_vm(RadarProduct::Reflectivity, (-30.0, 80.0));
-        assert_eq!(vm.title, "Reflectivity · dBZ");
+        assert_eq!(vm.caption, "dBZ");
+        assert_eq!(vm.hover, "Reflectivity · dBZ");
         // 110 dBZ of span → a tick every 10.
         assert_eq!(vm.ticks.first().map(|t| t.1.as_str()), Some("-30"));
         assert_eq!(vm.ticks.last().map(|t| t.1.as_str()), Some("80"));
@@ -2239,6 +2301,9 @@ mod legend_tests {
     fn narrow_ranges_get_decimal_ticks() {
         let vm = legend_vm(RadarProduct::CorrelationCoefficient, (0.2, 1.05));
         assert!(vm.ticks.iter().all(|(_, l)| l.contains('.')));
+        // Unitless: the product's code captions the bar.
+        assert_eq!(vm.caption, "CC");
+        assert_eq!(vm.hover, "Correlation Coefficient");
         assert_eq!(vm.ticks.first().map(|t| t.1.as_str()), Some("0.2"));
     }
 
@@ -2365,9 +2430,58 @@ mod overlay_tests {
             antenna_az: None,
             chunk_last_az: &[],
             live_edge_time: None,
+            offscreen_cut: None,
             playhead_secs: 1_000.0,
             fallbacks: CanvasFallbacks::default(),
         }
+    }
+
+    #[wasm_bindgen_test]
+    fn the_live_cut_is_marked_whichever_tilt_is_on_screen() {
+        // Latest, or the fixed tilt the antenna is on: it composites, so it is
+        // not an off-screen cut.
+        assert_eq!(
+            offscreen_live_cut(false, None, Some(3), Some((10.0, 80.0))),
+            None
+        );
+        assert_eq!(
+            offscreen_live_cut(false, Some(3), Some(3), Some((10.0, 80.0))),
+            None
+        );
+        // Frames holds whole sweeps; nothing to mark.
+        assert_eq!(
+            offscreen_live_cut(true, Some(1), Some(3), Some((10.0, 80.0))),
+            None
+        );
+        // A fixed 0.5° while the antenna is on 1.3°: the cut is marked.
+        let cut = offscreen_live_cut(false, Some(1), Some(3), Some((10.0, 80.0)));
+        assert_eq!(
+            cut,
+            Some(OffscreenCut {
+                first_az: 10.0,
+                last_az: 80.0
+            })
+        );
+
+        let chunks = [30.0, 60.0, 80.0];
+        let mut i = inputs(None);
+        i.live = true;
+        i.antenna_az = Some(95.0);
+        i.chunk_last_az = &chunks;
+        i.live_edge_time = Some(990.0);
+        i.offscreen_cut = cut;
+        let s = CanvasOverlayVm::build(&i).sweep.unwrap();
+        assert_eq!((s.start_az, s.edge_az), (10.0, 80.0));
+        assert_eq!(s.now_az, Some(95.0));
+        assert_eq!(s.chunk_az, vec![30.0, 60.0]);
+        assert!(s.offscreen);
+        // The same rule as the on-screen cut: Rays only.
+        i.show_lines = false;
+        assert!(CanvasOverlayVm::build(&i).sweep.is_none());
+        // Not live: nothing off screen to mark.
+        i.show_lines = true;
+        i.live = false;
+        assert!(CanvasOverlayVm::build(&i).sweep.is_none());
     }
 
     #[wasm_bindgen_test]
