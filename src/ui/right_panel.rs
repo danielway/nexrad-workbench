@@ -706,22 +706,21 @@ pub(super) fn settings_tab(
         }
     }
 
-    section(ui, "Controls");
-    let mut advanced = state.show_advanced();
-    if ui
-        .checkbox(&mut advanced, "Advanced controls")
-        .on_hover_text("Show every control (Ctrl+Shift+A)")
-        .changed()
-    {
-        state.push_command(Intent::TopBar(TopBarIntent::SetAdvanced(advanced)));
-    }
     if !state.is_mobile {
-        ui.checkbox(&mut state.dev_mode, "Developer mode")
+        section(ui, "Developer");
+        let mut dev = state.dev_mode;
+        if ui
+            .checkbox(&mut dev, "Developer mode")
             .on_hover_text(
-                "Add deep diagnostics — per-phase timings, worker queue depth, \
-                 FPS, and cross-origin isolation — to the activity sheet's Details \
-                 section. Adds ?dev=true to the URL when enabled.",
-            );
+                "Add deep diagnostics — request counts, per-phase timings, worker \
+                 queue depth, FPS, and cross-origin isolation — to the activity \
+                 sheet's Details section. Saved; a link with ?dev=true turns it on \
+                 for that session only.",
+            )
+            .changed()
+        {
+            state.push_command(Intent::SetDeveloperMode(dev));
+        }
     }
 
     ui.add_space(8.0);

@@ -158,7 +158,7 @@ migration:
 
 - **Type rehoming done** — the domain data model lives below everything in
   [`core/domain/`](../src/core/domain/) (`Scan`/`Sweep`/`Radial`/`RadarTimeline`,
-  playback time model, viz types, `UserPreferences`, errors, feeds, telemetry,
+  playback time model, viz types, errors, feeds, telemetry,
   worker outcomes). `state → core` is the arrow now; `core → state` is gone.
 - **`Intent` is defined in the core** ([`core/intent.rs`](../src/core/intent.rs));
   the `AppCommand` name no longer exists anywhere.

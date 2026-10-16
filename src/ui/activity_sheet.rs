@@ -385,22 +385,6 @@ fn render_details(
                 .show(ui, |ui| {
                     detail_row(
                         ui,
-                        "Requests",
-                        vm.session.requests.to_string(),
-                        label_color,
-                        value_color,
-                    );
-                    if vm.session.failed_requests > 0 {
-                        detail_row(
-                            ui,
-                            "Failed",
-                            vm.session.failed_requests.to_string(),
-                            label_color,
-                            theme::acquisition::FAILED,
-                        );
-                    }
-                    detail_row(
-                        ui,
                         "Transferred",
                         format_bytes(vm.session.bytes),
                         label_color,
@@ -472,6 +456,22 @@ fn render_dev_rows(
     label_color: egui::Color32,
     value_color: egui::Color32,
 ) {
+    detail_row(
+        ui,
+        "Requests",
+        detail.requests.to_string(),
+        label_color,
+        value_color,
+    );
+    if detail.failed_requests > 0 {
+        detail_row(
+            ui,
+            "Failed",
+            detail.failed_requests.to_string(),
+            label_color,
+            theme::acquisition::FAILED,
+        );
+    }
     ui.label(
         RichText::new("HTTP in flight")
             .size(10.0)

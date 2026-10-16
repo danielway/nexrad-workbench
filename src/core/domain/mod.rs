@@ -5,7 +5,6 @@ pub(crate) mod feeds;
 pub(crate) mod forecast;
 pub(crate) mod ops;
 pub(crate) mod playback;
-pub(crate) mod prefs;
 pub(crate) mod radar;
 pub(crate) mod telemetry;
 pub(crate) mod time;

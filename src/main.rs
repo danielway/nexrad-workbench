@@ -229,9 +229,9 @@ pub struct WorkbenchApp {
     /// service-worker network monitor).
     diagnostics: subsystem::Diagnostics,
 
-    /// Last `AppMode` pushed to the favicon. `None` until the first frame so
-    /// the initial mode is always sent. See `sync_favicon_to_mode`.
-    last_favicon_mode: Option<state::AppMode>,
+    /// Last live-now flag pushed to the favicon. `None` until the first frame
+    /// so the initial state is always sent. See `sync_favicon`.
+    last_favicon_live: Option<bool>,
 }
 
 // Embed shapefile data at compile time
@@ -244,54 +244,66 @@ static COUNTIES_SHP: &[u8] =
 static COUNTIES_DBF: &[u8] =
     include_bytes!("../assets/vectors/cb_2023_us_county_20m/cb_2023_us_county_20m.dbf");
 
-/// Apply parsed URL parameters to the freshly bootstrapped state +
-/// playback + chrome subsystems. Extracted from `WorkbenchApp::new`
-/// to keep the constructor focused on wiring up subsystems rather
-/// than restoring view state.
-fn apply_url_params(
-    url_params: &state::url_state::UrlParams,
+/// Open the session from the link (one-instrument §14): apply what the link
+/// says is on screen to the freshly bootstrapped state + playback + chrome,
+/// following the pure [`core::link::BootPlan`]. Extracted from
+/// `WorkbenchApp::new` to keep the constructor focused on wiring up
+/// subsystems rather than restoring view state.
+fn apply_link(
+    link: &core::link::LinkState,
+    prefs: &core::Preferences,
     state: &mut AppState,
     playback: &mut subsystem::Playback,
     chrome: &mut subsystem::Chrome,
 ) {
-    state.dev_mode = url_params.dev;
-    if let Some(advanced) = url_params.ui_advanced {
-        state.advanced_mode = advanced;
+    use core::link::{BootStart, LinkTilt};
+
+    let plan = core::link::decide_boot(link, state.preferred_site.as_deref(), |id| {
+        data::get_site(id).is_some()
+    });
+
+    // The link's developer flag wins for this session without being saved.
+    if let Some(dev) = link.dev {
+        state.dev_mode = dev;
     }
-    if let Some(ref site) = url_params.site {
-        state.viz_state.site_id = site.to_uppercase();
-        if let Some(site_info) = data::sites::get_site(site) {
-            state.viz_state.center_lat = site_info.lat;
-            state.viz_state.center_lon = site_info.lon;
-            state
-                .viz_state
-                .camera
-                .center_on(site_info.lat, site_info.lon);
+
+    match plan.site.as_deref().and_then(data::get_site) {
+        Some(site) => {
+            state.viz_state.site_id = site.id.to_string();
+            state.viz_state.center_lat = site.lat;
+            state.viz_state.center_lon = site.lon;
+            if state.recent_sites.is_empty() {
+                state.recent_sites = vec![site.id.to_string()];
+            }
+            if plan.site_from_link {
+                state.push_command(crate::core::Intent::RefreshTimeline {
+                    auto_position: false,
+                });
+            }
         }
-        state.push_command(crate::core::Intent::RefreshTimeline {
-            auto_position: false,
-        });
+        // True first visit: the site picker opens and cannot be dismissed
+        // until a site is chosen (any pick clears `site_required`); the
+        // stream starts once one is.
+        None => {
+            chrome.site_modal_open = true;
+            chrome.site_required = true;
+        }
     }
-    if let Some(lat) = url_params.lat {
+    if let Some(lat) = link.lat {
         state.viz_state.center_lat = lat;
     }
-    if let Some(lon) = url_params.lon {
+    if let Some(lon) = link.lon {
         state.viz_state.center_lon = lon;
     }
-    // Sync camera with potentially overridden lat/lon
     state
         .viz_state
         .camera
         .center_on(state.viz_state.center_lat, state.viz_state.center_lon);
 
-    // A deep link carries an explicit playback time WITHOUT `rt=true`: honor it
-    // as a detached archive view (the user shared "this moment"), and do NOT
-    // auto-tether. With `rt=true`, the boot-live path below re-tethers and the
-    // restored time is irrelevant (the playhead snaps to now).
-    let explicit_deep_link = url_params.time.is_some() && url_params.view.rt != Some(true);
+    let pinned = plan.start.is_pinned();
 
     // Apply view state (zoom levels) before centering so the zoom is correct
-    if let Some(mz) = url_params.view.mz {
+    if let Some(mz) = link.view.mz {
         state.viz_state.set_zoom(mz);
     }
     {
@@ -302,27 +314,25 @@ fn apply_url_params(
         // calendar span instead of decades out (spec §6.4 DECIDED). Width isn't
         // measured yet at boot, so use the seeded `timeline_width_px`; the
         // per-frame reconcile corrects the tier once the real width is known.
-        let zoom =
-            crate::core::timeline_interaction::boot_zoom(url_params.view.tz, !explicit_deep_link);
+        let zoom = crate::core::timeline_interaction::boot_zoom(link.view.tz, pinned);
         let min = crate::core::PlaybackState::min_zoom_for_width(playback.state.timeline_width_px);
         playback.state.timeline_zoom = zoom.clamp(min, crate::core::TIMELINE_ZOOM_MAX);
         // Seed the tier deterministically from the restored zoom+width (no
         // hysteresis memory at boot). The per-frame reconcile corrects it once
         // the real strip width is measured.
         playback.state.seed_tier_from_state();
-        if !explicit_deep_link {
+        if pinned {
             let now = playback.state.playback_position();
             playback.state.center_view_on(now);
         }
     }
 
-    // Restore 3D view mode and camera parameters from URL. The camera is the
-    // single source of truth for the view mode, so a globe link reconstructs
-    // the orbit camera from the saved snapshot; a 2D link leaves the camera
-    // in its (already-centered) Flat2D state.
-    let v = &url_params.view;
-    let wants_3d = v.vm.is_some_and(|vm| vm != 0);
-    if wants_3d {
+    // Restore 3D view mode and camera parameters from the link. The camera is
+    // the single source of truth for the view mode, so a globe link
+    // reconstructs the orbit camera from the saved snapshot; a 2D link leaves
+    // the camera in its (already-centered) Flat2D state.
+    let v = &link.view;
+    if v.vm.is_some_and(|vm| vm != 0) {
         // The pure legacy mapping in `restore_from_url_fields` handles both
         // new-format links and pre-overhaul per-mode (`cm`) links.
         state
@@ -346,54 +356,56 @@ fn apply_url_params(
         state.viz_state.volume_density_cutoff = vdc;
     }
 
-    if let Some(ref product_code) = url_params.product {
-        if let Some(product) = crate::core::RadarProduct::from_short_code(product_code) {
-            state.viz_state.product = product;
+    if let Some(product) = link
+        .product
+        .as_deref()
+        .and_then(crate::core::RadarProduct::from_short_code)
+    {
+        state.viz_state.product = product;
+    }
+    match link.tilt {
+        Some(LinkTilt::Latest) => {
+            state.viz_state.elevation_selection = crate::core::ElevationSelection::Latest;
         }
+        // Re-resolved to the volume's elevation number when its VCP arrives.
+        Some(LinkTilt::Angle(angle)) => {
+            state.viz_state.elevation_selection = crate::core::ElevationSelection::Fixed {
+                elevation_number: 1,
+                angle,
+            };
+        }
+        None => {}
+    }
+    // The link says which mode plays; the preferences say how fast.
+    if let Some(mode) = link.play_mode {
+        playback.state.speed = prefs.speed_for(mode);
+        playback.state.restore_play_mode(mode);
     }
 
-    if let Some(time) = url_params.time {
-        playback.state.set_playback_position(time);
-        // Center view on the restored position (a live boot stays centered on
-        // now). timeline_width_px may still be the default 1000px since we
-        // haven't rendered yet, but it will be accurate on subsequent centers.
-        if explicit_deep_link {
-            playback.state.center_view_on(time);
+    match plan.start {
+        BootStart::At(t) => {
+            playback.state.set_playback_position(t);
+            playback.state.center_view_on(t);
         }
-    }
-
-    // First-launch detection: if no site specified in the URL, check for a
-    // saved preferred site. If one exists, apply it silently. Otherwise open
-    // the first-visit modal so the user can choose a site.
-    if url_params.site.is_none() {
-        if let Some(ref preferred) = state.preferred_site {
-            if let Some(site) = crate::data::get_site(preferred) {
-                state.viz_state.site_id = site.id.to_string();
-                state.viz_state.center_lat = site.lat;
-                state.viz_state.center_lon = site.lon;
-                state.viz_state.camera.center_on(site.lat, site.lon);
-                state.recent_sites = vec![site.id.to_string()];
-            }
-        } else {
-            // First visit: the site picker opens and cannot be dismissed
-            // until a site is chosen (any pick clears `site_required`).
-            chrome.site_modal_open = true;
-            chrome.site_required = true;
+        BootStart::Range {
+            start,
+            end,
+            playhead,
+        } => {
+            playback.state.set_playback_position(playhead);
+            playback.state.select_range(start, end, false);
+            playback.state.center_view_on((start + end) / 2.0);
         }
-    }
-
-    // Session start: open tethered to live (spec §7 DECIDED, alignment §5),
-    // unless the user followed an explicit detached deep link. With a site
-    // already known (URL or preferred), tether now. On a true first visit (no
-    // site, modal open), defer: tether once the user picks a site.
-    if !explicit_deep_link {
-        let site_known = url_params.site.is_some() || state.preferred_site.is_some();
-        if site_known {
-            // Queued behind the initial RefreshTimeline so the timeline
-            // populates first (same as the legacy `rt=true` restore).
-            state.push_command(crate::core::Intent::StartLive);
-        } else {
+        // Session start pinned to now (spec §7 DECIDED). With a site known,
+        // tether now — queued behind the initial RefreshTimeline so the
+        // timeline populates first. On a first visit, tether once the user
+        // picks a site.
+        BootStart::PinnedNow | BootStart::PinnedRange(_) if plan.site.is_none() => {
             state.start_live_on_site_select = true;
+        }
+        BootStart::PinnedNow => state.push_command(crate::core::Intent::StartLive),
+        BootStart::PinnedRange(preset) => {
+            state.push_command(crate::core::Intent::ApplyLoopPreset(preset));
         }
     }
 }
@@ -449,15 +461,18 @@ impl WorkbenchApp {
             mut state,
             playback: bootstrapped_playback,
             mping_api_key: loaded_mping_api_key,
+            prefs: loaded_prefs,
         } = AppState::bootstrap();
         let mut playback = subsystem::Playback {
             state: bootstrapped_playback,
         };
         let mut chrome = subsystem::Chrome::new();
         chrome.coarse_pointer = ui::coarse_pointer();
+        chrome.rail_tab = loaded_prefs.panel_tab;
+        chrome.right_sidebar_visible = loaded_prefs.panel_open;
 
-        let url_params = state::url_state::parse_from_url();
-        apply_url_params(&url_params, &mut state, &mut playback, &mut chrome);
+        let link = state::url_state::read_link();
+        apply_link(&link, &loaded_prefs, &mut state, &mut playback, &mut chrome);
 
         let initial_site_id = state.viz_state.site_id.clone();
         let data_facade = MainThreadStore::new();
@@ -475,11 +490,9 @@ impl WorkbenchApp {
             });
         }
 
-        let initial_prefs = core::UserPreferences::from_app_state(
-            &state,
-            &playback.state,
-            loaded_mping_api_key.clone(),
-        );
+        // Track what is on disk, so anything the boot changed (a first
+        // recent site, say) is saved at the first persist.
+        let initial_prefs = loaded_prefs.clone();
 
         // Create decode worker pool (offloads heavy NEXRAD work to parallel
         // Web Workers so the download → decompress → store pipeline can fan
@@ -568,7 +581,7 @@ impl WorkbenchApp {
                 diag.mping.api_key = loaded_mping_api_key;
                 diag
             },
-            last_favicon_mode: None,
+            last_favicon_live: None,
         };
 
         // Check cross-origin isolation status on startup
@@ -712,7 +725,6 @@ impl WorkbenchApp {
                 zone: &zone,
                 use_local_time: use_local,
                 view_mode: self.state.viz_state.view_mode(),
-                advanced: self.state.show_advanced(),
                 alerts: &self.diagnostics.alerts,
                 visible_alerts: &diagnostics_vm.visible_alerts,
                 map_bounds_known: derived.visible_bounds.is_some(),
@@ -826,9 +838,9 @@ impl WorkbenchApp {
 
     /// Push current app state to the URL bar and save user preferences (throttled).
     fn persist_url_state(&mut self, ctx: &egui::Context) {
-        // Encode `rt=` (reload re-enters live) only while the playhead is
-        // attached to the live edge — a detached background stream's "current
-        // view" is the scrubbed archive position, which the URL captures.
+        // The link carries what is on screen (core::link); a pinned selection
+        // is written as `sel=`, so a reload re-enters live only when the
+        // playhead was attached.
         //
         // The decision (throttle gate + prefs change-detection) is pure and
         // clock-injected: we pass this frame's wall clock and execute the
@@ -837,16 +849,19 @@ impl WorkbenchApp {
             self.state.frame_now.secs(),
             &self.state,
             &self.playback.state,
+            state::PanelPrefs {
+                tab: self.chrome.rail_tab,
+                open: self.chrome.right_sidebar_visible,
+            },
             self.diagnostics.mping.api_key.clone(),
-            self.live.session.app_mode == state::AppMode::Live,
         );
         self.apply_effects(ctx, effects);
     }
 
-    /// Push the current `AppMode`'s color to the browser favicon via the
-    /// `setFaviconColor` JS hook in `index.html`. No-op when the mode hasn't
+    /// Push the live-now color to the browser favicon via the
+    /// `setFaviconColor` JS hook in `index.html`. No-op when it hasn't
     /// changed since the last push.
-    fn sync_favicon_to_mode(&mut self) {
+    fn sync_favicon(&mut self) {
         use wasm_bindgen::prelude::*;
         #[wasm_bindgen]
         extern "C" {
@@ -854,25 +869,21 @@ impl WorkbenchApp {
             fn js_set_favicon_color(hex: &str) -> Result<(), JsValue>;
         }
 
-        let mode = self.live.session.app_mode;
-        if self.last_favicon_mode == Some(mode) {
+        let live_now = self.live.session.live_now;
+        if self.last_favicon_live == Some(live_now) {
             return;
         }
-        let c = ui::theme::mode_color(mode);
+        let c = ui::theme::favicon_color(live_now);
         let hex = format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
         let _ = js_set_favicon_color(&hex);
 
-        // Prefix the document title so backgrounded tabs surface the mode.
+        // Prefix the document title so a backgrounded tab says it is live.
         if let Some(document) = web_sys::window().and_then(|w| w.document()) {
-            let prefix = match mode {
-                state::AppMode::Idle => "",
-                state::AppMode::Archive => "[ARCHIVE] ",
-                state::AppMode::Live => "[LIVE] ",
-            };
+            let prefix = if live_now { "[LIVE] " } else { "" };
             document.set_title(&format!("{}NEXRAD Workbench", prefix));
         }
 
-        self.last_favicon_mode = Some(mode);
+        self.last_favicon_live = Some(live_now);
     }
 }
 
@@ -1014,7 +1025,6 @@ impl eframe::App for WorkbenchApp {
         // 14-17. FRAME SNAPSHOT: materialize the per-frame state UI reads.
         // Live::refresh derives everything from this frame's shared `now`.
         self.live.refresh(subsystem::live::LiveRefreshInputs {
-            radar_timeline: &self.timeline.scans,
             playback: &self.playback.state,
             archive_boundaries: &self.timeline.shadow_scan_boundaries,
             now: self.state.frame_now,
@@ -1043,8 +1053,8 @@ impl eframe::App for WorkbenchApp {
             self.handle_diagnostics_intent(ctx, intent);
         }
 
-        // 18. Recolor the favicon if the AppMode changed this frame.
-        self.sync_favicon_to_mode();
+        // 18. Recolor the favicon if live-now changed this frame.
+        self.sync_favicon();
 
         // Per-frame chrome animations that should tick in both layouts.
         // Hoisted out of `BottomPanelLayer` so the mobile path doesn't

@@ -16,7 +16,7 @@ use crate::geo::GeoLayerVisibility;
 // ───────────────────────────────────────────────────────────────────────────
 
 /// One tab of the panel.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) enum RailTab {
     /// The product row and the tilt ladder (and, in 3D, volume rendering).
     #[default]

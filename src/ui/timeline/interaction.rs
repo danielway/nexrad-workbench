@@ -126,16 +126,13 @@ pub(super) fn handle_timeline_interaction(
             if let Some(pos) = pointer_pos {
                 let ts = frame.x_to_ts(pos.x);
                 if input.primary_dragging || input.primary_drag_started {
-                    let status = live.seek(
+                    live.seek(
                         &mut playback.state,
                         state.frame_now.secs(),
                         state.pause_stream_while_reviewing,
                         ts,
                         SeekGesture::Scrub,
                     );
-                    if let Some(msg) = status {
-                        state.toasts.notice(msg);
-                    }
                 } else {
                     state.push_command(Intent::Seek {
                         ts,

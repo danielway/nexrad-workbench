@@ -59,9 +59,6 @@ pub(super) fn render_activity_chip(
     folded: bool,
 ) {
     let idle = vm.state == ActivityState::UpToDate;
-    // Level-0 viewers get a bare glyph when nothing is happening; the label
-    // would be chrome without information.
-    let show_label = !folded && (!idle || state.show_advanced());
 
     let animate = vm.headline.animate && !super::timeline::reduced_motion(ui.ctx());
     let tint = chip_tint(ui, idle, animate);
@@ -75,7 +72,10 @@ pub(super) fn render_activity_chip(
             text.push(' ');
             text.push_str(&count.to_string());
         }
-        if show_label {
+        // The chip is always present, so "Up to date" is a state, not an
+        // absence: the label shows at rest too — except on the phone, where
+        // it is folded into the hover.
+        if !folded {
             text.push(' ');
             text.push_str(vm.headline.label);
         }

@@ -7,18 +7,19 @@
 //!
 //! 1. [`persist_due`] — the throttle gate. The shell checks it first and does
 //!    no snapshot work on suppressed frames.
-//! 2. [`decide_persist`] — given the pre-built [`UrlPush`] and the current
+//! 2. [`decide_persist`] — given the pre-built [`LinkState`] and the current
 //!    preferences snapshot (both assembled by the shell from app state), emit
 //!    the [`Effect`]s and the tracking updates.
 //!
 //! The shell ([`crate::app::persistence_manager::PersistenceManager`] +
 //! [`crate::WorkbenchApp::apply_effects`]) injects the frame clock, builds the
-//! inputs (`state::url_state::build_url_push`,
-//! `UserPreferences::from_app_state`), applies the returned tracking updates,
+//! inputs (`state::url_state::build_link`,
+//! `Preferences::from_app_state`), applies the returned tracking updates,
 //! and executes the [`Effect`]s.
 
-use crate::core::effect::{Effect, UrlPush};
-use crate::core::UserPreferences;
+use crate::core::effect::Effect;
+use crate::core::link::LinkState;
+use crate::core::Preferences;
 
 /// Minimum wall-clock seconds between URL-bar pushes. Preference saves piggyback
 /// on the same throttle window. (Was a hardcoded `1.0` inside `persist_if_due`.)
@@ -45,23 +46,23 @@ pub(crate) struct PersistDecision {
     /// New throttle marker; `Some(now)` iff the throttle gate passed this call.
     pub last_url_push_secs: Option<f64>,
     /// New saved-prefs snapshot; `Some` iff prefs changed and a save was emitted.
-    pub saved_preferences: Option<UserPreferences>,
+    pub saved_preferences: Option<Preferences>,
 }
 
 /// Emit the persistence effects for a frame whose [`persist_due`] gate passed.
 ///
 /// Mirrors the historical `PersistenceManager::persist_if_due` exactly:
-/// 1. Emit an [`Effect::PushUrl`] with the shell-built payload and advance the
+/// 1. Emit an [`Effect::PushUrl`] with the shell-built link and advance the
 ///    throttle marker to `now_secs`.
 /// 2. If `current_prefs` differs from `last_saved_preferences`, also emit
 ///    [`Effect::SavePreferences`] and report the new snapshot.
 pub(crate) fn decide_persist(
     now_secs: f64,
-    url_push: UrlPush,
-    current_prefs: UserPreferences,
-    last_saved_preferences: &UserPreferences,
+    link: LinkState,
+    current_prefs: Preferences,
+    last_saved_preferences: &Preferences,
 ) -> PersistDecision {
-    let mut effects = vec![Effect::PushUrl(url_push)];
+    let mut effects = vec![Effect::PushUrl(Box::new(link))];
 
     // Save user preferences if changed (piggyback on the URL throttle).
     let saved_preferences = if current_prefs != *last_saved_preferences {
@@ -84,15 +85,16 @@ mod tests {
     use crate::core::ViewState;
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    fn push() -> UrlPush {
-        UrlPush {
-            site: "KDMX".to_string(),
-            time: 1_700_000_000.0,
-            product: "REF".to_string(),
-            lat: 41.7,
-            lon: -93.7,
+    fn push() -> LinkState {
+        LinkState {
+            site: Some("KDMX".to_string()),
+            time: Some(1_700_000_000.0),
+            product: Some("REF".to_string()),
+            lat: Some(41.7),
+            lon: Some(-93.7),
             view: ViewState::default(),
-            dev: false,
+            dev: Some(false),
+            ..Default::default()
         }
     }
 
@@ -110,7 +112,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn push_emitted_and_throttle_advanced_when_due() {
-        let saved = UserPreferences::default();
+        let saved = Preferences::default();
         let d = decide_persist(200.0, push(), saved.clone(), &saved);
         assert_eq!(d.last_url_push_secs, Some(200.0));
         // Unchanged prefs → exactly one effect, the URL push.
@@ -121,7 +123,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn changed_prefs_also_emit_save() {
-        let saved = UserPreferences::default();
+        let saved = Preferences::default();
         let mut current = saved.clone();
         current.use_local_time = !saved.use_local_time;
         let d = decide_persist(200.0, push(), current.clone(), &saved);
@@ -136,7 +138,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn unchanged_prefs_emit_no_save() {
-        let saved = UserPreferences::default();
+        let saved = Preferences::default();
         let d = decide_persist(200.0, push(), saved.clone(), &saved);
         assert!(!d
             .effects
@@ -150,7 +152,7 @@ mod tests {
         // The mPING key is sourced separately by the shell (from the
         // diagnostics subsystem, not AppState), so a snapshot whose key differs
         // from the saved one must trigger a SavePreferences carrying the key.
-        let saved = UserPreferences::default(); // mping_api_key == None
+        let saved = Preferences::default(); // mping_api_key == None
         let mut current = saved.clone();
         current.mping_api_key = Some("ABC123".to_string());
         let d = decide_persist(200.0, push(), current, &saved);
@@ -172,9 +174,9 @@ mod tests {
         // should adopt must be byte-for-byte the same value carried in the
         // SavePreferences effect — otherwise the shell's tracking would drift
         // from what was persisted and re-save every frame.
-        let saved = UserPreferences::default();
+        let saved = Preferences::default();
         let mut current = saved.clone();
-        current.advanced_mode = !saved.advanced_mode;
+        current.data_age_desaturation = !saved.data_age_desaturation;
         let d = decide_persist(200.0, push(), current.clone(), &saved);
         let snap = d.saved_preferences.clone().expect("snapshot when changed");
         let payload = match &d.effects[1] {
@@ -183,22 +185,15 @@ mod tests {
         };
         assert_eq!(snap, payload);
         // And it reflects the changed field, not the stale `saved`.
-        assert_eq!(snap.advanced_mode, current.advanced_mode);
+        assert_eq!(snap.data_age_desaturation, current.data_age_desaturation);
     }
 
     #[wasm_bindgen_test]
     fn url_push_payload_passes_through_verbatim() {
-        let saved = UserPreferences::default();
+        let saved = Preferences::default();
         let d = decide_persist(200.0, push(), saved.clone(), &saved);
         match &d.effects[0] {
-            Effect::PushUrl(p) => {
-                assert_eq!(p.site, "KDMX");
-                assert_eq!(p.product, "REF");
-                assert_eq!(p.time, 1_700_000_000.0);
-                assert_eq!(p.lat, 41.7);
-                assert_eq!(p.lon, -93.7);
-                assert!(!p.dev);
-            }
+            Effect::PushUrl(p) => assert_eq!(**p, push()),
             other => panic!("expected PushUrl, got {:?}", other),
         }
     }
@@ -207,18 +202,12 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
-    use crate::core::ViewState;
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    fn push() -> UrlPush {
-        UrlPush {
-            site: "KOAX".to_string(),
-            time: 0.0,
-            product: "REF".to_string(),
-            lat: 0.0,
-            lon: 0.0,
-            view: ViewState::default(),
-            dev: false,
+    fn push() -> LinkState {
+        LinkState {
+            site: Some("KOAX".to_string()),
+            ..Default::default()
         }
     }
 
@@ -248,7 +237,7 @@ mod coverage_tests {
         // marker is exactly `now_secs` — not rounded, not the elapsed delta.
         let now = 100.0001 + 1.0; // 101.0001
         assert!(persist_due(now, 100.0));
-        let saved = UserPreferences::default();
+        let saved = Preferences::default();
         let d = decide_persist(now, push(), saved.clone(), &saved);
         assert_eq!(d.last_url_push_secs, Some(now));
         assert!(matches!(d.effects.first(), Some(Effect::PushUrl(_))));

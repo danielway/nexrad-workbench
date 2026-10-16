@@ -90,8 +90,15 @@ pub(crate) enum Intent {
     /// ([`crate::core::dialogs::Confirm::ResetSettings`]).
     ResetSettings,
     /// Reset local settings and preferences while preserving saved events,
-    /// then reload (the confirmation was accepted).
+    /// then reload with a clean URL (the confirmation was accepted). What it
+    /// clears is [`crate::core::prefs::reset_plan`]'s.
     ResetSettingsNow,
+    /// The reset confirmation's "also forget the mPING key and preferred
+    /// site" choice (off each time the confirmation opens).
+    SetResetForgetsKeyAndSite(bool),
+    /// Settings › Developer: turn developer mode on or off, for this session
+    /// and saved.
+    SetDeveloperMode(bool),
     /// Pause the acquisition queue.
     PauseQueue,
     /// Resume the acquisition queue.

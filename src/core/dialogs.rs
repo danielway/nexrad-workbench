@@ -313,6 +313,17 @@ pub(crate) struct ConfirmFacts {
     pub saved_events: usize,
     /// The event a [`Confirm::DeleteEvent`] names: `(name, site, start, end)`.
     pub event: Option<(String, String, f64, f64)>,
+    /// What a [`Confirm::ResetSettings`] reads to list what it clears.
+    pub reset: ResetFacts,
+}
+
+/// The facts behind the reset's lists ([`crate::core::prefs::reset_plan`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct ResetFacts {
+    pub has_mping_key: bool,
+    pub has_preferred_site: bool,
+    /// The user asked to forget the key and the site too.
+    pub forget_key_and_site: bool,
 }
 
 /// What a confirmation shows.
@@ -357,14 +368,30 @@ pub(crate) fn confirm_vm(
             action: "Clear cache".into(),
             destructive: true,
         },
-        Confirm::ResetSettings => ConfirmVm {
-            title: "Reset settings?".into(),
-            deletes: vec!["Settings and preferences, including the preferred site".into()],
-            keeps: vec![events, "Cached radar data".into()],
-            note: Some("The page reloads after resetting.".into()),
-            action: "Reset settings".into(),
-            destructive: true,
-        },
+        Confirm::ResetSettings => {
+            let current = crate::core::Preferences {
+                mping_api_key: facts.reset.has_mping_key.then(String::new),
+                preferred_site: facts.reset.has_preferred_site.then(String::new),
+                ..Default::default()
+            };
+            let plan = crate::core::prefs::reset_plan(&current, facts.reset.forget_key_and_site);
+            ConfirmVm {
+                title: "Reset settings?".into(),
+                deletes: plan.clears.iter().map(|s| s.to_string()).collect(),
+                // The plan's "Saved events" is said with its count.
+                keeps: plan
+                    .keeps
+                    .iter()
+                    .map(|s| match *s {
+                        "Saved events" => events.clone(),
+                        other => other.to_string(),
+                    })
+                    .collect(),
+                note: Some("The page reloads with a clean link after resetting.".into()),
+                action: "Reset settings".into(),
+                destructive: true,
+            }
+        }
         Confirm::DeleteEvent(_) => {
             let line = match &facts.event {
                 Some((name, site, start, end)) => format!(
@@ -629,7 +656,7 @@ mod tests {
         let facts = ConfirmFacts {
             cache_bytes: 512,
             saved_events: 1,
-            event: None,
+            ..Default::default()
         };
         let vm = confirm_vm(Confirm::ClearCache, &facts, bytes, &UtcCalendar, 0.0);
         assert!(vm.deletes[0].contains("(512 B)"));
@@ -646,7 +673,27 @@ mod tests {
         let vm = confirm_vm(Confirm::ResetSettings, &facts, bytes, &UtcCalendar, 0.0);
         assert!(vm.keeps.contains(&"2 saved events".to_string()));
         assert!(vm.keeps.contains(&"Cached radar data".to_string()));
+        assert!(vm.deletes.contains(&"Developer mode".to_string()));
         assert!(vm.note.unwrap().contains("reload"));
+    }
+
+    #[wasm_bindgen_test]
+    fn reset_keeps_the_key_and_site_unless_asked() {
+        let mut facts = ConfirmFacts {
+            reset: ResetFacts {
+                has_mping_key: true,
+                has_preferred_site: true,
+                forget_key_and_site: false,
+            },
+            ..Default::default()
+        };
+        let vm = confirm_vm(Confirm::ResetSettings, &facts, bytes, &UtcCalendar, 0.0);
+        assert!(vm.keeps.contains(&"mPING API key".to_string()));
+        assert!(vm.keeps.contains(&"Preferred site".to_string()));
+        facts.reset.forget_key_and_site = true;
+        let vm = confirm_vm(Confirm::ResetSettings, &facts, bytes, &UtcCalendar, 0.0);
+        assert!(vm.deletes.contains(&"mPING API key".to_string()));
+        assert!(vm.deletes.contains(&"Preferred site".to_string()));
     }
 
     #[wasm_bindgen_test]

@@ -183,15 +183,13 @@ pub(in crate::ui) fn render_mini_timeline(
         if response.dragged() {
             // A scrub runs the seek reducer synchronously so the playhead
             // keeps up with the finger.
-            if let Some(msg) = live.seek(
+            live.seek(
                 &mut playback.state,
                 now,
                 state.pause_stream_while_reviewing,
                 ts,
                 SeekGesture::Scrub,
-            ) {
-                state.toasts.notice(msg);
-            }
+            );
         } else if response.clicked() {
             state.push_command(Intent::Seek {
                 ts,

@@ -23,11 +23,7 @@ impl WorkbenchApp {
     /// variant forces a decision about how the shell performs it.
     fn apply_effect(&mut self, ctx: &egui::Context, effect: Effect) {
         match effect {
-            Effect::PushUrl(p) => {
-                crate::state::url_state::push_to_url(
-                    &p.site, p.time, &p.product, p.lat, p.lon, &p.view, p.dev,
-                );
-            }
+            Effect::PushUrl(link) => crate::state::url_state::push_link(&link),
             Effect::SavePreferences(prefs) => prefs.save(),
             Effect::StartGeolocation => {
                 crate::app::geolocation::start_geolocation(

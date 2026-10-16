@@ -164,9 +164,10 @@ collection time is not yet late if the ingest-lag window hasn't elapsed.
   strip (Queued › Downloading › Processing › Finishing) with live counts,
   rolling throughput, active/queued/recent downloads with sizes and
   cancel/retry, the acquisition policy toggles, and a collapsed **Details**
-  disclosure holding session totals and the recent-request log. Deep
-  diagnostics (per-phase timings, worker queue depth, FPS, cross-origin
-  isolation, VCP forecast) appear inside Details only in developer mode.
+  disclosure holding session totals and the recent-request log. Raw request
+  counts and deep diagnostics (per-phase timings, worker queue depth, FPS,
+  cross-origin isolation, VCP forecast) appear inside Details only in
+  developer mode.
 
 ## 5. The Timeline
 
@@ -364,8 +365,8 @@ mode — it is a tether state.
 ### 8.2 Playback mode & speed
 
 Playback timing is the user's explicit choice of **Frames** or **Rays**, set by
-a toggle beside the speed control and saved with the preferences. Zoom never
-changes it (§5.5).
+a toggle beside the speed control and carried in the link (§13.4); each mode's
+speed is saved with the preferences. Zoom never changes it (§5.5).
 
 - **Rays — true-time playback.** The position advances evenly in wall-clock
   time; radials are revealed at their actual collection timestamps behind a
@@ -386,6 +387,8 @@ changes it (§5.5).
 The speed control shows × in Rays and fps in Frames. Switching modes swaps the
 speed list and snaps the active speed to the nearest equivalent, so the
 perceived rhythm doesn't lurch. A live lookback replay always steps frames.
+Going live in Rays locks the speed to 1× without overwriting the saved speed,
+which comes back on leaving live.
 
 ### 8.3 Gap glyphs
 
@@ -633,14 +636,60 @@ Interactive measurement and analysis affordances on the 2D canvas:
 | Touch ≥600px | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
 | Phone | Condensed transport (play · selection chip · speed) over ~44px strip; no overview (the scrubber plays its role) | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; custom loop dragging replaced by presets; 3D view is desktop-only |
 
-### 13.4 Deep linking & sharing
+### 13.4 Links and preferences
 
-Application state is encoded in the URL: site, playback time, product/elevation,
-view, and map/camera position. Any view of the data is shareable as a single
-link; opening the link reconstructs the view. URL updates are throttled so
-back/forward navigation works naturally.
+One rule: **the link is what you see; preferences are how you like it.** The
+URL is rewritten with `replaceState` about once a second, so any view is
+shareable as a single link and a reload reopens it. The codec and the boot
+decision are `core::link`; preferences are `core::prefs`.
+
+**In the link**
+
+| What | Key | Notes |
+|---|---|---|
+| Site | `site` | An unknown site falls back to the preferred site |
+| Playhead time | `t` | Unix seconds; not written while pinned |
+| Selection | `sel` | `now` (pinned point), `last6f` / `last1800s` (range ending now), `START~END` (fixed range); absent = a point at `t` |
+| Play mode | `mode` | `frames` or `rays` |
+| Product | `product` | Short code (`REF`, `VEL`, …) |
+| Tilt | `tilt` | An angle (`0.5`) or `latest` |
+| Map center | `lat`, `lon` | |
+| 2D/3D, camera, map and timeline zoom, volume rendering and cutoff | `v` | Base64 JSON blob; its old `rt` flag is read as `sel=now` |
+| Developer flag | `dev=true` | Wins for that session without being saved |
+
+A link with a pinned selection opens pinned; one with a time (or a fixed
+range) opens there, detached. Opening with no link opens pinned to live at the
+preferred site, or with the site picker on a first visit. `?ui=` is retired
+and ignored.
+
+**In preferences** (localStorage, versioned)
+
+| What | Notes |
+|---|---|
+| Layers, rendering (interpolation, opacity, age desaturation) | |
+| Speed per mode | One for Frames, one for Rays |
+| Time zone | Local or UTC |
+| Data-saving policies | Auto-fetch while scrubbing; pause stream while reviewing |
+| Loop style | Loop, ping-pong or once |
+| Panel tab and collapse | |
+| Tools | Data probe, distance, storm cells and their dBZ threshold |
+| Developer mode | Settings › Developer |
+| mPING key, preferred site, recent sites | |
+| Storage quota | Its own key |
+
+Older preference blobs are migrated once: the single speed is filed under the
+mode it was saved with, the play mode and tilt they carried move to the link,
+and the retired Basic/Advanced setting is read and discarded, so every control
+is visible. **Reset** lists what it clears and keeps, keeps the mPING key and
+the preferred site unless asked, and reloads with a clean URL.
 
 ## 14. Progressive Disclosure Ladder
+
+Depth replaces modes: there is no Basic/Advanced switch. Every surface is
+simple at a glance and reveals more where you look harder, and the same
+controls exist at every width — the phone leaves out only the keyboard map and
+the Developer row. Developer mode (Settings › Developer, or `?dev=true`) only
+adds diagnostics.
 
 - **Level 0 (first launch / casual):** canvas + simple scrubber + LIVE + play.
   Everything automatic. No jargon — "frame," not "sweep." The VOLUMES/TILTS lane

@@ -17,8 +17,8 @@
 //! Variants are added per migration phase as decisions are extracted; the enum
 //! is `#[non_exhaustive]`-in-spirit and grows.
 
-use crate::core::UserPreferences;
-use crate::core::ViewState;
+use crate::core::link::LinkState;
+use crate::core::Preferences;
 
 /// How a lat/lon was obtained. Distinguishes browser geolocation from zip
 /// geocoding so site-pick can enable the My Location layer only for the
@@ -51,26 +51,15 @@ pub(crate) enum LocationResult {
     Error(String),
 }
 
-/// A fully-described URL-bar push (`history.replaceState`). The core builds this
-/// from the current view; the shell calls [`crate::state::url_state::push_to_url`].
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct UrlPush {
-    pub site: String,
-    pub time: f64,
-    pub product: String,
-    pub lat: f64,
-    pub lon: f64,
-    pub view: ViewState,
-    pub dev: bool,
-}
-
 /// A side effect the core asks the shell to perform.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Effect {
-    /// Push the current view state to the browser URL bar (throttled upstream).
-    PushUrl(UrlPush),
+    /// Write the link for what is on screen to the URL bar with
+    /// `history.replaceState` (throttled upstream). The shell writes
+    /// [`crate::core::link::to_query`] of it.
+    PushUrl(Box<LinkState>),
     /// Persist user preferences to localStorage.
-    SavePreferences(Box<UserPreferences>),
+    SavePreferences(Box<Preferences>),
     /// Begin a one-shot browser geolocation lookup for the "My Location" overlay.
     /// The shell supplies the result sink (a `GpsState` channel) and `egui`
     /// context, so the effect itself carries no payload.
