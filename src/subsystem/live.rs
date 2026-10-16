@@ -16,7 +16,6 @@
 use crate::core::projection::{new_shared_engine, Projection, SharedProjectionEngine};
 use crate::core::session::{LiveCut, SessionInputs, SessionVm};
 use crate::core::PlaybackState;
-use crate::core::RadarTimeline;
 use crate::core::{ElevationSelection, StreamingFilter};
 use crate::core::{ExpectedSweep, LiveModeState, LiveRadarModel};
 use crate::nexrad::RealtimeChannel;
@@ -25,7 +24,6 @@ use crate::nexrad::RealtimeChannel;
 /// subsystem. Kept explicit so [`Live`] doesn't take a back-reference
 /// to [`AppState`].
 pub(crate) struct LiveRefreshInputs<'a> {
-    pub radar_timeline: &'a RadarTimeline,
     pub playback: &'a PlaybackState,
     /// Available archive scan boundaries — fed to the engine for authoritative
     /// next-scan extent.
@@ -299,10 +297,6 @@ impl Live {
             playback_position_secs: inputs.playback.playback_position(),
             displayed: inputs.displayed,
             live_cut,
-            scan_at_playhead: inputs
-                .radar_timeline
-                .find_scan_at_timestamp(inputs.playback.playback_position())
-                .is_some(),
             caption_context: inputs.caption_context,
         });
     }
@@ -326,7 +320,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn new_starts_idle_and_unprojected() {
         let l = live();
-        assert_eq!(l.session.app_mode, crate::state::AppMode::Idle);
+        assert!(!l.session.live_now);
         assert!(l.frame_projection.is_none());
         assert!(!l.mode_state.is_active());
         assert_eq!(l.mode_state.phase, LivePhase::Idle);

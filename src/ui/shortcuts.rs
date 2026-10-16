@@ -289,16 +289,6 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
             chrome.shortcuts_help_visible = !chrome.shortcuts_help_visible
         },
     },
-    OneShotShortcut {
-        section: SECTION_GENERAL,
-        key_label: "Ctrl+Shift+A",
-        description: "Toggle Basic / Advanced controls",
-        pressed: |i| i.key_pressed(egui::Key::A) && i.modifiers.command && i.modifiers.shift,
-        enabled: always_enabled,
-        handler: |state, _live, _timeline, _playback, _chrome, _| {
-            state.advanced_mode = !state.advanced_mode
-        },
-    },
 ];
 
 /// Help-only entries for behavior dispatched outside this registry.

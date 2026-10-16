@@ -92,13 +92,13 @@ pub(crate) fn alpha(c: Color32, a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
-/// The accent for the derived top-level mode (shell-side mapping; the core
-/// stays color-free).
-pub(crate) fn mode_color(mode: crate::state::AppMode) -> Color32 {
-    match mode {
-        crate::state::AppMode::Idle => TEXT_FAINT,
-        crate::state::AppMode::Archive => legacy::ACTIVE_BLUE,
-        crate::state::AppMode::Live => NOW,
+/// The favicon's color: the one red while pinned to a running stream, the
+/// faint tone otherwise (shell-side mapping; the core stays color-free).
+pub(crate) fn favicon_color(live_now: bool) -> Color32 {
+    if live_now {
+        NOW
+    } else {
+        TEXT_FAINT
     }
 }
 
@@ -582,15 +582,9 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn mode_colors_are_distinct() {
-        use crate::state::AppMode;
-        let (i, a, l) = (
-            mode_color(AppMode::Idle),
-            mode_color(AppMode::Archive),
-            mode_color(AppMode::Live),
-        );
-        assert!(i != a && a != l && i != l);
-        assert!(l == NOW);
+    fn favicon_is_red_only_when_live() {
+        assert!(favicon_color(true) == NOW);
+        assert!(favicon_color(false) != NOW);
     }
 
     #[wasm_bindgen_test]

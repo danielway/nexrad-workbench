@@ -174,7 +174,7 @@ mod tests {
         // from what was persisted and re-save every frame.
         let saved = UserPreferences::default();
         let mut current = saved.clone();
-        current.advanced_mode = !saved.advanced_mode;
+        current.data_age_desaturation = !saved.data_age_desaturation;
         let d = decide_persist(200.0, push(), current.clone(), &saved);
         let snap = d.saved_preferences.clone().expect("snapshot when changed");
         let payload = match &d.effects[1] {
@@ -183,7 +183,7 @@ mod tests {
         };
         assert_eq!(snap, payload);
         // And it reflects the changed field, not the stale `saved`.
-        assert_eq!(snap.advanced_mode, current.advanced_mode);
+        assert_eq!(snap.data_age_desaturation, current.data_age_desaturation);
     }
 
     #[wasm_bindgen_test]

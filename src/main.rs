@@ -229,9 +229,9 @@ pub struct WorkbenchApp {
     /// service-worker network monitor).
     diagnostics: subsystem::Diagnostics,
 
-    /// Last `AppMode` pushed to the favicon. `None` until the first frame so
-    /// the initial mode is always sent. See `sync_favicon_to_mode`.
-    last_favicon_mode: Option<state::AppMode>,
+    /// Last live-now flag pushed to the favicon. `None` until the first frame
+    /// so the initial state is always sent. See `sync_favicon`.
+    last_favicon_live: Option<bool>,
 }
 
 // Embed shapefile data at compile time
@@ -255,9 +255,6 @@ fn apply_url_params(
     chrome: &mut subsystem::Chrome,
 ) {
     state.dev_mode = url_params.dev;
-    if let Some(advanced) = url_params.ui_advanced {
-        state.advanced_mode = advanced;
-    }
     if let Some(ref site) = url_params.site {
         state.viz_state.site_id = site.to_uppercase();
         if let Some(site_info) = data::sites::get_site(site) {
@@ -565,7 +562,7 @@ impl WorkbenchApp {
                 diag.mping.api_key = loaded_mping_api_key;
                 diag
             },
-            last_favicon_mode: None,
+            last_favicon_live: None,
         };
 
         // Check cross-origin isolation status on startup
@@ -707,7 +704,6 @@ impl WorkbenchApp {
                 zone: &zone,
                 use_local_time: use_local,
                 view_mode: self.state.viz_state.view_mode(),
-                advanced: self.state.show_advanced(),
                 alerts: &self.diagnostics.alerts,
                 visible_alerts: &diagnostics_vm.visible_alerts,
                 map_bounds_known: derived.visible_bounds.is_some(),
@@ -833,15 +829,15 @@ impl WorkbenchApp {
             &self.state,
             &self.playback.state,
             self.diagnostics.mping.api_key.clone(),
-            self.live.session.app_mode == state::AppMode::Live,
+            self.live.session.live_now,
         );
         self.apply_effects(ctx, effects);
     }
 
-    /// Push the current `AppMode`'s color to the browser favicon via the
-    /// `setFaviconColor` JS hook in `index.html`. No-op when the mode hasn't
+    /// Push the live-now color to the browser favicon via the
+    /// `setFaviconColor` JS hook in `index.html`. No-op when it hasn't
     /// changed since the last push.
-    fn sync_favicon_to_mode(&mut self) {
+    fn sync_favicon(&mut self) {
         use wasm_bindgen::prelude::*;
         #[wasm_bindgen]
         extern "C" {
@@ -849,25 +845,21 @@ impl WorkbenchApp {
             fn js_set_favicon_color(hex: &str) -> Result<(), JsValue>;
         }
 
-        let mode = self.live.session.app_mode;
-        if self.last_favicon_mode == Some(mode) {
+        let live_now = self.live.session.live_now;
+        if self.last_favicon_live == Some(live_now) {
             return;
         }
-        let c = ui::theme::mode_color(mode);
+        let c = ui::theme::favicon_color(live_now);
         let hex = format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
         let _ = js_set_favicon_color(&hex);
 
-        // Prefix the document title so backgrounded tabs surface the mode.
+        // Prefix the document title so a backgrounded tab says it is live.
         if let Some(document) = web_sys::window().and_then(|w| w.document()) {
-            let prefix = match mode {
-                state::AppMode::Idle => "",
-                state::AppMode::Archive => "[ARCHIVE] ",
-                state::AppMode::Live => "[LIVE] ",
-            };
+            let prefix = if live_now { "[LIVE] " } else { "" };
             document.set_title(&format!("{}NEXRAD Workbench", prefix));
         }
 
-        self.last_favicon_mode = Some(mode);
+        self.last_favicon_live = Some(live_now);
     }
 }
 
@@ -1000,7 +992,6 @@ impl eframe::App for WorkbenchApp {
         // 14-17. FRAME SNAPSHOT: materialize the per-frame state UI reads.
         // Live::refresh derives everything from this frame's shared `now`.
         self.live.refresh(subsystem::live::LiveRefreshInputs {
-            radar_timeline: &self.timeline.scans,
             playback: &self.playback.state,
             archive_boundaries: &self.timeline.shadow_scan_boundaries,
             now: self.state.frame_now,
@@ -1027,8 +1018,8 @@ impl eframe::App for WorkbenchApp {
             self.handle_diagnostics_intent(ctx, intent);
         }
 
-        // 18. Recolor the favicon if the AppMode changed this frame.
-        self.sync_favicon_to_mode();
+        // 18. Recolor the favicon if live-now changed this frame.
+        self.sync_favicon();
 
         // Per-frame chrome animations that should tick in both layouts.
         // Hoisted out of `BottomPanelLayer` so the mobile path doesn't

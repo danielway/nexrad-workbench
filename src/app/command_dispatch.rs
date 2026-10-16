@@ -340,7 +340,6 @@ impl DispatchState<'_> {
             }
             TopBarIntent::SetView(ViewMode::Flat2D) => self.state.viz_state.switch_to_2d(),
             TopBarIntent::SetView(ViewMode::Globe3D) => self.state.viz_state.switch_to_3d_view(),
-            TopBarIntent::SetAdvanced(on) => self.state.advanced_mode = on,
             TopBarIntent::ToggleShortcutsHelp => {
                 self.chrome.shortcuts_help_visible = !self.chrome.shortcuts_help_visible;
             }
@@ -1376,9 +1375,6 @@ mod dispatch_tests {
         let help = f.chrome.shortcuts_help_visible;
         f.apply(Intent::TopBar(TopBarIntent::ToggleShortcutsHelp));
         assert_eq!(f.chrome.shortcuts_help_visible, !help);
-
-        f.apply(Intent::TopBar(TopBarIntent::SetAdvanced(true)));
-        assert!(f.state.advanced_mode);
 
         f.apply(Intent::TopBar(TopBarIntent::SetView(
             crate::geo::ViewMode::Globe3D,

@@ -21,7 +21,7 @@
 //!   Nothing outside the owning widget reads it.
 //!
 //! Anything that is neither is domain state: theme, dev mode, mobile
-//! detection, advanced mode and other preference-style state stay on
+//! detection and other preference-style state stay on
 //! `AppState` (or `UserPreferences`), because business logic reads them
 //! in many places that have nothing to do with chrome rendering.
 

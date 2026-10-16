@@ -45,7 +45,6 @@ impl UserPreferences {
             opacity: state.render_processing.opacity,
             data_age_desaturation: state.render_processing.data_age_desaturation,
             mobile_override: state.mobile_override,
-            advanced_mode: state.advanced_mode,
             pause_stream_while_reviewing: state.pause_stream_while_reviewing,
             autofetch_while_scrubbing: state.autofetch_while_scrubbing,
         }
@@ -86,7 +85,6 @@ impl UserPreferences {
         state.render_processing.opacity = self.opacity;
         state.render_processing.data_age_desaturation = self.data_age_desaturation;
         state.mobile_override = self.mobile_override;
-        state.advanced_mode = self.advanced_mode;
         state.pause_stream_while_reviewing = self.pause_stream_while_reviewing;
         state.autofetch_while_scrubbing = self.autofetch_while_scrubbing;
         self.mping_api_key.clone()
@@ -110,9 +108,9 @@ impl UserPreferences {
         };
 
         // Two-phase parse: first as raw JSON to detect missing fields for
-        // migration, then to the typed struct. Existing users (stored prefs
-        // from before `advanced_mode` existed) are promoted to Advanced so
-        // their familiar UI is unchanged.
+        // migration, then to the typed struct. A retired `advanced_mode`
+        // (Basic/Advanced) value is read and discarded: every control is now
+        // visible to everyone.
         let raw: serde_json::Value = match serde_json::from_str(&json) {
             Ok(v) => v,
             Err(e) => {
@@ -120,18 +118,11 @@ impl UserPreferences {
                 return Self::default();
             }
         };
-        let had_advanced_mode_field = raw.get("advanced_mode").is_some();
         let had_split_alert_layers =
             raw.get("layer_alerts_warnings").is_some() || raw.get("layer_alerts_other").is_some();
 
         match serde_json::from_value::<Self>(raw) {
             Ok(mut prefs) => {
-                if !had_advanced_mode_field {
-                    log::info!(
-                        "Migrating existing user preferences to Advanced mode (no advanced_mode field)"
-                    );
-                    prefs.advanced_mode = true;
-                }
                 // Migrate the old single `layer_alerts` toggle into the split
                 // warnings/other fields: warnings inherit the old on/off state,
                 // watches stay off (the new default).
@@ -197,9 +188,9 @@ mod tests {
         let legacy = r#"{"speed":"Normal","advanced_mode":true}"#;
         let prefs: UserPreferences = serde_json::from_str(legacy).expect("legacy parse");
         assert!(!prefs.pause_stream_while_reviewing);
-        // A sibling field still round-trips, confirming the blob really lacked
-        // the new field rather than silently defaulting everything.
-        assert!(prefs.advanced_mode);
+        // A sibling field still parses, confirming the blob really lacked the
+        // new field rather than silently defaulting everything.
+        assert_eq!(prefs.speed, crate::core::PlaybackSpeed::Normal);
     }
 
     #[wasm_bindgen_test]
@@ -274,7 +265,6 @@ mod coverage_tests {
         assert!(!prefs.layer_national_mosaic);
         assert!(!prefs.layer_alerts_other);
         assert!(!prefs.layer_mping);
-        assert!(!prefs.advanced_mode);
         assert!(!prefs.pause_stream_while_reviewing);
         // Numeric defaults from explicit default fns:
         assert!((prefs.preferred_elevation_angle - 0.5).abs() < 1e-6);
@@ -335,7 +325,6 @@ mod coverage_tests {
         prefs.interpolation = InterpolationMode::Bilinear;
         prefs.opacity = 0.42;
         prefs.mobile_override = Some(true);
-        prefs.advanced_mode = true;
         prefs.use_local_time = false;
         let json = serde_json::to_string(&prefs).expect("serialize");
         let back: UserPreferences = serde_json::from_str(&json).expect("deserialize");
@@ -446,7 +435,6 @@ mod coverage_tests {
         src.render_processing.opacity = 0.3;
         src.render_processing.data_age_desaturation = false;
         src.mobile_override = Some(false);
-        src.advanced_mode = true;
         src.pause_stream_while_reviewing = true;
         src.autofetch_while_scrubbing = false;
 
@@ -478,7 +466,6 @@ mod coverage_tests {
         assert!((dst.render_processing.opacity - 0.3).abs() < 1e-6);
         assert!(!dst.render_processing.data_age_desaturation);
         assert!(dst.mobile_override == Some(false));
-        assert!(dst.advanced_mode);
         assert!(dst.pause_stream_while_reviewing);
         assert!(!dst.autofetch_while_scrubbing);
     }

@@ -69,13 +69,6 @@ pub(crate) struct UserPreferences {
     #[serde(default)]
     pub mobile_override: Option<bool>,
 
-    /// Whether advanced controls are visible. `false` = Basic (default for
-    /// new users), `true` = Advanced. Existing users with stored preferences
-    /// from before this feature are migrated to `true` on first load —
-    /// see [`UserPreferences::load`].
-    #[serde(default)]
-    pub advanced_mode: bool,
-
     /// Data-saver policy (spec §7 / alignment §5): when `true`, detaching the
     /// playhead (scrubbing away to review) stops the background live stream
     /// immediately rather than letting it keep filling the cache. Default off;
@@ -130,7 +123,6 @@ impl Default for UserPreferences {
             opacity: 1.0,
             data_age_desaturation: true,
             mobile_override: None,
-            advanced_mode: false,
             pause_stream_while_reviewing: false,
             autofetch_while_scrubbing: true,
         }

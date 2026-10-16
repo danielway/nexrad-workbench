@@ -709,15 +709,7 @@ fn settings_tab(ui: &mut egui::Ui, state: &mut AppState, chrome: &mut crate::sub
         state.push_command(Intent::TopBar(TopBarIntent::ToggleShortcutsHelp));
     }
 
-    section(ui, "Controls");
-    let mut advanced = state.show_advanced();
-    if ui
-        .checkbox(&mut advanced, "Advanced controls")
-        .on_hover_text("Show every control (Ctrl+Shift+A)")
-        .changed()
-    {
-        state.push_command(Intent::TopBar(TopBarIntent::SetAdvanced(advanced)));
-    }
+    section(ui, "Developer");
     ui.checkbox(&mut state.dev_mode, "Developer mode")
         .on_hover_text(
             "Add deep diagnostics — per-phase timings, worker queue depth, \

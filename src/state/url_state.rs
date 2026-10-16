@@ -79,9 +79,6 @@ pub(crate) struct UrlParams {
     pub view: ViewState,
     /// Developer mode flag — `true` only when `?dev=true` is present.
     pub dev: bool,
-    /// UI mode override: `Some(true)` = Advanced, `Some(false)` = Basic,
-    /// `None` = use stored preference. Set via `?ui=advanced` / `?ui=basic`.
-    pub ui_advanced: Option<bool>,
 }
 
 /// Parse URL query parameters from the current browser URL.
@@ -94,7 +91,6 @@ pub(crate) fn parse_from_url() -> UrlParams {
         lon: None,
         view: ViewState::default(),
         dev: false,
-        ui_advanced: None,
     };
 
     let Ok(search) = web_sys::window().expect("no window").location().search() else {
@@ -124,13 +120,8 @@ pub(crate) fn parse_from_url() -> UrlParams {
                 }
             }
             "dev" => params.dev = value == "true",
-            "ui" => {
-                params.ui_advanced = match value {
-                    "advanced" => Some(true),
-                    "basic" => Some(false),
-                    _ => None,
-                };
-            }
+            // `ui=basic|advanced` is retired: the modes are gone, so the key
+            // falls through with every other unknown one.
             _ => {}
         }
     }
