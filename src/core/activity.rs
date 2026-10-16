@@ -224,11 +224,11 @@ pub(crate) struct ThroughputReadout {
     pub samples: usize,
 }
 
-/// Cumulative session figures shown in the Details disclosure.
+/// Cumulative session figures shown in the Details disclosure. The raw
+/// request counts are developer rows ([`ActivityDetailVm`]), as PRODUCT.md
+/// asks (one-instrument §11).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct SessionTotals {
-    pub requests: u32,
-    pub failed_requests: u32,
     pub bytes: u64,
     pub cache_bytes: u64,
 }
@@ -247,6 +247,10 @@ pub(crate) struct NetworkRow {
 /// Dev-only detail rows.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ActivityDetailVm {
+    /// HTTP requests this session (the service worker's count when it has
+    /// seen traffic, else the download channel's).
+    pub requests: u32,
+    pub failed_requests: u32,
     pub worker: WorkerLoad,
     pub http_in_flight: u32,
     pub fps: Option<f64>,
@@ -337,15 +341,6 @@ impl ActivityVm {
                     samples: inputs.throughput.len(),
                 }),
             session: SessionTotals {
-                // The service-worker aggregate sees *all* traffic (including
-                // requests the download channel never issued), so prefer it
-                // when the listener is attached and has seen anything.
-                requests: if inputs.sw_aggregate.total_requests > 0 {
-                    inputs.sw_aggregate.total_requests
-                } else {
-                    inputs.session_requests
-                },
-                failed_requests: inputs.sw_aggregate.failed_requests,
                 bytes: if inputs.sw_aggregate.total_bytes > 0 {
                     inputs.sw_aggregate.total_bytes
                 } else {
@@ -356,6 +351,15 @@ impl ActivityVm {
             rows,
             network,
             detail: inputs.dev.map(|dev| ActivityDetailVm {
+                // The service-worker aggregate sees *all* traffic (including
+                // requests the download channel never issued), so prefer it
+                // when the listener is attached and has seen anything.
+                requests: if inputs.sw_aggregate.total_requests > 0 {
+                    inputs.sw_aggregate.total_requests
+                } else {
+                    inputs.session_requests
+                },
+                failed_requests: inputs.sw_aggregate.failed_requests,
                 worker: inputs.worker,
                 http_in_flight: inputs.http_in_flight,
                 fps: dev.fps,
@@ -1136,10 +1140,29 @@ mod coverage_tests {
             failed_requests: 2,
             total_bytes: 9_000,
         };
+        f.dev = Some(ActivityDevInputs::default());
         let vm = f.vm();
-        assert_eq!(vm.session.requests, 42);
-        assert_eq!(vm.session.failed_requests, 2);
+        let detail = vm.detail.expect("developer rows");
+        assert_eq!(detail.requests, 42);
+        assert_eq!(detail.failed_requests, 2);
         assert_eq!(vm.session.bytes, 9_000);
+    }
+
+    /// Raw request counts are developer rows only (one-instrument §11):
+    /// outside developer mode the Details carry bytes and cache, no counts.
+    #[wasm_bindgen_test]
+    fn request_counts_only_in_developer_mode() {
+        let mut f = Fixture::new();
+        f.aggregate = NetworkAggregate {
+            total_requests: 42,
+            failed_requests: 2,
+            total_bytes: 9_000,
+        };
+        let vm = f.vm();
+        assert!(vm.detail.is_none());
+        assert_eq!(vm.session.bytes, 9_000);
+        f.dev = Some(ActivityDevInputs::default());
+        assert_eq!(f.vm().detail.map(|d| d.requests), Some(42));
     }
 
     /// Without a service worker, the channel counters are used instead.
@@ -1167,10 +1190,10 @@ mod coverage_tests {
                 cache_size_bytes: 0,
                 stream: Stream::Off,
                 sheet_open: false,
-                dev: None,
+                dev: Some(ActivityDevInputs::default()),
             }
         });
-        assert_eq!(vm.session.requests, 7);
+        assert_eq!(vm.detail.expect("developer rows").requests, 7);
         assert_eq!(vm.session.bytes, 700);
     }
 
