@@ -46,11 +46,14 @@ impl RailTab {
         }
     }
 
-    /// The tab's keyboard hint in its title row ("P · E" cycles the
-    /// product and the ladder).
-    pub(crate) fn hint(self) -> Option<&'static str> {
+    /// The tab's keyboard hint in its title row, in words, with a hover that
+    /// spells the keys out: `(short, hover)`.
+    pub(crate) fn hint(self) -> Option<(&'static str, &'static str)> {
         match self {
-            RailTab::View => Some("P \u{00B7} E"),
+            RailTab::View => Some((
+                "keys: P product, E tilt",
+                "P cycles the product; E steps down the tilt ladder and Shift+E up it",
+            )),
             _ => None,
         }
     }
@@ -62,7 +65,7 @@ pub(crate) struct RailTabVm {
     pub tab: RailTab,
     /// The icon is the open tab (drawn in the selected color).
     pub active: bool,
-    /// The count under the icon: layers on the map, events for this site.
+    /// The count badged on the icon: layers on the map, events for this site.
     pub count: Option<usize>,
 }
 
@@ -231,6 +234,14 @@ mod tests {
         assert!(folded.iter().all(|t| !t.active));
         assert_eq!(folded[1].count, Some(5));
         assert_eq!(folded[2].count, None, "no badge for zero events");
+    }
+
+    #[wasm_bindgen_test]
+    fn the_view_hint_names_its_keys_in_words() {
+        let (short, hover) = RailTab::View.hint().unwrap();
+        assert_eq!(short, "keys: P product, E tilt");
+        assert!(hover.contains("Shift+E"));
+        assert!(RailTab::Layers.hint().is_none());
     }
 
     #[wasm_bindgen_test]

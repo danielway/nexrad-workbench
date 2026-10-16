@@ -120,21 +120,7 @@ fn rail(root_ui: &mut egui::Ui, state: &AppState, chrome: &mut crate::subsystem:
                             ui.add_space(room);
                         }
                     }
-                    let color = if t.active {
-                        theme::SELECTED
-                    } else {
-                        theme::TEXT_DIM
-                    };
-                    let mut text = tab_icon(t.tab).to_string();
-                    if let Some(n) = t.count {
-                        text.push_str(&format!("\n{n}"));
-                    }
-                    let resp = ui
-                        .add(
-                            egui::Button::new(RichText::new(text).size(theme::BODY).color(color))
-                                .frame(t.active)
-                                .min_size(egui::vec2(32.0, 30.0)),
-                        )
+                    let resp = rail_cell(ui, tab_icon(t.tab), t.count, t.active)
                         .on_hover_text(t.tab.label());
                     if resp.clicked() {
                         let (tab, expanded) = panels::rail_click(
@@ -151,17 +137,55 @@ fn rail(root_ui: &mut egui::Ui, state: &AppState, chrome: &mut crate::subsystem:
         });
 }
 
+/// One rail tab: a fixed-size cell with the icon centred and any count as a
+/// small badge at the icon's top-right corner, so every tab is the same height
+/// and a count never wraps onto a row of its own.
+fn rail_cell(ui: &mut egui::Ui, icon: &str, count: Option<usize>, active: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(34.0, 32.0), egui::Sense::click());
+    let painter = ui.painter();
+    if active {
+        painter.rect_filled(rect, 4.0, theme::HOVER);
+    } else if resp.hovered() {
+        painter.rect_filled(rect, 4.0, theme::alpha(theme::HOVER, 120));
+    }
+    let color = if active {
+        theme::SELECTED
+    } else if resp.hovered() {
+        theme::TEXT
+    } else {
+        theme::TEXT_DIM
+    };
+    let icon_rect = painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icon,
+        egui::FontId::proportional(theme::BODY),
+        color,
+    );
+    if let Some(n) = count {
+        painter.text(
+            egui::pos2(icon_rect.right() - 1.0, icon_rect.top() + 1.0),
+            egui::Align2::LEFT_CENTER,
+            n.to_string(),
+            egui::FontId::monospace(theme::CAPTION - 1.0),
+            color,
+        );
+    }
+    resp
+}
+
 fn title_row(ui: &mut egui::Ui, tab: RailTab) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.label(RichText::new(tab.label()).strong().color(theme::TEXT));
-        if let Some(hint) = tab.hint() {
+        if let Some((hint, hover)) = tab.hint() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     RichText::new(hint)
                         .size(theme::CAPTION)
                         .color(theme::TEXT_FAINT),
-                );
+                )
+                .on_hover_text(hover);
             });
         }
     });
