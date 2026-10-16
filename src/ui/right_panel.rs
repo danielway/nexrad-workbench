@@ -43,6 +43,8 @@ impl Layer for RightPanelLayer {
                 .min_size(260.0)
                 .max_size(440.0)
                 .show(ctx.root_ui, |ui| {
+                    // Hold the panel's width whichever tab is open.
+                    ui.set_min_width(ui.available_width());
                     let tab = ctx.chrome.rail_tab;
                     title_row(ui, tab);
                     ScrollArea::vertical().show(ui, |ui| match tab {
