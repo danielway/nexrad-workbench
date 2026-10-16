@@ -218,9 +218,17 @@ pub(crate) fn dispatch_state_only(
         Intent::ClearCache => s.dialog(crate::core::dialogs::DialogIntent::RequestConfirm(
             crate::core::dialogs::Confirm::ClearCache,
         )),
-        Intent::ResetSettings => s.dialog(crate::core::dialogs::DialogIntent::RequestConfirm(
-            crate::core::dialogs::Confirm::ResetSettings,
-        )),
+        Intent::ResetSettings => {
+            s.chrome.reset_forgets_key_and_site = false;
+            s.dialog(crate::core::dialogs::DialogIntent::RequestConfirm(
+                crate::core::dialogs::Confirm::ResetSettings,
+            ));
+        }
+        Intent::SetResetForgetsKeyAndSite(on) => s.chrome.reset_forgets_key_and_site = on,
+        Intent::SetDeveloperMode(on) => {
+            s.state.dev_mode = on;
+            s.state.dev_mode_saved = on;
+        }
         Intent::Dialog(intent) => s.dialog(intent),
         Intent::LoopFromScan(scan_start) => s.loop_from_scan(scan_start),
 
@@ -300,9 +308,6 @@ impl DispatchState<'_> {
         if actions.stop_channel {
             self.live.channel.stop();
         }
-        if let Some(msg) = actions.status_message {
-            self.state.toasts.notice(msg);
-        }
         out
     }
 
@@ -352,7 +357,6 @@ impl DispatchState<'_> {
             }
             TopBarIntent::SetView(ViewMode::Flat2D) => self.state.viz_state.switch_to_2d(),
             TopBarIntent::SetView(ViewMode::Globe3D) => self.state.viz_state.switch_to_3d_view(),
-            TopBarIntent::SetAdvanced(on) => self.state.advanced_mode = on,
             TopBarIntent::ToggleShortcutsHelp => {
                 self.chrome.shortcuts_help_visible = !self.chrome.shortcuts_help_visible;
             }
@@ -684,6 +688,8 @@ impl WorkbenchApp {
             | Intent::TopBar(_)
             | Intent::ClearCache
             | Intent::ResetSettings
+            | Intent::SetResetForgetsKeyAndSite(_)
+            | Intent::SetDeveloperMode(_)
             | Intent::Dialog(_)
             | Intent::LoopFromScan(_) => {
                 unreachable!("state-only intent was not consumed by dispatch_state_only")
@@ -798,6 +804,12 @@ impl WorkbenchApp {
     }
 
     fn handle_reset_settings(&mut self) {
+        let current = crate::core::Preferences {
+            mping_api_key: self.diagnostics.mping.api_key.clone(),
+            preferred_site: self.state.preferred_site.clone(),
+            ..Default::default()
+        };
+        let plan = crate::core::prefs::reset_plan(&current, self.chrome.reset_forgets_key_and_site);
         let Some(window) = web_sys::window() else {
             return;
         };
@@ -805,28 +817,20 @@ impl WorkbenchApp {
             log::error!("Unable to access localStorage while resetting settings");
             return;
         };
-        let Ok(len) = storage.length() else {
-            log::error!("Unable to read localStorage length while resetting settings");
-            return;
-        };
-        let mut keys = Vec::with_capacity(len as usize);
-        for i in 0..len {
-            match storage.key(i) {
-                Ok(Some(key)) => keys.push(key),
-                Ok(None) => {}
-                Err(e) => {
-                    log::error!("Failed to enumerate localStorage keys: {:?}", e);
-                    return;
-                }
-            }
-        }
-        for key in crate::state::SavedEvents::keys_to_reset(keys) {
-            if let Err(e) = storage.remove_item(&key) {
+        for key in &plan.remove_keys {
+            if let Err(e) = storage.remove_item(key) {
                 log::error!("Failed to remove setting {key}: {:?}", e);
                 return;
             }
         }
-        let _ = window.location().reload();
+        if let Some(kept) = &plan.write {
+            kept.save();
+        }
+        // Reload with a clean URL so the link cannot re-apply what was just
+        // cleared (developer flag, mode, tilt).
+        let location = window.location();
+        let path = location.pathname().unwrap_or_else(|_| "/".to_string());
+        let _ = location.replace(&path);
     }
 
     fn handle_refresh_timeline(&mut self, ctx: &egui::Context, auto_position: bool) {
@@ -1094,10 +1098,12 @@ mod dispatch_tests {
             Intent::TopBar(TopBarIntent::ToggleTimeZone),
             Intent::ClearCache,
             Intent::ResetSettings,
+            Intent::SetResetForgetsKeyAndSite(true),
+            Intent::SetDeveloperMode(true),
             Intent::Dialog(crate::core::dialogs::DialogIntent::Escape),
             Intent::LoopFromScan(1_000.0),
         ];
-        assert_eq!(state_only.len(), 30);
+        assert_eq!(state_only.len(), 32);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -1415,9 +1421,6 @@ mod dispatch_tests {
         f.apply(Intent::TopBar(TopBarIntent::ToggleShortcutsHelp));
         assert_eq!(f.chrome.shortcuts_help_visible, !help);
 
-        f.apply(Intent::TopBar(TopBarIntent::SetAdvanced(true)));
-        assert!(f.state.advanced_mode);
-
         f.apply(Intent::TopBar(TopBarIntent::SetView(
             crate::geo::ViewMode::Globe3D,
         )));
@@ -1657,14 +1660,12 @@ mod dispatch_tests {
         assert!(!f.playback.state.playing);
         assert!(!f.playback.state.is_pinned());
         assert!((f.playback.state.playback_position() - 5_000.0).abs() < 1e-9);
-        assert_eq!(
-            f.toast().as_deref(),
-            Some(LiveExitReason::UserStopped.message())
-        );
+        // The cap turning to GO LIVE says it; no toast (one-instrument §10).
+        assert_eq!(f.toast(), None);
     }
 
     /// The `StopLive` payload reaches the reducer: `InPlace` keeps the playhead
-    /// where it was and says nothing, unlike the `LiveEdge` case above.
+    /// where it was; neither placement says anything.
     #[wasm_bindgen_test]
     fn stop_live_in_place_keeps_the_playhead_and_stays_silent() {
         let mut f = Fixture::new();

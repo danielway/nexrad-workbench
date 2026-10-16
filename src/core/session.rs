@@ -212,19 +212,6 @@ pub(crate) struct AgePill {
     pub text: String,
 }
 
-/// The legacy three-way mode, now read only by the favicon and tab title. A
-/// projection of the facts kept until those surfaces are retired.
-#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum AppMode {
-    /// No frame under the playhead and not live.
-    #[default]
-    Idle,
-    /// A frame exists under the playhead.
-    Archive,
-    /// A stream runs and the selection is pinned to now.
-    Live,
-}
-
 /// Clock formatting in the user's chosen zone. Implemented by the shell,
 /// which owns the zone (a browser fact).
 pub(crate) trait Clock {
@@ -273,8 +260,6 @@ pub(crate) struct SessionInputs<'a> {
     pub displayed: Option<&'a DisplayedSweep>,
     /// The cut the live stream is filling, if any.
     pub live_cut: Option<LiveCut>,
-    /// A cached scan lies under the playhead (legacy [`AppMode`] only).
-    pub scan_at_playhead: bool,
     /// What the render loop knows about the frame and the playhead (one
     /// frame's length, a render in flight, downloads, the wanted tilt) — the
     /// caption rule reads it beside the frame and playhead facts.
@@ -308,8 +293,9 @@ pub(crate) struct SessionVm {
     /// [`SessionVm::canvas_caption_line`].
     pub canvas_caption: CanvasCaption,
 
-    /// Legacy mode for the favicon and tab title.
-    pub app_mode: AppMode,
+    /// A stream runs and the selection is pinned to now: what the favicon,
+    /// the tab title and the link's pinned selection read.
+    pub live_now: bool,
 }
 
 impl Default for SessionVm {
@@ -332,7 +318,7 @@ impl Default for SessionVm {
             activity_chip: None,
             activity_hover: None,
             canvas_caption: CanvasCaption::None,
-            app_mode: AppMode::Idle,
+            live_now: false,
         }
     }
 }
@@ -412,13 +398,7 @@ impl SessionVm {
         );
         let activity_chip = stream_line(stream, status, inputs.live_cut.as_ref(), now);
         let activity_hover = stream_hover(stream, status);
-        let app_mode = if stream.is_running() && selection_pinned {
-            AppMode::Live
-        } else if inputs.scan_at_playhead {
-            AppMode::Archive
-        } else {
-            AppMode::Idle
-        };
+        let live_now = stream.is_running() && selection_pinned;
 
         Self {
             stream,
@@ -432,7 +412,7 @@ impl SessionVm {
             activity_chip,
             activity_hover,
             canvas_caption,
-            app_mode,
+            live_now,
         }
     }
 
@@ -756,7 +736,6 @@ mod tests {
         playhead: f64,
         displayed: Option<&'a DisplayedSweep>,
         live_cut: Option<LiveCut>,
-        scan_at_playhead: bool,
         caption: CaptionContext,
     }
 
@@ -772,7 +751,6 @@ mod tests {
                 playhead: now,
                 displayed: None,
                 live_cut: None,
-                scan_at_playhead: false,
                 caption: CaptionContext::default(),
             }
         }
@@ -799,7 +777,6 @@ mod tests {
                 playback_position_secs: self.playhead,
                 displayed: self.displayed,
                 live_cut: self.live_cut.clone(),
-                scan_at_playhead: self.scan_at_playhead,
                 caption_context: self.caption,
             })
         }
@@ -1001,7 +978,7 @@ mod tests {
         assert_eq!(vm.now_cap.label(), "LIVE");
         assert_eq!(vm.activity_chip.as_deref(), Some("next 0.5° in ~5:00"));
         assert_eq!(vm.canvas_caption_text(&Utc), None);
-        assert_eq!(vm.app_mode, AppMode::Live);
+        assert!(vm.live_now);
     }
 
     /// B · Pinned, Rays, Latest (inventory 59): the frame is the cut being
@@ -1034,7 +1011,6 @@ mod tests {
         s.playhead = t(11, 46, 4);
         s.displayed = Some(&f);
         s.live_cut = Some(cut(4, 3.1, 1, 6));
-        s.scan_at_playhead = true;
         let vm = s.vm();
         assert_eq!(Utc.hms(vm.frame.as_ref().unwrap().time_secs), "11:45:53");
         assert_eq!(pill(&vm), None);
@@ -1042,7 +1018,7 @@ mod tests {
         assert_eq!(vm.now_cap.label(), "REJOIN");
         assert_eq!(vm.activity_chip.as_deref(), Some("receiving 3.1° · 1 of 6"));
         assert_eq!(vm.canvas_caption_text(&Utc), None);
-        assert_eq!(vm.app_mode, AppMode::Archive);
+        assert!(!vm.live_now);
     }
 
     /// D · Detached into a gap (inventory 36): the caption names both clocks
@@ -1088,7 +1064,7 @@ mod tests {
         assert_eq!(vm.now_cap.label(), "LIVE");
         assert_eq!(vm.activity_chip.as_deref(), Some("next 0.5° in ~1:05"));
         assert_eq!(vm.canvas_caption_text(&Utc), None);
-        assert_eq!(vm.app_mode, AppMode::Live);
+        assert!(vm.live_now);
     }
 
     // ── Facts and edges ────────────────────────────────────────────────────
@@ -1367,33 +1343,23 @@ mod tests {
         );
     }
 
-    /// The legacy mode word: LIVE needs a running stream and a pinned
-    /// selection; otherwise a frame under the playhead decides.
+    /// Live now needs a running stream and a pinned selection.
     #[wasm_bindgen_test]
-    fn app_mode_truth_table() {
+    fn live_now_truth_table() {
         let now = t(12, 0, 0);
-        for (stream, selection, scan, want) in [
-            (true, PINNED, false, AppMode::Live),
-            (true, PINNED, true, AppMode::Live),
-            (
-                true,
-                last_6_frames((now - 600.0, now)),
-                false,
-                AppMode::Live,
-            ),
-            (true, POINT, true, AppMode::Archive),
-            (true, POINT, false, AppMode::Idle),
-            (false, PINNED, true, AppMode::Archive),
-            (false, POINT, true, AppMode::Archive),
-            (false, POINT, false, AppMode::Idle),
+        for (stream, selection, want) in [
+            (true, PINNED, true),
+            (true, last_6_frames((now - 600.0, now)), true),
+            (true, POINT, false),
+            (false, PINNED, false),
+            (false, POINT, false),
         ] {
             let mut s = S::at(now);
             if stream {
                 s = s.streaming(receiving());
             }
             s.selection = selection;
-            s.scan_at_playhead = scan;
-            assert_eq!(s.vm().app_mode, want, "{stream} {selection:?} {scan}");
+            assert_eq!(s.vm().live_now, want, "{stream} {selection:?}");
         }
     }
 

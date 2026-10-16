@@ -1,33 +1,44 @@
 //! User preference persistence — the shell half of
-//! [`UserPreferences`](crate::core::UserPreferences).
+//! [`Preferences`](crate::core::Preferences).
 //!
-//! The struct itself is pure domain vocabulary (`crate::core::UserPreferences`);
-//! this module holds the impls that touch localStorage (`load`/`save`) and the
-//! `AppState` snapshot/apply pair. Loaded on startup, saved automatically when
-//! changes are detected.
+//! The struct, its migration and the reset decision are pure
+//! (`crate::core::prefs`); this module holds the impls that touch
+//! localStorage (`load`/`save`) and the `AppState` snapshot/apply pair.
+//! Loaded on startup, saved automatically when changes are detected.
 
-use crate::core::{ElevationSelection, UserPreferences};
+use crate::core::panels::RailTab;
+use crate::core::prefs::{self, Loaded, ToolPrefs};
+use crate::core::Preferences;
 
 use super::AppState;
 
-impl UserPreferences {
-    const STORAGE_KEY: &'static str = "nexrad_user_preferences";
+/// The panel's tab and whether it is open — kept on the Chrome subsystem,
+/// passed in so `state` doesn't reach for it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PanelPrefs {
+    pub tab: RailTab,
+    pub open: bool,
+}
 
+impl Preferences {
     /// Snapshot current preferences from application state.
     ///
-    /// `mping_api_key` is sourced separately because the mPING state
-    /// lives on the diagnostics subsystem, not on `AppState`.
-    /// `playback` comes from the Playback subsystem.
+    /// `mping_api_key` is sourced separately because the mPING state lives on
+    /// the diagnostics subsystem, `panel` on the Chrome subsystem, and
+    /// `playback` comes from the Playback subsystem. `prev` (the last saved
+    /// snapshot) carries the speed of the mode not playing now.
     pub(crate) fn from_app_state(
         state: &AppState,
         playback: &crate::core::PlaybackState,
+        panel: PanelPrefs,
         mping_api_key: Option<String>,
+        prev: &Preferences,
     ) -> Self {
-        Self {
-            speed: playback.speed,
-            play_mode: playback.play_mode,
-            elevation_auto: state.viz_state.elevation_selection.is_auto(),
-            preferred_elevation_angle: state.viz_state.elevation_selection.angle(),
+        let mut prefs = Self {
+            version: prefs::VERSION,
+            speed_frames: prev.speed_frames,
+            speed_rays: prev.speed_rays,
+            loop_style: playback.time_model.loop_mode,
             layer_states: state.layer_state.geo.states,
             layer_counties: state.layer_state.geo.counties,
             layer_labels: state.layer_state.geo.labels,
@@ -36,41 +47,45 @@ impl UserPreferences {
             layer_national_mosaic: state.layer_state.geo.national_mosaic,
             layer_alerts_warnings: state.layer_state.geo.alerts_warnings,
             layer_alerts_other: state.layer_state.geo.alerts_other,
-            layer_alerts_legacy: None,
             layer_mping: state.layer_state.geo.mping,
-            mping_api_key,
-            use_local_time: state.use_local_time,
-            preferred_site: state.preferred_site.clone(),
             interpolation: state.render_processing.interpolation,
             opacity: state.render_processing.opacity,
             data_age_desaturation: state.render_processing.data_age_desaturation,
-            mobile_override: state.mobile_override,
-            advanced_mode: state.advanced_mode,
+            use_local_time: state.use_local_time,
             pause_stream_while_reviewing: state.pause_stream_while_reviewing,
             autofetch_while_scrubbing: state.autofetch_while_scrubbing,
-        }
+            panel_tab: panel.tab,
+            panel_open: panel.open,
+            tools: ToolPrefs {
+                probe: state.viz_state.data_probe_enabled,
+                distance: state.viz_state.distance_tool_active,
+                storm_cells: state.viz_state.storm_cells_visible,
+                storm_cell_dbz: state.viz_state.storm_cell_threshold_dbz,
+            },
+            developer_mode: state.dev_mode_saved,
+            mping_api_key,
+            preferred_site: state.preferred_site.clone(),
+            recent_sites: state.recent_sites.clone(),
+            mobile_override: state.mobile_override,
+        };
+        prefs.remember_speed(playback.play_mode, playback.chosen_speed());
+        prefs
     }
 
     /// Apply loaded preferences to application state. Returns the saved
     /// `mping_api_key` (if any) so the caller can apply it to the
     /// diagnostics subsystem; `AppState` no longer owns mPING state.
-    /// `playback` is mutated to carry the persisted speed.
+    /// `playback` is given the loop style and the saved speed for its mode
+    /// (the link may then switch the mode and its speed, see `apply_link`).
+    /// The panel is applied by the caller, which owns the Chrome subsystem.
     pub(crate) fn apply_to(
         &self,
         state: &mut AppState,
         playback: &mut crate::core::PlaybackState,
     ) -> Option<String> {
-        playback.speed = self.speed;
-        playback.restore_play_mode(self.play_mode);
-        if self.elevation_auto {
-            state.viz_state.elevation_selection = ElevationSelection::Latest;
-        } else {
-            state.viz_state.elevation_selection = ElevationSelection::Fixed {
-                elevation_number: 1,
-                angle: self.preferred_elevation_angle,
-            };
-            // Will be re-resolved when VCP data arrives
-        }
+        playback.speed = self.speed_for(playback.play_mode);
+        playback.restore_play_mode(playback.play_mode);
+        playback.time_model.loop_mode = self.loop_style;
         state.layer_state.geo.states = self.layer_states;
         state.layer_state.geo.counties = self.layer_counties;
         state.layer_state.geo.labels = self.layer_labels;
@@ -82,98 +97,53 @@ impl UserPreferences {
         state.layer_state.geo.mping = self.layer_mping;
         state.use_local_time = self.use_local_time;
         state.preferred_site = self.preferred_site.clone();
+        state.recent_sites = self.recent_sites.clone();
         state.render_processing.interpolation = self.interpolation;
         state.render_processing.opacity = self.opacity;
         state.render_processing.data_age_desaturation = self.data_age_desaturation;
         state.mobile_override = self.mobile_override;
-        state.advanced_mode = self.advanced_mode;
         state.pause_stream_while_reviewing = self.pause_stream_while_reviewing;
         state.autofetch_while_scrubbing = self.autofetch_while_scrubbing;
+        state.viz_state.data_probe_enabled = self.tools.probe;
+        state.viz_state.distance_tool_active = self.tools.distance;
+        state.viz_state.storm_cells_visible = self.tools.storm_cells;
+        state.viz_state.storm_cell_threshold_dbz = self.tools.storm_cell_dbz;
+        state.dev_mode = self.developer_mode;
+        state.dev_mode_saved = self.developer_mode;
         self.mping_api_key.clone()
     }
 
-    /// Load preferences from localStorage.
+    /// Load preferences from localStorage, migrating an older blob. A
+    /// migrated blob is written back at once, so the retired fields are read
+    /// once and gone.
     pub(crate) fn load() -> Self {
-        let window = match web_sys::window() {
-            Some(w) => w,
-            None => return Self::default(),
-        };
-
-        let storage = match window.local_storage() {
-            Ok(Some(s)) => s,
-            _ => return Self::default(),
-        };
-
-        let json = match storage.get_item(Self::STORAGE_KEY) {
-            Ok(Some(s)) => s,
-            _ => return Self::default(),
-        };
-
-        // Two-phase parse: first as raw JSON to detect missing fields for
-        // migration, then to the typed struct. Existing users (stored prefs
-        // from before `advanced_mode` existed) are promoted to Advanced so
-        // their familiar UI is unchanged.
-        let raw: serde_json::Value = match serde_json::from_str(&json) {
-            Ok(v) => v,
-            Err(e) => {
-                log::warn!("Failed to parse user preferences: {}", e);
-                return Self::default();
-            }
-        };
-        let had_advanced_mode_field = raw.get("advanced_mode").is_some();
-        let had_split_alert_layers =
-            raw.get("layer_alerts_warnings").is_some() || raw.get("layer_alerts_other").is_some();
-
-        match serde_json::from_value::<Self>(raw) {
-            Ok(mut prefs) => {
-                if !had_advanced_mode_field {
-                    log::info!(
-                        "Migrating existing user preferences to Advanced mode (no advanced_mode field)"
-                    );
-                    prefs.advanced_mode = true;
-                }
-                // Migrate the old single `layer_alerts` toggle into the split
-                // warnings/other fields: warnings inherit the old on/off state,
-                // watches stay off (the new default).
-                if !had_split_alert_layers {
-                    if let Some(legacy) = prefs.layer_alerts_legacy {
-                        prefs.layer_alerts_warnings = legacy;
-                        prefs.layer_alerts_other = false;
-                    }
-                }
-                prefs.layer_alerts_legacy = None;
-                log::debug!("Loaded user preferences from localStorage");
-                prefs
-            }
-            Err(e) => {
-                log::warn!("Failed to deserialize user preferences: {}", e);
-                Self::default()
+        let stored = web_sys::window()
+            .and_then(|w| w.local_storage().ok().flatten())
+            .and_then(|s| s.get_item(prefs::STORAGE_KEY).ok().flatten());
+        let (prefs, loaded) = prefs::parse_stored(stored.as_deref());
+        match loaded {
+            Loaded::Fresh => log::debug!("No stored preferences; using defaults"),
+            Loaded::Current => log::debug!("Loaded user preferences from localStorage"),
+            Loaded::Migrated { from } => {
+                log::info!("Migrated user preferences from version {from}");
+                prefs.save();
             }
         }
+        prefs
     }
 
     /// Save preferences to localStorage.
     pub(crate) fn save(&self) {
-        let window = match web_sys::window() {
-            Some(w) => w,
-            None => return,
+        let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
+            return;
         };
-
-        let storage = match window.local_storage() {
-            Ok(Some(s)) => s,
-            _ => return,
-        };
-
-        let json = match serde_json::to_string(self) {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!("Failed to serialize user preferences: {}", e);
-                return;
+        match serde_json::to_string(self) {
+            Ok(json) => {
+                if let Err(e) = storage.set_item(prefs::STORAGE_KEY, &json) {
+                    log::warn!("Failed to save user preferences: {:?}", e);
+                }
             }
-        };
-
-        if let Err(e) = storage.set_item(Self::STORAGE_KEY, &json) {
-            log::warn!("Failed to save user preferences: {:?}", e);
+            Err(e) => log::warn!("Failed to serialize user preferences: {}", e),
         }
     }
 }
@@ -181,260 +151,85 @@ impl UserPreferences {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{InterpolationMode, LoopMode, PlaybackMode, PlaybackSpeed};
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    #[wasm_bindgen_test]
-    fn pause_stream_while_reviewing_defaults_off() {
-        // New users / fresh defaults: the data-saver policy starts off (spec §7
-        // / alignment §5 default).
-        assert!(!UserPreferences::default().pause_stream_while_reviewing);
-    }
-
-    #[wasm_bindgen_test]
-    fn legacy_prefs_without_pause_stream_field_deserialize_to_false() {
-        // A stored blob from before the field existed must still parse (serde
-        // default), landing the policy off rather than failing the whole load.
-        let legacy = r#"{"speed":"Normal","advanced_mode":true}"#;
-        let prefs: UserPreferences = serde_json::from_str(legacy).expect("legacy parse");
-        assert!(!prefs.pause_stream_while_reviewing);
-        // A sibling field still round-trips, confirming the blob really lacked
-        // the new field rather than silently defaulting everything.
-        assert!(prefs.advanced_mode);
-    }
-
-    #[wasm_bindgen_test]
-    fn pause_stream_while_reviewing_round_trips() {
-        let mut prefs = UserPreferences::default();
-        prefs.pause_stream_while_reviewing = true;
-        let json = serde_json::to_string(&prefs).expect("serialize");
-        let back: UserPreferences = serde_json::from_str(&json).expect("deserialize");
-        assert!(back.pause_stream_while_reviewing);
-    }
-
-    #[wasm_bindgen_test]
-    fn autofetch_while_scrubbing_defaults_on() {
-        // The default is ON — automatic fetch is the ~95% path (spec §10).
-        assert!(UserPreferences::default().autofetch_while_scrubbing);
-    }
-
-    #[wasm_bindgen_test]
-    fn legacy_prefs_without_autofetch_field_migrate_to_on() {
-        // A stored blob from before the field existed must keep autofetch ON
-        // (the serde default), so existing users' navigation still fills the
-        // canvas — the field's default IS the migration target.
-        let legacy = r#"{"speed":"Normal","advanced_mode":true}"#;
-        let prefs: UserPreferences = serde_json::from_str(legacy).expect("legacy parse");
-        assert!(prefs.autofetch_while_scrubbing);
-    }
-
-    #[wasm_bindgen_test]
-    fn autofetch_while_scrubbing_round_trips_when_disabled() {
-        let mut prefs = UserPreferences::default();
-        prefs.autofetch_while_scrubbing = false;
-        let json = serde_json::to_string(&prefs).expect("serialize");
-        let back: UserPreferences = serde_json::from_str(&json).expect("deserialize");
-        assert!(!back.autofetch_while_scrubbing);
-    }
-}
-
-#[cfg(test)]
-mod coverage_tests {
-    use super::*;
-    use crate::core::InterpolationMode;
-    use crate::core::PlaybackSpeed;
-    use wasm_bindgen_test::wasm_bindgen_test;
-
-    // Re-declared builder idioms (sibling `mod tests` helpers are private).
-    // `AppState::default()` / `PlaybackState::default()` are the constructors
-    // used throughout the state suite (see src/core/persist.rs tests).
     fn states() -> (AppState, crate::core::PlaybackState) {
         (AppState::default(), crate::core::PlaybackState::default())
     }
 
-    // --- serde default table (`#[serde(default = ...)]`) -------------------
-
-    #[wasm_bindgen_test]
-    fn partial_json_fills_serde_defaults() {
-        // A blob with only `speed` set must hydrate every other field from its
-        // serde default function, NOT panic / fail the load.
-        let prefs: UserPreferences =
-            serde_json::from_str(r#"{"speed":"Normal"}"#).expect("partial parse");
-        // `default = "default_true"` fields:
-        assert!(prefs.layer_states);
-        assert!(prefs.layer_counties);
-        assert!(prefs.layer_labels);
-        assert!(prefs.layer_cities);
-        assert!(prefs.layer_alerts_warnings);
-        assert!(prefs.use_local_time);
-        assert!(prefs.data_age_desaturation);
-        assert!(prefs.autofetch_while_scrubbing);
-        // `#[serde(default)]` bool fields → false:
-        assert!(!prefs.elevation_auto);
-        assert!(!prefs.layer_nexrad_sites);
-        assert!(!prefs.layer_national_mosaic);
-        assert!(!prefs.layer_alerts_other);
-        assert!(!prefs.layer_mping);
-        assert!(!prefs.advanced_mode);
-        assert!(!prefs.pause_stream_while_reviewing);
-        // Numeric defaults from explicit default fns:
-        assert!((prefs.preferred_elevation_angle - 0.5).abs() < 1e-6);
-        assert!((prefs.opacity - 1.0).abs() < 1e-6);
-        // Option defaults → None:
-        assert!(prefs.mping_api_key.is_none());
-        assert!(prefs.preferred_site.is_none());
-        assert!(prefs.mobile_override.is_none());
-        assert!(prefs.layer_alerts_legacy.is_none());
-    }
-
-    #[wasm_bindgen_test]
-    fn default_matches_serde_default_construction() {
-        // The hand-written `Default` impl must agree field-for-field with what
-        // serde produces from an empty object (every field defaulted).
-        let from_empty: UserPreferences = serde_json::from_str("{}").expect("empty parse");
-        assert!(from_empty == UserPreferences::default());
-    }
-
-    // --- legacy `layer_alerts` rename capture (serde-pure half) -----------
-
-    #[wasm_bindgen_test]
-    fn legacy_layer_alerts_field_captured_into_option() {
-        // The `#[serde(rename = "layer_alerts")]` mapping pulls the old single
-        // toggle into `layer_alerts_legacy` as `Some(_)`. (The promotion into
-        // the split fields happens in `load()` and is not exercised here.)
-        let prefs: UserPreferences =
-            serde_json::from_str(r#"{"layer_alerts":false}"#).expect("legacy alerts parse");
-        assert!(prefs.layer_alerts_legacy == Some(false));
-        let prefs_on: UserPreferences =
-            serde_json::from_str(r#"{"layer_alerts":true}"#).expect("legacy alerts on parse");
-        assert!(prefs_on.layer_alerts_legacy == Some(true));
-    }
-
-    #[wasm_bindgen_test]
-    fn legacy_field_never_serialized_back_as_some_default() {
-        // Default has `layer_alerts_legacy: None`; serializing must NOT bring
-        // the legacy key back as a real value the next load would re-capture.
-        let json = serde_json::to_string(&UserPreferences::default()).expect("serialize");
-        let back: UserPreferences = serde_json::from_str(&json).expect("deserialize");
-        assert!(back.layer_alerts_legacy.is_none());
-    }
-
-    // --- full round-trip of the serde struct ------------------------------
-
-    #[wasm_bindgen_test]
-    fn full_struct_round_trips_through_json() {
-        let mut prefs = UserPreferences::default();
-        prefs.speed = PlaybackSpeed::Double;
-        prefs.play_mode = crate::core::PlaybackMode::Micro;
-        prefs.elevation_auto = true;
-        prefs.preferred_elevation_angle = 3.25;
-        prefs.layer_states = false;
-        prefs.layer_nexrad_sites = true;
-        prefs.layer_alerts_other = true;
-        prefs.mping_api_key = Some("abc-123".to_string());
-        prefs.preferred_site = Some("KDMX".to_string());
-        prefs.interpolation = InterpolationMode::Bilinear;
-        prefs.opacity = 0.42;
-        prefs.mobile_override = Some(true);
-        prefs.advanced_mode = true;
-        prefs.use_local_time = false;
-        let json = serde_json::to_string(&prefs).expect("serialize");
-        let back: UserPreferences = serde_json::from_str(&json).expect("deserialize");
-        assert!(back == prefs);
-    }
-
-    // --- from_app_state snapshot mapping ----------------------------------
-
-    #[wasm_bindgen_test]
-    fn from_app_state_default_reads_fixed_elevation() {
-        // Default VizState elevation is Fixed{1, 0.5} → not auto, angle 0.5.
-        let (state, playback) = states();
-        let prefs = UserPreferences::from_app_state(&state, &playback, None);
-        assert!(!prefs.elevation_auto);
-        assert!((prefs.preferred_elevation_angle - 0.5).abs() < 1e-6);
-        // Default layer mirror.
-        assert!(prefs.layer_states);
-        assert!(prefs.layer_cities);
-        assert!(!prefs.layer_nexrad_sites);
-        // mping key is sourced separately, passed through verbatim.
-        assert!(prefs.mping_api_key.is_none());
-    }
-
-    #[wasm_bindgen_test]
-    fn from_app_state_passes_mping_key_through() {
-        let (state, playback) = states();
-        let prefs = UserPreferences::from_app_state(&state, &playback, Some("KEY".to_string()));
-        assert!(prefs.mping_api_key == Some("KEY".to_string()));
-    }
-
-    #[wasm_bindgen_test]
-    fn from_app_state_reflects_auto_elevation() {
-        let (mut state, playback) = states();
-        state.viz_state.elevation_selection = ElevationSelection::Latest;
-        let prefs = UserPreferences::from_app_state(&state, &playback, None);
-        assert!(prefs.elevation_auto);
-        // Latest reports angle() == 0.5 by convention.
-        assert!((prefs.preferred_elevation_angle - 0.5).abs() < 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn from_app_state_captures_fixed_angle() {
-        let (mut state, playback) = states();
-        state.viz_state.elevation_selection = ElevationSelection::Fixed {
-            elevation_number: 4,
-            angle: 2.4,
-        };
-        let prefs = UserPreferences::from_app_state(&state, &playback, None);
-        assert!(!prefs.elevation_auto);
-        assert!((prefs.preferred_elevation_angle - 2.4).abs() < 1e-6);
-    }
-
-    // --- apply_to: elevation branch behavior ------------------------------
-
-    #[wasm_bindgen_test]
-    fn apply_to_auto_sets_latest_and_returns_key() {
-        let (mut state, mut playback) = states();
-        let mut prefs = UserPreferences::default();
-        prefs.elevation_auto = true;
-        prefs.mping_api_key = Some("mk".to_string());
-        let returned = prefs.apply_to(&mut state, &mut playback);
-        assert!(state.viz_state.elevation_selection == ElevationSelection::Latest);
-        // apply_to returns the persisted mping key for the diagnostics subsystem.
-        assert!(returned == Some("mk".to_string()));
-    }
-
-    #[wasm_bindgen_test]
-    fn apply_to_fixed_resets_number_to_one_keeps_angle() {
-        // Non-auto applies as Fixed{elevation_number:1, angle}: number is reset
-        // to 1 (re-resolved later from VCP), the angle is preserved verbatim.
-        let (mut state, mut playback) = states();
-        let mut prefs = UserPreferences::default();
-        prefs.elevation_auto = false;
-        prefs.preferred_elevation_angle = 1.75;
-        prefs.apply_to(&mut state, &mut playback);
-        match state.viz_state.elevation_selection {
-            ElevationSelection::Fixed {
-                elevation_number,
-                angle,
-            } => {
-                assert_eq!(elevation_number, 1);
-                assert!((angle - 1.75).abs() < 1e-6);
-            }
-            ElevationSelection::Latest => panic!("expected Fixed selection"),
+    fn panel() -> PanelPrefs {
+        PanelPrefs {
+            tab: RailTab::View,
+            open: true,
         }
     }
 
-    // --- from_app_state -> apply_to persistence contract ------------------
+    fn snapshot(state: &AppState, playback: &crate::core::PlaybackState) -> Preferences {
+        Preferences::from_app_state(state, playback, panel(), None, &Preferences::default())
+    }
+
+    #[wasm_bindgen_test]
+    fn from_app_state_passes_mping_key_and_panel_through() {
+        let (state, playback) = states();
+        let p = Preferences::from_app_state(
+            &state,
+            &playback,
+            PanelPrefs {
+                tab: RailTab::Events,
+                open: false,
+            },
+            Some("KEY".to_string()),
+            &Preferences::default(),
+        );
+        assert_eq!(p.mping_api_key.as_deref(), Some("KEY"));
+        assert_eq!(p.panel_tab, RailTab::Events);
+        assert!(!p.panel_open);
+        assert_eq!(p.version, prefs::VERSION);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_speed_of_the_other_mode_is_kept() {
+        let (state, mut playback) = states();
+        playback.speed = PlaybackSpeed::Double;
+        let prev = Preferences {
+            speed_rays: PlaybackSpeed::FifteenToOne,
+            ..Preferences::default()
+        };
+        let p = Preferences::from_app_state(&state, &playback, panel(), None, &prev);
+        assert_eq!(p.speed_frames, PlaybackSpeed::Double);
+        assert_eq!(p.speed_rays, PlaybackSpeed::FifteenToOne);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_live_lock_in_rays_is_not_saved() {
+        let (state, mut playback) = states();
+        playback.restore_play_mode(PlaybackMode::Micro);
+        playback.speed = PlaybackSpeed::Quadruple;
+        playback.enter_pinned_live(1_000.0);
+        assert_eq!(playback.speed, PlaybackSpeed::Realtime);
+        assert_eq!(
+            snapshot(&state, &playback).speed_rays,
+            PlaybackSpeed::Quadruple
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_link_dev_flag_is_not_saved() {
+        // The link sets dev_mode for the session; only the toggle sets the
+        // saved flag.
+        let (mut state, playback) = states();
+        state.dev_mode = true;
+        assert!(!snapshot(&state, &playback).developer_mode);
+        state.dev_mode_saved = true;
+        assert!(snapshot(&state, &playback).developer_mode);
+    }
 
     #[wasm_bindgen_test]
     fn snapshot_then_apply_round_trips_observable_fields() {
-        // Mutate a spread of preference-backed AppState/Playback fields, snapshot
-        // them, apply onto a fresh state, and confirm the snapshot survives.
         let (mut src, mut src_pb) = states();
         src_pb.speed = PlaybackSpeed::Quadruple;
-        src.viz_state.elevation_selection = ElevationSelection::Fixed {
-            elevation_number: 7,
-            angle: 3.5,
-        };
+        src_pb.time_model.loop_mode = LoopMode::PingPong;
         src.layer_state.geo.states = false;
         src.layer_state.geo.nexrad_sites = true;
         src.layer_state.geo.national_mosaic = true;
@@ -442,44 +237,50 @@ mod coverage_tests {
         src.layer_state.geo.mping = true;
         src.use_local_time = false;
         src.preferred_site = Some("KTLX".to_string());
+        src.recent_sites = vec!["KTLX".to_string(), "KDMX".to_string()];
         src.render_processing.interpolation = InterpolationMode::Bilinear;
         src.render_processing.opacity = 0.3;
         src.render_processing.data_age_desaturation = false;
         src.mobile_override = Some(false);
-        src.advanced_mode = true;
         src.pause_stream_while_reviewing = true;
         src.autofetch_while_scrubbing = false;
+        src.viz_state.data_probe_enabled = true;
+        src.viz_state.storm_cells_visible = true;
+        src.viz_state.storm_cell_threshold_dbz = 45.0;
+        src.dev_mode_saved = true;
 
-        let prefs = UserPreferences::from_app_state(&src, &src_pb, None);
-
+        let prefs = snapshot(&src, &src_pb);
         let (mut dst, mut dst_pb) = states();
         prefs.apply_to(&mut dst, &mut dst_pb);
 
-        assert!(dst_pb.speed == PlaybackSpeed::Quadruple);
-        // Fixed angle preserved; elevation_number resets to 1 by contract.
-        match dst.viz_state.elevation_selection {
-            ElevationSelection::Fixed {
-                elevation_number,
-                angle,
-            } => {
-                assert_eq!(elevation_number, 1);
-                assert!((angle - 3.5).abs() < 1e-6);
-            }
-            ElevationSelection::Latest => panic!("expected Fixed selection"),
-        }
+        assert_eq!(dst_pb.speed, PlaybackSpeed::Quadruple);
+        assert_eq!(dst_pb.time_model.loop_mode, LoopMode::PingPong);
         assert!(!dst.layer_state.geo.states);
         assert!(dst.layer_state.geo.nexrad_sites);
         assert!(dst.layer_state.geo.national_mosaic);
         assert!(dst.layer_state.geo.alerts_other);
         assert!(dst.layer_state.geo.mping);
         assert!(!dst.use_local_time);
-        assert!(dst.preferred_site == Some("KTLX".to_string()));
+        assert_eq!(dst.preferred_site.as_deref(), Some("KTLX"));
+        assert_eq!(dst.recent_sites, src.recent_sites);
         assert!(dst.render_processing.interpolation == InterpolationMode::Bilinear);
         assert!((dst.render_processing.opacity - 0.3).abs() < 1e-6);
         assert!(!dst.render_processing.data_age_desaturation);
-        assert!(dst.mobile_override == Some(false));
-        assert!(dst.advanced_mode);
+        assert_eq!(dst.mobile_override, Some(false));
         assert!(dst.pause_stream_while_reviewing);
         assert!(!dst.autofetch_while_scrubbing);
+        assert!(dst.viz_state.data_probe_enabled);
+        assert!(dst.viz_state.storm_cells_visible);
+        assert!((dst.viz_state.storm_cell_threshold_dbz - 45.0).abs() < 1e-6);
+        assert!(dst.dev_mode && dst.dev_mode_saved);
+    }
+
+    #[wasm_bindgen_test]
+    fn default_prefs_match_default_state() {
+        // Applying defaults to a default state changes nothing a fresh
+        // snapshot would see.
+        let (mut state, mut playback) = states();
+        Preferences::default().apply_to(&mut state, &mut playback);
+        assert_eq!(snapshot(&state, &playback), Preferences::default());
     }
 }

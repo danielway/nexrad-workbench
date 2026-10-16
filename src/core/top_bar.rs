@@ -37,8 +37,6 @@ pub(crate) enum TopBarIntent {
     ToggleTimeZone,
     /// 2D or 3D.
     SetView(ViewMode),
-    /// Basic / Advanced controls (kept in ⋯ until depth replaces the modes).
-    SetAdvanced(bool),
     /// Show or hide the keyboard map.
     ToggleShortcutsHelp,
     /// Fold or open the panel (the rail stays).
@@ -66,7 +64,6 @@ pub(crate) struct TopBarInputs<'a> {
     pub zone: &'a str,
     pub use_local_time: bool,
     pub view_mode: ViewMode,
-    pub advanced: bool,
     pub alerts: &'a AlertsState,
     /// Severity-sorted alerts intersecting the map ([`crate::core::diagnostics::DiagnosticsVm`]).
     pub visible_alerts: &'a [VisibleAlert],
@@ -183,7 +180,6 @@ pub(crate) struct TopBarVm {
     pub worker_error: Option<String>,
     /// 2D / 3D; the active one.
     pub view_mode: ViewMode,
-    pub advanced: bool,
     /// ⋯ › About.
     pub version: String,
 }
@@ -278,7 +274,6 @@ impl TopBarVm {
             ),
             worker_error: inputs.worker_init_error.map(str::to_string),
             view_mode: inputs.view_mode,
-            advanced: inputs.advanced,
             version: inputs.version.to_string(),
         }
     }
@@ -526,7 +521,6 @@ mod tests {
             playback_position_secs: now - 600.0,
             displayed: frame,
             live_cut: None,
-            scan_at_playhead: frame.is_some(),
             caption_context: crate::core::canvas::CaptionContext::default(),
             loop_mode: crate::core::LoopMode::Loop,
         })
@@ -570,7 +564,6 @@ mod tests {
                     zone: "UTC",
                     use_local_time: false,
                     view_mode: ViewMode::Flat2D,
-                    advanced: false,
                     alerts: &self.alerts,
                     visible_alerts: &self.visible,
                     map_bounds_known: self.bounds,

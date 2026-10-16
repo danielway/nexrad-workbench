@@ -709,21 +709,20 @@ fn settings_tab(ui: &mut egui::Ui, state: &mut AppState, chrome: &mut crate::sub
         state.push_command(Intent::TopBar(TopBarIntent::ToggleShortcutsHelp));
     }
 
-    section(ui, "Controls");
-    let mut advanced = state.show_advanced();
+    section(ui, "Developer");
+    let mut dev = state.dev_mode;
     if ui
-        .checkbox(&mut advanced, "Advanced controls")
-        .on_hover_text("Show every control (Ctrl+Shift+A)")
+        .checkbox(&mut dev, "Developer mode")
+        .on_hover_text(
+            "Add deep diagnostics — request counts, per-phase timings, worker \
+             queue depth, FPS, and cross-origin isolation — to the activity \
+             sheet's Details section. Saved; a link with ?dev=true turns it on \
+             for that session only.",
+        )
         .changed()
     {
-        state.push_command(Intent::TopBar(TopBarIntent::SetAdvanced(advanced)));
+        state.push_command(Intent::SetDeveloperMode(dev));
     }
-    ui.checkbox(&mut state.dev_mode, "Developer mode")
-        .on_hover_text(
-            "Add deep diagnostics — per-phase timings, worker queue depth, \
-             FPS, and cross-origin isolation — to the activity sheet's Details \
-             section. Adds ?dev=true to the URL when enabled.",
-        );
 
     ui.add_space(8.0);
     if ui

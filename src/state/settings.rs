@@ -26,7 +26,7 @@ impl Default for StorageSettings {
 
 impl StorageSettings {
     /// localStorage key for persisting settings.
-    const STORAGE_KEY: &'static str = "nexrad_storage_settings";
+    const STORAGE_KEY: &'static str = crate::core::prefs::STORAGE_SETTINGS_KEY;
 
     /// Sets the quota and derives the eviction target from
     /// `QuotaPolicy::eviction_target_fraction`.

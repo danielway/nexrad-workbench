@@ -5,8 +5,8 @@
 //! areas of functionality.
 
 use crate::core::{
-    ElevationListEntry, ErrorContext, FrameNow, Intent, PlaybackState, RadarTimeline,
-    RenderProcessing, UserPreferences,
+    ElevationListEntry, ErrorContext, FrameNow, Intent, PlaybackState, Preferences, RadarTimeline,
+    RenderProcessing,
 };
 
 pub(crate) mod acquisition;
@@ -15,6 +15,7 @@ mod frame_clock;
 mod layer;
 mod playback;
 mod preferences;
+pub(crate) use preferences::PanelPrefs;
 pub(crate) mod recency;
 pub(crate) mod render_cache;
 mod saved_events;
@@ -28,7 +29,6 @@ pub(crate) use acquisition::AcquisitionState;
 // The operation vocabulary lives in `core::domain::ops` (the pure activity
 // view-model reads it, and `core` may not import `state`). Re-exported here so
 // existing `crate::state::OperationKind`-style paths keep resolving.
-pub(crate) use crate::core::session::AppMode;
 pub(crate) use crate::core::{DownloadPhase, OperationKind};
 pub(crate) use calendar::{aggregate_buckets, TimeBucket};
 pub(crate) use layer::LayerState;
@@ -144,40 +144,38 @@ pub(crate) struct AppState {
     pub saved_events: SavedEvents,
 
     // ------------------------------------------------------------------------
-    // User preferences and settings — mirrored to `UserPreferences` (localStorage)
-    // and/or the URL. `UserPreferences::from_app_state` reads exactly these.
+    // User preferences and settings — mirrored to `Preferences` (localStorage)
+    // and/or the URL. `Preferences::from_app_state` reads exactly these.
     /// Theme mode selection (System, Dark, Light).
     pub theme_mode: ThemeMode,
     /// Whether to display times in local timezone (false = UTC).
     pub use_local_time: bool,
-    /// Developer mode: shows perf timings, FPS, network metrics, and the COI
-    /// badge in the status bar, and enables the code paths that feed them.
-    /// Mirrored to/from the `?dev=true` URL parameter.
+    /// Developer mode in effect this session: adds the deep diagnostics to
+    /// the activity sheet's Details and enables the code paths that feed
+    /// them. The saved preference, unless the link's `dev=` overrides it for
+    /// the session.
     pub dev_mode: bool,
-    /// Advanced UI mode: when `false` (Basic, default for new users), the
-    /// some surfaces hide controls. When `true`
-    /// (Advanced), all controls are visible regardless of operational mode.
-    /// Persisted in `UserPreferences`; existing users are migrated to `true`.
-    /// Override via `?ui=basic` or `?ui=advanced`.
-    pub advanced_mode: bool,
+    /// Developer mode as saved in Settings › Developer. Changed only by the
+    /// user's toggle, so a link's `dev=true` is never saved.
+    pub dev_mode_saved: bool,
     /// Data-saver policy: when `true`, detaching the playhead stops the live
     /// stream immediately rather than letting it ingest in the background
-    /// (spec §7). Default off; persisted in `UserPreferences`. Read by
+    /// (spec §7). Default off; persisted in `Preferences`. Read by
     /// `Live::detach_playhead` (the single policy site).
     pub pause_stream_while_reviewing: bool,
     /// Acquisition policy: when `true` (default), playhead-driven reactive
     /// prefetch + the anchor fast-path run as the user scrubs/seeks. When
     /// `false` (data-saver), that automatic fetch is suppressed — explicit
     /// range selections and the inspector's tap-to-fetch still work (spec §10).
-    /// Persisted in `UserPreferences`; read by `pump_implicit_prefetch`.
+    /// Persisted in `Preferences`; read by `pump_implicit_prefetch`.
     pub autofetch_while_scrubbing: bool,
     /// Preferred NEXRAD site chosen during first visit. `Some` means the user
     /// has already completed the first-visit flow and this site should be used
     /// as the default on future visits.
     pub preferred_site: Option<String>,
     /// Sites picked this session, most recent first (the site picker's
-    /// Recent group; [`crate::core::site_picker::push_recent`]). Session-only
-    /// until preferences carry it.
+    /// Recent group; [`crate::core::site_picker::push_recent`]). Persisted in
+    /// `Preferences`.
     pub recent_sites: Vec<String>,
     /// Storage settings (quota, eviction targets).
     pub storage_settings: StorageSettings,
@@ -200,16 +198,16 @@ pub(crate) struct AppState {
 /// chrome the top/bottom bars keep inline vs. fold into an overflow `⋯` menu.
 /// Mobile has its own dedicated chrome and ignores this; these tiers apply only
 /// to the desktop layout. Breakpoints are sized against the tightest case (the
-/// Advanced top bar) so the surviving inline content provably fits each tier's
+/// fullest top bar) so the surviving inline content provably fits each tier's
 /// smallest viewport, which is what structurally prevents overlap.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub(crate) enum WidthTier {
     /// `< 720px` (down to the ~500px floor before mobile takes over):
-    /// aggressive overflow — title dropped, status hidden, the Basic/Advanced
-    /// pill and all view pills demoted, timestamp compacted to time-only.
+    /// aggressive overflow — title dropped, status hidden, all view pills
+    /// demoted, timestamp compacted to time-only.
     Cramped,
     /// `720..1080px`: moderate overflow — help/version/UTC/loop demoted, and
-    /// the wide four-pill Advanced view selector folded into the menu.
+    /// the wide view selector folded into the menu.
     Compact,
     /// `>= 1080px`: full desktop layout, nothing collapsed. The ceiling leaves
     /// headroom for a wide NWS alerts chip (many active warnings/watches).
@@ -340,6 +338,9 @@ pub(crate) struct AppStateBootstrap {
     pub state: AppState,
     pub playback: PlaybackState,
     pub mping_api_key: Option<String>,
+    /// The preferences as loaded, for the pieces applied outside `AppState`
+    /// (the panel, and the saved speed for the link's play mode).
+    pub prefs: Preferences,
 }
 
 impl Default for AppStateBootstrap {
@@ -391,22 +392,15 @@ impl AppState {
         // Returns the mPING api key (if any) which lives on the diagnostics
         // subsystem rather than on AppState; the constructor caller is
         // responsible for applying it.
-        let prefs = UserPreferences::load();
+        let prefs = Preferences::load();
         let mping_api_key = prefs.apply_to(&mut state, &mut playback);
 
         AppStateBootstrap {
             state,
             playback,
             mping_api_key,
+            prefs,
         }
-    }
-
-    /// Whether advanced controls should be shown. Helper for UI gating
-    /// throughout the codebase — call this rather than reading
-    /// `advanced_mode` directly so future logic (e.g. forced-advanced
-    /// during a session) can live in one place.
-    pub(crate) fn show_advanced(&self) -> bool {
-        self.advanced_mode
     }
 
     /// Push a command onto the queue for the main update loop to process.
@@ -609,19 +603,9 @@ mod coverage_tests {
     // ---- AppState command queue / gating ----
 
     #[wasm_bindgen_test]
-    fn app_state_default_show_advanced_false() {
+    fn app_state_default_has_no_commands() {
         let state = AppState::default();
-        assert!(!state.show_advanced());
         assert!(state.commands.is_empty());
-    }
-
-    #[wasm_bindgen_test]
-    fn app_state_show_advanced_tracks_flag() {
-        let mut state = AppState::default();
-        state.advanced_mode = true;
-        assert!(state.show_advanced());
-        state.advanced_mode = false;
-        assert!(!state.show_advanced());
     }
 
     #[wasm_bindgen_test]

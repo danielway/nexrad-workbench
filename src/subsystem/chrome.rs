@@ -21,7 +21,7 @@
 //!   Nothing outside the owning widget reads it.
 //!
 //! Anything that is neither is domain state: theme, dev mode, mobile
-//! detection, advanced mode and other preference-style state stay on
+//! detection and other preference-style state stay on
 //! `AppState` (or `UserPreferences`), because business logic reads them
 //! in many places that have nothing to do with chrome rendering.
 
@@ -39,6 +39,9 @@ pub(crate) struct Chrome {
     pub site_modal_open: bool,
     /// The destructive confirmation on screen, if any (one-instrument §12).
     pub confirm: Option<crate::core::dialogs::Confirm>,
+    /// The reset confirmation's "also forget the mPING key and preferred
+    /// site" choice. Off each time the confirmation opens.
+    pub reset_forgets_key_and_site: bool,
     /// The open dialogs and popovers in stacking order: what Escape closes
     /// and whether global shortcuts fire. Synced from the flags each frame.
     pub dialogs: crate::core::dialogs::DialogStack,

@@ -57,9 +57,6 @@ pub(super) fn render_activity_chip(
     font_size: f32,
 ) {
     let idle = vm.state == ActivityState::UpToDate;
-    // Level-0 viewers get a bare glyph when nothing is happening; the label
-    // would be chrome without information.
-    let show_label = !idle || state.show_advanced();
 
     let animate = vm.headline.animate && !super::timeline::reduced_motion(ui.ctx());
     let tint = chip_tint(ui, idle, animate);
@@ -73,10 +70,10 @@ pub(super) fn render_activity_chip(
             text.push(' ');
             text.push_str(&count.to_string());
         }
-        if show_label {
-            text.push(' ');
-            text.push_str(vm.headline.label);
-        }
+        // The chip is always present, so "Up to date" is a state, not an
+        // absence: the label shows at rest too.
+        text.push(' ');
+        text.push_str(vm.headline.label);
 
         let resp = ui.add(
             egui::Button::new(RichText::new(text).size(font_size).strong().color(tint))

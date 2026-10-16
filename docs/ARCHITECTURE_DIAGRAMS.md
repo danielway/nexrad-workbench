@@ -314,9 +314,9 @@ cross-cutting facts panels need: `frame_now_secs`, `visible_bounds`,
 **`SessionVm`** (`core::session`) is built once per frame at the end of
 `Live::refresh` from four facts — stream, playhead, selection, frame — and
 holds the words every status surface prints (selection chip, now cap, age
-pill, activity line, canvas caption). The legacy **`AppMode`** (`Idle` /
-`Archive` / `Live`) is one of its projections and drives the favicon color +
-title prefix.
+pill, activity line, canvas caption). Its `live_now` flag (a running stream
+with the selection pinned) drives the favicon color and the `[LIVE]` title
+prefix.
 
 ---
 
