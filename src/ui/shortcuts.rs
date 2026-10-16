@@ -203,11 +203,24 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         section: SECTION_PLAYBACK,
         owned: None,
         key_label: "E",
-        description: "Cycle elevation up (2D)",
+        description: "Next tilt down the ladder (2D)",
         pressed: |i| no_mods(i, egui::Key::E),
         // In 3D, E is reserved for heading rotation.
         enabled: in_2d,
-        handler: handle_cycle_elevation,
+        handler: |state, live, timeline, playback, _chrome, _| {
+            step_tilt(state, live, timeline, playback, true)
+        },
+    },
+    OneShotShortcut {
+        section: SECTION_PLAYBACK,
+        owned: None,
+        key_label: "Shift+E",
+        description: "Next tilt up the ladder (2D)",
+        pressed: |i| i.modifiers.shift_only() && i.key_pressed(egui::Key::E),
+        enabled: in_2d,
+        handler: |state, live, timeline, playback, _chrome, _| {
+            step_tilt(state, live, timeline, playback, false)
+        },
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
@@ -574,17 +587,20 @@ fn handle_cycle_product(
 ) {
     let products = RadarProduct::all();
     if let Some(idx) = products.iter().position(|p| *p == state.viz_state.product) {
-        state.viz_state.product = products[(idx + 1) % products.len()];
+        state.push_command(crate::core::Intent::TopBar(
+            crate::core::top_bar::TopBarIntent::SetProduct(products[(idx + 1) % products.len()]),
+        ));
     }
 }
 
-fn handle_cycle_elevation(
+/// E / Shift+E: the next row of the one tilt list ([`crate::core::ladder`]),
+/// Latest included, as the same pick a ladder row click makes.
+fn step_tilt(
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
     timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
-    _chrome: &mut crate::subsystem::Chrome,
-    _: &egui::Context,
+    down: bool,
 ) {
     let entries = state.current_elevation_list(
         &playback.state,
@@ -594,24 +610,16 @@ fn handle_cycle_elevation(
             .as_ref()
             .and_then(|v| v.vcp_pattern.as_ref()),
     );
-    if entries.is_empty() {
-        return;
+    let rows = crate::core::ladder::tilt_rows(
+        &state.viz_state.elevation_selection,
+        &entries,
+        state.viz_state.product,
+    );
+    if let Some(pick) = crate::core::ladder::step_tilt(&rows, down) {
+        state.push_command(crate::core::Intent::TopBar(
+            crate::core::top_bar::TopBarIntent::SetTilt(pick),
+        ));
     }
-    let current_idx = match &state.viz_state.elevation_selection {
-        crate::core::ElevationSelection::Fixed {
-            elevation_number, ..
-        } => entries
-            .iter()
-            .position(|e| e.elevation_number == *elevation_number)
-            .unwrap_or(0),
-        crate::core::ElevationSelection::Latest => 0,
-    };
-    let next_idx = (current_idx + 1) % entries.len();
-    let entry = &entries[next_idx];
-    state.viz_state.elevation_selection = crate::core::ElevationSelection::Fixed {
-        elevation_number: entry.elevation_number,
-        angle: entry.angle,
-    };
 }
 
 fn handle_open_site(

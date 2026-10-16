@@ -1,206 +1,196 @@
-//! Pure panel-derivation logic, lifted out of the chrome panels.
+//! The panel on a rail (one-instrument §8): four tabs, View, Layers, Events
+//! and Settings, in one right-side panel that collapses to its 44 px rail.
 //!
-//! The panels (left/right/top/bottom) should *render a view and emit intents*.
-//! This module holds the read-only derivations and small decision predicates
-//! they previously computed inline: the radar-state query the left panel shows,
-//! the high-speed animation freeze rule and the archive sweep-azimuth. All
-//! pure and unit-tested.
-//!
-//! Note: the broad `&mut`-state → intent migration for the interactive panels
-//! (transport, layer toggles, camera) is intentionally *not* done here — see
-//! `docs/CORE_SHELL_MIGRATION_LOG.md` (D6) for why that half is QA-gated.
+//! The ladder itself is [`crate::core::ladder`]. This module holds the
+//! rail's own decisions: which tab a click opens (or whether it folds the
+//! panel), the counts the tab icons keep so a collapsed rail still says what
+//! is on the map, the Layers tab's recency sentence, and the map toolbar's
+//! tool toggles. All pure; the egui layer (`ui::right_panel`, `ui::canvas`)
+//! draws them and emits the intents they name.
 
-use crate::core::Scan;
+use crate::core::recency::RECENCY_SECS;
+use crate::geo::GeoLayerVisibility;
 
-// ---------------------------------------------------------------------------
-// Small shared predicates / math
-// ---------------------------------------------------------------------------
+// ───────────────────────────────────────────────────────────────────────────
+// The rail
+// ───────────────────────────────────────────────────────────────────────────
 
-/// Whether animated radar state (azimuth, elevation, sweep indicator, progress)
-/// should be frozen this frame: playback is advancing *and* faster than 30 s/s.
-/// Above that the rotating indicators flash violently, so they're held still
-/// while static VCP info keeps rendering. (Was an inline `>30.0` in the left
-/// panel; the canvas sweep-line uses the same 30 s/s ceiling.)
-pub(crate) fn animation_frozen(playing: bool, speed_secs_per_sec: f64) -> bool {
-    playing && speed_secs_per_sec > 30.0
+/// One tab of the panel.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum RailTab {
+    /// The product row and the tilt ladder (and, in 3D, volume rendering).
+    #[default]
+    View,
+    /// Map, live and analysis layers.
+    Layers,
+    /// Saved events.
+    Events,
+    /// Storage, data saving, time zone, keyboard map, developer, reset.
+    Settings,
 }
 
-/// The archive sweep-line azimuth from linear progress through `[start, end]`,
-/// or `None` for a non-positive-duration sweep. Mirrors the left panel's inline
-/// `progress * 360 % 360` (note: the `f32` cast happens after the multiply, as
-/// in the original).
-pub(crate) fn archive_azimuth_from_progress(start: f64, end: f64, ts: f64) -> Option<f32> {
-    let dur = end - start;
-    if dur <= 0.0 {
-        return None;
+impl RailTab {
+    pub(crate) const ALL: [RailTab; 4] = [
+        RailTab::View,
+        RailTab::Layers,
+        RailTab::Events,
+        RailTab::Settings,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            RailTab::View => "View",
+            RailTab::Layers => "Layers",
+            RailTab::Events => "Events",
+            RailTab::Settings => "Settings",
+        }
     }
-    let progress = (ts - start) / dur;
-    Some(((progress * 360.0) as f32) % 360.0)
+
+    /// The tab's keyboard hint in its title row, in words, with a hover that
+    /// spells the keys out: `(short, hover)`.
+    pub(crate) fn hint(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            RailTab::View => Some((
+                "keys: P product, E tilt",
+                "P cycles the product; E steps down the tilt ladder and Shift+E up it",
+            )),
+            _ => None,
+        }
+    }
 }
 
-// ---------------------------------------------------------------------------
-// Left-panel radar-state derivation
-// ---------------------------------------------------------------------------
-
-/// State queried from the radar timeline at the current playback timestamp, for
-/// the left panel's azimuth/elevation/VCP readouts. Read-only projection of
-/// the timeline/live/playback state slices; holds borrows tied to them.
-pub(crate) struct RadarStateAtTimestamp<'a> {
-    /// Current azimuth angle in degrees (0-360), from actual radial data.
-    pub azimuth: Option<f32>,
-    /// Current elevation angle in degrees, from actual radial data.
-    pub elevation: Option<f32>,
-    /// Current VCP number.
-    pub vcp: Option<u16>,
-    /// Elevation number (1-based VCP cut ordinal) of the sweep currently on the
-    /// canvas. The VCP-row highlight keys off this so it stays in sync with the
-    /// displayed cut even when the scan is missing elevations.
-    pub current_elevation_number: Option<u8>,
-    /// Scan progress as a fraction (0.0-1.0).
-    pub scan_progress: Option<f32>,
-    /// Reference to the current scan (for the elevation list).
-    pub scan: Option<&'a Scan>,
-    /// Extracted VCP pattern from live streaming (used when `scan` is `None`).
-    pub live_vcp_pattern: Option<&'a crate::data::ExtractedVcp>,
-    /// Unified position model with sweep timing (live or archived).
-    pub position: Option<crate::core::projection::ScanProjection>,
+/// One rail icon, ready to draw.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct RailTabVm {
+    pub tab: RailTab,
+    /// The icon is the open tab (drawn in the selected color).
+    pub active: bool,
+    /// The count badged on the icon: layers on the map, events for this site.
+    pub count: Option<usize>,
 }
 
-/// Derive the left panel's radar state at the current playback position.
-///
-/// Pure read over core state slices (no egui, no mutation, no I/O). Moved verbatim
-/// from `ui::left_panel`; the high-speed freeze and the archive azimuth now use
-/// [`animation_frozen`] / [`archive_azimuth_from_progress`].
-pub(crate) fn query_radar_state_at_timestamp<'a>(
-    scans: &'a crate::core::RadarTimeline,
-    shadow_scan_boundaries: &'a [crate::core::ScanBoundary],
-    live_mode: &'a crate::core::live_mode::LiveModeState,
-    radar_model: &'a crate::core::live_radar_model::LiveRadarModel,
-    playback: &'a crate::core::PlaybackState,
-) -> RadarStateAtTimestamp<'a> {
-    let ts = playback.playback_position();
+/// The rail's icons. `active` is highlighted only while the panel is open.
+pub(crate) fn rail_tabs(
+    active: RailTab,
+    expanded: bool,
+    layers_on: usize,
+    events_here: usize,
+) -> Vec<RailTabVm> {
+    RailTab::ALL
+        .iter()
+        .map(|&tab| RailTabVm {
+            tab,
+            active: expanded && tab == active,
+            count: match tab {
+                RailTab::Layers => Some(layers_on).filter(|&n| n > 0),
+                RailTab::Events => Some(events_here).filter(|&n| n > 0),
+                _ => None,
+            },
+        })
+        .collect()
+}
 
-    // Resolve position detail through the same single adapter the timeline uses,
-    // so the panel can't drift from it. The in-progress volume is excluded from
-    // `settled_scan_at` and surfaced via `live_volume()` (with its cached cuts
-    // merged in).
-    let view = crate::core::TimelineView::build(
-        scans,
-        shadow_scan_boundaries,
-        Some(live_mode),
-        radar_model.position.as_ref(),
-    );
+/// A click on a rail icon: open that tab, or fold the panel when it is the
+/// open tab already. Returns `(tab, expanded)`.
+pub(crate) fn rail_click(active: RailTab, expanded: bool, clicked: RailTab) -> (RailTab, bool) {
+    if expanded && clicked == active {
+        (active, false)
+    } else {
+        (clicked, true)
+    }
+}
 
-    match view.settled_scan_at(ts) {
-        Some(scan) => {
-            // Time-window match: drives the rotating-azimuth animation, only
-            // meaningful while the cursor is inside a sweep's [start, end].
-            let sweep_at_ts = scan.find_sweep_at_timestamp(ts);
-            // Highlight match: in a gap between sweeps, show the most-recently
-            // completed sweep. Sweeps are stored in elevation order, not time
-            // order (SAILS-style VCPs revisit the lowest cut), so pick by max
-            // end_time rather than Vec position.
-            let sweep_for_highlight = sweep_at_ts.or_else(|| {
-                scan.sweeps
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, s)| s.end_time <= ts)
-                    .max_by(|(_, a), (_, b)| {
-                        a.end_time
-                            .partial_cmp(&b.end_time)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-            });
+/// How many layers draw on the map: the counted badge on the Layers icon.
+pub(crate) fn layers_on(geo: &GeoLayerVisibility, storm_cells: bool) -> usize {
+    [
+        geo.states,
+        geo.counties,
+        geo.cities,
+        geo.labels,
+        geo.nexrad_sites,
+        geo.gps_location,
+        geo.alerts_warnings,
+        geo.alerts_other,
+        geo.national_mosaic,
+        geo.mping,
+        storm_cells,
+    ]
+    .iter()
+    .filter(|&&on| on)
+    .count()
+}
 
-            // Freeze animated state at high playback speeds; static VCP info
-            // (number, name, elevation list) still renders.
-            let is_fast = animation_frozen(
-                playback.playing,
-                playback.speed.timeline_seconds_per_real_second(),
-            );
+// ───────────────────────────────────────────────────────────────────────────
+// Layers
+// ───────────────────────────────────────────────────────────────────────────
 
-            let azimuth = if is_fast {
-                None
-            } else {
-                sweep_at_ts.and_then(|(_, sweep)| {
-                    archive_azimuth_from_progress(sweep.start_time, sweep.end_time, ts)
-                })
-            };
-            let elevation = if is_fast {
-                None
-            } else {
-                sweep_for_highlight.map(|(_, s)| scan.display_angle(s))
-            };
-            let current_elevation_number = if is_fast {
-                None
-            } else {
-                sweep_for_highlight.map(|(_, s)| s.elevation_number)
-            };
-            let scan_progress = if is_fast {
-                None
-            } else {
-                scan.progress_at_timestamp(ts)
-            };
+/// The Layers tab's one sentence over the live rows when the playhead is more
+/// than [`RECENCY_SECS`] behind now (§7: one recency rule, said in words with
+/// a Return to live link instead of greying a checked box). `None` while the
+/// live layers draw.
+pub(crate) fn live_layers_note(data_is_live: bool) -> Option<String> {
+    (!data_is_live).then(|| {
+        format!(
+            "Warnings and the mosaic show current conditions, so they draw only within {} min of now.",
+            (RECENCY_SECS / 60.0).round()
+        )
+    })
+}
 
-            RadarStateAtTimestamp {
-                azimuth,
-                elevation,
-                vcp: Some(scan.vcp),
-                current_elevation_number,
-                scan_progress,
-                scan: Some(scan),
-                live_vcp_pattern: None,
-                position: Some(crate::core::projection::scan_to_projection(scan)),
-            }
-        }
-        None => {
-            // In live mode, read the frame-snapshotted derivations from
-            // LiveRadarModel rather than re-evaluating with a fresh
-            // js_sys::Date::now() — that would drift against every other surface
-            // that consumed the same model.
-            if let Some(position) = view.live_volume() {
-                let frame = &radar_model.frame_now;
-                let vcp = Some(position.vcp_number).filter(|&v| v > 0);
-                let azimuth = radar_model.estimated_azimuth;
-                let sweep_index = frame.sweep_index.or_else(|| {
-                    position
-                        .in_progress_elevation
-                        .map(|e| e.saturating_sub(1) as usize)
-                });
-                let scan_progress = frame.progress;
-                let elevation = frame.elevation_angle.or_else(|| {
-                    sweep_index.and_then(|idx| position.sweeps.get(idx).map(|s| s.elevation_angle))
-                });
-                let current_elevation_number = sweep_index
-                    .and_then(|idx| position.sweeps.get(idx).map(|s| s.elevation_number))
-                    .or(position.in_progress_elevation);
+/// The mPING row's state: drawn, waiting for a key ("Add a key"), or held
+/// back by the recency rule.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum MpingRow {
+    /// Toggleable; reports draw when on.
+    Ready,
+    /// No API key yet: the row says "Add a key".
+    NeedsKey,
+}
 
-                RadarStateAtTimestamp {
-                    azimuth,
-                    elevation,
-                    vcp,
-                    current_elevation_number,
-                    scan_progress,
-                    scan: None,
-                    live_vcp_pattern: radar_model
-                        .volume
-                        .as_ref()
-                        .and_then(|v| v.vcp_pattern.as_ref()),
-                    position: Some(position.clone()),
-                }
-            } else {
-                RadarStateAtTimestamp {
-                    azimuth: None,
-                    elevation: None,
-                    vcp: None,
-                    current_elevation_number: None,
-                    scan_progress: None,
-                    scan: None,
-                    live_vcp_pattern: None,
-                    position: None,
-                }
-            }
-        }
+pub(crate) fn mping_row(has_key: bool) -> MpingRow {
+    if has_key {
+        MpingRow::Ready
+    } else {
+        MpingRow::NeedsKey
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// The map toolbar
+// ───────────────────────────────────────────────────────────────────────────
+
+/// A tool in the map's corner toolbar.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum MapTool {
+    /// Hover the radar for the value under the cursor.
+    Probe,
+    /// Click two points to measure the distance between them.
+    Distance,
+}
+
+/// What a tool toggle leaves behind.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) struct ToolState {
+    pub probe: bool,
+    pub distance: bool,
+    /// Drop the measured points (the distance tool was switched off).
+    pub clear_points: bool,
+}
+
+/// Toggle one tool. The two are independent; switching the distance tool off
+/// clears its measurement.
+pub(crate) fn toggle_map_tool(probe: bool, distance: bool, tool: MapTool) -> ToolState {
+    match tool {
+        MapTool::Probe => ToolState {
+            probe: !probe,
+            distance,
+            clear_points: false,
+        },
+        MapTool::Distance => ToolState {
+            probe,
+            distance: !distance,
+            clear_points: distance,
+        },
     }
 }
 
@@ -210,91 +200,96 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     #[wasm_bindgen_test]
-    fn animation_freeze_gate() {
-        assert!(animation_frozen(true, 31.0));
-        assert!(!animation_frozen(true, 30.0)); // not strictly greater
-        assert!(!animation_frozen(false, 100.0)); // paused never freezes
-        assert!(!animation_frozen(true, 1.0));
+    fn a_click_opens_a_tab_or_folds_the_open_one() {
+        assert_eq!(
+            rail_click(RailTab::View, true, RailTab::Layers),
+            (RailTab::Layers, true)
+        );
+        assert_eq!(
+            rail_click(RailTab::View, true, RailTab::View),
+            (RailTab::View, false)
+        );
+        // A folded rail opens on whichever icon was clicked, the open one too.
+        assert_eq!(
+            rail_click(RailTab::View, false, RailTab::View),
+            (RailTab::View, true)
+        );
+        assert_eq!(
+            rail_click(RailTab::View, false, RailTab::Settings),
+            (RailTab::Settings, true)
+        );
     }
 
     #[wasm_bindgen_test]
-    fn archive_azimuth_basic_and_degenerate() {
-        // Halfway through a 0..10 sweep → 180°.
-        assert_eq!(archive_azimuth_from_progress(0.0, 10.0, 5.0), Some(180.0));
-        // Start → 0°.
-        assert_eq!(archive_azimuth_from_progress(0.0, 10.0, 0.0), Some(0.0));
-        // Zero / negative duration → None.
-        assert_eq!(archive_azimuth_from_progress(10.0, 10.0, 10.0), None);
-        assert_eq!(archive_azimuth_from_progress(10.0, 5.0, 7.0), None);
-    }
-}
+    fn the_rail_lists_four_tabs_and_keeps_its_counts_when_folded() {
+        let open = rail_tabs(RailTab::Events, true, 5, 2);
+        let tabs: Vec<_> = open.iter().map(|t| t.tab.label()).collect();
+        assert_eq!(tabs, ["View", "Layers", "Events", "Settings"]);
+        assert!(open[2].active && !open[0].active);
+        assert_eq!(open[1].count, Some(5));
+        assert_eq!(open[2].count, Some(2));
+        assert_eq!(open[0].count, None);
 
-#[cfg(test)]
-mod coverage_tests {
-    use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test;
-
-    // --- animation_frozen: boundary just above the 30 s/s ceiling, negatives ---
-
-    #[wasm_bindgen_test]
-    fn animation_frozen_just_above_ceiling() {
-        // Strictly greater than 30.0 freezes, even by an epsilon.
-        assert!(animation_frozen(true, 30.000001));
-        // Paused never freezes regardless of speed.
-        assert!(!animation_frozen(false, 30.000001));
-        // Negative speed (reverse) is below the ceiling → not frozen.
-        assert!(!animation_frozen(true, -100.0));
-        // Exactly 30.0 is not strictly greater → not frozen.
-        assert!(!animation_frozen(true, 30.0));
-    }
-
-    // --- archive_azimuth_from_progress: the `% 360.0` wrap and negative paths ---
-
-    #[wasm_bindgen_test]
-    fn archive_azimuth_wraps_past_full_revolution() {
-        // ts == end → progress 1.0 → 360.0 as f32 % 360.0 == 0.0 (wrap to zero).
-        match archive_azimuth_from_progress(0.0, 10.0, 10.0) {
-            Some(a) => assert!((a - 0.0).abs() < 1e-3, "az {a}"),
-            None => panic!("expected Some"),
-        }
-        // ts well past end → progress 2.0 → 720.0 % 360.0 == 0.0.
-        match archive_azimuth_from_progress(0.0, 10.0, 20.0) {
-            Some(a) => assert!((a - 0.0).abs() < 1e-3, "az {a}"),
-            None => panic!("expected Some"),
-        }
-        // progress 1.5 → 540.0 % 360.0 == 180.0.
-        match archive_azimuth_from_progress(0.0, 10.0, 15.0) {
-            Some(a) => assert!((a - 180.0).abs() < 1e-3, "az {a}"),
-            None => panic!("expected Some"),
-        }
-        // progress 1.25 → 450.0 % 360.0 == 90.0.
-        match archive_azimuth_from_progress(0.0, 10.0, 12.5) {
-            Some(a) => assert!((a - 90.0).abs() < 1e-3, "az {a}"),
-            None => panic!("expected Some"),
-        }
+        let folded = rail_tabs(RailTab::Events, false, 5, 0);
+        assert!(folded.iter().all(|t| !t.active));
+        assert_eq!(folded[1].count, Some(5));
+        assert_eq!(folded[2].count, None, "no badge for zero events");
     }
 
     #[wasm_bindgen_test]
-    fn archive_azimuth_negative_progress_keeps_sign() {
-        // ts before start → progress -0.5 → (-180.0) % 360.0 == -180.0
-        // (f32 remainder takes the sign of the dividend).
-        match archive_azimuth_from_progress(0.0, 10.0, -5.0) {
-            Some(a) => assert!((a - (-180.0)).abs() < 1e-3, "az {a}"),
-            None => panic!("expected Some"),
-        }
+    fn the_view_hint_names_its_keys_in_words() {
+        let (short, hover) = RailTab::View.hint().unwrap();
+        assert_eq!(short, "keys: P product, E tilt");
+        assert!(hover.contains("Shift+E"));
+        assert!(RailTab::Layers.hint().is_none());
     }
 
     #[wasm_bindgen_test]
-    fn archive_azimuth_nonzero_start_offset() {
-        // start=100, end=200, ts=150 → progress 0.5 → 180.0.
-        match archive_azimuth_from_progress(100.0, 200.0, 150.0) {
-            Some(a) => assert!((a - 180.0).abs() < 1e-3, "az {a}"),
-            None => panic!("expected Some"),
-        }
-        // start=100, end=200, ts=125 → progress 0.25 → 90.0.
-        match archive_azimuth_from_progress(100.0, 200.0, 125.0) {
-            Some(a) => assert!((a - 90.0).abs() < 1e-3, "az {a}"),
-            None => panic!("expected Some"),
-        }
+    fn layers_on_counts_every_drawn_layer() {
+        let mut geo = GeoLayerVisibility::default();
+        let base = layers_on(&geo, false);
+        geo.mping = true;
+        assert_eq!(layers_on(&geo, false), base + 1);
+        assert_eq!(layers_on(&geo, true), base + 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_recency_sentence_appears_only_away_from_now() {
+        assert_eq!(live_layers_note(true), None);
+        let s = live_layers_note(false).unwrap();
+        assert_eq!(
+            s,
+            "Warnings and the mosaic show current conditions, so they draw only within 15 min of now."
+        );
+        assert_eq!(mping_row(false), MpingRow::NeedsKey);
+        assert_eq!(mping_row(true), MpingRow::Ready);
+    }
+
+    #[wasm_bindgen_test]
+    fn tools_toggle_independently_and_distance_off_clears_points() {
+        assert_eq!(
+            toggle_map_tool(false, true, MapTool::Probe),
+            ToolState {
+                probe: true,
+                distance: true,
+                clear_points: false
+            }
+        );
+        assert_eq!(
+            toggle_map_tool(false, true, MapTool::Distance),
+            ToolState {
+                probe: false,
+                distance: false,
+                clear_points: true
+            }
+        );
+        assert_eq!(
+            toggle_map_tool(false, false, MapTool::Distance),
+            ToolState {
+                probe: false,
+                distance: true,
+                clear_points: false
+            }
+        );
     }
 }

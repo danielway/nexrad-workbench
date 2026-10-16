@@ -321,8 +321,6 @@ fn render_more_body(
     ui.add_space(4.0);
     super::super::right_panel::render_rendering_section(ui, state, playback, chrome);
     ui.add_space(4.0);
-    super::super::right_panel::render_tools_section(ui, state, chrome);
-    ui.add_space(4.0);
     super::super::right_panel::render_events_section(ui, state, live, playback, chrome);
     ui.add_space(4.0);
     super::super::right_panel::render_storage_section(ui, state, chrome);

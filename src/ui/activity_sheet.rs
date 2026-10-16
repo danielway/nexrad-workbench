@@ -86,11 +86,6 @@ fn draw_activity_sheet(
 
                 ui.add_space(6.0);
                 ui.separator();
-                ui.add_space(4.0);
-                render_policy_section(ui, state);
-
-                ui.add_space(6.0);
-                ui.separator();
                 render_details(ui, state, vm, chrome);
             });
     });
@@ -343,42 +338,6 @@ fn render_row_actions(
                     .color(theme::acquisition::CANCELLED),
             );
         }
-    }
-}
-
-/// The acquisition policy toggles (spec §10 / alignment §5). Both persist via
-/// `UserPreferences` on the next throttled save.
-fn render_policy_section(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.label(
-        RichText::new("Data saving")
-            .size(11.0)
-            .strong()
-            .color(theme::TEXT_FAINT),
-    );
-    ui.add_space(2.0);
-
-    let mut autofetch = state.autofetch_while_scrubbing;
-    if ui
-        .checkbox(&mut autofetch, "Auto-fetch while scrubbing")
-        .on_hover_text(
-            "Download scans automatically as you scrub and seek. Turn off to save data — \
-             you can still fetch a selected range or fetch from the scan inspector.",
-        )
-        .changed()
-    {
-        state.push_command(Intent::SetAutofetchWhileScrubbing(autofetch));
-    }
-
-    let mut pause_stream = state.pause_stream_while_reviewing;
-    if ui
-        .checkbox(&mut pause_stream, "Pause live stream while reviewing")
-        .on_hover_text(
-            "When you scrub away from the live edge, stop the background live stream \
-             instead of letting it keep downloading.",
-        )
-        .changed()
-    {
-        state.push_command(Intent::SetPauseStreamWhileReviewing(pause_stream));
     }
 }
 

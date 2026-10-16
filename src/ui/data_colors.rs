@@ -61,19 +61,6 @@ pub(crate) fn storm_cell(max_dbz: f32) -> Color32 {
     }
 }
 
-/// A distinguishing swatch for a saved event in the events list, by its ID.
-pub(crate) fn event_swatch(id: u64) -> Color32 {
-    const PALETTE: &[Color32] = &[
-        Color32::from_rgb(255, 200, 80),
-        Color32::from_rgb(120, 220, 160),
-        Color32::from_rgb(160, 180, 255),
-        Color32::from_rgb(255, 150, 150),
-        Color32::from_rgb(200, 160, 255),
-        Color32::from_rgb(255, 180, 120),
-    ];
-    PALETTE[(id % PALETTE.len() as u64) as usize]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,11 +92,5 @@ mod tests {
         assert!(storm_cell(49.9) == storm_cell(10.0));
         assert!(storm_cell(60.0) != storm_cell(50.0));
         assert!(storm_cell(50.0) != storm_cell(49.0));
-    }
-
-    #[wasm_bindgen_test]
-    fn event_swatch_cycles() {
-        assert!(event_swatch(0) == event_swatch(6));
-        assert!(event_swatch(0) != event_swatch(1));
     }
 }

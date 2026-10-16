@@ -9,7 +9,9 @@ pub struct VcpElevation {
     pub angle: f32,
     /// Waveform type: "CS" (Contiguous Surveillance) or "CD" (Contiguous Doppler)
     pub waveform: &'static str,
-    /// PRF category: "Low", "Med", or "High"
+    /// PRF category: "Low", "Med", or "High". Reference data from the VCP
+    /// tables; nothing draws it since the ladder replaced the PRF column.
+    #[allow(dead_code)]
     pub prf: &'static str,
 }
 

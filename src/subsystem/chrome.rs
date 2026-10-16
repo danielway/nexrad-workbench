@@ -28,10 +28,11 @@
 /// Owner of UI chrome visibility + modal-open state.
 #[derive(Default)]
 pub(crate) struct Chrome {
-    /// Whether the left sidebar is visible (desktop only).
-    pub left_sidebar_visible: bool,
-    /// Whether the right sidebar is visible (desktop only).
+    /// Whether the panel is open beside its rail (desktop only). Folded, the
+    /// rail's 44 px of tab icons stays.
     pub right_sidebar_visible: bool,
+    /// The panel's open tab (one-instrument §8).
+    pub rail_tab: crate::core::panels::RailTab,
     /// Whether the keyboard shortcut help overlay is open.
     pub shortcuts_help_visible: bool,
     /// Whether the site selection modal is open.
@@ -96,11 +97,10 @@ pub(crate) struct Chrome {
 impl Chrome {
     /// Construct with the default-visible flags pre-set.
     ///
-    /// The two desktop sidebars start visible; everything else starts
-    /// hidden. Matches the previous `AppState` defaults.
+    /// The desktop panel starts open on View; everything else starts
+    /// hidden.
     pub(crate) fn new() -> Self {
         Self {
-            left_sidebar_visible: true,
             right_sidebar_visible: true,
             ..Default::default()
         }

@@ -237,6 +237,7 @@ impl ScanProjection {
     }
 
     /// Volume progress 0.0..1.0 at `ts`.
+    #[cfg(test)]
     pub(crate) fn progress_at(&self, ts: f64) -> f32 {
         let duration = self.volume_end - self.volume_start;
         if duration <= 0.0 {

@@ -155,7 +155,7 @@ pub(crate) struct AppState {
     /// Mirrored to/from the `?dev=true` URL parameter.
     pub dev_mode: bool,
     /// Advanced UI mode: when `false` (Basic, default for new users), the
-    /// left panel and several right-panel sections are hidden. When `true`
+    /// some surfaces hide controls. When `true`
     /// (Advanced), all controls are visible regardless of operational mode.
     /// Persisted in `UserPreferences`; existing users are migrated to `true`.
     /// Override via `?ui=basic` or `?ui=advanced`.
@@ -481,10 +481,9 @@ impl AppState {
     }
 
     /// Elevation list for the current playback context, derived per
-    /// call from the same sources the left panel uses: scan at the
-    /// playback timestamp first, then the live VCP if streaming, else
-    /// empty. Both panels share this so they can't disagree about
-    /// what's available.
+    /// call: scan at the playback timestamp first, then the live VCP if
+    /// streaming, else empty. The ladder, the top bar's tilt menu and
+    /// the E shortcut all build their rows from it.
     ///
     /// `playback` / `timeline` / `live_vcp_pattern` are passed in from
     /// their respective subsystems so this method doesn't reach into

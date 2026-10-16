@@ -72,6 +72,39 @@ pub(crate) fn render_radar_sweep(painter: &Painter, vm: &CanvasOverlayVm, p: &Sw
         return;
     };
 
+    // The antenna is on another tilt than the one on screen: its cut is
+    // marked in grey over a whole edge ring, since none of it is in the
+    // picture, and the red now line still turns. No label: the caption names
+    // the antenna's tilt.
+    if marks.offscreen {
+        draw_edge_ring_whole(painter, site, data_r);
+        let grey = theme::radar::sweep_line_stale();
+        painter.line_segment(
+            [site.center, site.at(data_r, marks.start_az)],
+            Stroke::new(1.0_f32, theme::radar::sweep_start_line_stale()),
+        );
+        for az in &marks.chunk_az {
+            painter.line_segment(
+                [site.center, site.at(data_r, *az)],
+                Stroke::new(1.0_f32, theme::radar::chunk_line()),
+            );
+        }
+        painter.line_segment(
+            [site.center, site.at(data_r, marks.edge_az)],
+            Stroke::new(1.5_f32, grey),
+        );
+        if let Some(now_az) = marks.now_az {
+            painter.extend(Shape::dashed_line(
+                &[site.center, site.at(data_r, now_az)],
+                Stroke::new(2.0_f32, theme::NOW),
+                7.0,
+                5.0,
+            ));
+        }
+        draw_hover(painter, vm, p, None);
+        return;
+    }
+
     // The edge ring: the new sweep's arc in white, the rest faint.
     draw_edge_ring_split(
         painter,
