@@ -393,7 +393,7 @@ pub(crate) struct LadderLine {
 /// The ladder, ready to draw.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct VolumeLadder {
-    /// "VCP 212 · 23 cuts · ~7:05".
+    /// "VCP 212 Precipitation · 23 cuts · ~7:05".
     pub summary: Option<String>,
     /// "on 1.3° · az 148° · next volume in ~4:50", "moving to 1.8° · ~0:02",
     /// "volume of 11:08:00 · 5 of 23 cuts on device".
@@ -439,6 +439,15 @@ pub(crate) struct LadderInputs<'a> {
     /// The antenna's estimated azimuth (live only).
     pub antenna_azimuth: Option<f32>,
     pub on_screen: Option<OnScreenCut>,
+}
+
+/// "VCP 212 Precipitation": the number with the pattern's name when the VCP
+/// table knows it, else the number alone.
+pub(crate) fn vcp_label(vcp: u16) -> String {
+    match crate::data::vcp::get_vcp_definition(vcp) {
+        Some(def) => format!("VCP {vcp} {}", def.name),
+        None => format!("VCP {vcp}"),
+    }
 }
 
 /// "7:05"
@@ -757,8 +766,8 @@ impl VolumeLadder {
         let length_label = format!("{}{}", if projected { "~" } else { "" }, mmss(length));
         let summary = Some(if volume.vcp_number > 0 {
             format!(
-                "VCP {} \u{00B7} {} cuts \u{00B7} {length_label}",
-                volume.vcp_number,
+                "{} \u{00B7} {} cuts \u{00B7} {length_label}",
+                vcp_label(volume.vcp_number),
                 cuts.len()
             )
         } else {
@@ -1106,7 +1115,10 @@ mod tests {
                 start_secs: V0,
             }),
         );
-        assert_eq!(l.summary.as_deref(), Some("VCP 212 · 5 cuts · ~3:30"));
+        assert_eq!(
+            l.summary.as_deref(),
+            Some("VCP 212 Precip Fast · 5 cuts · ~3:30")
+        );
         assert_eq!(
             l.status.as_deref(),
             Some("on 1.3° · az 148° · next volume in ~1:15")
@@ -1269,6 +1281,14 @@ mod tests {
         assert!(l.rows.iter().all(|r| r.bars.is_empty()));
         assert_eq!(l.empty, Some("No volume at the playhead"));
         assert!(l.line.is_none() && l.summary.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_vcp_is_named_when_the_table_knows_it() {
+        assert_eq!(vcp_label(212), "VCP 212 Precip Fast");
+        assert_eq!(vcp_label(215), "VCP 215 Precipitation");
+        assert_eq!(vcp_label(35), "VCP 35 Clear Air");
+        assert_eq!(vcp_label(9999), "VCP 9999");
     }
 
     #[wasm_bindgen_test]
