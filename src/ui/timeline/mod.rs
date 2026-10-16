@@ -4,6 +4,7 @@
 
 mod frame_cells;
 mod interaction;
+mod marks;
 mod now_edge;
 mod overlays;
 mod overview;
@@ -21,8 +22,9 @@ use crate::ui::theme::timeline as tl_colors;
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
-use frame_cells::{paint_container, CellAnim, FailedTick};
+use frame_cells::{paint_container, CellAnim};
 use interaction::handle_timeline_interaction;
+use marks::paint_strip_marks;
 use now_edge::render_now_affordance;
 use overlays::render_saved_events;
 use ruler::{render_playback_cursor, render_tick_marks};
@@ -158,6 +160,18 @@ const TICK_CONFIGS: &[TickConfig] = &[
         min_pixels_per_major: 60.0,
     },
 ];
+
+/// The chosen zone's offset east of UTC at `ts` (seconds; 0 in UTC). A
+/// browser fact, so it is read here and handed to the core as a number.
+pub(super) fn tz_offset_secs(ts: f64, use_local: bool) -> i64 {
+    if !use_local {
+        return 0;
+    }
+    // getTimezoneOffset() is minutes positive-west.
+    let d = js_sys::Date::new_0();
+    d.set_time(ts * 1000.0);
+    -(d.get_timezone_offset() as i64) * 60
+}
 
 pub(super) fn select_tick_config(zoom: f64) -> &'static TickConfig {
     // zoom is pixels per second
@@ -427,10 +441,28 @@ pub(super) fn render_timeline(
     // renders the uniform-tick / coverage strip. During a morph both
     // cross-fade. The download-progress ghosts feed the join (queued / in
     // flight) so queued cells render; failed scan-starts come from the
-    // acquisition operations (so a retry clears the tick — the error ring
-    // never forgets).
+    // acquisition operations (so a retry clears the mark — the error ring
+    // never forgets). The same containers give the strip marks in both
+    // tiers, so queued, failed, projected and filling states never vanish
+    // when zoomed out.
     let failed_secs = acquisition.state.failed_scan_starts();
-    let mut failed_ticks: Vec<FailedTick> = Vec::new();
+    // Active in-flight downloads + still-ingesting both count as in-flight.
+    let mut in_flight_all = state.download_progress.in_flight_scans.clone();
+    in_flight_all.extend_from_slice(&state.download_progress.active_scans);
+    let product = state.viz_state.product.to_worker_string();
+    let join = FrameJoinInputs {
+        queued: &state.download_progress.pending_scans,
+        in_flight: &in_flight_all,
+        failed: &failed_secs,
+        product,
+        tilt: state.viz_state.elevation_selection.elevation_number(),
+        active: active_sweep,
+        prev_active: prev_active_sweep,
+    };
+    let containers = frame
+        .view
+        .frame_containers_in_range(view_start, view_end, join);
+    let strip_marks = crate::core::timeline_view::strip_marks(&containers, zoom, tier);
 
     // Micro path (frames-first). Drawn when in Micro or morphing into/out of
     // it; cell heights + alpha scale by `micro_t` so they collapse/expand.
@@ -446,23 +478,6 @@ pub(super) fn render_timeline(
             reduced_motion: reduced,
             morph: micro_t,
         };
-        // Active in-flight downloads + still-ingesting both count as in-flight.
-        let mut in_flight_all = state.download_progress.in_flight_scans.clone();
-        in_flight_all.extend_from_slice(&state.download_progress.active_scans);
-        let product = state.viz_state.product.to_worker_string();
-        let join = FrameJoinInputs {
-            queued: &state.download_progress.pending_scans,
-            in_flight: &in_flight_all,
-            failed: &failed_secs,
-            product,
-            tilt: state.viz_state.elevation_selection.elevation_number(),
-            active: active_sweep,
-            prev_active: prev_active_sweep,
-        };
-
-        let containers = frame
-            .view
-            .frame_containers_in_range(view_start, view_end, join);
 
         // Which container carries the "next data" countdown (tilt + seconds).
         // It is whichever has the next matching cell still to receive data: the
@@ -502,15 +517,7 @@ pub(super) fn render_timeline(
         // `anim.morph`. The Macro layer fades in opposite via its `fade`.
         for (i, container) in containers.iter().enumerate() {
             let carries = countdown_idx == Some(i);
-            paint_container(
-                &painter,
-                &frame,
-                container,
-                anim,
-                countdown,
-                carries,
-                &mut failed_ticks,
-            );
+            paint_container(&painter, &frame, container, anim, countdown, carries);
         }
 
         // Keep the strip animating while live chunks fill or while morphing.
@@ -548,10 +555,29 @@ pub(super) fn render_timeline(
         &state.viz_state.site_id,
     );
 
+    // The range as the core places it: a pinned range runs to the now line.
+    let range_marks = playback.state.selection_range().and_then(|(s, e)| {
+        let site = crate::data::SiteId::new(state.viz_state.site_id.clone());
+        let sizes = timeline.activity.scans(&site, s.min(e), s.max(e));
+        let cost = frame.view.range_cost(s, e, |t| {
+            sizes
+                .at(t)
+                .filter(|v| (v.start - t).abs() < 60.0)
+                .map(|v| v.bytes)
+        });
+        crate::core::timeline_view::range_marks(
+            Some((s, e)),
+            playback.state.is_live_range(),
+            playback.state.selection_in_progress(),
+            frame.now_secs,
+            cost,
+        )
+    });
+
     // Draw the selected range over the frames.
-    if let Some((range_start, range_end)) = playback.state.selection_range() {
-        let start_x = ts_to_x(range_start);
-        let end_x = ts_to_x(range_end);
+    if let Some(rm) = &range_marks {
+        let start_x = ts_to_x(rm.start);
+        let end_x = ts_to_x(rm.end);
 
         if end_x >= overlay_rect.left() && start_x <= overlay_rect.right() {
             let visible_start = start_x.max(overlay_rect.left());
@@ -563,66 +589,68 @@ pub(super) fn render_timeline(
             );
             painter.rect_filled(range_rect, 0.0, tl_colors::selection_fill());
 
-            if start_x >= overlay_rect.left() && start_x <= overlay_rect.right() {
-                painter.line_segment(
-                    [
-                        Pos2::new(start_x, overlay_rect.top()),
-                        Pos2::new(start_x, overlay_rect.bottom()),
-                    ],
-                    Stroke::new(1.5_f32, tl_colors::selection_edge()),
-                );
-            }
-            if end_x >= overlay_rect.left() && end_x <= overlay_rect.right() {
-                painter.line_segment(
-                    [
-                        Pos2::new(end_x, overlay_rect.top()),
-                        Pos2::new(end_x, overlay_rect.bottom()),
-                    ],
-                    Stroke::new(1.5_f32, tl_colors::selection_edge()),
-                );
+            for x in [start_x, end_x] {
+                if x >= overlay_rect.left() && x <= overlay_rect.right() {
+                    painter.line_segment(
+                        [
+                            Pos2::new(x, overlay_rect.top()),
+                            Pos2::new(x, overlay_rect.bottom()),
+                        ],
+                        Stroke::new(1.5_f32, tl_colors::selection_edge()),
+                    );
+                }
             }
         }
     }
 
-    // Draw the playback-position cursor (the neutral "needle").
-    render_playback_cursor(&painter, &frame, playback.state.playback_position());
+    // Queued, failed, projected and filling marks, over cells and blocks.
+    let failed_ticks = paint_strip_marks(&painter, &frame, &strip_marks, response.hover_pos());
+
+    // Draw the playback-position cursor (the white "needle"), or its edge
+    // arrow when it is out of view. While it rides now the now marker
+    // stands for it.
+    let playhead_at_now = live.mode_state.is_active() && playback.state.is_pinned();
+    let edges = crate::core::timeline_view::edge_markers(
+        view_start,
+        view_end,
+        (!playhead_at_now).then(|| playback.state.playback_position()),
+        frame.now_secs,
+    );
+    render_playback_cursor(
+        &painter,
+        &frame,
+        playback.state.playback_position(),
+        edges.playhead,
+    );
 
     // The now affordance: the live edge of the timeline — both the streaming
     // indicator and the control to start/stop it. When now is on-screen it's
     // an inline line + clickable cap; when scrolled off it's an edge chip.
     // Returns the rect it occupies so the seek handler ignores clicks on it.
-    let now_affordance_rect = render_now_affordance(ui, &painter, state, live, &frame);
+    let now_affordance_rect = render_now_affordance(ui, &painter, state, live, &frame, edges.now);
 
-    // Draw selection range labels (boundaries and duration)
-    if let Some((range_start, range_end)) = playback.state.selection_range() {
-        let start_x = ts_to_x(range_start);
-        let end_x = ts_to_x(range_end);
+    // Range labels: the cost at the top (`6:00 · 2 scans · 30 MB`, shown
+    // while drawing and after), the boundary times at the bottom corners.
+    if let Some(rm) = &range_marks {
+        let start_x = ts_to_x(rm.start);
+        let end_x = ts_to_x(rm.end);
 
         if end_x >= scan_rect.left() && start_x <= scan_rect.right() {
             let label_color = tl_colors::SELECTION_LABEL;
-            let duration_secs = range_end - range_start;
-            let duration_text = if duration_secs < 60.0 {
-                format!("{:.0}s", duration_secs)
-            } else if duration_secs < 3600.0 {
-                format!("{:.1}m", duration_secs / 60.0)
-            } else {
-                format!("{:.1}h", duration_secs / 3600.0)
-            };
-
             let center_x =
-                ((start_x + end_x) / 2.0).clamp(scan_rect.left() + 20.0, scan_rect.right() - 20.0);
-            painter.text(
-                Pos2::new(center_x, scan_rect.top() + 3.0),
-                egui::Align2::CENTER_TOP,
-                &duration_text,
-                style::block_font(),
-                label_color,
+                ((start_x + end_x) / 2.0).clamp(scan_rect.left() + 40.0, scan_rect.right() - 40.0);
+            let galley = painter.layout_no_wrap(rm.label.clone(), style::block_font(), label_color);
+            let chip = Rect::from_center_size(
+                Pos2::new(center_x, scan_rect.top() + 3.0 + galley.size().y / 2.0),
+                galley.size() + Vec2::new(6.0, 0.0),
             );
+            painter.rect_filled(chip, 2.0, tl_colors::block_label_backdrop());
+            painter.galley(chip.min + Vec2::new(3.0, 0.0), galley, label_color);
 
             let tick_config_sel = select_tick_config(zoom);
             if (end_x - start_x) > 100.0 {
-                let start_label = format_timestamp(range_start as i64, tick_config_sel, use_local);
-                let end_label = format_timestamp(range_end as i64, tick_config_sel, use_local);
+                let start_label = format_timestamp(rm.start as i64, tick_config_sel, use_local);
+                let end_label = format_timestamp(rm.end as i64, tick_config_sel, use_local);
                 if start_x >= scan_rect.left() && start_x <= scan_rect.right() {
                     painter.text(
                         Pos2::new(start_x + 2.0, scan_rect.bottom() - 2.0),
@@ -645,28 +673,31 @@ pub(super) fn render_timeline(
         }
     }
 
-    // -- Failed-cell retry ticks --
-    // A click on a failed cell's alert triangle pushes the existing
-    // `Intent::RetryFailed` for the matching operation. The tick rects are
-    // added to `suppress_rects` unconditionally below so the generic press-seek
-    // never also fires on a tick.
+    // -- Failure retry marks --
+    // A click on a ⚠ pushes the existing `Intent::RetryFailed` for each
+    // failed operation the mark stands for (one when zoomed in; every merged
+    // scan when zoomed out). The mark rects are added to `suppress_rects`
+    // unconditionally below so the generic press-seek never also fires on one.
     if response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
             if let Some(tick) = failed_ticks.iter().find(|t| t.rect.contains(pos)) {
-                if let Some(op_id) = acquisition.state.failed_operation_for_scan_start(
-                    tick.key_secs.round() as i64,
-                    crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
-                ) {
-                    state.push_command(crate::core::Intent::RetryFailed(op_id));
+                for key in &tick.keys {
+                    if let Some(op_id) = acquisition.state.failed_operation_for_scan_start(
+                        key.round() as i64,
+                        crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+                    ) {
+                        state.push_command(crate::core::Intent::RetryFailed(op_id));
+                    }
                 }
             }
         }
     }
-    // Hover hint on a failed tick.
-    if let Some(hover_pos) = response.hover_pos() {
-        if failed_ticks.iter().any(|t| t.rect.contains(hover_pos)) {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
+    // Hover hint on a failure mark.
+    let over_failure = response
+        .hover_pos()
+        .and_then(|h| failed_ticks.iter().find(|t| t.rect.contains(h)));
+    if over_failure.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
     // -- Interaction handling --

@@ -126,6 +126,39 @@ impl Live {
         }
     }
 
+    /// Seek from a direct-manipulation gesture (a scrub), synchronously so the
+    /// playhead never trails the pointer by a frame (CORE_SHELL.md, "not a
+    /// violation" #3). The decision is [`crate::core::transport::reduce_seek`],
+    /// the same reducer `Intent::Seek` runs. Returns the status line to show,
+    /// if any.
+    pub(crate) fn seek(
+        &mut self,
+        playback: &mut PlaybackState,
+        now: f64,
+        pause_stream_while_reviewing: bool,
+        ts: f64,
+        gesture: crate::core::transport::SeekGesture,
+    ) -> Option<String> {
+        let actions = crate::core::transport::reduce_seek(
+            &crate::core::transport::TransportEnv {
+                now_secs: now,
+                pause_stream_while_reviewing,
+                frame_secs: playback.median_frame_spacing(),
+            },
+            crate::core::transport::TransportSlices {
+                live_mode: &mut self.mode_state,
+                engine: &mut self.engine.borrow_mut(),
+                playback,
+            },
+            ts,
+            gesture,
+        );
+        if actions.stop_channel {
+            self.channel.stop();
+        }
+        actions.status_message
+    }
+
     /// Select a range from a timeline gesture: a live range when `to_live`
     /// and streaming, else a fixed range with the playhead detached. Returns
     /// whether a range was selected. See [`crate::core::transport::select_range`].

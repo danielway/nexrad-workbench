@@ -394,12 +394,6 @@ impl ActivityWindow {
         }
         (first, ((last - first) / DAY_SECS + 1) as usize)
     }
-
-    /// Whether the overview lists this window's days on its own (it doesn't
-    /// past [`MAX_AUTO_FETCH_DAYS`]; the bars then show what's known).
-    pub(crate) fn is_listed(&self) -> bool {
-        self.days().1 <= MAX_AUTO_FETCH_DAYS
-    }
 }
 
 /// Every known site-day summary, with per-site baselines kept current.
@@ -485,6 +479,28 @@ impl ActivityBook {
         out
     }
 
+    /// Starts of the known outage days (the radar recorded nothing) in
+    /// `[start, end)` (Unix seconds). Only days after the site's first day
+    /// with data count: before that the radar wasn't there yet, which is
+    /// not an outage.
+    pub(crate) fn outage_days(&self, site: &SiteId, start: f64, end: f64) -> Vec<i64> {
+        let Some(days) = self.days.get(site) else {
+            return Vec::new();
+        };
+        let Some(first_data) = days.values().find(|d| d.volumes > 0).map(|d| d.day_start) else {
+            return Vec::new();
+        };
+        let first = day_start_of(start).max(first_data);
+        let last = end.ceil() as i64;
+        if last <= first {
+            return Vec::new();
+        }
+        days.range(first..last)
+            .filter(|(_, d)| d.volumes == 0)
+            .map(|(day, _)| *day)
+            .collect()
+    }
+
     /// What's known about the days starting in `[start, end)` (Unix
     /// seconds).
     pub(crate) fn span(&self, site: &SiteId, start: f64, end: f64) -> SpanActivity {
@@ -516,6 +532,13 @@ impl ActivityBook {
 // ---------------------------------------------------------------------------
 // Fetch plan
 // ---------------------------------------------------------------------------
+
+/// Every how many days a window of `count` days lists: every day up to
+/// [`MAX_AUTO_FETCH_DAYS`], then one day in `ceil(count / MAX)`, so a
+/// window of years still lists about [`MAX_AUTO_FETCH_DAYS`] days.
+pub(crate) fn sample_stride_days(count: usize) -> i64 {
+    count.div_ceil(MAX_AUTO_FETCH_DAYS).max(1) as i64
+}
 
 /// UTC midnight at or before `ts` (Unix seconds).
 pub(crate) fn day_start_of(ts: f64) -> i64 {
@@ -575,8 +598,10 @@ impl ActivityFetcher {
     /// The days to list next for `site` across `[start, end)`, nearest the
     /// middle first: days that aren't known (or are stale), aren't in flight
     /// and aren't backing off, within the in-flight limit. Nothing until the
-    /// site's stored days are read, and nothing when the window spans more
-    /// than [`MAX_AUTO_FETCH_DAYS`] (the bars show what's known).
+    /// site's stored days are read. A window wider than
+    /// [`MAX_AUTO_FETCH_DAYS`] (years) keeps listing in the background on a
+    /// sample of its days ([`sample_stride_days`]), so the bars fill in
+    /// instead of the lane staying empty.
     pub(crate) fn plan(
         &self,
         book: &ActivityBook,
@@ -592,12 +617,16 @@ impl ActivityFetcher {
             return Vec::new();
         }
         let (first, count) = window.days();
-        if count == 0 || count > MAX_AUTO_FETCH_DAYS {
+        if count == 0 {
             return Vec::new();
         }
+        let stride = sample_stride_days(count);
         let middle = (window.start + window.end) / 2.0;
         let mut wanted: Vec<i64> = (0..count as i64)
             .map(|i| first + i * DAY_SECS)
+            // Sampled on whole multiples of the stride since the epoch, so
+            // sliding the window keeps the same days.
+            .filter(|day| (day / DAY_SECS).rem_euclid(stride) == 0)
             .filter(|day| {
                 let key = (site.clone(), *day);
                 !self.pending.contains(&key)
@@ -859,8 +888,44 @@ mod tests {
         let plan = fetcher.plan(&book, &site(), &w, now * 1000.0);
         assert_eq!(plan, vec![OCT_9_2024]);
 
-        let years = fetcher.plan(&book, &site(), &window(0.0, 4e8, 0.0, 2e9), 2e12);
-        assert!(years.is_empty());
+        // Years across: still listing, on a stable sample of the days.
+        let w = window(0.0, 4e8, 0.0, 2e9);
+        let stride = sample_stride_days(w.days().1);
+        assert!(stride > 1);
+        let years = fetcher.plan(&book, &site(), &w, 2e12);
+        assert_eq!(years.len(), MAX_IN_FLIGHT);
+        assert!(years.iter().all(|d| (d / DAY_SECS) % stride == 0));
+        // The days nearest the middle come first.
+        let middle = 2e8;
+        assert!(years
+            .iter()
+            .all(|d| (*d as f64 - middle).abs() < (stride * DAY_SECS * 3) as f64));
+    }
+
+    #[wasm_bindgen_test]
+    fn outages_count_only_after_the_site_first_has_data() {
+        let mut book = ActivityBook::default();
+        book.insert_many([
+            day(OCT_9_2024 - 2 * DAY_SECS, 0, "V06"),
+            day(OCT_9_2024, 5_000_000, "V06"),
+            day(OCT_9_2024 + DAY_SECS, 0, "V06"),
+            day(OCT_9_2024 + 2 * DAY_SECS, 6_000_000, "V06"),
+            day(OCT_9_2024 + 3 * DAY_SECS, 0, "V06"),
+        ]);
+        let all = book.outage_days(
+            &site(),
+            (OCT_9_2024 - 5 * DAY_SECS) as f64,
+            (OCT_9_2024 + 10 * DAY_SECS) as f64,
+        );
+        assert_eq!(all, vec![OCT_9_2024 + DAY_SECS, OCT_9_2024 + 3 * DAY_SECS]);
+        // A window clips them.
+        let some = book.outage_days(
+            &site(),
+            (OCT_9_2024 + 2 * DAY_SECS) as f64,
+            (OCT_9_2024 + 10 * DAY_SECS) as f64,
+        );
+        assert_eq!(some, vec![OCT_9_2024 + 3 * DAY_SECS]);
+        assert!(book.outage_days(&SiteId::new("KXXX"), 0.0, 2e9).is_empty());
     }
 
     #[wasm_bindgen_test]
@@ -967,13 +1032,11 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn windows_past_the_auto_fetch_limit_are_not_listed() {
-        let day = DAY_SECS as f64;
-        let start = OCT_9_2024 as f64;
-        assert!(window(start, start + 400.0 * day, 0.0, 2e9).is_listed());
-        assert!(!window(start, start + 401.0 * day, 0.0, 2e9).is_listed());
-        // Only days the archive covers count.
-        assert!(window(start - 5000.0 * day, start + day, start, 2e9).is_listed());
+    fn windows_past_the_auto_fetch_limit_list_a_sample() {
+        assert_eq!(sample_stride_days(1), 1);
+        assert_eq!(sample_stride_days(MAX_AUTO_FETCH_DAYS), 1);
+        assert_eq!(sample_stride_days(MAX_AUTO_FETCH_DAYS + 1), 2);
+        assert_eq!(sample_stride_days(30 * 365), 28);
     }
 
     #[wasm_bindgen_test]

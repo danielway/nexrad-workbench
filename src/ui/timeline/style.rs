@@ -26,13 +26,19 @@ pub(crate) const MAIN_TRACK_H: f32 = 42.0;
 /// The overview above the tick rail: [`OVERVIEW_PAD_TOP`], the lane itself
 /// ([`OVERVIEW_LANE_H`]), and below it the funnel joining the view box to
 /// the strip.
-pub(crate) const OVERVIEW_H: f32 = 30.0;
+pub(crate) const OVERVIEW_H: f32 = 38.0;
 
 /// Gap above the overview lane.
 pub(crate) const OVERVIEW_PAD_TOP: f32 = 2.0;
 
-/// Height of the overview lane (coverage, time labels and the view box).
-pub(crate) const OVERVIEW_LANE_H: f32 = 20.0;
+/// Height of the overview lane (activity bars, time labels, the underline
+/// band and the view box) — 28 px so the storm-activity bars keep room
+/// above the held underline.
+pub(crate) const OVERVIEW_LANE_H: f32 = 28.0;
+
+/// The band along the overview lane's bottom that carries the held
+/// underline and the event pennants' underlines; the bars stand on it.
+pub(crate) const OVERVIEW_UNDERLINE_H: f32 = 3.0;
 
 /// The selection strip between the tick rail and the main track: drag along
 /// it to make a range, drag its handles to resize it.
@@ -100,8 +106,8 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn timeline_total_h_is_one_hundred_px() {
-        // Hand-computed: 30 + 14 + 14 + 42 = 100.
-        assert!((TIMELINE_TOTAL_H - 100.0).abs() < 1e-6);
+    fn timeline_total_h_is_one_hundred_eight_px() {
+        // Hand-computed: 38 + 14 + 14 + 42 = 108.
+        assert!((TIMELINE_TOTAL_H - 108.0).abs() < 1e-6);
     }
 }
