@@ -58,4 +58,11 @@ jobs:
         with:
           folder: dist
           branch: gh-pages
-          clean-exclude: pr-preview/
+          # PR previews and the nightly activity index
+          # (activity-index.yml) live beside the site; keep them.
+          clean-exclude: |
+            pr-preview/
+            activity-index/
+          # Rebase onto anything pushed meanwhile (an index update) rather
+          # than force-pushing over it.
+          force: false
