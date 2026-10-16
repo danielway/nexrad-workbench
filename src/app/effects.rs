@@ -40,7 +40,7 @@ impl WorkbenchApp {
                     let _ = window.open_with_url_and_target(url, "_blank");
                 }
             }
-            Effect::LocateForSite => self.begin_site_geolocation(ctx, false),
+            Effect::LocateForSite => self.begin_site_geolocation(ctx),
             Effect::GeocodeZip(zip) => self.begin_site_zip_lookup(ctx, zip),
         }
     }

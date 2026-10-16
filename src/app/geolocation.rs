@@ -19,12 +19,10 @@ use wasm_bindgen::JsCast;
 
 impl WorkbenchApp {
     /// Open the site picker with Near you locating and start a geolocation
-    /// lookup. The picker's "Use my location" link lists the nearest sites
-    /// (`auto_pick = false`); the phone's location button picks the nearest
-    /// (`auto_pick = true`).
-    pub(crate) fn begin_site_geolocation(&mut self, ctx: &egui::Context, auto_pick: bool) {
+    /// lookup. Near you lists the nearest sites; choosing one is the user's.
+    pub(crate) fn begin_site_geolocation(&mut self, ctx: &egui::Context) {
         self.chrome.site_modal_open = true;
-        self.modals.site.begin_pending(None, auto_pick);
+        self.modals.site.begin_pending(None);
         start_geolocation(self.modals.site.location_sender(), ctx.clone());
     }
 
@@ -34,7 +32,7 @@ impl WorkbenchApp {
     pub(crate) fn begin_site_zip_lookup(&mut self, ctx: &egui::Context, raw: String) {
         match crate::core::geocode::decide_zip_submission(&raw) {
             Ok(zip) => {
-                self.modals.site.begin_pending(Some(zip.clone()), false);
+                self.modals.site.begin_pending(Some(zip.clone()));
                 start_zip_lookup(&zip, self.modals.site.location_sender(), ctx.clone());
             }
             Err(message) => self.modals.site.show_error(message.to_string()),

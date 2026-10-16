@@ -376,29 +376,22 @@ pub(crate) fn push_recent(recent: &mut Vec<String>, id: &str) {
 pub(crate) struct LocationOutcome {
     /// The Near you group's next state.
     pub near: NearYou,
-    /// Pick this site now (the phone's "use my location" button picks the
-    /// nearest; the picker's link only lists them).
-    pub pick: Option<(&'static str, f64, f64)>,
     /// Also show the user's position on the map (a physical fix, not a zip).
     pub show_location: Option<(f64, f64)>,
 }
 
 /// Decide what a geolocation / zip result does. `zip` is the zip the lookup
-/// was for (it names the group); `auto_pick` picks the nearest site.
-pub(crate) fn on_location(
-    result: LocationResult,
-    zip: Option<String>,
-    auto_pick: bool,
-) -> LocationOutcome {
+/// was for (it names the group). It lists the nearest sites; it never
+/// switches site by itself.
+pub(crate) fn on_location(result: LocationResult, zip: Option<String>) -> LocationOutcome {
     match result {
         LocationResult::Success { lat, lon, source } => {
-            let Some(site) = crate::data::nearest_site(lat, lon) else {
+            if crate::data::nearest_site(lat, lon).is_none() {
                 return LocationOutcome {
                     near: NearYou::Failed("Could not find a nearby site".into()),
-                    pick: None,
                     show_location: None,
                 };
-            };
+            }
             let show_location = crate::core::effect::enable_location_layer_on_site_pick(source)
                 .then_some((lat, lon));
             LocationOutcome {
@@ -411,13 +404,11 @@ pub(crate) fn on_location(
                         None
                     },
                 },
-                pick: auto_pick.then_some((site.id, site.lat, site.lon)),
                 show_location,
             }
         }
         LocationResult::Error(msg) => LocationOutcome {
             near: NearYou::Failed(msg),
-            pick: None,
             show_location: None,
         },
     }
@@ -565,9 +556,8 @@ mod tests {
             lon: -93.62,
             source: LocationSource::Geolocation,
         };
-        let out = on_location(ok, None, false);
+        let out = on_location(ok, None);
         assert!(matches!(out.near, NearYou::Found { zip: None, .. }));
-        assert_eq!(out.pick, None);
         assert_eq!(out.show_location, Some((41.58, -93.62)));
 
         let zip = LocationResult::Success {
@@ -575,14 +565,12 @@ mod tests {
             lon: -93.62,
             source: LocationSource::Zip,
         };
-        let out = on_location(zip, Some("50309".into()), true);
+        let out = on_location(zip, Some("50309".into()));
         assert!(matches!(&out.near, NearYou::Found { zip: Some(z), .. } if z == "50309"));
-        assert_eq!(out.pick.map(|p| p.0), Some("KDMX"));
         assert_eq!(out.show_location, None, "a zip is not where you are");
 
-        let err = on_location(LocationResult::Error("denied".into()), None, true);
+        let err = on_location(LocationResult::Error("denied".into()), None);
         assert_eq!(err.near, NearYou::Failed("denied".into()));
-        assert_eq!(err.pick, None);
     }
 
     #[wasm_bindgen_test]

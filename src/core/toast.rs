@@ -183,8 +183,10 @@ impl ToastQueue {
     }
 }
 
-/// The toast words for an error, or `None` when another surface owns it.
-fn error_text(error: &AppError) -> Option<String> {
+/// The words for an error (its toast, and its line in the activity sheet),
+/// or `None` for a download failure, which the activity chip's failure
+/// count owns.
+pub(crate) fn error_text(error: &AppError) -> Option<String> {
     let source = match error {
         AppError::Download { .. } => return None,
         AppError::Worker { .. } => "Decode worker",

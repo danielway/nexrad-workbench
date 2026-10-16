@@ -139,6 +139,6 @@ pub(super) fn render_playback_controls(
 
     // What the app is doing to get data, at the right edge.
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        super::activity_chip::render_activity_chip(ui, activity_vm, state, 11.0);
+        super::activity_chip::render_activity_chip(ui, activity_vm, state, 11.0, false);
     });
 }

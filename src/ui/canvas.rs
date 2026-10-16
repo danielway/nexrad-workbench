@@ -803,8 +803,11 @@ fn render_canvas_caption(
                 .corner_radius(4.0)
                 .inner_margin(egui::Margin::symmetric(10, 5))
                 .show(ui, |ui| {
+                    // A phone-width map wraps the line rather than cutting
+                    // it at both edges.
+                    ui.set_max_width((rect.width() - 40.0).max(120.0));
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         for (words, role) in &line.segments {
                             let color = match role {
                                 CaptionRole::Words => theme::TEXT_DIM,

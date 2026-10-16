@@ -67,6 +67,10 @@ pub(crate) struct Chrome {
     /// queued / recent downloads, throughput, and acquisition policy toggles)
     /// is open. Opened by the ambient activity chip in either layout.
     pub activity_sheet_open: bool,
+    /// The app's error count (`ErrorContext::pushed_count`) when the
+    /// activity sheet last showed the errors; the chip counts the rest
+    /// ([`crate::core::activity::errors_acked`]).
+    pub errors_acked: u64,
     /// Whether the activity sheet's Details disclosure is expanded. Real state
     /// rather than egui memory so it survives a re-layout and is testable.
     pub activity_details_open: bool,
@@ -83,10 +87,6 @@ pub(crate) struct Chrome {
     /// Whether the phone's sheet (the rail's tabs, opened from the
     /// transport row) is open. Its tab is [`Self::rail_tab`].
     pub mobile_settings_open: bool,
-    /// Latched when the mobile bottom-bar location button is tapped.
-    /// The main update loop consumes this flag and kicks off
-    /// geolocation against `SiteModalState`.
-    pub mobile_geolocate_requested: bool,
     /// The phone chrome's auto-hide (one-instrument §13), decided by
     /// [`crate::core::phone::ChromeAutoHide::step`] once a frame before the
     /// layout, and read by the phone bars and the canvas. Inert on desktop.

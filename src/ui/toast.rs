@@ -40,6 +40,8 @@ impl Layer for ToastLayer {
         let bar_bottom = egui_ctx
             .data(|d| d.get_temp::<f32>(anchor_id()))
             .unwrap_or(0.0);
+        // At phone width a long failure wraps inside the screen.
+        let max_w = (egui_ctx.content_rect().width() - 48.0).max(160.0);
         let area = egui::Area::new(egui::Id::new("toast_surface"))
             .order(egui::Order::Tooltip)
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, bar_bottom + GAP))
@@ -51,7 +53,8 @@ impl Layer for ToastLayer {
                     .corner_radius(egui::CornerRadius::same(6))
                     .inner_margin(egui::Margin::symmetric(12, 6))
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| {
+                        ui.set_max_width(max_w);
+                        ui.horizontal_wrapped(|ui| {
                             if toast.kind == ToastKind::Failure {
                                 ui.label(
                                     RichText::new(egui_phosphor::regular::WARNING)

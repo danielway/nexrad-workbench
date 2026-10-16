@@ -642,6 +642,8 @@ impl WorkbenchApp {
             cache_size_bytes: stats.cache_size_bytes,
             stream: self.live.session.stream,
             sheet_open: self.chrome.activity_sheet_open,
+            errors: &self.state.errors,
+            errors_acked: self.chrome.errors_acked,
             dev: self
                 .state
                 .dev_mode
@@ -1061,15 +1063,7 @@ impl eframe::App for WorkbenchApp {
             self.live.radar_model.collecting_elevation(),
         );
 
-        // 19. Consume any deferred geolocation request raised by the
-        // mobile action bar. Handled before layout dispatch so the modal
-        // opens pending in the same frame the button was pressed.
-        if self.state.is_mobile && self.chrome.mobile_geolocate_requested {
-            self.chrome.mobile_geolocate_requested = false;
-            self.begin_site_geolocation(ctx, true);
-        }
-
-        // 19b. Resolve the phone chrome's auto-hide for this frame
+        // 19. Resolve the phone chrome's auto-hide for this frame
         // (core::phone::ChromeAutoHide): once, before layout, so the bars
         // and the canvas agree. A press on hidden chrome reveals it and the
         // canvas swallows that press instead of panning. Inert on desktop.
@@ -1097,6 +1091,11 @@ impl eframe::App for WorkbenchApp {
         // doing?", built once from this frame's inputs so the chip, the sheet
         // and the mobile bar all read the same numbers.
         let activity_vm = self.build_activity_vm();
+        self.chrome.errors_acked = core::activity::errors_acked(
+            &self.state.errors,
+            self.chrome.errors_acked,
+            self.chrome.activity_sheet_open,
+        );
 
         // Toasts: move this frame's legacy status line and fresh errors into
         // the queue, then advance it on the frame clock (core::toast).

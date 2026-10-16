@@ -1,7 +1,8 @@
 //! Compact mobile top bar (one-instrument §13): the same instrument at
-//! 390 px. The site, the frame time with its zone and the age pill, the
-//! alerts chip as a count, and the activity chip — all read from the same
-//! [`crate::core::top_bar::TopBarVm`] as the desktop bar. No mode badge, no
+//! 390 px. The site, the frame time with its zone and the age pill, and the
+//! alerts chip as a count — all read from the same
+//! [`crate::core::top_bar::TopBarVm`] as the desktop bar. The activity chip
+//! sits in the transport, as on the desktop. No mode badge, no
 //! mode-colored line and no version stamp (the version lives in the desktop
 //! bar's ⋯ › About).
 
@@ -10,7 +11,7 @@ use super::super::top_bar::{alerts_chip, emit, readout_pill, worker_error};
 use crate::core::top_bar::{TopBarIntent, TopBarVm};
 use crate::state::AppState;
 use crate::ui::theme;
-use eframe::egui::{self, Align, Frame, Layout, Margin, RichText};
+use eframe::egui::{self, Frame, Margin, RichText};
 
 const TOP_BAR_CONTENT_HEIGHT: f32 = 44.0;
 
@@ -27,13 +28,7 @@ impl Layer for MobileTopBarLayer {
         // Slides away with the bottom chrome while playback runs (§13): the
         // decision is `chrome.mobile_auto_hide`, resolved once per frame.
         let shown = !ctx.chrome.mobile_auto_hide.hidden;
-        draw_mobile_top_bar(
-            ctx.root_ui,
-            shown,
-            ctx.top_bar_vm,
-            ctx.activity_vm,
-            ctx.state,
-        );
+        draw_mobile_top_bar(ctx.root_ui, shown, ctx.top_bar_vm, ctx.state);
     }
 }
 
@@ -66,13 +61,7 @@ fn mobile_readout(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
     }
 }
 
-fn draw_mobile_top_bar(
-    root_ui: &mut egui::Ui,
-    shown: bool,
-    vm: &TopBarVm,
-    activity_vm: &crate::core::activity::ActivityVm,
-    state: &mut AppState,
-) {
+fn draw_mobile_top_bar(root_ui: &mut egui::Ui, shown: bool, vm: &TopBarVm, state: &mut AppState) {
     let ctx = root_ui.ctx().clone();
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
     // under the translucent status bar / notch. Pad the top so OS icons
@@ -127,11 +116,6 @@ fn draw_mobile_top_bar(
                 if let Some(err) = &vm.worker_error {
                     worker_error(ui, err, state);
                 }
-
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_space(8.0);
-                    super::super::activity_chip::render_activity_chip(ui, activity_vm, state, 12.0);
-                });
             });
         });
     let anchor = response.map_or(inset_top, |r| r.response.rect.bottom());
