@@ -341,12 +341,12 @@ fn render_sweep_table(
 /// ⚠ glyph in text color for a failure (red means now).
 fn cell_state_display(state: FrameCellState) -> (&'static str, &'static str, Color32) {
     match state {
-        FrameCellState::Cached => ("\u{25cf}", "on device", theme::ON_DEVICE),
-        FrameCellState::Available => ("\u{25cb}", "in archive", theme::TEXT_DIM),
-        FrameCellState::InFlight => ("\u{25d0}", "downloading", theme::ON_DEVICE),
-        FrameCellState::Queued => ("\u{25cc}", "queued", theme::TEXT_DIM),
+        FrameCellState::Cached => (icons::RECORD, "on device", theme::ON_DEVICE),
+        FrameCellState::Available => (icons::CIRCLE, "in archive", theme::TEXT_DIM),
+        FrameCellState::InFlight => (icons::CIRCLE_HALF, "downloading", theme::ON_DEVICE),
+        FrameCellState::Queued => (icons::CIRCLE_DASHED, "queued", theme::TEXT_DIM),
         FrameCellState::Projected => ("~", "expected", theme::TEXT_FAINT),
-        FrameCellState::Failed => (egui_phosphor::regular::WARNING, "failed", theme::TEXT),
+        FrameCellState::Failed => (icons::WARNING, "failed", theme::TEXT),
     }
 }
 

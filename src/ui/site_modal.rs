@@ -186,7 +186,11 @@ fn draw_site_picker(
         if fresh {
             field.request_focus();
         }
-        let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        // Enter takes the first match from the field, or with nothing focused
+        // (after Escape left the field on a first visit).
+        let nothing_focused = ui.ctx().memory(|m| m.focused().is_none());
+        let enter = (field.lost_focus() || nothing_focused)
+            && ui.input(|i| i.key_pressed(egui::Key::Enter));
 
         let vm = site_picker_vm(&SitePickerInputs {
             query: &picker.query,
@@ -315,7 +319,13 @@ fn site_row(ui: &mut egui::Ui, row: &SiteRow) -> bool {
             egui::Align::Center,
         )
     };
-    push(RichText::new(if primary { "\u{25cf} " } else { "   " }).color(theme::SELECTED));
+    // The filled circle marks the primary; other rows keep its space.
+    let mark = if primary {
+        theme::SELECTED
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    push(RichText::new(format!("{} ", egui_phosphor::regular::RECORD)).color(mark));
     push(RichText::new(row.id).monospace().color(theme::TEXT));
     push(RichText::new(format!("  {}", row.place)).color(theme::TEXT_DIM));
     if row.tdwr {
@@ -340,9 +350,11 @@ fn site_row(ui: &mut egui::Ui, row: &SiteRow) -> bool {
     } else {
         "Show this site"
     };
-    let response = ui.add_sized(
-        [ui.available_width(), 22.0],
-        egui::Button::selectable(primary, job),
-    );
+    // Full-width, left-aligned rows.
+    let response = ui
+        .with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+            ui.add(egui::Button::selectable(primary, job).min_size(Vec2::new(0.0, 22.0)))
+        })
+        .inner;
     response.on_hover_text(hover).clicked()
 }
