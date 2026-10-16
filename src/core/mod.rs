@@ -34,6 +34,7 @@ pub(crate) mod geo_labels;
 pub(crate) mod geo_layers;
 pub(crate) mod geocode;
 pub(crate) mod intent;
+pub(crate) mod keymap;
 pub(crate) mod ladder;
 pub(crate) mod link;
 pub(crate) mod live_coverage;

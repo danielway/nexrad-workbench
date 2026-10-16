@@ -16,10 +16,12 @@
 //! help overlay still lives here so users see the full set in one place.
 
 use crate::core::dialogs::{DialogId, DialogIntent, OwnedShortcut};
+use crate::core::keymap::{keymap_rows, KeyScope};
 use crate::core::transport::{LoopEdge, StepDir, StepUnit};
 use crate::core::RadarProduct;
 use crate::geo::ViewMode;
 use crate::state::AppState;
+use crate::ui::theme;
 use eframe::egui::{self, RichText};
 
 // ---------------------------------------------------------------------------
@@ -49,11 +51,6 @@ const SECTION_ORDER: &[&str] = &[
 /// can be stored in a `const` entry — `Context` is not `Copy`.
 type PressedFn = fn(&egui::InputState) -> bool;
 
-/// Returns true when the shortcut is applicable in the current state.
-/// Mode-restricted shortcuts (2D-only, 3D-only) use this to gate firing
-/// and to gray themselves out of the help overlay (future enhancement).
-type EnabledFn = fn(&AppState) -> bool;
-
 /// Side-effect to apply when the shortcut fires.
 type HandlerFn = fn(
     &mut AppState,
@@ -75,7 +72,8 @@ struct OneShotShortcut {
     key_label: &'static str,
     description: &'static str,
     pressed: PressedFn,
-    enabled: EnabledFn,
+    /// Where it works: gates firing and greys its row on the map.
+    scope: KeyScope,
     handler: HandlerFn,
 }
 
@@ -87,18 +85,7 @@ struct HelpEntry {
     section: &'static str,
     key_label: &'static str,
     description: &'static str,
-}
-
-const fn always_enabled(_: &AppState) -> bool {
-    true
-}
-
-fn in_2d(state: &AppState) -> bool {
-    state.viz_state.view_mode() == ViewMode::Flat2D
-}
-
-fn in_3d(state: &AppState) -> bool {
-    state.viz_state.view_mode() == ViewMode::Globe3D
+    scope: KeyScope,
 }
 
 fn no_mods(i: &egui::InputState, key: egui::Key) -> bool {
@@ -113,7 +100,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "←/→",
         description: "Frame step (prev / next)",
         pressed: |i| no_mods(i, egui::Key::ArrowLeft) || no_mods(i, egui::Key::ArrowRight),
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: handle_frame_step,
     },
     OneShotShortcut {
@@ -125,7 +112,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
             i.modifiers.shift_only()
                 && (i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowRight))
         },
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: handle_scan_step,
     },
     OneShotShortcut {
@@ -134,7 +121,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "[ / ]",
         description: "Speed down / up",
         pressed: |i| no_mods(i, egui::Key::OpenBracket) || no_mods(i, egui::Key::CloseBracket),
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: handle_speed_step,
     },
     OneShotShortcut {
@@ -151,7 +138,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
                 || no_mods(i, egui::Key::Plus)
                 || (i.key_pressed(egui::Key::Equals) && i.modifiers.shift_only())
         },
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: handle_zoom_step,
     },
     OneShotShortcut {
@@ -160,7 +147,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "I",
         description: "Set loop in-point at playhead",
         pressed: |i| no_mods(i, egui::Key::I),
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: handle_loop_in,
     },
     OneShotShortcut {
@@ -169,7 +156,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "O",
         description: "Set loop out-point at playhead",
         pressed: |i| no_mods(i, egui::Key::O),
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: handle_loop_out,
     },
     OneShotShortcut {
@@ -178,7 +165,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "L",
         description: "Go live (re-tether)",
         pressed: |i| no_mods(i, egui::Key::L),
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: handle_go_live,
     },
     OneShotShortcut {
@@ -187,7 +174,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "Shift+L",
         description: "Stop live stream",
         pressed: |i| i.modifiers.shift_only() && i.key_pressed(egui::Key::L),
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: handle_stop_live,
     },
     OneShotShortcut {
@@ -196,7 +183,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "P",
         description: "Cycle product",
         pressed: |i| no_mods(i, egui::Key::P),
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: handle_cycle_product,
     },
     OneShotShortcut {
@@ -206,7 +193,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Next tilt down the ladder (2D)",
         pressed: |i| no_mods(i, egui::Key::E),
         // In 3D, E is reserved for heading rotation.
-        enabled: in_2d,
+        scope: KeyScope::Only2D,
         handler: |state, live, timeline, playback, _chrome, _| {
             step_tilt(state, live, timeline, playback, true)
         },
@@ -217,7 +204,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "Shift+E",
         description: "Next tilt up the ladder (2D)",
         pressed: |i| i.modifiers.shift_only() && i.key_pressed(egui::Key::E),
-        enabled: in_2d,
+        scope: KeyScope::Only2D,
         handler: |state, live, timeline, playback, _chrome, _| {
             step_tilt(state, live, timeline, playback, false)
         },
@@ -229,7 +216,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Open site selection (2D)",
         pressed: |i| no_mods(i, egui::Key::S),
         // In 3D, S is reserved for camera panning.
-        enabled: in_2d,
+        scope: KeyScope::Only2D,
         handler: handle_open_site,
     },
     // ---- View modes -------------------------------------------------
@@ -239,7 +226,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "1",
         description: "2D top-down mode",
         pressed: |i| no_mods(i, egui::Key::Num1),
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: |state, _live, _timeline, _playback, _chrome, _| {
             state.viz_state.switch_to_2d();
         },
@@ -250,7 +237,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "2",
         description: "3D globe mode",
         pressed: |i| no_mods(i, egui::Key::Num2),
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: |state, _live, _timeline, _playback, _chrome, _| {
             state.viz_state.switch_to_3d_view();
         },
@@ -261,7 +248,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "T",
         description: "Toggle 2D / 3D view",
         pressed: |i| no_mods(i, egui::Key::T),
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: |state, _live, _timeline, _playback, _chrome, _| {
             state.viz_state.toggle_2d_3d();
         },
@@ -273,7 +260,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "R",
         description: "Reset camera to default",
         pressed: |i| no_mods(i, egui::Key::R),
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: handle_reset_camera,
     },
     OneShotShortcut {
@@ -282,7 +269,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "F",
         description: "Focus on radar site",
         pressed: |i| no_mods(i, egui::Key::F),
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: handle_focus_site,
     },
     OneShotShortcut {
@@ -291,7 +278,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         key_label: "N",
         description: "Align North up (3D)",
         pressed: |i| no_mods(i, egui::Key::N),
-        enabled: in_3d,
+        scope: KeyScope::Only3D,
         handler: |state, _live, _timeline, _playback, _chrome, _| {
             state.viz_state.camera.align_north()
         },
@@ -307,7 +294,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
             i.key_pressed(egui::Key::Questionmark)
                 || (i.key_pressed(egui::Key::Slash) && i.modifiers.shift)
         },
-        enabled: always_enabled,
+        scope: KeyScope::Always,
         handler: |_state, _live, _timeline, _playback, chrome, _| {
             chrome.shortcuts_help_visible = !chrome.shortcuts_help_visible
         },
@@ -320,31 +307,37 @@ const HELD_KEY_DOCS: &[HelpEntry] = &[
         section: SECTION_PLAYBACK,
         key_label: "Space",
         description: "Play / Pause",
+        scope: KeyScope::Always,
     },
     HelpEntry {
         section: SECTION_CAMERA,
         key_label: "WASD",
         description: "Pan map / camera",
+        scope: KeyScope::Always,
     },
     HelpEntry {
         section: SECTION_CAMERA,
         key_label: "Q / E",
         description: "Rotate view (3D)",
+        scope: KeyScope::Only3D,
     },
     HelpEntry {
         section: SECTION_CAMERA,
         key_label: "Shift",
         description: "2× camera speed",
+        scope: KeyScope::Always,
     },
     HelpEntry {
         section: SECTION_CAMERA,
         key_label: "Ctrl",
         description: "¼× camera speed",
+        scope: KeyScope::Always,
     },
     HelpEntry {
         section: SECTION_GENERAL,
         key_label: "Esc",
         description: "Close the top dialog (shortcuts pause while one is open)",
+        scope: KeyScope::Always,
     },
 ];
 
@@ -374,8 +367,9 @@ pub(crate) fn handle_shortcuts(
     // is checked against the current frame's input; matches run the handler.
     // Under a dialog or popover only the shortcuts the top one owns fire
     // (core::dialogs); Escape is routed to the stack separately.
+    let is_3d = state.viz_state.view_mode() == ViewMode::Globe3D;
     for sc in ONE_SHOT_SHORTCUTS {
-        if !(sc.enabled)(state) || !chrome.dialogs.allows(sc.owned) {
+        if !sc.scope.active(is_3d) || !chrome.dialogs.allows(sc.owned) {
             continue;
         }
         if ctx.input(sc.pressed) {
@@ -738,8 +732,10 @@ fn draw_shortcuts_help(ctx: &egui::Context, state: &mut AppState) {
                 .max_height(max_h)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
+                    let is_3d = state.viz_state.view_mode() == ViewMode::Globe3D;
+                    let mac = ctx.os() == egui::os::OperatingSystem::Mac;
                     for section in SECTION_ORDER {
-                        render_help_section(ui, section);
+                        render_help_section(ui, section, is_3d, mac);
                     }
                 });
         });
@@ -750,17 +746,19 @@ fn draw_shortcuts_help(ctx: &egui::Context, state: &mut AppState) {
     }
 }
 
-fn render_help_section(ui: &mut egui::Ui, section: &'static str) {
+/// One section of the map: every shortcut, the ones inactive in this view
+/// greyed (core::keymap), the modifier spelled the platform's way.
+fn render_help_section(ui: &mut egui::Ui, section: &'static str, is_3d: bool, mac: bool) {
     let registry_entries = ONE_SHOT_SHORTCUTS
         .iter()
         .filter(|sc| sc.section == section)
-        .map(|sc| (sc.key_label, sc.description));
+        .map(|sc| (sc.key_label, sc.description, sc.scope));
     let doc_entries = HELD_KEY_DOCS
         .iter()
         .filter(|h| h.section == section)
-        .map(|h| (h.key_label, h.description));
-    let entries: Vec<_> = doc_entries.chain(registry_entries).collect();
-    if entries.is_empty() {
+        .map(|h| (h.key_label, h.description, h.scope));
+    let rows = keymap_rows(doc_entries.chain(registry_entries), is_3d, mac);
+    if rows.is_empty() {
         return;
     }
 
@@ -777,9 +775,19 @@ fn render_help_section(ui: &mut egui::Ui, section: &'static str) {
         .num_columns(2)
         .spacing([20.0, 4.0])
         .show(ui, |ui| {
-            for (key, description) in entries {
-                ui.label(RichText::new(key).monospace().strong());
-                ui.label(description);
+            for row in rows {
+                let (key_color, text_color) = if row.active {
+                    (theme::TEXT, theme::TEXT_DIM)
+                } else {
+                    (theme::TEXT_FAINT, theme::TEXT_FAINT)
+                };
+                let key = ui.label(RichText::new(row.key).monospace().strong().color(key_color));
+                let desc = ui.label(RichText::new(row.description).color(text_color));
+                if !row.active {
+                    let hint = if is_3d { "Works in 2D" } else { "Works in 3D" };
+                    key.on_hover_text(hint);
+                    desc.on_hover_text(hint);
+                }
                 ui.end_row();
             }
         });
