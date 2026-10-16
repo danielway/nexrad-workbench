@@ -53,8 +53,7 @@ impl PersistenceManager {
     ///
     /// `now_secs` is the injected frame clock ([`crate::core::FrameNow::secs`]).
     /// `mping_api_key` is the current value from the diagnostics subsystem;
-    /// `is_live` is sourced from the Live subsystem; `playback` is the Playback
-    /// subsystem's state. All are passed in so the persistence manager doesn't
+    /// `playback` is the Playback subsystem's state. All are passed in so the persistence manager doesn't
     /// take back-references to subsystems.
     pub(crate) fn persist_if_due(
         &mut self,
@@ -62,25 +61,19 @@ impl PersistenceManager {
         state: &AppState,
         playback: &PlaybackState,
         mping_api_key: Option<String>,
-        is_live: bool,
     ) -> Vec<Effect> {
         // Gate first so suppressed frames do no snapshot work; then build the
         // core's inputs from app state and let the pure decision emit effects.
         if !persist_due(now_secs, self.last_url_push_secs) {
             return Vec::new();
         }
-        let url_push = crate::state::url_state::build_url_push(state, playback, is_live);
+        let link = crate::state::url_state::build_link(state, playback);
         let current_prefs = UserPreferences::from_app_state(state, playback, mping_api_key);
         let PersistDecision {
             effects,
             last_url_push_secs,
             saved_preferences,
-        } = decide_persist(
-            now_secs,
-            url_push,
-            current_prefs,
-            &self.last_saved_preferences,
-        );
+        } = decide_persist(now_secs, link, current_prefs, &self.last_saved_preferences);
         if let Some(t) = last_url_push_secs {
             self.last_url_push_secs = t;
         }

@@ -1,28 +1,22 @@
-//! URL state encoding/decoding for shareable URLs.
+//! The link's shell half: read it from `location.search`, assemble it from
+//! app state, and write it with `history.replaceState`.
 //!
-//! Encodes site, playback time, product, and map center in the URL query string
-//! so reloading restores the view and URLs can be shared.
-//!
-//! The `v` parameter is an opaque base64-encoded JSON blob carrying
-//! auxiliary view state (map zoom, timeline zoom, etc.) that may grow
-//! over time without changing the URL schema.
+//! The codec, the table of what the link carries and the boot decision are
+//! pure and live in [`crate::core::link`]; this module only touches the
+//! browser and reads `AppState`.
 
-use base64::Engine as _;
-
-use crate::core::ViewState;
+use crate::core::link::{LinkSelection, LinkState, LinkTilt};
+use crate::core::{ElevationSelection, Selection, ViewState};
 
 impl ViewState {
-    /// Build a `ViewState` from the current [`super::AppState`] plus
-    /// explicit `playback` and `is_live` slices.
-    ///
-    /// `playback` comes from [`crate::subsystem::Playback::state`] and
-    /// `is_live` from [`crate::subsystem::Live::mode_state`] — the
-    /// URL-state module doesn't reach for either subsystem so the
-    /// dependency stays one-way.
+    /// Build the `v` blob from the current [`super::AppState`] plus the
+    /// explicit `playback` slice (from [`crate::subsystem::Playback::state`];
+    /// the URL-state module doesn't reach for the subsystem so the dependency
+    /// stays one-way). The legacy `rt` flag is no longer written: a pinned
+    /// selection travels as the link's `sel`.
     pub(crate) fn from_state(
         state: &super::AppState,
         playback: &crate::core::PlaybackState,
-        is_live: bool,
     ) -> Self {
         let snap = state.viz_state.camera.url_snapshot();
         Self {
@@ -43,268 +37,151 @@ impl ViewState {
             cr: Some(snap.rotation),
             v3d: Some(state.viz_state.volume_3d_enabled),
             vdc: Some(state.viz_state.volume_density_cutoff),
-            rt: is_live.then_some(true),
             ..Default::default()
         }
     }
 }
 
-/// Assemble the full [`UrlPush`] payload from app state — the shell-side input
-/// builder for the pure [`crate::core::decide_persist`]. Kept beside
-/// [`ViewState::from_state`] so the whole state → URL field mapping lives in
+/// The link's selection for a [`Selection`].
+pub(crate) fn link_selection(selection: Selection) -> LinkSelection {
+    match selection {
+        Selection::Point { live: true } => LinkSelection::PinnedNow,
+        Selection::Point { live: false } => LinkSelection::Point,
+        Selection::Range(r) if r.live => LinkSelection::PinnedRange(r.basis),
+        Selection::Range(r) => match r.bounds {
+            Some((start, end)) => LinkSelection::Range { start, end },
+            None => LinkSelection::Point,
+        },
+    }
+}
+
+/// Assemble the link for what is on screen — the shell-side input builder
+/// for the pure [`crate::core::decide_persist`]. Kept beside
+/// [`ViewState::from_state`] so the whole state → link field mapping lives in
 /// one place.
-pub(crate) fn build_url_push(
+pub(crate) fn build_link(
     state: &super::AppState,
     playback: &crate::core::PlaybackState,
-    is_live: bool,
-) -> crate::core::effect::UrlPush {
-    crate::core::effect::UrlPush {
-        site: state.viz_state.site_id.clone(),
-        time: playback.playback_position(),
-        product: state.viz_state.product.short_code().to_string(),
-        lat: state.viz_state.center_lat,
-        lon: state.viz_state.center_lon,
-        view: ViewState::from_state(state, playback, is_live),
-        dev: state.dev_mode,
+) -> LinkState {
+    LinkState {
+        site: Some(state.viz_state.site_id.clone()),
+        time: Some(playback.playback_position()),
+        selection: Some(link_selection(playback.selection)),
+        play_mode: Some(playback.play_mode),
+        product: Some(state.viz_state.product.short_code().to_string()),
+        tilt: Some(match state.viz_state.elevation_selection {
+            ElevationSelection::Latest => LinkTilt::Latest,
+            ElevationSelection::Fixed { angle, .. } => LinkTilt::Angle(angle),
+        }),
+        lat: Some(state.viz_state.center_lat),
+        lon: Some(state.viz_state.center_lon),
+        view: ViewState::from_state(state, playback),
+        dev: Some(state.dev_mode),
     }
 }
 
-/// Parsed URL parameters.
-pub(crate) struct UrlParams {
-    pub site: Option<String>,
-    pub time: Option<f64>,
-    pub product: Option<String>,
-    pub lat: Option<f64>,
-    pub lon: Option<f64>,
-    pub view: ViewState,
-    /// Developer mode flag — `true` only when `?dev=true` is present.
-    pub dev: bool,
+/// Read the link from the current browser URL.
+pub(crate) fn read_link() -> LinkState {
+    web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .map(|search| crate::core::link::parse(&search))
+        .unwrap_or_default()
 }
 
-/// Parse URL query parameters from the current browser URL.
-pub(crate) fn parse_from_url() -> UrlParams {
-    let mut params = UrlParams {
-        site: None,
-        time: None,
-        product: None,
-        lat: None,
-        lon: None,
-        view: ViewState::default(),
-        dev: false,
+/// Write the link to the URL bar with `replaceState`.
+pub(crate) fn push_link(link: &LinkState) {
+    let query = crate::core::link::to_query(link);
+    let Some(history) = web_sys::window().and_then(|w| w.history().ok()) else {
+        return;
     };
-
-    let Ok(search) = web_sys::window().expect("no window").location().search() else {
-        return params;
-    };
-
-    let query = search.trim_start_matches('?');
-    if query.is_empty() {
-        return params;
-    }
-
-    for pair in query.split('&') {
-        let mut kv = pair.splitn(2, '=');
-        let key = kv.next().unwrap_or("");
-        let value = kv.next().unwrap_or("");
-        match key {
-            "site" => params.site = Some(value.to_string()),
-            "t" => params.time = value.parse().ok(),
-            "product" => params.product = Some(value.to_string()),
-            "lat" => params.lat = value.parse().ok(),
-            "lon" => params.lon = value.parse().ok(),
-            "v" => {
-                if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(value) {
-                    if let Ok(vs) = serde_json::from_slice::<ViewState>(&bytes) {
-                        params.view = vs;
-                    }
-                }
-            }
-            "dev" => params.dev = value == "true",
-            // `ui=basic|advanced` is retired: the modes are gone, so the key
-            // falls through with every other unknown one.
-            _ => {}
-        }
-    }
-
-    params
-}
-
-/// Push current state to the URL query string using `replaceState`.
-///
-/// `dev` is appended as `&dev=true` only when true; when false the parameter
-/// is omitted so off-mode URLs stay clean.
-pub(crate) fn push_to_url(
-    site: &str,
-    time: f64,
-    product: &str,
-    lat: f64,
-    lon: f64,
-    view: &ViewState,
-    dev: bool,
-) {
-    let v_json = serde_json::to_vec(view).unwrap_or_default();
-    let v_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&v_json);
-
-    let mut query = format!(
-        "?site={}&t={:.0}&product={}&lat={:.4}&lon={:.4}&v={}",
-        site, time, product, lat, lon, v_b64
-    );
-    if dev {
-        query.push_str("&dev=true");
-    }
-
-    let window = web_sys::window().expect("no window");
-    let history = window.history().expect("no history");
     let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&query));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{LoopBasis, PlaybackMode};
     use wasm_bindgen_test::wasm_bindgen_test;
 
     #[wasm_bindgen_test]
-    fn rt_persisted_only_when_caller_reports_attached_live() {
-        // The persistence rule (spec §7): `rt=true` (reload re-tethers) is
-        // written ONLY while the playhead is attached to the live edge. The
-        // caller passes that as `is_live` (`live.session.app_mode == AppMode::Live`,
-        // which requires both a stream session AND an attached playhead), so a
-        // detached background stream persists `t` only — no `rt`.
+    fn a_pinned_point_travels_as_sel_now_not_rt() {
         let state = crate::state::AppState::default();
-        let playback = crate::core::PlaybackState::default();
-
-        // Attached live → rt = Some(true).
-        let attached = ViewState::from_state(&state, &playback, true);
-        assert_eq!(attached.rt, Some(true));
-
-        // Detached (or idle) → rt = None, so reload restores the archive
-        // position rather than re-tethering and losing it.
-        let detached = ViewState::from_state(&state, &playback, false);
-        assert_eq!(detached.rt, None);
+        let mut playback = crate::core::PlaybackState::default();
+        playback.enter_pinned_live(1_700_000_000.0);
+        let link = build_link(&state, &playback);
+        assert_eq!(link.selection, Some(LinkSelection::PinnedNow));
+        assert_eq!(link.view.rt, None);
+        // And it opens pinned again.
+        let back = crate::core::link::parse(&crate::core::link::to_query(&link));
+        assert_eq!(back.selection, Some(LinkSelection::PinnedNow));
     }
 
     #[wasm_bindgen_test]
-    fn url_push_carries_view_fields() {
-        let mut state = crate::state::AppState::default();
-        let playback = crate::core::PlaybackState::default();
-        state.viz_state.site_id = "KDMX".to_string();
-        state.dev_mode = true;
-        let p = build_url_push(&state, &playback, true);
-        assert_eq!(p.site, "KDMX");
-        assert!(p.dev);
-        // `is_live=true` is encoded into the view blob's `rt` flag.
-        assert_eq!(p.view.rt, Some(true));
+    fn a_detached_point_travels_as_its_time() {
+        let state = crate::state::AppState::default();
+        let mut playback = crate::core::PlaybackState::default();
+        playback.set_playback_position(1_700_000_000.0);
+        let link = build_link(&state, &playback);
+        assert_eq!(link.selection, Some(LinkSelection::Point));
+        let q = crate::core::link::to_query(&link);
+        assert!(q.contains("t=1700000000"), "{q}");
+        assert!(!q.contains("sel="), "{q}");
     }
 
     #[wasm_bindgen_test]
-    fn url_push_carries_product_lat_lon_and_time() {
-        // Cover the scalar payload: product short_code, center coords, and the
-        // playback position threaded through as `time`.
+    fn ranges_map_to_the_link() {
+        let mut playback = crate::core::PlaybackState::default();
+        playback.set_playback_position(1_500.0);
+        assert!(playback.select_range(1_000.0, 2_000.0, false));
+        assert_eq!(
+            link_selection(playback.selection),
+            LinkSelection::Range {
+                start: 1_000.0,
+                end: 2_000.0
+            }
+        );
+        assert!(playback.select_range(1_000.0, 2_000.0, true));
+        assert_eq!(
+            link_selection(playback.selection),
+            LinkSelection::PinnedRange(LoopBasis::Duration(1_000.0))
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn link_carries_mode_product_tilt_center_and_dev() {
         let mut state = crate::state::AppState::default();
         let mut playback = crate::core::PlaybackState::default();
-        state.viz_state.product = crate::core::RadarProduct::Velocity; // "VEL"
+        state.viz_state.site_id = "KDMX".to_string();
+        state.viz_state.product = crate::core::RadarProduct::Velocity;
         state.viz_state.center_lat = 41.25;
         state.viz_state.center_lon = -93.75;
-        playback.set_playback_position(1_700_000_000.5);
-        let p = build_url_push(&state, &playback, false);
-        assert_eq!(p.product, "VEL");
-        assert_eq!(p.lat, 41.25);
-        assert_eq!(p.lon, -93.75);
-        assert_eq!(p.time, 1_700_000_000.5);
-    }
-
-    #[wasm_bindgen_test]
-    fn url_push_view_matches_from_state() {
-        // The view blob in the push must be exactly what ViewState::from_state
-        // produces for the same (state, playback, is_live) — the doc-comment
-        // contract that the whole state → URL mapping lives in one place.
-        let state = crate::state::AppState::default();
-        let playback = crate::core::PlaybackState::default();
-        let is_live = true;
-        let p = build_url_push(&state, &playback, is_live);
-        assert_eq!(p.view, ViewState::from_state(&state, &playback, is_live));
-    }
-}
-
-#[cfg(test)]
-mod coverage_tests {
-    use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test;
-
-    // Mirror the exact codec parse_from_url uses for the `v` parameter.
-    fn encode_v(vs: &ViewState) -> String {
-        let json = serde_json::to_vec(vs).unwrap();
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&json)
-    }
-    fn decode_v(s: &str) -> Option<ViewState> {
-        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(s)
-            .ok()?;
-        serde_json::from_slice::<ViewState>(&bytes).ok()
-    }
-
-    #[wasm_bindgen_test]
-    fn default_view_state_serializes_to_empty_object() {
-        // Every field is `skip_serializing_if = Option::is_none`, so a default
-        // ViewState carries no keys — keeps shared URLs minimal.
-        let json = serde_json::to_string(&ViewState::default()).unwrap();
-        assert_eq!(json, "{}");
-    }
-
-    #[wasm_bindgen_test]
-    fn view_state_round_trips_through_v_blob_codec() {
-        let vs = ViewState {
-            mz: Some(1.5),
-            tz: Some(4.0),
-            vm: Some(1),
-            cm: Some(2),
-            cd: Some(3.25),
-            ct: Some(35.0),
-            cr: Some(-120.0),
-            v3d: Some(true),
-            rt: Some(true),
-            ..Default::default()
-        };
-        let decoded = decode_v(&encode_v(&vs)).expect("round trip");
-        assert_eq!(decoded, vs);
-    }
-
-    #[wasm_bindgen_test]
-    fn round_trip_preserves_none_fields_as_none() {
-        // Fields left None must come back None (not defaulted to Some(0)).
-        let vs = ViewState {
-            mz: Some(2.0),
-            ..Default::default()
-        };
-        let decoded = decode_v(&encode_v(&vs)).unwrap();
-        assert_eq!(decoded.mz, Some(2.0));
-        assert_eq!(decoded.tz, None);
-        assert_eq!(decoded.cm, None);
-        assert_eq!(decoded.rt, None);
-    }
-
-    #[wasm_bindgen_test]
-    fn malformed_v_blob_is_rejected_not_panicking() {
-        // parse_from_url silently ignores a bad `v`; the codec must return None
-        // rather than panic on invalid base64 or invalid JSON.
-        assert!(decode_v("!!!not base64!!!").is_none());
-        // Valid base64 but not valid ViewState JSON.
-        let not_json = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"\xff\xff\xff");
-        assert!(decode_v(&not_json).is_none());
+        state.viz_state.elevation_selection = ElevationSelection::Latest;
+        state.dev_mode = true;
+        playback.restore_play_mode(PlaybackMode::Micro);
+        let link = build_link(&state, &playback);
+        assert_eq!(link.site.as_deref(), Some("KDMX"));
+        assert_eq!(link.product.as_deref(), Some("VEL"));
+        assert_eq!(link.tilt, Some(LinkTilt::Latest));
+        assert_eq!(link.play_mode, Some(PlaybackMode::Micro));
+        assert_eq!(link.lat, Some(41.25));
+        assert_eq!(link.lon, Some(-93.75));
+        assert_eq!(link.dev, Some(true));
+        assert_eq!(link.view, ViewState::from_state(&state, &playback));
     }
 
     #[wasm_bindgen_test]
     fn from_state_default_sets_core_view_fields() {
         let state = crate::state::AppState::default();
         let playback = crate::core::PlaybackState::default();
-        let vs = ViewState::from_state(&state, &playback, false);
-        // These are always populated (Some) regardless of live state.
+        let vs = ViewState::from_state(&state, &playback);
+        // These are always populated (Some).
         assert!(vs.mz.is_some());
         assert!(vs.tz.is_some());
         assert!(vs.vm.is_some());
         assert!(vs.cd.is_some());
         // Legacy per-mode fields are parse-only — never written anymore.
         assert!(vs.cm.is_none());
+        assert!(vs.rt.is_none());
         assert_eq!(vs.tz, Some(playback.timeline_zoom));
     }
 }
