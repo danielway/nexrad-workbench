@@ -12,6 +12,11 @@
 //!   playback without a touch, never on the first tether, never under a
 //!   menu or a finger; and how the map holds still while it slides
 //!   ([`hold_map_still`]).
+//! - **What the mini timeline spans** ([`mini_window`]): the last three
+//!   volumes up to now and the ghost of the next, or the playhead's own
+//!   three volumes when it is far from now.
+//! - **What a press on it is** ([`PressTrack`]): a tap, a scrub, or a
+//!   long-press that opens the inspector, never two of them.
 //! - **What the phone cannot show**: 3D ([`NO_3D_NOTICE`]).
 //!
 //! All pure; `ui::mobile` draws what these return.
@@ -242,6 +247,172 @@ pub(crate) fn hold_map_still(prev: Option<CanvasFrame>, now: CanvasFrame) -> (f3
     }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// The mini timeline
+// ───────────────────────────────────────────────────────────────────────────
+
+/// A volume's length when the timeline has too few to measure (VCP 212's
+/// is about four and a half minutes).
+pub(crate) const DEFAULT_VOLUME_SECS: f64 = 300.0;
+
+/// How many volumes the mini timeline shows.
+pub(crate) const MINI_VOLUMES: f64 = 3.0;
+
+/// The room right of now, as a share of the window, where the next volume's
+/// ghost draws.
+pub(crate) const MINI_LEAD_SHARE: f64 = 0.25;
+
+/// The mini timeline's time window, in Unix seconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MiniWindow {
+    pub start: f64,
+    pub end: f64,
+}
+
+impl MiniWindow {
+    pub(crate) fn span(&self) -> f64 {
+        self.end - self.start
+    }
+}
+
+/// The median gap between volume starts, if there are enough to measure.
+fn volume_secs(starts: &[f64]) -> Option<f64> {
+    let mut gaps: Vec<f64> = starts
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .filter(|g| *g > 30.0)
+        .collect();
+    if gaps.is_empty() {
+        return None;
+    }
+    gaps.sort_by(f64::total_cmp);
+    Some(gaps[gaps.len() / 2])
+}
+
+/// The mini timeline's window. `volume_starts` are the containers' starts,
+/// oldest first (received, archived, live and the next volume's ghost).
+///
+/// Near now (pinned, or a playhead within two volumes of now) it shows the
+/// last three volumes that have begun, with room right of now for the next
+/// volume's ghost and the cap. A playhead further back gets its own three
+/// volumes centered on it, and the now cap moves to the edge.
+pub(crate) fn mini_window(
+    now: f64,
+    playhead: f64,
+    pinned: bool,
+    volume_starts: &[f64],
+) -> MiniWindow {
+    let vol = volume_secs(volume_starts)
+        .unwrap_or(DEFAULT_VOLUME_SECS)
+        .clamp(120.0, 900.0);
+    let span = MINI_VOLUMES * vol;
+    let lead = span * MINI_LEAD_SHARE;
+    let near_now = pinned || (playhead <= now + lead && now - playhead <= 2.0 * vol);
+    if !near_now {
+        return MiniWindow {
+            start: playhead - span / 2.0,
+            end: playhead + span / 2.0,
+        };
+    }
+    let begun: Vec<f64> = volume_starts
+        .iter()
+        .copied()
+        .filter(|&s| s <= now)
+        .collect();
+    let third_last = begun
+        .len()
+        .checked_sub(MINI_VOLUMES as usize)
+        .map(|i| begun[i])
+        .filter(|&s| now - s <= 2.0 * span);
+    let mut start = third_last.unwrap_or(now - span);
+    if !pinned {
+        // Keep the playhead off the left edge.
+        start = start.min(playhead - 0.1 * span);
+    }
+    MiniWindow {
+        start,
+        end: now + lead,
+    }
+}
+
+/// How long a still finger must stay down to be a long-press.
+pub(crate) const LONG_PRESS_SECS: f64 = 0.5;
+
+/// How far a finger may move (points) and still be a tap or a long-press:
+/// egui's drag threshold, so a press that has begun to scrub can never also
+/// become a long-press.
+pub(crate) const PRESS_SLOP_PX: f32 = 6.0;
+
+/// One press on a surface that seeks on a tap, scrubs on a drag and opens
+/// the inspector on a long-press.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PressTrack {
+    start_secs: f64,
+    start: (f32, f32),
+    /// Moved past [`PRESS_SLOP_PX`]: a scrub for the rest of the press.
+    scrubbing: bool,
+    /// The long-press fired.
+    fired: bool,
+}
+
+/// What a press did this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub(crate) struct PressOut {
+    /// The long-press fired this frame, at the press's start.
+    pub long_press: Option<(f32, f32)>,
+    /// The press is (still) a candidate for a long-press: ask for frames.
+    pub waiting: bool,
+    /// The press ended after its long-press: the release is not a tap.
+    pub swallow_release: bool,
+}
+
+impl PressTrack {
+    /// Advance a press. `down` is the finger on this surface; `pos` where it
+    /// is. Returns the press to keep (none once released) and what it did.
+    pub(crate) fn step(
+        prev: Option<PressTrack>,
+        down: bool,
+        pos: Option<(f32, f32)>,
+        now: f64,
+    ) -> (Option<PressTrack>, PressOut) {
+        let (true, Some(p)) = (down, pos) else {
+            let swallow = prev.is_some_and(|t| t.fired);
+            return (
+                None,
+                PressOut {
+                    swallow_release: swallow,
+                    ..Default::default()
+                },
+            );
+        };
+        let mut t = prev.unwrap_or(PressTrack {
+            start_secs: now,
+            start: p,
+            scrubbing: false,
+            fired: false,
+        });
+        let (dx, dy) = (p.0 - t.start.0, p.1 - t.start.1);
+        if (dx * dx + dy * dy).sqrt() > PRESS_SLOP_PX {
+            t.scrubbing = true;
+        }
+        let mut out = PressOut::default();
+        if !t.scrubbing && !t.fired {
+            if now - t.start_secs >= LONG_PRESS_SECS {
+                t.fired = true;
+                out.long_press = Some(t.start);
+            } else {
+                out.waiting = true;
+            }
+        }
+        (Some(t), out)
+    }
+
+    /// The press fired its long-press: it neither seeks nor scrubs.
+    pub(crate) fn fired(&self) -> bool {
+        self.fired
+    }
+}
+
 /// The one line a 3D link gets on the phone, which opens it in 2D.
 pub(crate) const NO_3D_NOTICE: &str = "3D isn't available on the phone yet, so this opens in 2D";
 
@@ -449,6 +620,72 @@ mod tests {
             viewport: (844.0, 390.0),
         };
         assert_eq!(hold_map_still(Some(a), rotated), (0.0, 0.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn pinned_the_mini_timeline_shows_the_last_three_volumes_and_the_ghost() {
+        // Volumes every 300 s; the live one began at 1_200; the ghost at 1_500.
+        let starts = [0.0, 300.0, 600.0, 900.0, 1_200.0, 1_500.0];
+        let w = mini_window(1_320.0, 1_320.0, true, &starts);
+        assert_eq!(w.start, 600.0, "three volumes that have begun");
+        assert!((w.end - (1_320.0 + MINI_LEAD_SHARE * 900.0)).abs() < 1e-9);
+        assert!(w.end > 1_500.0, "room for the ghost's first cut");
+    }
+
+    #[wasm_bindgen_test]
+    fn with_no_volumes_the_window_still_ends_at_now() {
+        let w = mini_window(10_000.0, 10_000.0, true, &[]);
+        assert_eq!(
+            w.span(),
+            3.0 * DEFAULT_VOLUME_SECS * (1.0 + MINI_LEAD_SHARE)
+        );
+        assert!(w.end > 10_000.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn detached_near_now_keeps_now_in_view_and_the_playhead_off_the_edge() {
+        let starts = [0.0, 300.0, 600.0, 900.0, 1_200.0];
+        let w = mini_window(1_320.0, 800.0, false, &starts);
+        assert_eq!(w.start, 600.0);
+        assert!(w.start < 800.0 - 0.05 * 900.0);
+        assert!(w.end > 1_320.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn far_from_now_the_window_centers_on_the_playhead() {
+        let starts = [0.0, 300.0, 600.0, 900.0];
+        let w = mini_window(100_000.0, 600.0, false, &starts);
+        assert_eq!(w.start, 600.0 - 450.0);
+        assert_eq!(w.end, 600.0 + 450.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_still_hold_is_a_long_press_once() {
+        let (t, out) = PressTrack::step(None, true, Some((10.0, 10.0)), 0.0);
+        assert!(out.waiting && out.long_press.is_none());
+        let (t, out) = PressTrack::step(t, true, Some((12.0, 11.0)), 0.3);
+        assert!(out.waiting);
+        let (t, out) = PressTrack::step(t, true, Some((12.0, 11.0)), 0.5);
+        assert_eq!(out.long_press, Some((10.0, 10.0)));
+        assert!(t.unwrap().fired());
+        let (t, out) = PressTrack::step(t, true, Some((12.0, 11.0)), 0.9);
+        assert_eq!(out.long_press, None, "fires once");
+        assert!(!out.waiting);
+        let (t, out) = PressTrack::step(t, false, None, 1.0);
+        assert!(t.is_none());
+        assert!(out.swallow_release, "the release is not a tap");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_press_that_starts_to_scrub_never_becomes_a_long_press() {
+        let (t, _) = PressTrack::step(None, true, Some((10.0, 10.0)), 0.0);
+        let (t, _) = PressTrack::step(t, true, Some((18.0, 10.0)), 0.1);
+        // Back over the start and held: still a scrub.
+        let (t, out) = PressTrack::step(t, true, Some((10.0, 10.0)), 2.0);
+        assert_eq!(out.long_press, None);
+        assert!(!out.waiting);
+        let (_, out) = PressTrack::step(t, false, None, 2.1);
+        assert!(!out.swallow_release);
     }
 
     #[wasm_bindgen_test]

@@ -278,19 +278,6 @@ impl RadarTimeline {
         ranges
     }
 
-    /// Get the overall time range covered by this data (min start to max end).
-    ///
-    /// This is a convenience method that returns the bounding box of all ranges.
-    /// For checking if data exists in a specific period, use `time_ranges()` instead.
-    pub(crate) fn overall_time_range(&self) -> Option<(f64, f64)> {
-        if self.scans.is_empty() {
-            return None;
-        }
-        let start = self.scans.first().unwrap().start_time;
-        let end = self.scans.last().unwrap().end_time;
-        Some((start, end))
-    }
-
     /// Find the scan containing the given timestamp.
     ///
     /// Uses binary search on the sorted scan list for O(log n) lookup.
@@ -1297,20 +1284,6 @@ mod tests {
         assert_eq!(ranges[0].end, 1600.0);
         assert_eq!(ranges[1].start, 2600.0);
         assert_eq!(ranges[1].end, 2900.0);
-    }
-
-    #[wasm_bindgen_test]
-    fn overall_time_range() {
-        let tl = RadarTimeline {
-            scans: vec![scan(1000.0, 1300.0), scan(5000.0, 5300.0)],
-        };
-        assert_eq!(tl.overall_time_range(), Some((1000.0, 5300.0)));
-    }
-
-    #[wasm_bindgen_test]
-    fn overall_time_range_empty() {
-        let tl = RadarTimeline { scans: vec![] };
-        assert_eq!(tl.overall_time_range(), None);
     }
 
     #[wasm_bindgen_test]

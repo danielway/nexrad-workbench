@@ -102,7 +102,9 @@ impl Live {
     /// one described effect the core can't reach: stopping the worker channel.
     ///
     /// This is what every seek/jog/jump gesture does while live: the user goes
-    /// browsing.
+    /// browsing. The gestures reach it through [`Self::seek`] and the core's
+    /// reducers; the tests pin the wrapper itself.
+    #[cfg(test)]
     pub(crate) fn detach_playhead(
         &mut self,
         playback: &mut PlaybackState,

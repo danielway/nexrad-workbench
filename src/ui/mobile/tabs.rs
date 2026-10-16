@@ -1,6 +1,5 @@
-//! Mobile bottom chrome: a condensed transport row over the scrubber strip
-//! (spec §13 phone: "Condensed transport (play · LIVE · speed · loop preset)
-//! over ~44px strip").
+//! Mobile bottom chrome: a condensed transport row under the mini timeline
+//! (one-instrument §13).
 //!
 //! Two stacked `Panel::bottom` panels:
 //!   1. Transport row (~48px) — bottommost. The primary controls, directly
@@ -9,8 +8,9 @@
 //!      preset menu. A slim trailing cluster keeps geolocate + the settings
 //!      sheet (deeper Level-2 controls) reachable; the radar-site picker lives
 //!      in the top-bar site chip.
-//!   2. Scrubber (~44px) — topmost. The coverage strip (faint=available,
-//!      solid=cached, red=now, neutral thumb, REJOIN pill, long-press→inspector).
+//!   2. The mini timeline (~46px) — topmost. The desktop strip's real cells,
+//!      marks, playhead and now cap over the last three volumes
+//!      (`ui::timeline::mini`).
 
 use crate::core::transport::StepDir;
 use crate::core::PlaybackMode;
@@ -18,7 +18,7 @@ use crate::state::{AppState, MobileSettingsTab};
 use eframe::egui::{self, RichText};
 
 const TRANSPORT_BAR_HEIGHT: f32 = 48.0;
-const SCRUBBER_AREA_HEIGHT: f32 = super::scrubber::SCRUBBER_HEIGHT + 6.0;
+const MINI_AREA_HEIGHT: f32 = crate::ui::timeline::mini::MINI_TIMELINE_H + 4.0;
 
 pub(in crate::ui) struct MobileChromeLayer;
 
@@ -36,6 +36,7 @@ impl super::super::layout::Layer for MobileChromeLayer {
             ctx.timeline,
             ctx.live,
             ctx.playback,
+            ctx.acquisition,
             ctx.chrome,
         );
     }
@@ -47,6 +48,7 @@ fn draw_mobile_chrome(
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
+    acquisition: &crate::subsystem::Acquisition,
     chrome: &mut crate::subsystem::Chrome,
 ) {
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
@@ -69,14 +71,22 @@ fn draw_mobile_chrome(
             render_transport_row(ui, state, timeline, live, playback, chrome);
         });
 
-    // Scrubber — sits just above the transport row.
+    // The mini timeline — just above the transport row.
     let mut expanded = shown;
-    egui::Panel::bottom("mobile_scrubber")
+    egui::Panel::bottom("mobile_mini_timeline")
         .resizable(false)
-        .exact_size(SCRUBBER_AREA_HEIGHT)
+        .exact_size(MINI_AREA_HEIGHT)
         .show_collapsible(root_ui, &mut expanded, |ui| {
             ui.add_space(2.0);
-            super::scrubber::render_scrubber(ui, state, timeline, live, playback, chrome);
+            crate::ui::timeline::mini::render_mini_timeline(
+                ui,
+                state,
+                timeline,
+                live,
+                playback,
+                acquisition,
+                chrome,
+            );
         });
 }
 

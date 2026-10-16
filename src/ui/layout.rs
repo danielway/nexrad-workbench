@@ -95,9 +95,9 @@ pub(crate) struct LayoutCtx<'a> {
     pub state: &'a mut AppState,
     /// Read-only: the scan index is projected, never edited, by the UI.
     pub timeline: &'a Timeline,
-    /// Still `&mut`: every seek/jog gesture calls `Live::detach_playhead`,
-    /// which mutates `mode_state` and can stop the worker channel
-    /// (playback controls, timeline interaction, mobile scrubber,
+    /// Still `&mut`: every scrub gesture calls `Live::seek`, which detaches
+    /// the playhead, mutates `mode_state` and can stop the worker channel
+    /// (playback controls, timeline interaction, the mini timeline,
     /// scan inspector, mobile tabs).
     pub live: &'a mut Live,
     /// Still `&mut`: transport widgets write `playback.state` directly —
