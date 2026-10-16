@@ -285,7 +285,8 @@ impl DialogStack {
 
 // ── Destructive confirmations ──────────────────────────────────────────────
 
-/// A destructive action waiting for confirmation.
+/// An action waiting for confirmation: the destructive ones, and the
+/// phone's site switch from a map tap ([`crate::core::canvas::MapPick::intent_for`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Confirm {
     /// Delete every downloaded scan on this device.
@@ -294,6 +295,13 @@ pub(crate) enum Confirm {
     ResetSettings,
     /// Delete one saved event.
     DeleteEvent(u64),
+    /// Switch to the site a phone tap landed near. A finger is wide and the
+    /// map is small, so a tap near a site asks before switching.
+    SwitchSite {
+        id: &'static str,
+        lat: f64,
+        lon: f64,
+    },
 }
 
 /// The facts a confirmation lists, read by the shell from state.
@@ -317,8 +325,11 @@ pub(crate) struct ConfirmVm {
     pub keeps: Vec<String>,
     /// A consequence after the action (the reload).
     pub note: Option<String>,
-    /// The destructive button's label.
+    /// The confirming button's label.
     pub action: String,
+    /// Whether the confirming button is the destructive one (outlined) or
+    /// the primary (filled). A site switch deletes nothing.
+    pub destructive: bool,
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -344,6 +355,7 @@ pub(crate) fn confirm_vm(
             keeps: vec![events, "Settings and preferences".into()],
             note: Some("Scans download again when you view them.".into()),
             action: "Clear cache".into(),
+            destructive: true,
         },
         Confirm::ResetSettings => ConfirmVm {
             title: "Reset settings?".into(),
@@ -351,6 +363,7 @@ pub(crate) fn confirm_vm(
             keeps: vec![events, "Cached radar data".into()],
             note: Some("The page reloads after resetting.".into()),
             action: "Reset settings".into(),
+            destructive: true,
         },
         Confirm::DeleteEvent(_) => {
             let line = match &facts.event {
@@ -367,9 +380,49 @@ pub(crate) fn confirm_vm(
                 keeps: vec!["Cached radar data for its time range".into()],
                 note: None,
                 action: "Delete event".into(),
+                destructive: true,
+            }
+        }
+        Confirm::SwitchSite { id, .. } => {
+            let name = crate::data::get_site(id).map(|s| match s.state {
+                Some(st) => format!("{}, {st}", title_case(s.name)),
+                None => title_case(s.name),
+            });
+            ConfirmVm {
+                title: format!("Switch to {id}?"),
+                deletes: Vec::new(),
+                keeps: Vec::new(),
+                note: Some(match name {
+                    Some(name) => format!("{name}. The map moves to this radar."),
+                    None => "The map moves to this radar.".into(),
+                }),
+                action: format!("Switch to {id}"),
+                destructive: false,
             }
         }
     }
+}
+
+/// "OKLAHOMA CITY" → "Oklahoma City" (site names are stored in capitals);
+/// the initialisms in the site list stay capitals ("VANCE AFB" → "Vance
+/// AFB").
+fn title_case(s: &str) -> String {
+    s.split(' ')
+        .map(|w| {
+            if matches!(w, "AFB" | "AB" | "JFK") {
+                return w.to_string();
+            }
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f
+                    .to_uppercase()
+                    .chain(c.flat_map(|x| x.to_lowercase()))
+                    .collect(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// What confirming does.
@@ -378,6 +431,11 @@ pub(crate) fn confirmed_intent(confirm: Confirm) -> Intent {
         Confirm::ClearCache => Intent::ClearCacheNow,
         Confirm::ResetSettings => Intent::ResetSettingsNow,
         Confirm::DeleteEvent(id) => Intent::Dialog(DialogIntent::DeleteEvent(id)),
+        Confirm::SwitchSite { id, lat, lon } => Intent::SelectSite {
+            site_id: id.to_string(),
+            lat,
+            lon,
+        },
     }
 }
 
@@ -609,6 +667,62 @@ mod tests {
         let line = &vm.deletes[0];
         assert!(line.contains("Derecho") && line.contains("KDMX"));
         assert!(line.contains("12:30:45") && line.contains("14:00:00"));
+    }
+
+    #[wasm_bindgen_test]
+    fn switch_site_names_the_radar_and_is_not_destructive() {
+        let vm = confirm_vm(
+            Confirm::SwitchSite {
+                id: "KTLX",
+                lat: 35.33,
+                lon: -97.28,
+            },
+            &ConfirmFacts::default(),
+            bytes,
+            &UtcCalendar,
+            0.0,
+        );
+        assert_eq!(vm.title, "Switch to KTLX?");
+        assert!(vm.deletes.is_empty() && vm.keeps.is_empty());
+        assert!(!vm.destructive);
+        assert_eq!(vm.action, "Switch to KTLX");
+        assert!(vm.note.unwrap().starts_with("Oklahoma City, OK."));
+    }
+
+    #[wasm_bindgen_test]
+    fn site_names_read_in_title_case_keeping_short_initialisms() {
+        assert_eq!(title_case("OKLAHOMA CITY"), "Oklahoma City");
+        assert_eq!(title_case("VANCE AFB"), "Vance AFB");
+        assert_eq!(title_case("SAN ANTONIO"), "San Antonio");
+        assert_eq!(title_case("FT WAYNE"), "Ft Wayne");
+    }
+
+    #[wasm_bindgen_test]
+    fn confirming_a_site_switch_selects_the_site() {
+        assert_eq!(
+            confirmed_intent(Confirm::SwitchSite {
+                id: "KTLX",
+                lat: 35.33,
+                lon: -97.28,
+            }),
+            Intent::SelectSite {
+                site_id: "KTLX".into(),
+                lat: 35.33,
+                lon: -97.28,
+            }
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn every_other_confirmation_is_destructive() {
+        for c in [
+            Confirm::ClearCache,
+            Confirm::ResetSettings,
+            Confirm::DeleteEvent(1),
+        ] {
+            let vm = confirm_vm(c, &ConfirmFacts::default(), bytes, &UtcCalendar, 0.0);
+            assert!(vm.destructive);
+        }
     }
 
     #[wasm_bindgen_test]

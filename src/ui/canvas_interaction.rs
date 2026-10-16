@@ -10,13 +10,12 @@ use crate::state::AppState;
 use eframe::egui::{self, Rect, Vec2};
 use geo_types::Coord;
 
-/// Pixel radius around a site marker that counts as a click hit.
-const SITE_HIT_RADIUS_PX: f32 = 10.0;
-
-/// Pixel radius around an mPING report marker that counts as a click hit.
-/// Slightly larger than the rendered dot (4.5 px) so small targets are
-/// still easy to hit on touch screens.
-const MPING_HIT_RADIUS_PX: f32 = 9.0;
+/// The desktop's pick radii, which the hit-test tests below pin.
+#[cfg(test)]
+const DESKTOP: crate::core::canvas::PickRadii = crate::core::canvas::PickRadii {
+    site: 10.0,
+    mping: 9.0,
+};
 
 pub(crate) fn handle_globe_interaction(
     response: &egui::Response,
@@ -138,7 +137,8 @@ pub(crate) fn handle_canvas_interaction(
             // What the click picks is the core's call (`decide_map_pick`):
             // marks over polygons, and only marks whose layer is drawn.
             match pick_at(click_pos, projection, state, playback, diagnostics, derived) {
-                Some(pick) => state.push_command(pick.intent()),
+                // On the phone a tap near a site asks before switching.
+                Some(pick) => state.push_command(pick.intent_for(state.is_mobile)),
                 // Missed every interactive overlay — dismiss any open mPING
                 // popover.
                 None => state.push_command(crate::core::Intent::Diagnostics(
@@ -218,6 +218,7 @@ pub(crate) fn pick_at(
     derived: &crate::subsystem::Derived,
 ) -> Option<crate::core::canvas::MapPick> {
     let geo_layers = &state.layer_state.geo;
+    let radii = crate::core::canvas::pick_radii(state.is_mobile);
     let show_warnings = geo_layers.alerts_warnings;
     let show_other = geo_layers.alerts_other;
     let layers = crate::core::canvas::PickLayers {
@@ -228,7 +229,7 @@ pub(crate) fn pick_at(
     let candidates = crate::core::canvas::PickCandidates {
         site: layers
             .sites
-            .then(|| pick_site_at(pos, projection, state))
+            .then(|| pick_site_at(pos, projection, state, radii.site))
             .flatten(),
         mping: layers
             .mping
@@ -238,6 +239,7 @@ pub(crate) fn pick_at(
                     projection,
                     &diagnostics.mping.reports,
                     playback.state.playback_position(),
+                    radii.mping,
                 )
             })
             .flatten(),
@@ -268,18 +270,19 @@ pub(crate) fn pick_at(
 }
 
 /// Return `(site_id, lat, lon)` for the NEXRAD site closest to `click_pos`
-/// within [`SITE_HIT_RADIUS_PX`], or `None` if no site was hit. The currently
+/// within `radius_px` ([`crate::core::canvas::pick_radii`]), or `None` if no site was hit. The currently
 /// active site is excluded so re-selecting it is a no-op rather than a spurious
 /// camera recenter.
 fn pick_site_at(
     click_pos: egui::Pos2,
     projection: &MapProjection,
     state: &AppState,
+    radius_px: f32,
 ) -> Option<(&'static str, f64, f64)> {
     let (min_lon, min_lat, max_lon, max_lat) = projection.visible_bounds();
     let padding = 2.0;
     let current_upper = state.viz_state.site_id.to_uppercase();
-    let hit_radius_sq = SITE_HIT_RADIUS_PX * SITE_HIT_RADIUS_PX;
+    let hit_radius_sq = radius_px * radius_px;
 
     let mut best: Option<(&'static str, f64, f64, f32)> = None;
     for site in NEXRAD_SITES.iter() {
@@ -306,16 +309,17 @@ fn pick_site_at(
 }
 
 /// Return the id of the mPING report whose marker is closest to `click_pos`
-/// and within [`MPING_HIT_RADIUS_PX`], or `None` if no marker was hit.
+/// and within `radius_px`, or `None` if no marker was hit.
 fn pick_mping_report_at(
     click_pos: egui::Pos2,
     projection: &MapProjection,
     reports: &[StormReport],
     playback_secs: f64,
+    radius_px: f32,
 ) -> Option<i64> {
     let (min_lon, min_lat, max_lon, max_lat) = projection.visible_bounds();
     let padding = 0.5;
-    let hit_radius_sq = MPING_HIT_RADIUS_PX * MPING_HIT_RADIUS_PX;
+    let hit_radius_sq = radius_px * radius_px;
 
     let mut best: Option<(i64, f32)> = None;
     for report in reports {
@@ -392,7 +396,7 @@ mod coverage_tests {
         let p = proj_on_kabr();
         let state = AppState::default(); // site_id = "KDMX", so KABR is a candidate
                                          // KABR projects to screen center (400,300); clicking there is a direct hit.
-        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &state);
+        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &state, DESKTOP.site);
         match hit {
             Some((id, lat, lon)) => {
                 assert!(id == "KABR");
@@ -407,8 +411,8 @@ mod coverage_tests {
     fn site_click_within_radius_still_hits() {
         let p = proj_on_kabr();
         let state = AppState::default();
-        // 7px from center: dist_sq = 49 <= 100 (SITE_HIT_RADIUS_PX^2).
-        let hit = pick_site_at(egui::Pos2::new(407.0, 300.0), &p, &state);
+        // 7px from center: dist_sq = 49 <= 100 (the desktop site radius squared).
+        let hit = pick_site_at(egui::Pos2::new(407.0, 300.0), &p, &state, DESKTOP.site);
         assert!(matches!(hit, Some((id, _, _)) if id == "KABR"));
     }
 
@@ -418,7 +422,7 @@ mod coverage_tests {
         let state = AppState::default();
         // 11px from center: dist_sq = 121 > 100, and the next-nearest site (KFSD)
         // is ~80px away, so nothing is within the hit radius.
-        let hit = pick_site_at(egui::Pos2::new(411.0, 300.0), &p, &state);
+        let hit = pick_site_at(egui::Pos2::new(411.0, 300.0), &p, &state, DESKTOP.site);
         assert!(hit.is_none());
     }
 
@@ -426,7 +430,7 @@ mod coverage_tests {
     fn site_click_far_corner_misses() {
         let p = proj_on_kabr();
         let state = AppState::default();
-        let hit = pick_site_at(egui::Pos2::new(5.0, 5.0), &p, &state);
+        let hit = pick_site_at(egui::Pos2::new(5.0, 5.0), &p, &state, DESKTOP.site);
         assert!(hit.is_none());
     }
 
@@ -437,7 +441,7 @@ mod coverage_tests {
         // Make KABR the active site: it must be excluded, and no other site is
         // within 10px of center, so the center click now misses.
         state.viz_state.site_id = "KABR".to_string();
-        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &state);
+        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &state, DESKTOP.site);
         assert!(hit.is_none());
     }
 
@@ -448,7 +452,7 @@ mod coverage_tests {
         // Lower-case site_id is upper-cased before comparison, so KABR is still
         // excluded and the center click misses.
         state.viz_state.site_id = "kabr".to_string();
-        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &state);
+        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &state, DESKTOP.site);
         assert!(hit.is_none());
     }
 
@@ -459,7 +463,13 @@ mod coverage_tests {
         let p = proj_on_kabr();
         // Report observed at 1000ms; playback at 1000s (=1_000_000ms) => visible.
         let reports = vec![report_at_pixel(&p, 42, 400.0, 300.0, 1000.0)];
-        let hit = pick_mping_report_at(egui::Pos2::new(400.0, 300.0), &p, &reports, 1000.0);
+        let hit = pick_mping_report_at(
+            egui::Pos2::new(400.0, 300.0),
+            &p,
+            &reports,
+            1000.0,
+            DESKTOP.mping,
+        );
         assert!(hit == Some(42));
     }
 
@@ -469,7 +479,13 @@ mod coverage_tests {
         // obtime 1000ms; playback at 0s => report is in the future of the
         // playhead and must not be hit-tested.
         let reports = vec![report_at_pixel(&p, 42, 400.0, 300.0, 1000.0)];
-        let hit = pick_mping_report_at(egui::Pos2::new(400.0, 300.0), &p, &reports, 0.0);
+        let hit = pick_mping_report_at(
+            egui::Pos2::new(400.0, 300.0),
+            &p,
+            &reports,
+            0.0,
+            DESKTOP.mping,
+        );
         assert!(hit.is_none());
     }
 
@@ -477,8 +493,14 @@ mod coverage_tests {
     fn mping_click_outside_radius_misses() {
         let p = proj_on_kabr();
         let reports = vec![report_at_pixel(&p, 42, 400.0, 300.0, 0.0)];
-        // 10px below the marker: dist_sq = 100 > 81 (MPING_HIT_RADIUS_PX^2).
-        let hit = pick_mping_report_at(egui::Pos2::new(400.0, 310.0), &p, &reports, 1000.0);
+        // 10px below the marker: dist_sq = 100 > 81 (the desktop mPING radius squared).
+        let hit = pick_mping_report_at(
+            egui::Pos2::new(400.0, 310.0),
+            &p,
+            &reports,
+            1000.0,
+            DESKTOP.mping,
+        );
         assert!(hit.is_none());
     }
 
@@ -491,7 +513,13 @@ mod coverage_tests {
             report_at_pixel(&p, 1, 400.0, 300.0, 0.0),
             report_at_pixel(&p, 2, 404.0, 303.0, 0.0),
         ];
-        let hit = pick_mping_report_at(egui::Pos2::new(400.0, 300.0), &p, &reports, 1000.0);
+        let hit = pick_mping_report_at(
+            egui::Pos2::new(400.0, 300.0),
+            &p,
+            &reports,
+            1000.0,
+            DESKTOP.mping,
+        );
         assert!(hit == Some(1));
     }
 }
