@@ -489,16 +489,9 @@ impl WorkbenchApp {
             });
         }
 
-        let initial_prefs = core::Preferences::from_app_state(
-            &state,
-            &playback.state,
-            state::PanelPrefs {
-                tab: chrome.rail_tab,
-                open: chrome.right_sidebar_visible,
-            },
-            loaded_mping_api_key.clone(),
-            &loaded_prefs,
-        );
+        // Track what is on disk, so anything the boot changed (a first
+        // recent site, say) is saved at the first persist.
+        let initial_prefs = loaded_prefs.clone();
 
         // Create decode worker pool (offloads heavy NEXRAD work to parallel
         // Web Workers so the download → decompress → store pipeline can fan
