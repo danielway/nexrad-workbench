@@ -771,8 +771,13 @@ pub(super) fn format_unix_timestamp(ts: f64, use_local: bool) -> String {
     )
 }
 
-/// Paint the canvas caption (§7) on a scrim at the center of the map —
-/// the only text that ever sits over it. The words and their roles are the
+/// Gap between the caption's scrim and the map's bottom edge; the same as the
+/// layer legends' margin, so the bottom scrims share a baseline.
+const CAPTION_BOTTOM_INSET: f32 = 12.0;
+
+/// Paint the canvas caption (§7) on a scrim at the bottom center of the map,
+/// [`CAPTION_BOTTOM_INSET`] above its edge — the only text that ever sits
+/// over it. The words and their roles are the
 /// session view-model's ([`crate::core::session::SessionVm::canvas_caption_line`]);
 /// a "fetch" segment emits the line's intent.
 fn render_canvas_caption(
@@ -793,8 +798,11 @@ fn render_canvas_caption(
     let font = theme::readout_font();
     egui::Area::new(egui::Id::new("canvas_caption"))
         .order(egui::Order::Middle)
-        .pivot(egui::Align2::CENTER_CENTER)
-        .fixed_pos(rect.center())
+        .pivot(egui::Align2::CENTER_BOTTOM)
+        .fixed_pos(egui::pos2(
+            rect.center().x,
+            rect.bottom() - CAPTION_BOTTOM_INSET,
+        ))
         .interactable(line.action.is_some())
         .show(ui.ctx(), |ui| {
             egui::Frame::new()
