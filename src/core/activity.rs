@@ -31,7 +31,7 @@ use crate::core::session::Stream;
 use crate::core::timeline_view::SCAN_JOIN_TOLERANCE_SECS;
 use crate::core::{
     describe_operation, operation_bytes, shows_in_activity_list, AcquisitionOperation,
-    NetworkAggregate, NetworkRequest, OperationId, OperationKind, OperationStatus,
+    ErrorContext, NetworkAggregate, NetworkRequest, OperationId, OperationKind, OperationStatus,
     ThroughputWindow, WorkerLoad,
 };
 
@@ -84,6 +84,10 @@ pub(crate) struct ActivityInputs<'a> {
     pub sheet_open: bool,
     /// Deep diagnostics, present only in dev mode.
     pub dev: Option<ActivityDevInputs>,
+    /// The app's recent errors, and how many had been pushed when the sheet
+    /// last showed them ([`errors_acked`]).
+    pub errors: &'a ErrorContext,
+    pub errors_acked: u64,
 }
 
 /// Dev-only inputs, surfaced under the sheet's Details disclosure.
@@ -216,6 +220,54 @@ pub(crate) struct FailureSummary {
     pub retryable: Vec<OperationId>,
 }
 
+/// The app's errors other than downloads (which [`FailureSummary`] owns):
+/// decode worker, alerts, mPING. Each also flashes as a toast; this is what
+/// stays, so an error the phone's toast came and went on is still on the
+/// chip until the sheet has shown it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct ErrorSummary {
+    /// Errors not yet shown in the sheet.
+    pub unseen: u32,
+    /// Newest first, at most [`SHEET_ERRORS`]. Empty unless the sheet is
+    /// open.
+    pub recent: Vec<String>,
+}
+
+/// How many recent errors the sheet lists.
+pub(crate) const SHEET_ERRORS: usize = 10;
+
+/// Summarize the errors for the chip and the sheet. `acked` is the pushed
+/// count when the sheet last showed them.
+pub(crate) fn error_summary(errors: &ErrorContext, acked: u64, sheet_open: bool) -> ErrorSummary {
+    let fresh = (errors.pushed_count().saturating_sub(acked) as usize).min(errors.len());
+    let unseen = errors
+        .iter()
+        .skip(errors.len() - fresh)
+        .filter(|e| crate::core::toast::error_text(&e.error).is_some())
+        .count() as u32;
+    let recent = if sheet_open {
+        errors
+            .iter()
+            .rev()
+            .filter_map(|e| crate::core::toast::error_text(&e.error))
+            .take(SHEET_ERRORS)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    ErrorSummary { unseen, recent }
+}
+
+/// The acknowledged count after this frame: an open sheet has shown every
+/// error there is.
+pub(crate) fn errors_acked(errors: &ErrorContext, acked: u64, sheet_open: bool) -> u64 {
+    if sheet_open {
+        errors.pushed_count()
+    } else {
+        acked
+    }
+}
+
 /// Transfer rate readout. Absent when nothing is moving — the shell renders
 /// that as "—", never as `0 B/s`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -277,6 +329,7 @@ pub(crate) struct ActivityVm {
     pub headline: ActivityHeadline,
     pub stages: [ActivityStage; 4],
     pub failed: FailureSummary,
+    pub errors: ErrorSummary,
     pub throughput: Option<ThroughputReadout>,
     pub session: SessionTotals,
     /// Empty unless the sheet is open.
@@ -291,6 +344,32 @@ pub(crate) struct ActivityVm {
 // ───────────────────────────────────────────────────────────────────────────
 
 impl ActivityVm {
+    /// The chip's ⚠ tick: failed downloads plus errors the sheet has not
+    /// shown, with its hover. `None` when there is nothing to flag.
+    pub(crate) fn warning(&self) -> Option<(u32, String)> {
+        let (failed, errors) = (self.failed.count, self.errors.unseen);
+        if failed + errors == 0 {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if failed > 0 {
+            parts.push(match self.failed.first_error.as_deref() {
+                Some(err) => format!("Some downloads failed ({err})"),
+                None => "Some downloads failed".to_string(),
+            });
+        }
+        if errors > 0 {
+            parts.push(format!(
+                "{errors} new error{}",
+                if errors == 1 { "" } else { "s" }
+            ));
+        }
+        Some((
+            failed + errors,
+            format!("{} — click for details", parts.join("; ")),
+        ))
+    }
+
     pub(crate) fn build(inputs: ActivityInputs<'_>) -> Self {
         let counts = stage_counts(&inputs);
         let failed = failure_summary(inputs.operations);
@@ -333,6 +412,7 @@ impl ActivityVm {
                 },
             ],
             failed,
+            errors: error_summary(inputs.errors, inputs.errors_acked, inputs.sheet_open),
             throughput: inputs
                 .throughput
                 .rate_bytes_per_sec(inputs.now_ms)
@@ -653,6 +733,8 @@ mod coverage_tests {
         sheet_open: bool,
         dev: Option<ActivityDevInputs>,
         now_ms: f64,
+        errors: crate::core::ErrorContext,
+        errors_acked: u64,
     }
 
     impl Fixture {
@@ -673,6 +755,8 @@ mod coverage_tests {
                 sheet_open: false,
                 dev: None,
                 now_ms: 1_000.0,
+                errors: crate::core::ErrorContext::default(),
+                errors_acked: 0,
             }
         }
 
@@ -696,6 +780,8 @@ mod coverage_tests {
                 stream: self.stream,
                 sheet_open: self.sheet_open,
                 dev: self.dev,
+                errors: &self.errors,
+                errors_acked: self.errors_acked,
             })
         }
     }
@@ -1191,6 +1277,8 @@ mod coverage_tests {
                 stream: Stream::Off,
                 sheet_open: false,
                 dev: Some(ActivityDevInputs::default()),
+                errors: &f.errors,
+                errors_acked: 0,
             }
         });
         assert_eq!(vm.detail.expect("developer rows").requests, 7);
@@ -1299,5 +1387,83 @@ mod coverage_tests {
         assert_eq!(detail.worker.ingest, 2);
         assert_eq!(detail.fps, Some(59.5));
         assert!(detail.cross_origin_isolated);
+    }
+
+    // ── Errors other than downloads ─────────────────────────────────────
+
+    fn alerts_error(msg: &str) -> crate::core::AppError {
+        crate::core::AppError::Alerts {
+            message: msg.into(),
+        }
+    }
+
+    fn download_error() -> crate::core::AppError {
+        crate::core::AppError::Download {
+            message: "404".into(),
+            scan_start_secs: None,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn unseen_errors_count_on_the_chip_and_skip_downloads() {
+        let mut f = Fixture::new();
+        f.errors.push(alerts_error("timeout"));
+        f.errors.push(download_error());
+        f.errors.push(alerts_error("503"));
+        let vm = f.vm();
+        assert_eq!(vm.errors.unseen, 2);
+        // The list is only built while the sheet is open.
+        assert!(vm.errors.recent.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_open_sheet_lists_errors_newest_first_and_acknowledges_them() {
+        let mut f = Fixture::new();
+        f.errors.push(alerts_error("first"));
+        f.errors.push(alerts_error("second"));
+        f.sheet_open = true;
+        let vm = f.vm();
+        assert_eq!(
+            vm.errors.recent,
+            vec!["NWS alerts: second", "NWS alerts: first"]
+        );
+        f.errors_acked = errors_acked(&f.errors, f.errors_acked, f.sheet_open);
+        f.sheet_open = false;
+        assert_eq!(f.vm().errors.unseen, 0);
+        // A new one after the sheet closed counts again.
+        f.errors.push(alerts_error("third"));
+        assert_eq!(f.vm().errors.unseen, 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_closed_sheet_keeps_the_acknowledged_count() {
+        let mut f = Fixture::new();
+        f.errors.push(alerts_error("x"));
+        assert_eq!(errors_acked(&f.errors, 0, false), 0);
+        assert_eq!(errors_acked(&f.errors, 0, true), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn unseen_errors_are_bounded_by_what_the_ring_still_holds() {
+        let mut f = Fixture::new();
+        for i in 0..80 {
+            f.errors.push(alerts_error(&i.to_string()));
+        }
+        assert_eq!(f.vm().errors.unseen as usize, f.errors.len());
+        f.sheet_open = true;
+        assert_eq!(f.vm().errors.recent.len(), SHEET_ERRORS);
+        assert_eq!(f.vm().errors.recent[0], "NWS alerts: 79");
+    }
+
+    #[wasm_bindgen_test]
+    fn the_warning_tick_counts_failures_and_unseen_errors() {
+        let mut f = Fixture::new();
+        assert_eq!(f.vm().warning(), None);
+        f.errors.push(alerts_error("x"));
+        let (n, hover) = f.vm().warning().unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(hover, "1 new error — click for details");
+        f.errors_acked = 1;
+        assert_eq!(f.vm().warning(), None);
     }
 }

@@ -44,6 +44,7 @@ pub(crate) mod live_status;
 pub(crate) mod overview;
 pub(crate) mod panels;
 pub(crate) mod persist;
+pub(crate) mod phone;
 pub(crate) mod playback_manager;
 pub(crate) mod prefs;
 pub(crate) mod projection;

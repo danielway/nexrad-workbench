@@ -33,6 +33,13 @@ pub(crate) struct Chrome {
     pub right_sidebar_visible: bool,
     /// The panel's open tab (one-instrument §8).
     pub rail_tab: crate::core::panels::RailTab,
+    /// The chrome this frame's viewport gets (one-instrument §13): the
+    /// desktop panels, or the phone's, with the sheet on the right in
+    /// landscape. Decided by [`crate::core::phone::device_layout`].
+    pub device_layout: crate::core::phone::DeviceLayout,
+    /// The browser reports a coarse primary pointer, read once at start-up
+    /// so a phone gets the phone layout before its first touch.
+    pub coarse_pointer: bool,
     /// Whether the keyboard shortcut help overlay is open.
     pub shortcuts_help_visible: bool,
     /// Whether the site selection modal is open.
@@ -63,6 +70,10 @@ pub(crate) struct Chrome {
     /// queued / recent downloads, throughput, and acquisition policy toggles)
     /// is open. Opened by the ambient activity chip in either layout.
     pub activity_sheet_open: bool,
+    /// The app's error count (`ErrorContext::pushed_count`) when the
+    /// activity sheet last showed the errors; the chip counts the rest
+    /// ([`crate::core::activity::errors_acked`]).
+    pub errors_acked: u64,
     /// Whether the activity sheet's Details disclosure is expanded. Real state
     /// rather than egui memory so it survives a re-layout and is testable.
     pub activity_details_open: bool,
@@ -76,20 +87,16 @@ pub(crate) struct Chrome {
     pub event_modal_open: bool,
     /// Event ID being edited (`None` = creating new).
     pub event_modal_editing_id: Option<u64>,
-    /// Whether the mobile settings modal (opened from the bottom-bar
-    /// ellipsis) is currently visible.
+    /// Whether the phone's sheet (the rail's tabs, opened from the
+    /// transport row) is open. Its tab is [`Self::rail_tab`].
     pub mobile_settings_open: bool,
-    /// Active tab inside the mobile settings modal.
-    pub mobile_settings_tab: super::super::state::MobileSettingsTab,
-    /// Latched when the mobile bottom-bar location button is tapped.
-    /// The main update loop consumes this flag and kicks off
-    /// geolocation against `SiteModalState`.
-    pub mobile_geolocate_requested: bool,
-    /// Mobile chrome auto-hide bookkeeping (spec §13 phone: chrome auto-hides
-    /// during playback, tap to reveal). The mobile layout reads this each frame
-    /// to decide whether to draw the top bar / bottom chrome; the canvas updates
-    /// it on a reveal tap. Inert on desktop (desktop chrome never auto-hides).
-    pub mobile_auto_hide: super::super::state::MobileChromeAutoHide,
+    /// The phone chrome's auto-hide (one-instrument §13), decided by
+    /// [`crate::core::phone::ChromeAutoHide::step`] once a frame before the
+    /// layout, and read by the phone bars and the canvas. Inert on desktop.
+    pub mobile_auto_hide: crate::core::phone::ChromeAutoHide,
+    /// The canvas's frame on the last phone frame, so the map can hold still
+    /// while the chrome slides ([`crate::core::phone::hold_map_still`]).
+    pub last_canvas: Option<crate::core::phone::CanvasFrame>,
 }
 
 impl Chrome {

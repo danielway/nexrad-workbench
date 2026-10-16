@@ -687,8 +687,9 @@ the preferred site unless asked, and reloads with a clean URL.
 
 Depth replaces modes: there is no Basic/Advanced switch. Every surface is
 simple at a glance and reveals more where you look harder, and the same
-controls exist at every width. Developer mode (Settings › Developer, or
-`?dev=true`) only adds diagnostics.
+controls exist at every width — the phone leaves out only the keyboard map and
+the Developer row. Developer mode (Settings › Developer, or `?dev=true`) only
+adds diagnostics.
 
 - **Level 0 (first launch / casual):** canvas + simple scrubber + LIVE + play.
   Everything automatic. No jargon — "frame," not "sweep." The VOLUMES/TILTS lane

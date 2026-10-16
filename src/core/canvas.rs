@@ -1286,6 +1286,31 @@ pub(crate) struct PickLayers {
     pub alerts: bool,
 }
 
+/// How far from a mark's center a click or tap still picks it, in screen
+/// px. The phone's are 12 px — a 24 px target, the size of a fingertip's
+/// contact on a 390 px map; the desktop's fit a mouse.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PickRadii {
+    pub site: f32,
+    pub mping: f32,
+}
+
+/// The pick radii for the layout.
+pub(crate) fn pick_radii(phone: bool) -> PickRadii {
+    if phone {
+        PickRadii {
+            site: 12.0,
+            mping: 12.0,
+        }
+    } else {
+        PickRadii {
+            site: 10.0,
+            // A little over the 4.5 px dot.
+            mping: 9.0,
+        }
+    }
+}
+
 /// The map object a click picks and a hover highlights.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum MapPick {
@@ -1317,6 +1342,25 @@ impl MapPick {
             MapPick::Alert { id, .. } => {
                 crate::core::Intent::Diagnostics(DiagnosticsIntent::SelectAlert(id.clone()))
             }
+        }
+    }
+
+    /// What a click or tap on it does, for the layout: on the phone a tap
+    /// near a site asks before switching ([`Confirm::SwitchSite`]); every
+    /// other pick does what [`Self::intent`] says.
+    ///
+    /// [`Confirm::SwitchSite`]: crate::core::dialogs::Confirm::SwitchSite
+    pub(crate) fn intent_for(&self, phone: bool) -> crate::core::Intent {
+        use crate::core::dialogs::{Confirm, DialogIntent};
+        match self {
+            MapPick::Site { id, lat, lon } if phone => {
+                crate::core::Intent::Dialog(DialogIntent::RequestConfirm(Confirm::SwitchSite {
+                    id,
+                    lat: *lat,
+                    lon: *lon,
+                }))
+            }
+            _ => self.intent(),
         }
     }
 
@@ -2632,6 +2676,39 @@ mod pick_tests {
         mping: true,
         alerts: true,
     };
+
+    #[wasm_bindgen_test]
+    fn a_phone_tap_on_a_site_asks_first_and_a_click_switches() {
+        use crate::core::dialogs::{Confirm, DialogIntent};
+        let site = MapPick::Site {
+            id: "KFDR",
+            lat: 34.3,
+            lon: -98.9,
+        };
+        assert_eq!(
+            site.intent_for(true),
+            Intent::Dialog(DialogIntent::RequestConfirm(Confirm::SwitchSite {
+                id: "KFDR",
+                lat: 34.3,
+                lon: -98.9,
+            }))
+        );
+        assert_eq!(site.intent_for(false), site.intent());
+        // Reports and alerts open the same on both.
+        assert_eq!(
+            MapPick::Mping(7).intent_for(true),
+            MapPick::Mping(7).intent()
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn phone_targets_are_24_px() {
+        let phone = pick_radii(true);
+        assert_eq!(phone.site * 2.0, 24.0);
+        assert_eq!(phone.mping * 2.0, 24.0);
+        let desk = pick_radii(false);
+        assert!(desk.site < phone.site && desk.mping < phone.mping);
+    }
 
     #[wasm_bindgen_test]
     fn a_hidden_site_never_picks() {

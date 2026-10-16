@@ -311,7 +311,11 @@ pub(crate) fn footer(ui: &mut egui::Ui, buttons: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(12.0);
     ui.separator();
     ui.add_space(6.0);
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), buttons);
+    // One row high: a bare right-to-left layout takes the window's whole
+    // remaining height, which stretched short dialogs to the viewport.
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), buttons);
+    });
 }
 
 fn sized(button: egui::Button<'_>) -> egui::Button<'_> {

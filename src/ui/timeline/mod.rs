@@ -5,6 +5,7 @@
 mod frame_cells;
 mod interaction;
 mod marks;
+pub(in crate::ui) mod mini;
 mod now_edge;
 mod overlays;
 mod overview;
@@ -312,7 +313,7 @@ pub(super) fn render_timeline(
     // 48 h of context with the view box, ABOVE the main strip in its OWN
     // allocated widget (distinct response id) so its drag/click never shares a
     // hit-test layer with the main strip's press-seek/scrub. Desktop only —
-    // the mobile scrubber plays this role on phones.
+    // the mini timeline plays this role on phones.
     overview::render_overview(ui, state, timeline, live, playback);
 
     // The main strip widget covers the tick rail, the selection strip and the
@@ -479,38 +480,11 @@ pub(super) fn render_timeline(
             morph: micro_t,
         };
 
-        // Which container carries the "next data" countdown (tilt + seconds).
-        // It is whichever has the next matching cell still to receive data: the
-        // live in-progress container (its in-flight cut, or its first projected
-        // cut when waiting between cuts) wins; otherwise the nearest projected
-        // ghost (e.g. the next-volume ghost). Identified by INDEX so two
-        // containers can't both claim it via f64-equal keys.
+        // Which container carries the "next data" countdown (the core's
+        // call: the live container's next cut, else the soonest ghost).
         let countdown = live.countdown_remaining_secs(frame.now_secs);
-        use crate::core::FrameCellState;
-        let countdown_idx = containers
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                // Eligible: the live container, or a future ghost container, that
-                // has a matching cell still awaiting data.
-                let has_pending = c.cells.iter().any(|cell| {
-                    matches!(
-                        cell.state,
-                        FrameCellState::InFlight | FrameCellState::Projected
-                    )
-                });
-                has_pending && (c.is_live || c.start_secs >= frame.now_secs - 1.0)
-            })
-            // The live container sorts before future ghosts (its start is now/past
-            // but it owns the live edge); among ghosts, the soonest.
-            .min_by(|(_, a), (_, b)| {
-                b.is_live.cmp(&a.is_live).then(
-                    a.start_secs
-                        .partial_cmp(&b.start_secs)
-                        .unwrap_or(std::cmp::Ordering::Equal),
-                )
-            })
-            .map(|(i, _)| i);
+        let countdown_idx =
+            crate::core::timeline_view::countdown_container(&containers, frame.now_secs);
 
         // The morph cross-fade is the cell-height collapse applied inside
         // `paint_container` (cells fold into ticks), keyed on `micro_t` via

@@ -27,7 +27,7 @@
 //!
 //! A thin projection of [`crate::core::overview`]: the window, the grabs, the
 //! resize, every mark ([`OverviewMarks`]) and the hover words are decided
-//! there. Desktop only; the mobile scrubber plays this role on phones.
+//! there. Desktop only; the mini timeline plays this role on phones.
 
 use crate::core::overview::{
     bar_shape, bar_tip, detail_for, label_step, label_times, resized_view, scan_tip, BarShape,

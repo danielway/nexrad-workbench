@@ -467,6 +467,7 @@ impl WorkbenchApp {
             state: bootstrapped_playback,
         };
         let mut chrome = subsystem::Chrome::new();
+        chrome.coarse_pointer = ui::coarse_pointer();
         chrome.rail_tab = loaded_prefs.panel_tab;
         chrome.right_sidebar_visible = loaded_prefs.panel_open;
 
@@ -654,6 +655,8 @@ impl WorkbenchApp {
             cache_size_bytes: stats.cache_size_bytes,
             stream: self.live.session.stream,
             sheet_open: self.chrome.activity_sheet_open,
+            errors: &self.state.errors,
+            errors_acked: self.chrome.errors_acked,
             dev: self
                 .state
                 .dev_mode
@@ -982,6 +985,15 @@ impl eframe::App for WorkbenchApp {
             let width = self.playback.state.timeline_width_px;
             self.playback.state.reconcile_tier(width);
         }
+        // The one playback tick (core::playback_manager): archive and loop
+        // playback advance here, before the render decision, in every layout.
+        let tick = core::playback_manager::playback_tick(
+            &mut self.playback.state,
+            ctx.input(|i| i.stable_dt) as f64,
+        );
+        if let Some(ms) = tick.repaint_after_ms {
+            ctx.request_repaint_after(std::time::Duration::from_millis(ms));
+        }
         self.advance_playback();
         // 9.5. REACTIVE ACQUISITION: now that advance_playback has settled the
         // playback position, prefetch the archive scans that position (and a
@@ -1020,7 +1032,9 @@ impl eframe::App for WorkbenchApp {
             displayed: self.state.viz_state.displayed.as_ref(),
             caption_context: self.state.viz_state.caption_context,
         });
-        self.state.refresh_mobile_mode(ctx);
+        self.chrome.device_layout = self
+            .state
+            .refresh_mobile_mode(ctx, self.chrome.coarse_pointer);
 
         // Drain GPS-overlay async results before panels render so the
         // "My Location" checkbox sees coords/error on the same frame the
@@ -1059,33 +1073,15 @@ impl eframe::App for WorkbenchApp {
             self.live.radar_model.collecting_elevation(),
         );
 
-        // 19. Consume any deferred geolocation request raised by the
-        // mobile action bar. Handled before layout dispatch so the modal
-        // opens pending in the same frame the button was pressed.
-        if self.state.is_mobile && self.chrome.mobile_geolocate_requested {
-            self.chrome.mobile_geolocate_requested = false;
-            self.begin_site_geolocation(ctx, true);
-        }
-
-        // 19b. Resolve mobile chrome auto-hide for this frame (spec §13 phone:
-        // "Canvas full-bleed; chrome auto-hides during playback, tap to
-        // reveal"). Done once, before layout, so the top bar, bottom chrome,
-        // and the canvas all read the same resolved `hidden` flag. A press
-        // while the chrome was hidden last frame is a reveal tap (only the
-        // canvas is on screen then): it bumps the idle timer and latches
-        // `revealed_this_frame` so the canvas swallows that tap instead of
-        // panning. Inert on desktop.
+        // 19. Resolve the phone chrome's auto-hide for this frame
+        // (core::phone::ChromeAutoHide): once, before layout, so the bars
+        // and the canvas agree. A press on hidden chrome reveals it and the
+        // canvas swallows that press instead of panning. Inert on desktop.
         if self.state.is_mobile {
-            ui::resolve_mobile_auto_hide(
-                ctx,
-                &mut self.playback,
-                &mut self.chrome,
-                &self.diagnostics,
-                self.modals.datetime.open,
-            );
+            ui::resolve_mobile_auto_hide(ctx, &self.playback, &mut self.chrome);
         } else {
-            self.chrome.mobile_auto_hide.hidden = false;
-            self.chrome.mobile_auto_hide.revealed_this_frame = false;
+            self.chrome.mobile_auto_hide.reset_visible();
+            self.chrome.last_canvas = None;
         }
 
         // 20. RENDER (layout tree): chrome panels + all modals dispatched
@@ -1105,6 +1101,11 @@ impl eframe::App for WorkbenchApp {
         // doing?", built once from this frame's inputs so the chip, the sheet
         // and the mobile bar all read the same numbers.
         let activity_vm = self.build_activity_vm();
+        self.chrome.errors_acked = core::activity::errors_acked(
+            &self.state.errors,
+            self.chrome.errors_acked,
+            self.chrome.activity_sheet_open,
+        );
 
         // Toasts: move this frame's legacy status line and fresh errors into
         // the queue, then advance it on the frame clock (core::toast).

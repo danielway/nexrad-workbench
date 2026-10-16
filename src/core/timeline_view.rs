@@ -281,7 +281,7 @@ impl<'a> TimelineView<'a> {
     }
 
     /// The full cache handle (for callers that need range bounds or sweep
-    /// lookups across all cached scans, e.g. the mobile scrubber). Prefer
+    /// lookups across all cached scans). Prefer
     /// the availability-oriented accessors above where possible.
     pub(crate) fn cache(&self) -> &'a RadarTimeline {
         self.cache
@@ -895,6 +895,32 @@ pub(crate) fn strip_marks(
         out.push(m);
     }
     out
+}
+
+/// Which container carries the "next data" countdown (tilt and seconds):
+/// whichever has the next matching cell still to receive data. The live
+/// in-progress container wins (its in-flight cut, or its first projected cut
+/// between cuts); otherwise the soonest future ghost. By index, so two
+/// containers cannot both claim it.
+pub(crate) fn countdown_container(containers: &[ScanContainer], now_secs: f64) -> Option<usize> {
+    containers
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            let has_pending = c.cells.iter().any(|cell| {
+                matches!(
+                    cell.state,
+                    FrameCellState::InFlight | FrameCellState::Projected
+                )
+            });
+            has_pending && (c.is_live || c.start_secs >= now_secs - 1.0)
+        })
+        .min_by(|(_, a), (_, b)| {
+            b.is_live
+                .cmp(&a.is_live)
+                .then(a.start_secs.total_cmp(&b.start_secs))
+        })
+        .map(|(i, _)| i)
 }
 
 /// The received fraction of a cut the stream is filling.
@@ -2228,6 +2254,30 @@ mod marks_tests {
             is_live: false,
             is_projected: false,
         }
+    }
+
+    #[wasm_bindgen_test]
+    fn the_live_container_carries_the_countdown_over_a_ghost() {
+        let mut live = container(
+            1000.0,
+            vec![cell(1000.0, 1030.0, FrameCellState::Projected)],
+        );
+        live.is_live = true;
+        let ghost = container(
+            1300.0,
+            vec![cell(1300.0, 1330.0, FrameCellState::Projected)],
+        );
+        let settled = container(700.0, vec![cell(700.0, 730.0, FrameCellState::Cached)]);
+        let cs = vec![settled.clone(), live, ghost.clone()];
+        assert_eq!(countdown_container(&cs, 1100.0), Some(1));
+        // No live volume: the soonest ghost still to come.
+        let later = container(
+            1600.0,
+            vec![cell(1600.0, 1630.0, FrameCellState::Projected)],
+        );
+        let cs = vec![settled, later, ghost];
+        assert_eq!(countdown_container(&cs, 1100.0), Some(2));
+        assert_eq!(countdown_container(&cs[..1], 1100.0), None);
     }
 
     #[wasm_bindgen_test]

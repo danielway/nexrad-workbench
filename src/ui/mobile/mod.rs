@@ -5,9 +5,7 @@
 //! panels when [`AppState::is_mobile`](crate::state::AppState::is_mobile) is
 //! true. Detailed controls live in the settings modal (see [`settings_modal`]).
 
-pub(crate) mod auto_hide;
 pub(crate) mod gestures;
-mod scrubber;
 mod settings_modal;
 mod tabs;
 mod top_bar;
@@ -16,105 +14,61 @@ pub(in crate::ui) use settings_modal::MobileSettingsModalLayer;
 pub(in crate::ui) use tabs::MobileChromeLayer;
 pub(in crate::ui) use top_bar::MobileTopBarLayer;
 
-/// Whether the mobile chrome (top bar + bottom transport) should be hidden
-/// this frame (spec §13 phone: "Canvas full-bleed; chrome auto-hides during
-/// playback, tap to reveal"). Bridges egui per-frame input into the pure
-/// [`auto_hide::should_hide_chrome`] policy; resolved once in
-/// [`resolve_mobile_auto_hide`] and stashed for everyone else to read.
-///
-/// Hides only while genuinely playing and idle past the threshold, never while
-/// paused, while any modal/sheet is open, or mid-gesture. Reads (does not
-/// mutate) the auto-hide timer.
-fn chrome_should_hide(
-    ctx: &eframe::egui::Context,
-    playback: &crate::subsystem::Playback,
-    chrome: &crate::subsystem::Chrome,
-    diagnostics: &crate::subsystem::Diagnostics,
-    picker_open: bool,
-) -> bool {
-    let now_secs = ctx.input(|i| i.time);
-    // "Playing" = archive playback advancing OR tethered to the live edge (the
-    // feed is conceptually playing). Either should let the canvas go full-bleed.
-    let is_playing = playback.state.playing || playback.state.is_pinned();
-    let gesture_active = ctx.input(|i| i.pointer.any_down() || i.any_touches());
-
-    auto_hide::should_hide_chrome(auto_hide::AutoHideInputs {
-        now_secs,
-        last_interaction_secs: chrome.mobile_auto_hide.last_interaction_secs,
-        is_playing,
-        modal_open: any_overlay_open(chrome, diagnostics, picker_open),
-        gesture_active,
-    })
-}
-
-/// Resolve the mobile chrome auto-hide for this frame (spec §13). Called once,
-/// before layout, so the top bar / bottom chrome `visible()` predicates and the
-/// canvas all read the same `chrome.mobile_auto_hide.hidden`.
-///
-/// Order of operations:
-/// 1. Detect a reveal tap — a pointer press while the chrome *was* hidden last
-///    frame. Since hidden chrome isn't drawn, the only thing on screen is the
-///    canvas, so any fresh press is a reveal: bump the idle timer and latch
-///    `revealed_this_frame` so [`crate::ui::canvas`] swallows that press rather
-///    than panning the map.
-/// 2. Recompute and store `hidden` from the (possibly bumped) timer.
-/// 3. While playing and still visible, schedule a single repaint at the hide
-///    moment so the chrome slides away on time even if nothing else animates.
+/// Resolve the phone chrome's auto-hide for this frame (one-instrument
+/// §13). Called once, before layout, so the top bar, the bottom chrome and
+/// the canvas all read the same `chrome.mobile_auto_hide`. The decision is
+/// [`crate::core::phone::ChromeAutoHide::step`]; this only reads egui's input
+/// into it and schedules the frame at which the chrome would hide.
 pub(crate) fn resolve_mobile_auto_hide(
     ctx: &eframe::egui::Context,
-    playback: &mut crate::subsystem::Playback,
+    playback: &crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
-    diagnostics: &crate::subsystem::Diagnostics,
-    picker_open: bool,
 ) {
-    let now_secs = ctx.input(|i| i.time);
-    let was_hidden = chrome.mobile_auto_hide.hidden;
-    chrome.mobile_auto_hide.revealed_this_frame = false;
-
-    // A press that begins while the chrome is hidden reveals it (and is
-    // consumed by the canvas). `any_pressed` is the press *down* edge.
-    let pressed = ctx.input(|i| i.pointer.any_pressed());
-    if was_hidden && pressed {
-        chrome.mobile_auto_hide.touch(now_secs);
-        chrome.mobile_auto_hide.revealed_this_frame = true;
-    }
-
-    let hidden = chrome_should_hide(ctx, playback, chrome, diagnostics, picker_open);
-    chrome.mobile_auto_hide.hidden = hidden;
-
-    // Keep the idle countdown ticking toward the hide moment without spinning.
-    if !hidden {
-        let is_playing = playback.state.playing || playback.state.is_pinned();
-        if let Some(remaining) = chrome
-            .mobile_auto_hide
-            .secs_until_hide(now_secs, is_playing)
-        {
-            ctx.request_repaint_after(std::time::Duration::from_millis(
-                (remaining * 1000.0).ceil().max(1.0) as u64,
-            ));
-        }
+    let (now, pressed, gesture_active) = ctx.input(|i| {
+        (
+            i.time,
+            i.pointer.any_pressed(),
+            i.pointer.any_down() || i.any_touches(),
+        )
+    });
+    // An open dialog, the sheet, or any menu or combo box keeps the chrome.
+    let menu_open = !chrome.dialogs.is_empty() || eframe::egui::Popup::is_any_open(ctx);
+    let out = chrome
+        .mobile_auto_hide
+        .step(crate::core::phone::AutoHideInputs {
+            now,
+            playing: playback.state.playing,
+            pinned: playback.state.is_pinned(),
+            menu_open,
+            gesture_active,
+            pressed,
+        });
+    if let Some(secs) = out.recheck_after_secs {
+        ctx.request_repaint_after(std::time::Duration::from_millis(
+            (secs * 1000.0).ceil().max(1.0) as u64,
+        ));
     }
 }
 
-/// Whether any modal, sheet, or popup is open over the mobile chrome — any of
-/// these should suppress auto-hide so the user can finish what they opened.
-fn any_overlay_open(
-    chrome: &crate::subsystem::Chrome,
-    diagnostics: &crate::subsystem::Diagnostics,
-    picker_open: bool,
-) -> bool {
-    chrome.mobile_settings_open
-        || chrome.site_modal_open
-        || chrome.activity_sheet_open
-        || chrome.scan_inspector.is_some()
-        || chrome.confirm.is_some()
-        || chrome.range_download_modal.is_some()
-        || chrome.vcp_forecast_open
-        || chrome.event_modal_open
-        || chrome.shortcuts_help_visible
-        || picker_open
-        || diagnostics.alerts.list_modal_open
-        || diagnostics.alerts.selected_alert_id.is_some()
+/// Whether the browser's primary pointer is coarse (a finger), from
+/// `matchMedia("(pointer: coarse)")`. A browser fact, read once at start-up
+/// and handed to the core's layout rule.
+pub(crate) fn coarse_pointer() -> bool {
+    use wasm_bindgen::{JsCast, JsValue};
+    let global: JsValue = js_sys::global().into();
+    let Ok(f) = js_sys::Reflect::get(&global, &"matchMedia".into()) else {
+        return false;
+    };
+    let Some(f) = f.dyn_ref::<js_sys::Function>() else {
+        return false;
+    };
+    let Ok(list) = f.call1(&global, &"(pointer: coarse)".into()) else {
+        return false;
+    };
+    js_sys::Reflect::get(&list, &"matches".into())
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 /// iOS safe-area insets in CSS pixels: `(top, right, bottom, left)`.

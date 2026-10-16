@@ -441,7 +441,9 @@ impl SessionVm {
     }
 
     /// The selection chip's words. `compact` (the phone bar) drops the
-    /// seconds and the lag from a point. A loop style other than Loop rides
+    /// seconds from a point and keeps the lag in short form
+    /// (`11:30 · −5:33`), so a detached phone still says how far behind it
+    /// is. A loop style other than Loop rides
     /// on the end: `⟲ 11:28 → 11:34 · Ping-pong`.
     pub(crate) fn selection_chip_text(
         &self,
@@ -493,6 +495,10 @@ fn chip_label(selection: SelectionFact, playhead: Playhead, stream: Stream) -> C
 fn chip_text(label: &ChipLabel, clock: &dyn Clock, g: &ChipGlyphs, compact: bool) -> String {
     match *label {
         ChipLabel::Live => format!("{} LIVE", g.live),
+        ChipLabel::At {
+            ts,
+            behind_secs: Some(lag),
+        } if compact => format!("{} · −{}", clock.hm(ts), format_lag(lag)),
         ChipLabel::At { ts, .. } if compact => format!("At {}", clock.hm(ts)),
         ChipLabel::At {
             ts,
@@ -1155,8 +1161,18 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn compact_chip_drops_seconds_and_lag() {
+    fn compact_chip_drops_seconds_and_keeps_the_lag() {
         let mut s = S::at(t(11, 36, 22)).streaming(receiving());
+        s.playhead = t(11, 30, 49);
+        assert_eq!(
+            s.vm().selection_chip_text(&Utc, &DESIGN_GLYPHS, true),
+            "11:30 · −5:33"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn compact_chip_without_a_stream_has_no_lag() {
+        let mut s = S::at(t(11, 36, 22));
         s.playhead = t(11, 30, 49);
         assert_eq!(
             s.vm().selection_chip_text(&Utc, &DESIGN_GLYPHS, true),

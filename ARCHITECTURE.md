@@ -334,10 +334,12 @@ executed by the `Effect` runtime (`app/effects.rs`).
 ```
 
 **Acquisition transparency** is one surface, not several. The always-visible
-activity chip (`ui/activity_chip.rs`, shared by the desktop transport row and
-the mobile top bar) opens the activity sheet (`ui/activity_sheet.rs`), which
-carries the stage strip, throughput, download list, policy toggles, and a
-collapsed Details disclosure. Both render a single per-frame projection,
+activity chip (`ui/activity_chip.rs`, shared by the desktop and phone
+transport rows; the phone folds its words) opens the activity sheet
+(`ui/activity_sheet.rs`), which carries the stage strip, throughput, download
+list, the recent errors other than downloads, policy toggles, and a collapsed
+Details disclosure. The chip's ⚠ tick counts failed downloads and the errors
+the sheet has not shown yet (`core::activity::ErrorSummary`). Both render a single per-frame projection,
 `core::activity::ActivityVm`, so they cannot disagree. The former dev-only
 surfaces — the DL/PROC/GPU pipeline lamps, the Performance modal, the network
 log modal, and the expandable acquisition drawer — were folded into it; what
@@ -351,8 +353,14 @@ folds the city, then the zone, then help and 2D/3D into ⋯. Refusals,
 confirmations and failures with no other home go to the **toast** under the bar
 (`core::toast::ToastQueue` on `AppState::toasts`, drawn by `ui/toast.rs`).
 
-When `AppState::is_mobile` is true, `ui/mobile/` replaces this desktop layout
-with dedicated mobile chrome (tabs, scrubber, gesture handling, auto-hide).
+When the layout is the phone's (`core::phone::device_layout`, in portrait and
+landscape), `ui/mobile/` replaces this desktop layout with the same instrument
+at phone width: the top bar, a transport row on the desktop transport's
+view-models, the mini timeline (`ui/timeline/mini.rs`), and a sheet with the
+rail's four tabs (bottom in portrait, right in landscape). The phone's
+decisions — layout, sheet rect, chrome auto-hide, press tracking, the mini
+timeline's window, pick radii and the site-switch confirmation — are pure and
+tested in `core::phone`, `core::canvas` and `core::dialogs`.
 
 Canvas overlays live in `ui/canvas_overlays/` — one module per overlay
 (national mosaic, alerts, mPING reports, GPS location, sweep line/donut, site

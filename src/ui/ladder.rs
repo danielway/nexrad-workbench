@@ -16,12 +16,33 @@ use crate::state::AppState;
 use crate::ui::theme;
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2};
 
-/// One row's height.
-const ROW_H: f32 = 19.0;
+/// The ladder's sizes: the desktop panel's, or the phone sheet's touch size.
+pub(super) struct LadderLook {
+    /// One row's height (the row is the tap target).
+    pub row_h: f32,
+    /// A bar's height inside its row.
+    pub bar_h: f32,
+    /// The least height of the product buttons drawn above the ladder (0 is
+    /// the widget's own).
+    pub product_h: f32,
+}
+
+/// The desktop panel's ladder.
+pub(super) const DESKTOP: LadderLook = LadderLook {
+    row_h: 19.0,
+    bar_h: 8.0,
+    product_h: 0.0,
+};
+
+/// The phone sheet's ladder: rows tall enough for a finger.
+pub(super) const TOUCH: LadderLook = LadderLook {
+    row_h: 28.0,
+    bar_h: 11.0,
+    product_h: 34.0,
+};
+
 /// The angle-label column.
 const LABEL_W: f32 = 44.0;
-/// A bar's height inside its row.
-const BAR_H: f32 = 8.0;
 /// Room under the rows for the axis labels.
 const AXIS_H: f32 = 16.0;
 
@@ -45,9 +66,15 @@ pub(super) fn header(ui: &mut egui::Ui, vm: &VolumeLadder) {
 }
 
 /// Draw the ladder at the available width and emit what a click asks for.
-pub(super) fn ladder(ui: &mut egui::Ui, vm: &VolumeLadder, state: &mut AppState) {
+pub(super) fn ladder(
+    ui: &mut egui::Ui,
+    vm: &VolumeLadder,
+    state: &mut AppState,
+    look: &LadderLook,
+) {
+    let (row_h, bar_h) = (look.row_h, look.bar_h);
     let width = ui.available_width().max(160.0);
-    let height = vm.rows.len() as f32 * ROW_H + AXIS_H;
+    let height = vm.rows.len() as f32 * row_h + AXIS_H;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     let painter = ui.painter_at(rect.expand(2.0));
 
@@ -55,12 +82,12 @@ pub(super) fn ladder(ui: &mut egui::Ui, vm: &VolumeLadder, state: &mut AppState)
         Pos2::new(rect.left() + LABEL_W, rect.top()),
         Pos2::new(
             rect.right() - 4.0,
-            rect.top() + vm.rows.len() as f32 * ROW_H,
+            rect.top() + vm.rows.len() as f32 * row_h,
         ),
     );
     let len = vm.length_secs.max(1.0);
     let x_at = |secs: f64| track.left() + (secs / len).clamp(0.0, 1.0) as f32 * track.width();
-    let row_y = |i: usize| rect.top() + (i as f32 + 0.5) * ROW_H;
+    let row_y = |i: usize| rect.top() + (i as f32 + 0.5) * row_h;
 
     // Minute ticks under the angle rows.
     if vm.length_secs > 0.0 {
@@ -101,8 +128,8 @@ pub(super) fn ladder(ui: &mut egui::Ui, vm: &VolumeLadder, state: &mut AppState)
     // Rows: label, click target, hint.
     for (i, row) in vm.rows.iter().enumerate() {
         let r = Rect::from_min_size(
-            Pos2::new(rect.left(), rect.top() + i as f32 * ROW_H),
-            Vec2::new(rect.width(), ROW_H),
+            Pos2::new(rect.left(), rect.top() + i as f32 * row_h),
+            Vec2::new(rect.width(), row_h),
         );
         let resp = ui
             .interact(r, ui.id().with(("ladder_row", i)), Sense::click())
@@ -133,7 +160,7 @@ pub(super) fn ladder(ui: &mut egui::Ui, vm: &VolumeLadder, state: &mut AppState)
             painter.rect_filled(
                 Rect::from_min_size(
                     r.left_top() + Vec2::new(0.0, 4.0),
-                    Vec2::new(2.0, ROW_H - 8.0),
+                    Vec2::new(2.0, row_h - 8.0),
                 ),
                 1.0,
                 theme::SELECTED,
@@ -179,6 +206,7 @@ pub(super) fn ladder(ui: &mut egui::Ui, vm: &VolumeLadder, state: &mut AppState)
                 x_at(bar.start),
                 x_at(bar.end),
                 row_y(i),
+                bar_h,
                 state,
             );
         }
@@ -211,7 +239,7 @@ pub(super) fn ladder(ui: &mut egui::Ui, vm: &VolumeLadder, state: &mut AppState)
         };
         painter.line_segment(
             [
-                Pos2::new(x, rect.top() + ROW_H),
+                Pos2::new(x, rect.top() + row_h),
                 Pos2::new(x, track.bottom()),
             ],
             Stroke::new(1.5, color),
@@ -243,11 +271,12 @@ fn paint_bar(
     x0: f32,
     x1: f32,
     y: f32,
+    bar_h: f32,
     state: &mut AppState,
 ) {
     let r = Rect::from_min_max(
-        Pos2::new(x0, y - BAR_H / 2.0),
-        Pos2::new(x1.max(x0 + 2.0), y + BAR_H / 2.0),
+        Pos2::new(x0, y - bar_h / 2.0),
+        Pos2::new(x1.max(x0 + 2.0), y + bar_h / 2.0),
     );
     match bar.mark {
         BarMark::Received | BarMark::OnDevice => {

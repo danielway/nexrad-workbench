@@ -1,24 +1,22 @@
-//! Mobile bottom chrome: a condensed transport row over the scrubber strip
-//! (spec §13 phone: "Condensed transport (play · LIVE · speed · loop preset)
-//! over ~44px strip").
+//! Mobile bottom chrome: a condensed transport row under the mini timeline
+//! (one-instrument §13).
 //!
 //! Two stacked `Panel::bottom` panels:
-//!   1. Transport row (~48px) — bottommost. The primary controls, directly
-//!      visible per spec: frame step ‹ ›, Play/Pause, a stateful LIVE button
-//!      (re-tether / go-live / freeze), a compact speed tap-cycle, and a loop
-//!      preset menu. A slim trailing cluster keeps geolocate + the settings
-//!      sheet (deeper Level-2 controls) reachable; the radar-site picker lives
-//!      in the top-bar site chip.
-//!   2. Scrubber (~44px) — topmost. The coverage strip (faint=available,
-//!      solid=cached, red=now, neutral thumb, REJOIN pill, long-press→inspector).
+//!   1. Transport row (~48px) — bottommost. Frame step ‹ ›, Play/Pause, the
+//!      selection chip, the speed, the activity dot and the sheet button —
+//!      the desktop transport's controls from the same view-models.
+//!   2. The mini timeline (~46px) — topmost. The desktop strip's real cells,
+//!      marks, playhead and now cap over the last three volumes
+//!      (`ui::timeline::mini`).
 
-use crate::core::transport::StepDir;
-use crate::core::PlaybackMode;
-use crate::state::{AppState, MobileSettingsTab};
+use crate::core::transport::{PlayButton, SpeedControl, StepDir};
+use crate::core::Intent;
+use crate::state::AppState;
+use crate::ui::theme;
 use eframe::egui::{self, RichText};
 
 const TRANSPORT_BAR_HEIGHT: f32 = 48.0;
-const SCRUBBER_AREA_HEIGHT: f32 = super::scrubber::SCRUBBER_HEIGHT + 6.0;
+const MINI_AREA_HEIGHT: f32 = crate::ui::timeline::mini::MINI_TIMELINE_H + 4.0;
 
 pub(in crate::ui) struct MobileChromeLayer;
 
@@ -29,124 +27,112 @@ impl super::super::layout::Layer for MobileChromeLayer {
     fn z_order(&self) -> i32 {
         20
     }
-    fn visible(&self, ctx: &super::super::layout::LayoutCtx) -> bool {
-        // Auto-hide during playback (spec §13): when hidden the panel isn't
-        // dispatched at all, so the canvas reclaims its space (full-bleed). The
-        // hide decision is resolved once per frame (before layout) into
-        // `mobile_auto_hide.hidden`; reading it here keeps the top bar, bottom
-        // chrome, and canvas reveal-tap perfectly in lockstep.
-        !ctx.chrome.mobile_auto_hide.hidden
-    }
     fn render(&self, ctx: &mut super::super::layout::LayoutCtx) {
-        draw_mobile_chrome(
-            ctx.root_ui,
-            ctx.state,
-            ctx.timeline,
-            ctx.live,
-            ctx.playback,
-            ctx.chrome,
-        );
+        draw_mobile_chrome(ctx);
     }
 }
 
-fn draw_mobile_chrome(
-    root_ui: &mut egui::Ui,
-    state: &mut AppState,
-    timeline: &crate::subsystem::Timeline,
-    live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
-    chrome: &mut crate::subsystem::Chrome,
-) {
-    let ctx = root_ui.ctx().clone();
+fn draw_mobile_chrome(ctx: &mut super::super::layout::LayoutCtx) {
+    let super::super::layout::LayoutCtx {
+        root_ui,
+        state,
+        timeline,
+        live,
+        playback,
+        acquisition,
+        chrome,
+        activity_vm,
+        ..
+    } = ctx;
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
     // under the home indicator reservation. Pad the transport row below so the
     // controls don't sit flush with the bottom edge of the screen.
     let (_t, _r, inset_bottom, _l) = super::safe_area_insets();
 
+    // Both panels slide away together while playback runs (§13); the
+    // decision is `chrome.mobile_auto_hide`, resolved once per frame. A press
+    // anywhere resets its clock, so using the transport keeps it up.
+    let shown = !chrome.mobile_auto_hide.hidden;
+
+    root_ui.style_mut().animation_time = crate::core::phone::CHROME_SLIDE_SECS;
     // Bottommost — the condensed transport row.
-    let transport = egui::Panel::bottom("mobile_transport_bar")
+    let mut expanded = shown;
+    egui::Panel::bottom("mobile_transport_bar")
         .resizable(false)
         .exact_size(TRANSPORT_BAR_HEIGHT + inset_bottom)
-        .show(root_ui, |ui| {
-            render_transport_row(ui, state, timeline, live, playback, chrome);
+        .show_collapsible(root_ui, &mut expanded, |ui| {
+            render_transport_row(ui, state, live, playback, chrome, activity_vm);
         });
 
-    // Scrubber — sits just above the transport row.
-    let scrubber = egui::Panel::bottom("mobile_scrubber")
+    // The mini timeline — just above the transport row.
+    let mut expanded = shown;
+    egui::Panel::bottom("mobile_mini_timeline")
         .resizable(false)
-        .exact_size(SCRUBBER_AREA_HEIGHT)
-        .show(root_ui, |ui| {
+        .exact_size(MINI_AREA_HEIGHT)
+        .show_collapsible(root_ui, &mut expanded, |ui| {
             ui.add_space(2.0);
-            super::scrubber::render_scrubber(ui, state, timeline, live, playback, chrome);
+            crate::ui::timeline::mini::render_mini_timeline(
+                ui,
+                state,
+                timeline,
+                live,
+                playback,
+                acquisition,
+                chrome,
+            );
         });
-
-    // Touching the chrome keeps it on: bump the auto-hide idle timer whenever a
-    // pointer is down over either bottom panel, so using the transport/scrubber
-    // doesn't let it slide away mid-interaction (and resets the idle window when
-    // the touch lifts). The `gesture_active` guard holds it up during the press;
-    // this is what extends the window afterward.
-    let pressed_chrome = ctx.input(|i| i.pointer.any_down())
-        && (transport.response.contains_pointer() || scrubber.response.contains_pointer());
-    if pressed_chrome {
-        chrome.mobile_auto_hide.touch(ctx.input(|i| i.time));
-    }
 }
 
-/// The condensed transport row. Left cluster is the spec's directly-visible
-/// transport (step · play · LIVE · speed · loop); a slim trailing cluster keeps
-/// geolocate + the settings sheet reachable without burying the transport.
+/// The condensed transport row: step, play, step, the selection chip (with
+/// the lag when detached) and the speed on the leading edge; the activity
+/// dot and the sheet button on the trailing edge. The same controls and
+/// view-models as the desktop transport, folded to 390 px.
 fn render_transport_row(
     ui: &mut egui::Ui,
     state: &mut AppState,
-    _timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
+    activity_vm: &crate::core::activity::ActivityVm,
 ) {
     // Never disabled: the core decides what each press means (§2).
     let btn_h = 38.0;
+    let vm = crate::core::transport::transport_vm(&playback.state);
 
     ui.horizontal_centered(|ui| {
-        ui.add_space(6.0);
-        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.add_space(4.0);
+        ui.spacing_mut().item_spacing.x = 3.0;
 
-        // Step back — a seek, so it detaches first (handled in `step_frame`).
         if ui
             .add(
                 egui::Button::new(RichText::new(egui_phosphor::regular::CARET_LEFT).size(15.0))
-                    .min_size(egui::vec2(34.0, btn_h)),
+                    .min_size(egui::vec2(30.0, btn_h)),
             )
             .clicked()
         {
             step_frame(state, StepDir::Back);
         }
 
-        // Play/Pause — the primary control (spec §13). While tethered the feed
-        // is conceptually playing, so this reads PAUSE and freezes; in archive
-        // it's ordinary play/pause. All branching lives in
-        // `core::transport::reduce_toggle_play_pause`, reached via
-        // `Intent::TogglePlayPause`.
-        let tethered = playback.state.is_pinned();
-        let play_icon = if tethered || playback.state.playing {
-            egui_phosphor::regular::PAUSE
-        } else {
-            egui_phosphor::regular::PLAY
+        // Play/Pause: the same button as the desktop transport, from the
+        // same view-model.
+        let play_icon = match vm.play {
+            PlayButton::Pause => egui_phosphor::regular::PAUSE,
+            PlayButton::Play => egui_phosphor::regular::PLAY,
         };
         if ui
             .add(
                 egui::Button::new(RichText::new(play_icon).size(20.0))
-                    .min_size(egui::vec2(52.0, btn_h)),
+                    .min_size(egui::vec2(44.0, btn_h)),
             )
             .clicked()
         {
             toggle_play(state);
         }
 
-        // Step forward.
         if ui
             .add(
                 egui::Button::new(RichText::new(egui_phosphor::regular::CARET_RIGHT).size(15.0))
-                    .min_size(egui::vec2(34.0, btn_h)),
+                    .min_size(egui::vec2(30.0, btn_h)),
             )
             .clicked()
         {
@@ -164,112 +150,77 @@ fn render_transport_row(
             &crate::ui::selection_chip::ChipStyle {
                 text_size: 12.0,
                 min_height: btn_h,
-                // Mobile has no now-line cap: stopping leaves the playhead
-                // where it is.
+                // The phone's stop leaves the playhead where it is; the
+                // mini timeline's cap is the way back to now.
                 stop_placement: crate::core::transport::LiveStopPlacement::InPlace,
                 compact: true,
             },
         );
-        render_stream_health(ui, live);
-        render_speed_button(ui, playback, btn_h);
 
-        // Trailing cluster: geolocate + settings sheet, right-aligned so the
-        // transport keeps the leading edge. Kept compact so they never crowd
-        // the directly-visible transport above.
+        // The speed: the desktop's menu, or the fixed readout while pinned in
+        // Rays.
+        match &vm.speed {
+            SpeedControl::Locked { label } => {
+                ui.label(
+                    RichText::new(label)
+                        .size(theme::LABEL)
+                        .color(theme::TEXT_DIM),
+                );
+            }
+            SpeedControl::Menu { selected, choices } => {
+                egui::ComboBox::from_id_salt("mobile_speed")
+                    .selected_text(RichText::new(selected.as_str()).size(13.0))
+                    .width(52.0)
+                    .height(320.0)
+                    .show_ui(ui, |ui| {
+                        for (speed, label) in choices {
+                            let on = *speed == playback.state.speed;
+                            if ui
+                                .add(
+                                    egui::Button::selectable(on, label.as_str())
+                                        .min_size(egui::vec2(80.0, 32.0)),
+                                )
+                                .clicked()
+                                && !on
+                            {
+                                state.push_command(Intent::SetSpeed(*speed));
+                            }
+                        }
+                    });
+            }
+        }
+
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(4.0);
             ui.spacing_mut().item_spacing.x = 2.0;
 
-            let settings_open = chrome.mobile_settings_open;
-            let settings_tint = if settings_open {
-                ui.visuals().strong_text_color()
-            } else {
-                ui.visuals().weak_text_color()
-            };
+            // The sheet: the rail's tabs. It opens on the rail's tab; its
+            // backdrop owns closing.
+            let open = chrome.mobile_settings_open;
             if ui
                 .add(
                     egui::Button::new(
                         RichText::new(egui_phosphor::regular::SLIDERS)
                             .size(18.0)
-                            .color(settings_tint),
+                            .color(if open {
+                                theme::SELECTED
+                            } else {
+                                theme::TEXT_DIM
+                            }),
                     )
                     .frame(false)
                     .min_size(egui::vec2(34.0, btn_h)),
                 )
-                .on_hover_text("More controls")
+                .on_hover_text("View, layers, events and settings")
                 .clicked()
             {
-                chrome.mobile_settings_open = !settings_open;
-                if chrome.mobile_settings_open {
-                    chrome.mobile_settings_tab = MobileSettingsTab::default();
-                }
+                chrome.mobile_settings_open = true;
             }
 
-            if ui
-                .add(
-                    egui::Button::new(
-                        RichText::new(egui_phosphor::regular::CROSSHAIR)
-                            .size(18.0)
-                            .color(ui.visuals().weak_text_color()),
-                    )
-                    .frame(false)
-                    .min_size(egui::vec2(34.0, btn_h)),
-                )
-                .on_hover_text("Use my location")
-                .clicked()
-            {
-                chrome.mobile_geolocate_requested = true;
-                chrome.mobile_settings_open = false;
-            }
+            // The activity dot: the desktop chip with its words folded.
+            crate::ui::activity_chip::render_activity_chip(ui, activity_vm, state, 13.0, true);
         });
     });
-}
-
-/// Compact stream-health readout beside the mobile LIVE button. The ~360 px
-/// transport row has no room for the desktop activity chip, so only the states
-/// that demand attention surface here: a stalled or failed stream. Healthy activity
-/// (receiving / waiting) is carried by the LIVE button itself.
-fn render_stream_health(ui: &mut egui::Ui, live: &crate::subsystem::Live) {
-    use crate::core::session::Stream;
-    let session = &live.session;
-    let word = match session.stream {
-        Stream::Stalled => "stalled",
-        Stream::Failed => "failed",
-        _ => return,
-    };
-    let resp = ui.label(
-        RichText::new(egui_phosphor::regular::BROADCAST)
-            .size(10.0)
-            .color(crate::ui::theme::legacy::WARN),
-    );
-    ui.label(
-        RichText::new(word)
-            .size(10.0)
-            .monospace()
-            .color(crate::ui::theme::legacy::WARN),
-    );
-    if let Some(hover) = session.activity_hover {
-        resp.on_hover_text(hover);
-    }
-}
-
-/// Compact speed control: a tap-cycle button showing the current speed in the
-/// mode's notation (× in Micro, fps in Macro) that walks a curated ladder
-/// ([`PlaybackSpeed::mobile_cycle`]) on each tap. The full speed list stays in
-/// the settings sheet for users who want a specific value.
-fn render_speed_button(ui: &mut egui::Ui, playback: &mut crate::subsystem::Playback, btn_h: f32) {
-    let mode = playback.state.playback_mode();
-    let label = match mode {
-        PlaybackMode::Macro => playback.state.speed.macro_label(),
-        PlaybackMode::Micro => playback.state.speed.label(),
-    };
-    if ui
-        .add(egui::Button::new(RichText::new(label).size(13.0)).min_size(egui::vec2(46.0, btn_h)))
-        .on_hover_text("Playback speed (tap to cycle)")
-        .clicked()
-    {
-        playback.state.speed = playback.state.speed.mobile_cycle(mode);
-    }
 }
 
 // ---------------------------------------------------------------------------

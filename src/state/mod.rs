@@ -215,119 +215,6 @@ pub(crate) enum WidthTier {
     Full,
 }
 
-/// Tabs in the mobile settings modal. Order matches the tab strip layout.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MobileSettingsTab {
-    #[default]
-    Playback,
-    Product,
-    Layers,
-    More,
-}
-
-impl MobileSettingsTab {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Playback => "Playback",
-            Self::Product => "Product",
-            Self::Layers => "Layers",
-            Self::More => "More",
-        }
-    }
-
-    pub(crate) fn all() -> [Self; 4] {
-        [Self::Playback, Self::Product, Self::Layers, Self::More]
-    }
-}
-
-/// Idle threshold (seconds) of no interaction before mobile chrome hides while
-/// playing (spec §13 phone: "chrome auto-hides during playback").
-pub(crate) const MOBILE_CHROME_IDLE_HIDE_SECS: f64 = 3.0;
-
-/// Per-frame bookkeeping for the mobile chrome auto-hide (spec §13 phone:
-/// "Canvas full-bleed; chrome auto-hides during playback, tap to reveal").
-///
-/// Lives on the [`Chrome`](crate::subsystem::Chrome) subsystem (its visibility
-/// domain) but is defined here, beside [`MobileSettingsTab`], so the `subsystem`
-/// layer doesn't have to reach into `ui`. The hide *policy* is the pure
-/// [`crate::ui::mobile::auto_hide::should_hide_chrome`]; this struct only holds
-/// the timer + a one-frame reveal latch it feeds.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct MobileChromeAutoHide {
-    /// egui `input.time` of the last interaction (chrome tap/drag or reveal
-    /// tap). Far-past sentinel by default so the first idle period while
-    /// playing still hides on schedule rather than instantly on launch.
-    pub last_interaction_secs: f64,
-    /// Whether the chrome is hidden as resolved for the current frame. Computed
-    /// once per frame (before layout) and read by the mobile layers' `visible()`
-    /// and the canvas, so all three agree. The canvas also uses last frame's
-    /// value to recognise a reveal tap (a press while hidden, when only the
-    /// canvas is on screen).
-    pub hidden: bool,
-    /// Set on the frame the user reveals hidden chrome by tapping the canvas —
-    /// consumed by the canvas so the same tap doesn't also pan/zoom.
-    pub revealed_this_frame: bool,
-}
-
-impl Default for MobileChromeAutoHide {
-    fn default() -> Self {
-        Self {
-            last_interaction_secs: f64::NEG_INFINITY,
-            hidden: false,
-            revealed_this_frame: false,
-        }
-    }
-}
-
-impl MobileChromeAutoHide {
-    /// Record an interaction at `now`, resetting the idle timer so chrome stays
-    /// visible for another [`MOBILE_CHROME_IDLE_HIDE_SECS`] window.
-    pub(crate) fn touch(&mut self, now_secs: f64) {
-        self.last_interaction_secs = now_secs;
-    }
-
-    /// Seconds remaining until chrome would auto-hide given `now` and whether
-    /// playback is advancing, or `None` if it won't hide (paused, or already
-    /// past the threshold). Used to schedule one repaint at the hide moment
-    /// rather than spinning every frame.
-    pub(crate) fn secs_until_hide(&self, now_secs: f64, is_playing: bool) -> Option<f64> {
-        if !is_playing {
-            return None;
-        }
-        let remaining = MOBILE_CHROME_IDLE_HIDE_SECS - (now_secs - self.last_interaction_secs);
-        (remaining > 0.0).then_some(remaining)
-    }
-}
-
-#[cfg(test)]
-mod mobile_auto_hide_tests {
-    use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test;
-
-    #[wasm_bindgen_test]
-    fn secs_until_hide_none_when_paused() {
-        let h = MobileChromeAutoHide {
-            last_interaction_secs: 10.0,
-            ..Default::default()
-        };
-        assert!(h.secs_until_hide(11.0, false).is_none());
-    }
-
-    #[wasm_bindgen_test]
-    fn secs_until_hide_counts_down_while_playing() {
-        let h = MobileChromeAutoHide {
-            last_interaction_secs: 10.0,
-            ..Default::default()
-        };
-        let remaining = h.secs_until_hide(11.0, true).expect("should be pending");
-        assert!((remaining - (MOBILE_CHROME_IDLE_HIDE_SECS - 1.0)).abs() < 1e-9);
-        // Past the threshold → no longer pending.
-        assert!(h
-            .secs_until_hide(10.0 + MOBILE_CHROME_IDLE_HIDE_SECS, true)
-            .is_none());
-    }
-}
-
 /// Bootstrap output from [`AppState::new`].
 ///
 /// Carries values that are loaded from persistence at construction time
@@ -413,20 +300,30 @@ impl AppState {
         self.commands.drain(..).collect()
     }
 
-    /// Refresh the mobile-mode flag for this frame.
-    ///
-    /// Auto mode: `width < 600px` plus either a sticky "touch has been seen"
-    /// flag or `width < 500px` (so a very narrow desktop window also switches
-    /// without needing a touch event). A user override in `mobile_override`
-    /// takes precedence.
-    pub(crate) fn refresh_mobile_mode(&mut self, ctx: &eframe::egui::Context) {
-        let width = ctx.content_rect().width();
+    /// Refresh the device layout for this frame from the pure rule
+    /// ([`crate::core::phone::device_layout`]): a phone's short side with a
+    /// finger (seen, or a coarse pointer) keeps the phone layout in either
+    /// orientation; a narrow window gets it without one. A user override in
+    /// `mobile_override` takes precedence. Returns the layout.
+    pub(crate) fn refresh_mobile_mode(
+        &mut self,
+        ctx: &eframe::egui::Context,
+        coarse_pointer: bool,
+    ) -> crate::core::phone::DeviceLayout {
+        let rect = ctx.content_rect();
+        let width = rect.width();
         let touch_now = ctx.input(|i| i.any_touches() || i.multi_touch().is_some());
         if touch_now {
             self.touch_seen_ever = true;
         }
-        let auto = width < 600.0 && (self.touch_seen_ever || width < 500.0);
-        self.is_mobile = self.mobile_override.unwrap_or(auto);
+        let layout = crate::core::phone::device_layout(crate::core::phone::LayoutInputs {
+            width,
+            height: rect.height(),
+            touch_seen: self.touch_seen_ever,
+            coarse_pointer,
+            forced: self.mobile_override,
+        });
+        self.is_mobile = layout.is_phone();
 
         // Desktop width tier — used by the top/bottom bars to fold low-priority
         // controls into overflow menus before they collide. Only meaningful when
@@ -440,15 +337,15 @@ impl AppState {
             WidthTier::Cramped
         };
 
-        // Mobile v1 is 2D-only. If the user was in globe mode on desktop and
-        // the layout flipped to mobile (browser resize, forced override),
-        // snap back to 2D rather than leaving them in a view they have no
-        // controls for.
+        // The phone is 2D-only: a 3D link (or a resize into the phone layout)
+        // opens in 2D, with one line saying so.
         if self.is_mobile && !self.viz_state.is_2d() {
             self.viz_state
                 .camera
                 .switch_to_flat_2d(crate::geo::Flat2DState::default());
+            self.toasts.notice(crate::core::phone::NO_3D_NOTICE);
         }
+        layout
     }
 
     /// Whether sweep animation (Rays mode's beam line and progressive
@@ -506,31 +403,6 @@ mod coverage_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    // ---- MobileSettingsTab ----
-
-    #[wasm_bindgen_test]
-    fn mobile_settings_tab_labels() {
-        assert_eq!(MobileSettingsTab::Playback.label(), "Playback");
-        assert_eq!(MobileSettingsTab::Product.label(), "Product");
-        assert_eq!(MobileSettingsTab::Layers.label(), "Layers");
-        assert_eq!(MobileSettingsTab::More.label(), "More");
-    }
-
-    #[wasm_bindgen_test]
-    fn mobile_settings_tab_all_order() {
-        let all = MobileSettingsTab::all();
-        assert_eq!(all.len(), 4);
-        assert_eq!(all[0], MobileSettingsTab::Playback);
-        assert_eq!(all[1], MobileSettingsTab::Product);
-        assert_eq!(all[2], MobileSettingsTab::Layers);
-        assert_eq!(all[3], MobileSettingsTab::More);
-    }
-
-    #[wasm_bindgen_test]
-    fn mobile_settings_tab_default_is_playback() {
-        assert_eq!(MobileSettingsTab::default(), MobileSettingsTab::Playback);
-    }
-
     // ---- WidthTier ----
 
     #[wasm_bindgen_test]
@@ -543,61 +415,6 @@ mod coverage_tests {
         assert!(WidthTier::Cramped < WidthTier::Compact);
         assert!(WidthTier::Compact < WidthTier::Full);
         assert!(WidthTier::Cramped < WidthTier::Full);
-    }
-
-    // ---- MobileChromeAutoHide ----
-
-    #[wasm_bindgen_test]
-    fn mobile_chrome_default_sentinel() {
-        let h = MobileChromeAutoHide::default();
-        assert_eq!(h.last_interaction_secs, f64::NEG_INFINITY);
-        assert!(!h.hidden);
-        assert!(!h.revealed_this_frame);
-    }
-
-    #[wasm_bindgen_test]
-    fn mobile_chrome_touch_resets_timer() {
-        let mut h = MobileChromeAutoHide::default();
-        h.touch(42.5);
-        assert!((h.last_interaction_secs - 42.5).abs() < 1e-9);
-        h.touch(100.0);
-        assert!((h.last_interaction_secs - 100.0).abs() < 1e-9);
-    }
-
-    #[wasm_bindgen_test]
-    fn mobile_chrome_secs_until_hide_none_when_paused() {
-        let h = MobileChromeAutoHide {
-            last_interaction_secs: 10.0,
-            ..Default::default()
-        };
-        assert!(h.secs_until_hide(11.0, false).is_none());
-    }
-
-    #[wasm_bindgen_test]
-    fn mobile_chrome_secs_until_hide_counts_down() {
-        let h = MobileChromeAutoHide {
-            last_interaction_secs: 10.0,
-            ..Default::default()
-        };
-        // 1 second of idle elapsed → remaining = threshold - 1.
-        let remaining = h.secs_until_hide(11.0, true).expect("pending");
-        assert!((remaining - (MOBILE_CHROME_IDLE_HIDE_SECS - 1.0)).abs() < 1e-9);
-    }
-
-    #[wasm_bindgen_test]
-    fn mobile_chrome_secs_until_hide_none_past_threshold() {
-        let h = MobileChromeAutoHide {
-            last_interaction_secs: 10.0,
-            ..Default::default()
-        };
-        // Exactly at the threshold remaining == 0.0, which is not > 0.0.
-        assert!(h
-            .secs_until_hide(10.0 + MOBILE_CHROME_IDLE_HIDE_SECS, true)
-            .is_none());
-        // Well past the threshold.
-        assert!(h
-            .secs_until_hide(10.0 + MOBILE_CHROME_IDLE_HIDE_SECS + 5.0, true)
-            .is_none());
     }
 
     // ---- AppState command queue / gating ----

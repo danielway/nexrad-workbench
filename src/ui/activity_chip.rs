@@ -48,13 +48,15 @@ fn hover_text(state: ActivityState) -> &'static str {
     }
 }
 
-/// Render the chip. `font_size` differs between the desktop transport (11) and
-/// the mobile top bar (12), which is the only thing that varies between them.
+/// Render the chip. The desktop transport draws it at 11 with its words; the
+/// phone's transport draws it at 13 with its words `folded` into the hover,
+/// leaving the glyph, the count and the ⚠ tick (the activity dot).
 pub(super) fn render_activity_chip(
     ui: &mut egui::Ui,
     vm: &ActivityVm,
     state: &mut AppState,
     font_size: f32,
+    folded: bool,
 ) {
     let idle = vm.state == ActivityState::UpToDate;
 
@@ -71,9 +73,12 @@ pub(super) fn render_activity_chip(
             text.push_str(&count.to_string());
         }
         // The chip is always present, so "Up to date" is a state, not an
-        // absence: the label shows at rest too.
-        text.push(' ');
-        text.push_str(vm.headline.label);
+        // absence: the label shows at rest too — except on the phone, where
+        // it is folded into the hover.
+        if !folded {
+            text.push(' ');
+            text.push_str(vm.headline.label);
+        }
 
         let resp = ui.add(
             egui::Button::new(RichText::new(text).size(font_size).strong().color(tint))
@@ -82,12 +87,17 @@ pub(super) fn render_activity_chip(
         if resp.clicked() {
             clicked = true;
         }
-        resp.on_hover_text(hover_text(vm.state));
+        if folded {
+            resp.on_hover_text(format!("{} — {}", vm.headline.label, hover_text(vm.state)));
+        } else {
+            resp.on_hover_text(hover_text(vm.state));
+        }
 
-        // Failure tick — independent of the activity state, because a failed
-        // scan coexists with an in-progress one.
-        if vm.failed.count > 0 {
-            let label = format!("{} {}", icons::WARNING, vm.failed.count);
+        // The ⚠ tick — independent of the activity state, because a failed
+        // scan or an error coexists with work in progress. It counts failed
+        // downloads and the errors the sheet has not shown yet.
+        if let Some((count, hover)) = vm.warning() {
+            let label = format!("{} {}", icons::WARNING, count);
             let resp = ui.add(
                 egui::Button::new(
                     RichText::new(label)
@@ -100,10 +110,7 @@ pub(super) fn render_activity_chip(
             if resp.clicked() {
                 clicked = true;
             }
-            resp.on_hover_text(match vm.failed.first_error.as_deref() {
-                Some(err) => format!("Some downloads failed ({err}) — click to retry"),
-                None => "Some downloads failed — click to retry".to_string(),
-            });
+            resp.on_hover_text(hover);
         }
 
         if animate {

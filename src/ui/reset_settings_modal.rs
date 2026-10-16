@@ -77,14 +77,19 @@ fn draw_confirm(ctx: &egui::Context, state: &mut AppState, reset: ResetFacts, co
     let out = Dialog::new(DialogId::Confirm, &vm.title)
         .width(Width::Narrow)
         .show(ctx, |ui| {
-            dialog::group_heading(ui, "Deletes");
-            for line in &vm.deletes {
-                dialog::bullet(ui, line, theme::TEXT);
+            if !vm.deletes.is_empty() {
+                dialog::group_heading(ui, "Deletes");
+                for line in &vm.deletes {
+                    dialog::bullet(ui, line, theme::TEXT);
+                }
+                ui.add_space(8.0);
             }
-            ui.add_space(8.0);
-            dialog::group_heading(ui, "Keeps");
-            for line in &vm.keeps {
-                dialog::bullet(ui, line, theme::TEXT_DIM);
+            if !vm.keeps.is_empty() {
+                dialog::group_heading(ui, "Keeps");
+                for line in &vm.keeps {
+                    dialog::bullet(ui, line, theme::TEXT_DIM);
+                }
+                ui.add_space(8.0);
             }
             // The mPING key and the preferred site stay unless asked.
             if confirm == Confirm::ResetSettings
@@ -100,7 +105,6 @@ fn draw_confirm(ctx: &egui::Context, state: &mut AppState, reset: ResetFacts, co
                 }
             }
             if let Some(note) = &vm.note {
-                ui.add_space(8.0);
                 ui.label(
                     RichText::new(note)
                         .size(theme::CAPTION)
@@ -108,7 +112,12 @@ fn draw_confirm(ctx: &egui::Context, state: &mut AppState, reset: ResetFacts, co
                 );
             }
             dialog::footer(ui, |ui| {
-                confirmed = dialog::destructive(ui, &vm.action).clicked();
+                confirmed = if vm.destructive {
+                    dialog::destructive(ui, &vm.action)
+                } else {
+                    dialog::primary(ui, &vm.action)
+                }
+                .clicked();
                 cancel = dialog::secondary(ui, "Cancel").clicked();
             });
         });

@@ -83,6 +83,7 @@ fn draw_activity_sheet(
 
                 ui.separator();
                 render_operation_list(ui, state, vm);
+                render_errors(ui, vm);
 
                 ui.add_space(6.0);
                 ui.separator();
@@ -195,6 +196,28 @@ fn stage_hint(stage: &ActivityStage) -> &'static str {
         K::Downloading => "Scans being fetched from the archive now",
         K::Processing => "Jobs sent to the decode workers, awaiting a result",
         K::Finishing => "Decoded and stored — waiting for the timeline to pick them up",
+    }
+}
+
+/// The app's recent errors other than downloads, newest first. Opening the
+/// sheet acknowledges them, which clears them from the chip's ⚠ tick.
+fn render_errors(ui: &mut egui::Ui, vm: &ActivityVm) {
+    if vm.errors.recent.is_empty() {
+        return;
+    }
+    ui.add_space(6.0);
+    ui.separator();
+    ui.label(
+        RichText::new("Recent errors")
+            .size(11.0)
+            .color(theme::TEXT_FAINT),
+    );
+    for line in &vm.errors.recent {
+        ui.label(
+            RichText::new(format!("{} {line}", icons::WARNING))
+                .size(12.0)
+                .color(theme::TEXT_DIM),
+        );
     }
 }
 

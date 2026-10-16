@@ -37,9 +37,6 @@ pub(crate) struct SiteModalState {
     pub near: NearYou,
     /// The zip an in-flight lookup is for (it names the group).
     pending_zip: Option<String>,
-    /// Pick the nearest site when the fix arrives (the phone's location
-    /// button); the picker's own link only lists the nearest.
-    auto_pick: bool,
     /// The opening (stack generation) the field was last reset for.
     opened_for: Option<u64>,
     /// Sender given to async callbacks. Clone freely.
@@ -55,11 +52,10 @@ impl SiteModalState {
     }
 
     /// A lookup started: Near you shows its spinner. `zip` names the zip
-    /// being looked up; `auto_pick` picks the nearest site on arrival.
-    pub(crate) fn begin_pending(&mut self, zip: Option<String>, auto_pick: bool) {
+    /// being looked up.
+    pub(crate) fn begin_pending(&mut self, zip: Option<String>) {
         self.near = NearYou::Locating;
         self.pending_zip = zip;
-        self.auto_pick = auto_pick;
     }
 
     /// A lookup could not start (validation): say why in Near you.
@@ -83,7 +79,6 @@ impl Default for SiteModalState {
             query: String::new(),
             near: NearYou::Idle,
             pending_zip: None,
-            auto_pick: false,
             opened_for: None,
             location_tx,
             location_rx,
@@ -124,16 +119,8 @@ fn draw_site_picker(
 ) {
     // Location results (geolocation or zip) → the core decides.
     for result in picker.drain_location_results() {
-        let out = on_location(result, picker.pending_zip.take(), picker.auto_pick);
+        let out = on_location(result, picker.pending_zip.take());
         picker.near = out.near;
-        picker.auto_pick = false;
-        if let Some((id, lat, lon)) = out.pick {
-            state.push_command(Intent::SelectSite {
-                site_id: id.to_string(),
-                lat,
-                lon,
-            });
-        }
         if let Some((lat, lon)) = out.show_location {
             state.push_command(Intent::SetGeoLayer(
                 crate::core::GeoLayer::GpsLocation,

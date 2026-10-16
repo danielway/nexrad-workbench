@@ -102,6 +102,22 @@ pub(crate) fn render_canvas_with_geo(
             }
             ViewMode::Flat2D => {
                 // --- Existing flat 2D path ---
+                // On the phone the map holds still while the chrome slides
+                // (core::phone::hold_map_still): shift the pan by the
+                // opposite of the canvas center's move.
+                if state.is_mobile {
+                    let viewport = ctx.input(|i| i.viewport_rect()).size();
+                    let now = crate::core::phone::CanvasFrame {
+                        center: (rect.center().x, rect.center().y),
+                        viewport: (viewport.x, viewport.y),
+                    };
+                    let (dx, dy) = crate::core::phone::hold_map_still(chrome.last_canvas, now);
+                    chrome.last_canvas = Some(now);
+                    if dx != 0.0 || dy != 0.0 {
+                        let pan = state.viz_state.pan_offset();
+                        state.viz_state.set_pan_offset(pan + egui::vec2(dx, dy));
+                    }
+                }
                 let mut projection =
                     MapProjection::new(state.viz_state.center_lat, state.viz_state.center_lon);
                 projection.update(state.viz_state.zoom(), state.viz_state.pan_offset(), rect);
@@ -787,8 +803,11 @@ fn render_canvas_caption(
                 .corner_radius(4.0)
                 .inner_margin(egui::Margin::symmetric(10, 5))
                 .show(ui, |ui| {
+                    // A phone-width map wraps the line rather than cutting
+                    // it at both edges.
+                    ui.set_max_width((rect.width() - 40.0).max(120.0));
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         for (words, role) in &line.segments {
                             let color = match role {
                                 CaptionRole::Words => theme::TEXT_DIM,

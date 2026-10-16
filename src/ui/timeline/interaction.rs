@@ -15,8 +15,8 @@
 //!   - **Right-click** opens the scan inspector. (There is deliberately no
 //!     long-press alias here: the strip shares one response across seek and
 //!     scrub, so a long-press fired mid-scrub — see the UX audit. The
-//!     mobile scrubber keeps its long-press, on its own dedicated response,
-//!     because touch has no secondary button.)
+//!     phone's mini timeline has its long-press, decided by
+//!     `core::phone::PressTrack`, because touch has no secondary button.)
 //!
 //! Which gesture *wins* a given frame is not decided here — it is
 //! [`crate::core::resolve_gesture`], a pure function with unit tests. This
