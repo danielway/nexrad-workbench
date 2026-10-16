@@ -308,9 +308,6 @@ impl DispatchState<'_> {
         if actions.stop_channel {
             self.live.channel.stop();
         }
-        if let Some(msg) = actions.status_message {
-            self.state.toasts.notice(msg);
-        }
         out
     }
 
@@ -1663,14 +1660,12 @@ mod dispatch_tests {
         assert!(!f.playback.state.playing);
         assert!(!f.playback.state.is_pinned());
         assert!((f.playback.state.playback_position() - 5_000.0).abs() < 1e-9);
-        assert_eq!(
-            f.toast().as_deref(),
-            Some(LiveExitReason::UserStopped.message())
-        );
+        // The cap turning to GO LIVE says it; no toast (one-instrument §10).
+        assert_eq!(f.toast(), None);
     }
 
     /// The `StopLive` payload reaches the reducer: `InPlace` keeps the playhead
-    /// where it was and says nothing, unlike the `LiveEdge` case above.
+    /// where it was; neither placement says anything.
     #[wasm_bindgen_test]
     fn stop_live_in_place_keeps_the_playhead_and_stays_silent() {
         let mut f = Fixture::new();

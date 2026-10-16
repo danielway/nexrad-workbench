@@ -65,9 +65,11 @@ pub(crate) struct TransportSlices<'a> {
 #[derive(Default, Debug, PartialEq)]
 pub(crate) struct TransportActions {
     /// `live.channel.stop()` — tear down the realtime worker stream.
+    ///
+    /// There is no notice: stopping the stream is said by the now cap
+    /// turning to GO LIVE, and toasts are for failures and notices only
+    /// (one-instrument §10).
     pub stop_channel: bool,
-    /// Assign `state.status_message`.
-    pub status_message: Option<String>,
 }
 
 /// Stop the live state machine: reset the phase/exit reason and drop the
@@ -110,10 +112,7 @@ pub(crate) fn detach_playhead(env: &TransportEnv, slices: TransportSlices<'_>) -
     if env.pause_stream_while_reviewing {
         // Data-saver: stop the moment the user starts reviewing.
         stop_live_machine(live_mode, engine, LiveExitReason::UserStopped);
-        return TransportActions {
-            stop_channel: true,
-            status_message: None,
-        };
+        return TransportActions { stop_channel: true };
     }
     if live_mode.detached_since.is_none() {
         live_mode.detached_since = Some(env.now_secs);
@@ -631,15 +630,6 @@ pub(crate) fn reduce_stop_live(
         // would download and store chunks the user asked to stop and has no way
         // to see.
         stop_channel: true,
-        status_message: match placement {
-            LiveStopPlacement::LiveEdge => Some(
-                live_mode
-                    .last_exit_reason
-                    .map(|r| r.message().to_string())
-                    .unwrap_or_default(),
-            ),
-            LiveStopPlacement::InPlace => None,
-        },
     }
 }
 
@@ -993,10 +983,6 @@ mod coverage_tests {
         assert!((f.playback.playback_position() - 2500.0).abs() < 1e-9);
         // An explicit stop tears down the stream (unlike a detach).
         assert!(actions.stop_channel);
-        assert_eq!(
-            actions.status_message.as_deref(),
-            Some(LiveExitReason::UserStopped.message())
-        );
     }
 
     #[wasm_bindgen_test]
@@ -1027,7 +1013,6 @@ mod coverage_tests {
         assert!(!f.playback.is_pinned());
         // FreezeAt::Keep: the playhead stays where the pin left it.
         assert!((f.playback.playback_position() - 1400.0).abs() < 1e-9);
-        assert_eq!(actions.status_message, None);
         // Placement differs between surfaces; tearing the stream down does not.
         assert!(actions.stop_channel);
     }

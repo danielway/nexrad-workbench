@@ -875,8 +875,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn stop_live_shortcut_is_a_noop_when_idle() {
-        // No stream → no intent, so reduce_stop_live's "Live mode stopped"
-        // toast can't fire from an idle keypress.
+        // No stream → no intent, so an idle keypress cannot stop anything.
         assert!(run_stop_live(crate::core::LivePhase::Idle).is_empty());
     }
 
