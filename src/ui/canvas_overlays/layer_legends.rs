@@ -27,17 +27,21 @@ impl super::Overlay for LayerLegendsOverlay {
         50
     }
 
-    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
+    /// Returns the bounds of the legend stack.
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) -> Option<Rect> {
         let painter = ui.painter();
         let state = ctx.state;
         let right = ctx.rect.right() - MARGIN;
         let mut bottom = ctx.rect.bottom() - MARGIN;
+        let mut stack: Option<Rect> = None;
 
         if state.layer_state.geo.national_mosaic && ctx.derived.data_is_live {
             if let Some(stamp) =
                 format_mosaic_stamp(state.national_mosaic.image_time(), state.use_local_time)
             {
-                bottom = draw_mosaic(painter, right, bottom, stamp) - GAP;
+                let r = draw_mosaic(painter, right, bottom, stamp);
+                bottom = r.top() - GAP;
+                stack = Some(r);
             }
         }
 
@@ -46,9 +50,11 @@ impl super::Overlay for LayerLegendsOverlay {
         {
             let legend = crate::core::canvas::mping_legend(ctx.mping_reports, ctx.playback_secs);
             if !legend.is_empty() {
-                draw_mping(painter, right, bottom, &legend);
+                let r = draw_mping(painter, right, bottom, &legend);
+                stack = Some(stack.map_or(r, |s| s.union(r)));
             }
         }
+        stack
     }
 }
 
@@ -62,8 +68,8 @@ fn scrim(painter: &Painter, r: Rect) {
     );
 }
 
-/// The mosaic stamp with its palette strip under it. Returns the scrim's top.
-fn draw_mosaic(painter: &Painter, right: f32, bottom: f32, stamp: String) -> f32 {
+/// The mosaic stamp with its palette strip under it. Returns the scrim.
+fn draw_mosaic(painter: &Painter, right: f32, bottom: f32, stamp: String) -> Rect {
     let font = egui::FontId::monospace(theme::CAPTION);
     let title = painter.layout_no_wrap(stamp, font.clone(), theme::TEXT_DIM);
     let (lo, hi) = crate::core::canvas::mosaic_legend_ends();
@@ -100,16 +106,17 @@ fn draw_mosaic(painter: &Painter, right: f32, bottom: f32, stamp: String) -> f32
         x += swatch.x;
     }
     painter.galley(Pos2::new(x + 4.0, y), hi, theme::TEXT_FAINT);
-    r.min.y
+    r
 }
 
-/// The mPING categories drawn at the playhead, one row each.
+/// The mPING categories drawn at the playhead, one row each. Returns the
+/// scrim.
 fn draw_mping(
     painter: &Painter,
     right: f32,
     bottom: f32,
     legend: &[(crate::mping::ReportCategory, &'static str)],
-) {
+) -> Rect {
     let font = egui::FontId::proportional(theme::CAPTION);
     let title = painter.layout_no_wrap("mPING reports".to_string(), font.clone(), theme::TEXT_DIM);
     let rows: Vec<_> = legend
@@ -144,4 +151,5 @@ fn draw_mping(
         painter.galley(Pos2::new(c.x + dot + 6.0, y), galley, theme::TEXT);
         y += row_h;
     }
+    r
 }

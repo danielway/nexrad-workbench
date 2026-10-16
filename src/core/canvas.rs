@@ -748,6 +748,42 @@ fn fetch_intent(scan_start: i64) -> crate::core::Intent {
     }
 }
 
+/// Gap between the caption's scrim and the map's bottom edge; the same as the
+/// layer legends' margin, so the bottom scrims share a baseline.
+pub(crate) const CAPTION_BOTTOM_INSET: f32 = 12.0;
+
+/// Clear space between the caption and a corner scrim it is lifted over.
+const CAPTION_SCRIM_GAP: f32 = 6.0;
+
+/// A scrim along the map's bottom edge (the scale bar, the layer legends, the
+/// 3D compass), in points: `left` and `right` from the map's left edge, `top`
+/// up from its bottom edge.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct BottomScrim {
+    pub left: f32,
+    pub right: f32,
+    pub top: f32,
+}
+
+/// How far above the map's bottom edge the caption's scrim sits: bottom
+/// center at [`CAPTION_BOTTOM_INSET`], unless at `caption_width` it would
+/// reach over a corner scrim, as on a phone-width map; then just above the
+/// tallest one it would cover.
+pub(crate) fn caption_bottom_inset(
+    map_width: f32,
+    caption_width: f32,
+    scrims: &[BottomScrim],
+) -> f32 {
+    let left = (map_width - caption_width) / 2.0 - CAPTION_SCRIM_GAP;
+    let right = (map_width + caption_width) / 2.0 + CAPTION_SCRIM_GAP;
+    scrims
+        .iter()
+        .filter(|s| s.left < right && s.right > left)
+        .fold(CAPTION_BOTTOM_INSET, |inset, s| {
+            inset.max(s.top + CAPTION_SCRIM_GAP)
+        })
+}
+
 /// Longitude span (degrees) covering `range_km` at `center_lat`, accounting for
 /// meridian convergence (`/cos(lat)`). The coverage-cutout circle's radius is
 /// this span projected to screen. Mirrors the canvas cutout math.
@@ -2197,6 +2233,44 @@ mod caption_tests {
         assert_eq!(
             frame_step_secs(&tl, &shown(0.0, 1, 0.0, 20.0), false),
             DEFAULT_FRAME_STEP_SECS
+        );
+    }
+
+    /// A scale bar in the bottom-left corner, 10 pt in, 44 pt tall.
+    const SCALE_BAR: BottomScrim = BottomScrim {
+        left: 10.0,
+        right: 142.0,
+        top: 54.0,
+    };
+
+    #[wasm_bindgen_test]
+    fn the_caption_sits_at_the_bottom_between_the_corners() {
+        assert_eq!(
+            caption_bottom_inset(1250.0, 550.0, &[SCALE_BAR]),
+            CAPTION_BOTTOM_INSET
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_phone_width_caption_rises_over_the_scale_bar() {
+        assert_eq!(caption_bottom_inset(360.0, 290.0, &[SCALE_BAR]), 60.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_caption_clears_the_tallest_scrim_it_covers() {
+        let legends = BottomScrim {
+            left: 220.0,
+            right: 348.0,
+            top: 120.0,
+        };
+        assert_eq!(
+            caption_bottom_inset(360.0, 290.0, &[SCALE_BAR, legends]),
+            126.0
+        );
+        // A narrow caption covers neither.
+        assert_eq!(
+            caption_bottom_inset(360.0, 60.0, &[SCALE_BAR, legends]),
+            CAPTION_BOTTOM_INSET
         );
     }
 }

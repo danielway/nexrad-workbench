@@ -21,12 +21,13 @@ impl super::Overlay for CompassOverlay {
         ctx.state.viz_state.view_mode() == crate::geo::ViewMode::Globe3D
     }
 
-    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
-        draw_compass(ui, &ctx.rect, &ctx.state.viz_state.camera);
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) -> Option<egui::Rect> {
+        Some(draw_compass(ui, &ctx.rect, &ctx.state.viz_state.camera))
     }
 }
 
-fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &Camera) {
+/// Returns the dial's bounds.
+fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &Camera) -> Rect {
     let painter = ui.painter();
     let radius = 28.0f32;
     let margin = 16.0f32;
@@ -93,4 +94,5 @@ fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &Camera) {
 
     // Center dot
     painter.circle_filled(center, 2.0, theme::alpha(theme::TEXT_DIM, 160));
+    Rect::from_center_size(center, Vec2::splat((radius + 4.0) * 2.0))
 }
