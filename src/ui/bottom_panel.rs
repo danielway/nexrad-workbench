@@ -1,7 +1,6 @@
 //! Bottom panel UI: orchestrates the timeline, playback controls, and session statistics.
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
-use crate::core::PlaybackMode;
 use crate::state::AppState;
 use crate::subsystem::Acquisition;
 use eframe::egui;
@@ -13,8 +12,8 @@ use super::timeline::render_timeline;
 ///
 /// Only rendered in the desktop layout — the mobile layout omits this
 /// layer entirely and instead places `MobileChromeLayer` at the bottom.
-/// The per-frame pulse-animation tick is hoisted into the main update
-/// loop so it runs in both layouts.
+/// The per-frame pulse-animation tick and the playback tick run in the
+/// main update loop so they run in both layouts.
 pub(super) struct BottomPanelLayer;
 
 impl Layer for BottomPanelLayer {
@@ -52,7 +51,6 @@ fn draw_bottom_panel(
     activity_vm: &crate::core::activity::ActivityVm,
 ) {
     let ctx = root_ui.ctx().clone();
-    let dt = ctx.input(|i| i.stable_dt);
 
     // Handle spacebar to toggle playback (only when no text input is focused).
     // Decoupled from the stream: while tethered this freezes the live feed
@@ -64,24 +62,8 @@ fn draw_bottom_panel(
         state.push_command(crate::core::Intent::TogglePlayPause);
     }
 
-    // Advance playback position when playing, dispatching on the Frames/Rays
-    // mode the user chose (cadence carries over in `set_play_mode`).
-    if playback.state.playing {
-        // Effective mode: a lookback replay frame-steps (Macro) regardless of
-        // tier, so it dispatches to advance_macro and gets the macro fps speeds.
-        match playback.state.playback_mode() {
-            PlaybackMode::Micro => playback.state.advance(dt as f64),
-            PlaybackMode::Macro => playback.state.advance_macro(dt as f64),
-        }
-
-        // Keeping the live edge on-screen now lives in `tick_live`
-        // (App::keep_now_on_screen), so it runs in LIVE-NOW too — not just
-        // while `playing`.
-
-        // Repaint at 30 FPS while playing — smooth for continuous micro-mode
-        // advances and well above the 1–15 FPS frame cadence macro mode emits.
-        ctx.request_repaint_after(std::time::Duration::from_millis(33));
-    }
+    // Playback advances in the main loop (core::playback_manager::
+    // playback_tick), so it runs in the phone layout too.
 
     // Sized to the content layout (timeline + spacing + controls ~24 +
     // frame margins). Stays constant across macro/micro because the

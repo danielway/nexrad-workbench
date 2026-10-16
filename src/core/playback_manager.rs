@@ -6,10 +6,52 @@
 //! elevation-list builder. Originally extracted from `main.rs`; moved from
 //! `state` into `core` so the render-loop reducer
 //! ([`crate::core::render_loop`]) can compose these decisions.
+//!
+//! It also owns the one playback tick ([`playback_tick`]): the per-frame
+//! advance of an archive or loop playback. Both the desktop and the phone
+//! shells run it once a frame from the main loop, so playback advances
+//! whichever chrome is drawn (one-instrument §13).
 
 use std::collections::HashMap;
 
-use crate::core::{RadarTimeline, Scan, Sweep};
+use crate::core::{PlaybackMode, PlaybackState, RadarTimeline, Scan, Sweep};
+
+// ---------------------------------------------------------------------------
+// The playback tick
+// ---------------------------------------------------------------------------
+
+/// Repaint cadence while playback runs: 30 fps, smooth for Rays and well
+/// above the 1–15 fps Frames cadence.
+pub(crate) const PLAYING_REPAINT_MS: u64 = 33;
+
+/// What one playback tick asks of the shell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PlaybackTick {
+    /// Repaint again after this many milliseconds; `None` while paused.
+    pub repaint_after_ms: Option<u64>,
+}
+
+/// Advance playback by one frame's `dt_secs` of real time, in the mode the
+/// user chose: Rays moves the playhead continuously, Frames steps whole
+/// sweeps at the speed's frame rate. Loops wrap inside their range; a live
+/// point's position is the live tick's, so it never moves here.
+///
+/// Independent of the chrome: the main loop calls it once a frame in every
+/// layout, so the phone advances exactly as the desktop does.
+pub(crate) fn playback_tick(playback: &mut PlaybackState, dt_secs: f64) -> PlaybackTick {
+    if !playback.playing {
+        return PlaybackTick {
+            repaint_after_ms: None,
+        };
+    }
+    match playback.playback_mode() {
+        PlaybackMode::Micro => playback.advance(dt_secs),
+        PlaybackMode::Macro => playback.advance_macro(dt_secs),
+    }
+    PlaybackTick {
+        repaint_after_ms: Some(PLAYING_REPAINT_MS),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Cached sweep data
@@ -581,6 +623,91 @@ pub(crate) fn build_elevation_roster(
         })
         .collect();
     (entries, crate::core::RosterSource::SweepsOnly)
+}
+
+#[cfg(test)]
+mod tick_tests {
+    use super::*;
+    use crate::core::{LoopMode, PlaybackSpeed};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn at(ts: f64) -> PlaybackState {
+        let mut ps = PlaybackState::default();
+        ps.set_playback_position(ts);
+        ps
+    }
+
+    /// Drive the tick the way the main loop does, at 60 Hz, with no chrome.
+    fn run(ps: &mut PlaybackState, secs: f64) {
+        let frames = (secs * 60.0).round() as usize;
+        for _ in 0..frames {
+            playback_tick(ps, 1.0 / 60.0);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn paused_playback_does_not_move_or_repaint() {
+        let mut ps = at(1_000.0);
+        ps.set_play_mode(PlaybackMode::Micro);
+        let tick = playback_tick(&mut ps, 1.0);
+        assert_eq!(tick.repaint_after_ms, None);
+        assert_eq!(ps.playback_position(), 1_000.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn archive_rays_playback_advances_the_playhead() {
+        let mut ps = at(1_000.0);
+        ps.set_play_mode(PlaybackMode::Micro);
+        ps.speed = PlaybackSpeed::Realtime;
+        ps.playing = true;
+        run(&mut ps, 2.0);
+        let moved = ps.playback_position() - 1_000.0;
+        assert!((moved - 2.0).abs() < 0.05, "moved {moved} s");
+        assert_eq!(
+            playback_tick(&mut ps, 0.0).repaint_after_ms,
+            Some(PLAYING_REPAINT_MS)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_frames_loop_steps_and_wraps_inside_its_range() {
+        let mut ps = at(100.0);
+        ps.set_play_mode(PlaybackMode::Macro);
+        ps.macro_playback.sweep_frames = vec![100.0, 200.0, 300.0];
+        ps.macro_playback.current_frame_index = 0;
+        ps.time_model.loop_mode = LoopMode::Loop;
+        ps.speed = PlaybackSpeed::Normal; // 5 fps
+        ps.playing = true;
+
+        playback_tick(&mut ps, 1.0 / 5.0);
+        assert_eq!(ps.playback_position(), 200.0);
+        playback_tick(&mut ps, 2.0 / 5.0);
+        assert_eq!(ps.playback_position(), 100.0, "wrapped to the first frame");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_rays_loop_wraps_at_the_range_end() {
+        let mut ps = at(1_000.0);
+        assert!(ps.select_range(1_000.0, 1_010.0, false));
+        ps.set_play_mode(PlaybackMode::Micro);
+        ps.speed = PlaybackSpeed::Realtime;
+        ps.time_model.loop_mode = LoopMode::Loop;
+        ps.playing = true;
+        run(&mut ps, 12.0);
+        let pos = ps.playback_position();
+        assert!((1_000.0..1_010.0).contains(&pos), "inside the loop: {pos}");
+        assert!(pos < 1_005.0, "wrapped past the end: {pos}");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_live_point_is_left_to_the_live_tick() {
+        let mut ps = at(1_000.0);
+        ps.enter_pinned_live(1_000.0);
+        ps.set_play_mode(PlaybackMode::Micro);
+        ps.playing = true;
+        run(&mut ps, 1.0);
+        assert_eq!(ps.playback_position(), 1_000.0);
+    }
 }
 
 #[cfg(test)]

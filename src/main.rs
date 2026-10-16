@@ -969,6 +969,15 @@ impl eframe::App for WorkbenchApp {
             let width = self.playback.state.timeline_width_px;
             self.playback.state.reconcile_tier(width);
         }
+        // The one playback tick (core::playback_manager): archive and loop
+        // playback advance here, before the render decision, in every layout.
+        let tick = core::playback_manager::playback_tick(
+            &mut self.playback.state,
+            ctx.input(|i| i.stable_dt) as f64,
+        );
+        if let Some(ms) = tick.repaint_after_ms {
+            ctx.request_repaint_after(std::time::Duration::from_millis(ms));
+        }
         self.advance_playback();
         // 9.5. REACTIVE ACQUISITION: now that advance_playback has settled the
         // playback position, prefetch the archive scans that position (and a
