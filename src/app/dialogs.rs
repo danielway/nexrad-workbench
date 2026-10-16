@@ -34,11 +34,6 @@ pub(crate) fn dialog_flags(chrome: &Chrome, diagnostics: &Diagnostics) -> Dialog
 /// Bring the stack in step with the flags. Called before the layout renders
 /// and around every dialog intent.
 pub(crate) fn sync_dialogs(chrome: &mut Chrome, diagnostics: &Diagnostics) {
-    // The Storage section's Reset button still raises this flag; it opens
-    // the shared confirmation.
-    if std::mem::take(&mut chrome.reset_settings_modal_open) {
-        chrome.confirm = Some(crate::core::dialogs::Confirm::ResetSettings);
-    }
     let open = dialog_flags(chrome, diagnostics).open();
     chrome.dialogs.sync(&open);
 }

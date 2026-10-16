@@ -37,11 +37,6 @@ pub(crate) struct Chrome {
     pub shortcuts_help_visible: bool,
     /// Whether the site selection modal is open.
     pub site_modal_open: bool,
-    /// Raised by the Storage section's Reset button; the dialog sync folds it
-    /// into [`Self::confirm`] the same frame (see
-    /// `app::dialogs::sync_dialogs`). New callers emit
-    /// `DialogIntent::RequestConfirm(Confirm::ResetSettings)` instead.
-    pub reset_settings_modal_open: bool,
     /// The destructive confirmation on screen, if any (one-instrument §12).
     pub confirm: Option<crate::core::dialogs::Confirm>,
     /// The open dialogs and popovers in stacking order: what Escape closes

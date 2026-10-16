@@ -87,10 +87,7 @@ pub(crate) enum Intent {
     /// Check and run eviction after a storage operation.
     CheckEviction,
     /// Ask to reset settings: opens the destructive confirmation
-    /// ([`crate::core::dialogs::Confirm::ResetSettings`]). The Storage
-    /// section still raises `Chrome::reset_settings_modal_open` (folded into
-    /// the same confirmation) until it moves to this intent.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// ([`crate::core::dialogs::Confirm::ResetSettings`]).
     ResetSettings,
     /// Reset local settings and preferences while preserving saved events,
     /// then reload (the confirmation was accepted).
