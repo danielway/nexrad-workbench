@@ -17,18 +17,11 @@ use crate::core::session::{AgeMarker, Clock, SessionVm};
 use crate::core::{AlertsState, ElevationListEntry, ElevationSelection, Intent, RadarProduct};
 use crate::geo::ViewMode;
 
+pub(crate) use crate::core::ladder::{angle_label, apply_tilt_pick, tilt_rows, TiltPick, TiltRow};
+
 // ───────────────────────────────────────────────────────────────────────────
 // Intents
 // ───────────────────────────────────────────────────────────────────────────
-
-/// A tilt chosen from the tilt picker.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub(crate) enum TiltPick {
-    /// Follow the most recently completed sweep, whatever its angle.
-    Latest,
-    /// One cut of the volume.
-    Fixed { elevation_number: u8, angle: f32 },
-}
 
 /// What the top bar (and the toast under it) can ask for.
 #[derive(Clone, PartialEq, Debug)]
@@ -48,40 +41,12 @@ pub(crate) enum TopBarIntent {
     SetAdvanced(bool),
     /// Show or hide the keyboard map.
     ToggleShortcutsHelp,
-    ToggleLeftPanel,
+    /// Fold or open the panel (the rail stays).
     ToggleRightPanel,
+    /// ⋯ › Settings: open the panel on its Settings tab.
+    OpenSettings,
     /// The toast was clicked away.
     DismissToast,
-}
-
-/// Apply a tilt pick to the selection. Choosing Latest remembers the fixed
-/// cut it left so the panel's "Auto" toggle can restore it.
-pub(crate) fn apply_tilt_pick(
-    selection: &mut ElevationSelection,
-    last_fixed: &mut Option<(u8, f32)>,
-    pick: TiltPick,
-) {
-    match pick {
-        TiltPick::Latest => {
-            if let ElevationSelection::Fixed {
-                elevation_number,
-                angle,
-            } = selection
-            {
-                *last_fixed = Some((*elevation_number, *angle));
-            }
-            *selection = ElevationSelection::Latest;
-        }
-        TiltPick::Fixed {
-            elevation_number,
-            angle,
-        } => {
-            *selection = ElevationSelection::Fixed {
-                elevation_number,
-                angle,
-            };
-        }
-    }
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -123,6 +88,8 @@ pub(crate) struct SitePicker {
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct ProductRow {
     pub product: RadarProduct,
+    /// "VEL", for the panel's segmented product row.
+    pub code: &'static str,
     pub label: String,
     pub selected: bool,
 }
@@ -132,20 +99,9 @@ pub(crate) struct ProductPicker {
     /// "REF".
     pub code: &'static str,
     pub hover: &'static str,
+    /// "Reflectivity · dBZ", under the panel's product row.
+    pub name: String,
     pub rows: Vec<ProductRow>,
-}
-
-/// One row of the tilt menu (the ladder's rows, as a list of angles).
-#[derive(Clone, PartialEq, Debug)]
-pub(crate) struct TiltRow {
-    /// "Latest", "0.5°".
-    pub label: String,
-    /// "SAILS" / "MRLE" for a repeated low cut.
-    pub note: Option<&'static str>,
-    pub selected: bool,
-    /// False when the chosen product isn't recorded at this cut.
-    pub enabled: bool,
-    pub pick: TiltPick,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -228,8 +184,6 @@ pub(crate) struct TopBarVm {
     /// 2D / 3D; the active one.
     pub view_mode: ViewMode,
     pub advanced: bool,
-    /// The left panel toggle exists only while the left panel does (Advanced).
-    pub show_left_toggle: bool,
     /// ⋯ › About.
     pub version: String,
 }
@@ -250,10 +204,16 @@ impl TopBarVm {
         let product = ProductPicker {
             code: inputs.product.short_code(),
             hover: inputs.product.label(),
+            name: format!(
+                "{} \u{00B7} {}",
+                inputs.product.label(),
+                inputs.product.unit()
+            ),
             rows: RadarProduct::all()
                 .iter()
                 .map(|&p| ProductRow {
                     product: p,
+                    code: p.short_code(),
                     label: format!("{}  {}", p.short_code(), p.label()),
                     selected: p == inputs.product,
                 })
@@ -319,7 +279,6 @@ impl TopBarVm {
             worker_error: inputs.worker_init_error.map(str::to_string),
             view_mode: inputs.view_mode,
             advanced: inputs.advanced,
-            show_left_toggle: inputs.advanced,
             version: inputs.version.to_string(),
         }
     }
@@ -331,11 +290,6 @@ fn zone_hover(zone: &str, use_local: bool) -> String {
     } else {
         "Times in UTC — click for local time".to_string()
     }
-}
-
-/// "0.5°"
-fn angle_label(deg: f32) -> String {
-    format!("{deg:.1}\u{00B0}")
 }
 
 fn tilt_picker(
@@ -352,46 +306,7 @@ fn tilt_picker(
         ElevationSelection::Fixed { angle, .. } => angle_label(*angle),
     };
 
-    let mut rows = vec![TiltRow {
-        label: "Latest".to_string(),
-        note: None,
-        selected: selection.is_auto(),
-        enabled: true,
-        pick: TiltPick::Latest,
-    }];
-    let selected_number = selection.elevation_number();
-    if entries.is_empty() {
-        // Before any volume is known: the default lowest cut.
-        rows.push(TiltRow {
-            label: angle_label(0.5),
-            note: None,
-            selected: selected_number == Some(1),
-            enabled: true,
-            pick: TiltPick::Fixed {
-                elevation_number: 1,
-                angle: 0.5,
-            },
-        });
-    } else {
-        let worker = product.to_worker_string();
-        rows.extend(entries.iter().map(|e| TiltRow {
-            label: angle_label(e.angle),
-            note: if e.is_sails {
-                Some("SAILS")
-            } else if e.is_mrle {
-                Some("MRLE")
-            } else {
-                None
-            },
-            selected: selected_number == Some(e.elevation_number),
-            // Empty means "unknown": allow.
-            enabled: e.cached_products.is_empty() || e.cached_products.iter().any(|p| p == worker),
-            pick: TiltPick::Fixed {
-                elevation_number: e.elevation_number,
-                angle: e.angle,
-            },
-        }));
-    }
+    let rows = tilt_rows(selection, entries, product);
     TiltPicker { label, rows }
 }
 
@@ -787,6 +702,8 @@ mod tests {
             "exactly one product is chosen"
         );
         assert_eq!(vm.product.rows[1].label, "VEL  Velocity");
+        assert_eq!(vm.product.rows[1].code, "VEL");
+        assert_eq!(vm.product.name, "Reflectivity · dBZ");
     }
 
     #[wasm_bindgen_test]
@@ -819,15 +736,16 @@ mod tests {
         ];
         let vm = fx.build();
         assert_eq!(vm.tilt.label, "0.9°");
+        // The top bar lists the ladder's rows: one per angle, the SAILS
+        // repeat joined to its angle.
         let labels: Vec<_> = vm.tilt.rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Latest", "0.5°", "0.9°", "0.5°"]);
+        assert_eq!(labels, ["Latest", "0.5°", "0.9°"]);
         assert!(vm.tilt.rows[2].selected);
         assert!(!vm.tilt.rows[0].selected);
-        // Reflectivity is not recorded at cut 2; unknown (empty) allows.
-        assert!(vm.tilt.rows[1].enabled);
-        assert!(!vm.tilt.rows[2].enabled);
-        assert!(vm.tilt.rows[3].enabled);
-        assert_eq!(vm.tilt.rows[3].note, Some("SAILS"));
+        // Reflectivity is not recorded at 0.9°: the row says so, never disabled.
+        assert!(vm.tilt.rows[1].reaches_product);
+        assert!(!vm.tilt.rows[2].reaches_product);
+        assert_eq!(vm.tilt.rows[1].note.as_deref(), Some("SAILS ×1"));
     }
 
     #[wasm_bindgen_test]

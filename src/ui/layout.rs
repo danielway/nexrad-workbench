@@ -8,7 +8,7 @@
 //!
 //! The seam is bounded:
 //!
-//! - **In scope:** the 6 chrome panels (top/bottom/left/right desktop,
+//! - **In scope:** the 5 chrome panels (top/bottom/right desktop,
 //!   mobile_top, mobile_chrome) and the 10 modals. Each had 3–10 subsystem
 //!   refs threaded through `main.rs` and an early-return guard checked
 //!   inside the function body. Both collapse into the trait.
@@ -47,7 +47,6 @@ use super::activity_sheet::ActivitySheetLayer;
 use super::alerts_modal::AlertsModalsLayer;
 use super::bottom_panel::BottomPanelLayer;
 use super::event_modal::EventModalLayer;
-use super::left_panel::LeftPanelLayer;
 use super::mobile::{MobileChromeLayer, MobileSettingsModalLayer, MobileTopBarLayer};
 use super::mping_modal::MpingModalLayer;
 use super::range_download_modal::RangeDownloadModalLayer;
@@ -127,6 +126,9 @@ pub(crate) struct LayoutCtx<'a> {
     /// The top bar's view-model ([`crate::core::top_bar::TopBarVm`]), built
     /// once per frame and read by both the desktop and the phone bar.
     pub top_bar_vm: &'a crate::core::top_bar::TopBarVm,
+    /// The tilt ladder ([`crate::core::ladder::VolumeLadder`]), built once per
+    /// frame and drawn in the rail's View tab.
+    pub ladder_vm: &'a crate::core::ladder::VolumeLadder,
     /// Still `&mut`, legitimately: these are transient egui form buffers
     /// (site filter/zip entry, event form fields, mPING key input) that are
     /// two-way bound to widgets and deliberately live outside `AppState`.
@@ -186,11 +188,10 @@ pub(crate) fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
         ]
     } else {
         &[
-            // Chrome: 4 panels around the canvas.
+            // Chrome: 3 panels around the canvas.
             &TopBarLayer,      // z=10
             &BottomPanelLayer, // z=20
-            &LeftPanelLayer,   // z=30
-            &RightPanelLayer,  // z=40
+            &RightPanelLayer,  // z=40 (the panel and its rail)
             // Modals: same set as mobile, in z-order.
             &SiteModalLayer,           // z=10
             &ShortcutsHelpLayer,       // z=20

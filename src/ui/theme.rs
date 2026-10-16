@@ -19,7 +19,7 @@
 //! the base tokens live in the submodules ([`timeline`], [`canvas`]), and the
 //! map marks in [`map`]. Hues in use today that the grammar retires are kept,
 //! folded and named, in [`legacy`] until the PR that removes their use lands.
-//! Data colors (mPING categories, storm-cell intensity, saved-event swatches,
+//! Data colors (mPING categories, storm-cell intensity,
 //! the radar color tables) are not chrome and live in
 //! [`crate::ui::data_colors`] / `crate::nexrad::render::color_table`.
 //!
@@ -107,9 +107,11 @@ pub(crate) fn mode_color(mode: crate::state::AppMode) -> Color32 {
 pub(crate) mod legacy {
     use super::Color32;
 
-    /// The old "active" blue: ARCHIVE badge, active pills, busy work, primary
-    /// buttons. Becomes [`super::SELECTED`] for selected controls and words
-    /// for busy work (top bar / transport / panel PRs).
+    /// The old "active" blue. The panel no longer uses it (the ladder and the
+    /// rail PR); what is left is busy work in the activity chip and sheet and
+    /// the timeline tooltips, the site and VCP forecast dialogs (dialogs PR)
+    /// and the favicon's archive color (links, preferences and modes PR).
+    /// Selected controls are [`super::SELECTED`]; busy work becomes words.
     pub(crate) const ACTIVE_BLUE: Color32 = Color32::from_rgb(100, 180, 255);
     /// Filled primary-button blue (dialogs PR: one button component).
     pub(crate) const BUTTON_BLUE: Color32 = Color32::from_rgb(65, 125, 200);
@@ -125,10 +127,6 @@ pub(crate) mod legacy {
     /// Badge yellow-amber (SAILS/MRLE, cache warning, 3D pill, notes). SAILS
     /// keeps a tiny [`super::LOOP`] tick; the rest lose color.
     pub(crate) const CAUTION: Color32 = Color32::from_rgb(230, 190, 80);
-    /// Green current-beam mark, left only in the left panel's Radar
-    /// Operations gauges; goes when the ladder replaces them (the ladder and
-    /// the rail PR). The canvas sweep line is [`super::SEEN`].
-    pub(crate) const SWEEP: Color32 = Color32::from_rgb(100, 255, 100);
 }
 
 /// Map marks drawn over the radar (sites, location, rings, compass).

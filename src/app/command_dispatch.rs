@@ -193,6 +193,20 @@ pub(crate) fn dispatch_state_only(
         // ---- Canvas / map overlays --------------------------------
         Intent::ShowAlertOnMap(id) => s.show_alert_on_map(id),
         Intent::PlaceDistancePoint { lat, lon } => s.place_distance_point(lat, lon),
+        Intent::ToggleMapTool(tool) => {
+            let viz = &mut s.state.viz_state;
+            let t = crate::core::panels::toggle_map_tool(
+                viz.data_probe_enabled,
+                viz.distance_tool_active,
+                tool,
+            );
+            viz.data_probe_enabled = t.probe;
+            viz.distance_tool_active = t.distance;
+            if t.clear_points {
+                viz.distance_start = None;
+                viz.distance_end = None;
+            }
+        }
         Intent::SetGeoLayer(layer, on) => layer.set(&mut s.state.layer_state.geo, on),
 
         // ---- Top bar ------------------------------------------------
@@ -288,7 +302,31 @@ impl DispatchState<'_> {
         use crate::geo::ViewMode;
         match intent {
             TopBarIntent::OpenSitePicker => self.chrome.site_modal_open = true,
-            TopBarIntent::SetProduct(product) => self.state.viz_state.product = product,
+            TopBarIntent::SetProduct(product) => {
+                // The product picks the cut inside a fixed angle's row.
+                let entries = self.state.current_elevation_list(
+                    &self.playback.state,
+                    &self.timeline.scans,
+                    self.live
+                        .radar_model
+                        .volume
+                        .as_ref()
+                        .and_then(|v| v.vcp_pattern.as_ref()),
+                );
+                let viz = &mut self.state.viz_state;
+                if let Some(pick) = crate::core::ladder::repick_for_product(
+                    &viz.elevation_selection,
+                    &entries,
+                    product,
+                ) {
+                    apply_tilt_pick(
+                        &mut viz.elevation_selection,
+                        &mut viz.last_fixed_selection,
+                        pick,
+                    );
+                }
+                viz.product = product;
+            }
             TopBarIntent::SetTilt(pick) => {
                 let viz = &mut self.state.viz_state;
                 apply_tilt_pick(
@@ -306,8 +344,9 @@ impl DispatchState<'_> {
             TopBarIntent::ToggleShortcutsHelp => {
                 self.chrome.shortcuts_help_visible = !self.chrome.shortcuts_help_visible;
             }
-            TopBarIntent::ToggleLeftPanel => {
-                self.chrome.left_sidebar_visible = !self.chrome.left_sidebar_visible;
+            TopBarIntent::OpenSettings => {
+                self.chrome.rail_tab = crate::core::panels::RailTab::Settings;
+                self.chrome.right_sidebar_visible = true;
             }
             TopBarIntent::ToggleRightPanel => {
                 self.chrome.right_sidebar_visible = !self.chrome.right_sidebar_visible;
@@ -628,6 +667,7 @@ impl WorkbenchApp {
             | Intent::ReorderOperation(..)
             | Intent::ShowAlertOnMap(_)
             | Intent::PlaceDistancePoint { .. }
+            | Intent::ToggleMapTool(_)
             | Intent::SetGeoLayer(..)
             | Intent::TopBar(_) => {
                 unreachable!("state-only intent was not consumed by dispatch_state_only")
@@ -1015,10 +1055,11 @@ mod dispatch_tests {
                 lat: 41.0,
                 lon: -93.0,
             },
+            Intent::ToggleMapTool(crate::core::panels::MapTool::Probe),
             Intent::SetGeoLayer(GeoLayer::Cities, false),
             Intent::TopBar(TopBarIntent::ToggleTimeZone),
         ];
-        assert_eq!(state_only.len(), 25);
+        assert_eq!(state_only.len(), 26);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -1325,15 +1366,12 @@ mod dispatch_tests {
         assert!(f.state.viz_state.elevation_selection == ElevationSelection::Latest);
         assert_eq!(f.state.viz_state.last_fixed_selection, Some((3, 1.3)));
 
-        let (left, right) = (
-            f.chrome.left_sidebar_visible,
-            f.chrome.right_sidebar_visible,
-        );
+        let right = f.chrome.right_sidebar_visible;
         f.apply(Intent::TopBar(TopBarIntent::ToggleRightPanel));
         assert_eq!(f.chrome.right_sidebar_visible, !right);
-        assert_eq!(f.chrome.left_sidebar_visible, left);
-        f.apply(Intent::TopBar(TopBarIntent::ToggleLeftPanel));
-        assert_eq!(f.chrome.left_sidebar_visible, !left);
+        f.apply(Intent::TopBar(TopBarIntent::OpenSettings));
+        assert!(f.chrome.right_sidebar_visible);
+        assert_eq!(f.chrome.rail_tab, crate::core::panels::RailTab::Settings);
 
         let help = f.chrome.shortcuts_help_visible;
         f.apply(Intent::TopBar(TopBarIntent::ToggleShortcutsHelp));

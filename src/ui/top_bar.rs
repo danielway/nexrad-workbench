@@ -48,11 +48,6 @@ fn draw_top_bar(root_ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
             ui.horizontal_centered(|ui| {
                 let f = fold(ui.available_width(), &measure(ui, vm));
 
-                if vm.show_left_toggle
-                    && icon_button(ui, icons::SIDEBAR_SIMPLE, "Toggle left panel")
-                {
-                    emit(state, TopBarIntent::ToggleLeftPanel);
-                }
                 site_picker(ui, vm, state, f.city);
                 product_picker(ui, vm, state);
                 tilt_picker(ui, vm, state);
@@ -66,7 +61,7 @@ fn draw_top_bar(root_ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icon_button(ui, icons::SIDEBAR_SIMPLE, "Toggle right panel") {
+                    if icon_button(ui, icons::SIDEBAR_SIMPLE, "Fold or open the panel") {
                         emit(state, TopBarIntent::ToggleRightPanel);
                     }
                     overflow_menu(ui, |ui| overflow_contents(ui, vm, state, f));
@@ -108,9 +103,6 @@ fn measure(ui: &egui::Ui, vm: &TopBarVm) -> TopBarWidths {
     let mono = |t: &str| text_width(ui, t, theme::readout_font()) + sp;
 
     let mut fixed = 0.0;
-    if vm.show_left_toggle {
-        fixed += icon(icons::SIDEBAR_SIMPLE);
-    }
     fixed += label(&format!("{} {}", vm.site.id, icons::CARET_DOWN));
     fixed += label(&format!("{} {}", vm.product.code, icons::CARET_DOWN));
     fixed += label(&format!("{} {}", vm.tilt.label, icons::CARET_DOWN));
@@ -207,13 +199,17 @@ fn tilt_picker(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
             .show(ui, |ui| {
                 for row in &vm.tilt.rows {
                     let mut text = RichText::new(&row.label);
-                    if row.label != "Latest" {
+                    if row.angle.is_some() {
                         text = text.monospace();
                     }
                     let resp = ui.horizontal(|ui| {
-                        let r = ui
-                            .add_enabled(row.enabled, egui::Button::selectable(row.selected, text));
-                        if let Some(note) = row.note {
+                        let text = if row.reaches_product {
+                            text
+                        } else {
+                            text.color(theme::TEXT_FAINT)
+                        };
+                        let r = ui.add(egui::Button::selectable(row.selected, text));
+                        if let Some(note) = &row.note {
                             ui.label(
                                 RichText::new(note)
                                     .size(theme::CAPTION)
@@ -222,9 +218,7 @@ fn tilt_picker(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
                         }
                         r
                     });
-                    let r = resp
-                        .inner
-                        .on_disabled_hover_text("Not recorded at this tilt");
+                    let r = resp.inner.on_hover_text(&row.hover);
                     if r.clicked() {
                         emit(state, TopBarIntent::SetTilt(row.pick));
                         ui.close();
@@ -454,19 +448,12 @@ fn overflow_contents(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState, f: 
         emit(state, TopBarIntent::ToggleShortcutsHelp);
         ui.close();
     }
-    ui.separator();
-    ui.label(
-        RichText::new("Settings")
-            .size(theme::CAPTION)
-            .color(theme::TEXT_FAINT),
-    );
-    let mut advanced = vm.advanced;
     if ui
-        .checkbox(&mut advanced, "Advanced controls")
-        .on_hover_text("Show every control (Ctrl+Shift+A)")
-        .changed()
+        .button(format!("{}  Settings", icons::SLIDERS_HORIZONTAL))
+        .clicked()
     {
-        emit(state, TopBarIntent::SetAdvanced(advanced));
+        emit(state, TopBarIntent::OpenSettings);
+        ui.close();
     }
     ui.separator();
     ui.label(

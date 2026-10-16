@@ -1,8 +1,9 @@
 //! Vertical color scale legend displayed on the right edge of the canvas.
 //!
 //! Builds a 1024-entry LUT matching the GPU shader's color mapping, then
-//! paints it as a gradient bar on a scrim, titled with the product and unit
-//! (one-instrument §7). Title and ticks are the core's
+//! paints it as a gradient bar on a scrim, captioned with the unit and named
+//! in full on hover (one-instrument §7). The bar and its ticks set the
+//! scrim's width, never the caption. Caption, hover and ticks are the core's
 //! [`crate::core::canvas::legend_vm`].
 
 use crate::ui::theme;
@@ -67,10 +68,11 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::core::Radar
 
     let painter = ui.painter();
     let title_font = egui::FontId::proportional(theme::CAPTION);
-    let title = painter.layout_no_wrap(vm.title.clone(), title_font, theme::TEXT_DIM);
+    let title = painter.layout_no_wrap(vm.caption.to_string(), title_font, theme::TEXT_DIM);
 
-    // The scrim: title over a bar with its ticks to the left.
-    let width = (tick_w + 4.0 + bar_width).max(title.size().x) + pad * 2.0;
+    // The scrim: the caption over a bar with its ticks to the left. The bar
+    // sets the width; the caption is a unit, short enough to fit over it.
+    let width = tick_w + 4.0 + bar_width + pad * 2.0;
     let scrim = Rect::from_min_size(
         Pos2::new(rect.right() - margin - width, rect.top() + margin),
         Vec2::new(width, pad + title_h + bar_height + pad + 4.0),
@@ -82,6 +84,8 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::core::Radar
         Stroke::new(1.0_f32, theme::map::scrim_edge()),
         StrokeKind::Inside,
     );
+    ui.interact(scrim, ui.id().with("color_scale"), egui::Sense::hover())
+        .on_hover_text(&vm.hover);
     painter.galley(
         Pos2::new(scrim.right() - pad - title.size().x, scrim.top() + pad),
         title,
