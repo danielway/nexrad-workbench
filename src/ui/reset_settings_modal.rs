@@ -9,7 +9,7 @@
 
 use super::dialog::{self, Dialog, Width};
 use super::layout::{Layer, LayerKind, LayoutCtx};
-use crate::core::dialogs::{confirm_vm, ConfirmFacts, DialogId, DialogIntent};
+use crate::core::dialogs::{confirm_vm, Confirm, ConfirmFacts, DialogId, DialogIntent, ResetFacts};
 use crate::core::Intent;
 use crate::state::{format_bytes, AppState};
 use crate::ui::theme;
@@ -29,12 +29,21 @@ impl Layer for ResetSettingsModalLayer {
     }
     fn render(&self, ctx: &mut LayoutCtx) {
         if let Some(confirm) = ctx.chrome.confirm {
-            draw_confirm(ctx.ctx, ctx.state, confirm);
+            let reset = ResetFacts {
+                has_mping_key: ctx.diagnostics.mping.api_key.is_some(),
+                has_preferred_site: ctx.state.preferred_site.is_some(),
+                forget_key_and_site: ctx.chrome.reset_forgets_key_and_site,
+            };
+            draw_confirm(ctx.ctx, ctx.state, reset, confirm);
         }
     }
 }
 
-fn facts(state: &AppState, confirm: crate::core::dialogs::Confirm) -> ConfirmFacts {
+fn facts(
+    state: &AppState,
+    reset: ResetFacts,
+    confirm: crate::core::dialogs::Confirm,
+) -> ConfirmFacts {
     let event = match confirm {
         crate::core::dialogs::Confirm::DeleteEvent(id) => state
             .saved_events
@@ -48,16 +57,17 @@ fn facts(state: &AppState, confirm: crate::core::dialogs::Confirm) -> ConfirmFac
         cache_bytes: state.session_stats.cache_size_bytes,
         saved_events: state.saved_events.events.len(),
         event,
+        reset,
     }
 }
 
-fn draw_confirm(ctx: &egui::Context, state: &mut AppState, confirm: crate::core::dialogs::Confirm) {
+fn draw_confirm(ctx: &egui::Context, state: &mut AppState, reset: ResetFacts, confirm: Confirm) {
     let clock = crate::ui::time_format::ZoneClock {
         use_local: state.use_local_time,
     };
     let vm = confirm_vm(
         confirm,
-        &facts(state, confirm),
+        &facts(state, reset, confirm),
         format_bytes,
         &clock,
         state.frame_now.secs(),
@@ -75,6 +85,19 @@ fn draw_confirm(ctx: &egui::Context, state: &mut AppState, confirm: crate::core:
             dialog::group_heading(ui, "Keeps");
             for line in &vm.keeps {
                 dialog::bullet(ui, line, theme::TEXT_DIM);
+            }
+            // The mPING key and the preferred site stay unless asked.
+            if confirm == Confirm::ResetSettings
+                && (reset.has_mping_key || reset.has_preferred_site)
+            {
+                ui.add_space(8.0);
+                let mut forget = reset.forget_key_and_site;
+                if ui
+                    .checkbox(&mut forget, "Also forget the mPING key and preferred site")
+                    .changed()
+                {
+                    state.push_command(Intent::SetResetForgetsKeyAndSite(forget));
+                }
             }
             if let Some(note) = &vm.note {
                 ui.add_space(8.0);

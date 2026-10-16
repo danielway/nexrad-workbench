@@ -18,7 +18,7 @@
 //! is `#[non_exhaustive]`-in-spirit and grows.
 
 use crate::core::link::LinkState;
-use crate::core::UserPreferences;
+use crate::core::Preferences;
 
 /// How a lat/lon was obtained. Distinguishes browser geolocation from zip
 /// geocoding so site-pick can enable the My Location layer only for the
@@ -59,7 +59,7 @@ pub(crate) enum Effect {
     /// [`crate::core::link::to_query`] of it.
     PushUrl(Box<LinkState>),
     /// Persist user preferences to localStorage.
-    SavePreferences(Box<UserPreferences>),
+    SavePreferences(Box<Preferences>),
     /// Begin a one-shot browser geolocation lookup for the "My Location" overlay.
     /// The shell supplies the result sink (a `GpsState` channel) and `egui`
     /// context, so the effect itself carries no payload.

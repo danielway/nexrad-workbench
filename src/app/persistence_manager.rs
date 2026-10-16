@@ -6,7 +6,7 @@
 //! [`Effect`]s for [`crate::WorkbenchApp::apply_effects`] to execute. The
 //! throttle math and change-detection are tested headlessly in `core::persist`.
 
-use crate::core::UserPreferences;
+use crate::core::Preferences;
 use crate::core::{decide_persist, persist_due, Effect, PersistDecision, PlaybackState, TimeModel};
 use crate::state::AppState;
 
@@ -17,13 +17,13 @@ pub(crate) struct PersistenceManager {
     /// monotonic `Instant`, so the decision is clock-injectable and testable.
     last_url_push_secs: f64,
     /// Last-saved user preferences snapshot (for change detection).
-    last_saved_preferences: UserPreferences,
+    last_saved_preferences: Preferences,
     /// Previous site ID to detect site changes.
     previous_site_id: String,
 }
 
 impl PersistenceManager {
-    pub(crate) fn new(initial_site_id: String, initial_prefs: UserPreferences) -> Self {
+    pub(crate) fn new(initial_site_id: String, initial_prefs: Preferences) -> Self {
         Self {
             // Seed with the construction-time wall clock so the first push still
             // waits a throttle window, preserving the old `Instant::now()` seed.
@@ -60,6 +60,7 @@ impl PersistenceManager {
         now_secs: f64,
         state: &AppState,
         playback: &PlaybackState,
+        panel: crate::state::PanelPrefs,
         mping_api_key: Option<String>,
     ) -> Vec<Effect> {
         // Gate first so suppressed frames do no snapshot work; then build the
@@ -68,7 +69,13 @@ impl PersistenceManager {
             return Vec::new();
         }
         let link = crate::state::url_state::build_link(state, playback);
-        let current_prefs = UserPreferences::from_app_state(state, playback, mping_api_key);
+        let current_prefs = Preferences::from_app_state(
+            state,
+            playback,
+            panel,
+            mping_api_key,
+            &self.last_saved_preferences,
+        );
         let PersistDecision {
             effects,
             last_url_push_secs,

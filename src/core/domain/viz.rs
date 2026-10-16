@@ -191,6 +191,9 @@ impl ElevationSelection {
         }
     }
 
+    /// The selected angle (0.5° for Latest). Test-only since the tilt moved
+    /// to the link, which writes `Latest` as itself.
+    #[cfg(test)]
     pub(crate) fn angle(&self) -> f32 {
         match self {
             ElevationSelection::Fixed { angle, .. } => *angle,

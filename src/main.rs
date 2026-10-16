@@ -251,6 +251,7 @@ static COUNTIES_DBF: &[u8] =
 /// subsystems rather than restoring view state.
 fn apply_link(
     link: &core::link::LinkState,
+    prefs: &core::Preferences,
     state: &mut AppState,
     playback: &mut subsystem::Playback,
     chrome: &mut subsystem::Chrome,
@@ -375,7 +376,9 @@ fn apply_link(
         }
         None => {}
     }
+    // The link says which mode plays; the preferences say how fast.
     if let Some(mode) = link.play_mode {
+        playback.state.speed = prefs.speed_for(mode);
         playback.state.restore_play_mode(mode);
     }
 
@@ -458,14 +461,17 @@ impl WorkbenchApp {
             mut state,
             playback: bootstrapped_playback,
             mping_api_key: loaded_mping_api_key,
+            prefs: loaded_prefs,
         } = AppState::bootstrap();
         let mut playback = subsystem::Playback {
             state: bootstrapped_playback,
         };
         let mut chrome = subsystem::Chrome::new();
+        chrome.rail_tab = loaded_prefs.panel_tab;
+        chrome.right_sidebar_visible = loaded_prefs.panel_open;
 
         let link = state::url_state::read_link();
-        apply_link(&link, &mut state, &mut playback, &mut chrome);
+        apply_link(&link, &loaded_prefs, &mut state, &mut playback, &mut chrome);
 
         let initial_site_id = state.viz_state.site_id.clone();
         let data_facade = MainThreadStore::new();
@@ -483,10 +489,15 @@ impl WorkbenchApp {
             });
         }
 
-        let initial_prefs = core::UserPreferences::from_app_state(
+        let initial_prefs = core::Preferences::from_app_state(
             &state,
             &playback.state,
+            state::PanelPrefs {
+                tab: chrome.rail_tab,
+                open: chrome.right_sidebar_visible,
+            },
             loaded_mping_api_key.clone(),
+            &loaded_prefs,
         );
 
         // Create decode worker pool (offloads heavy NEXRAD work to parallel
@@ -842,6 +853,10 @@ impl WorkbenchApp {
             self.state.frame_now.secs(),
             &self.state,
             &self.playback.state,
+            state::PanelPrefs {
+                tab: self.chrome.rail_tab,
+                open: self.chrome.right_sidebar_visible,
+            },
             self.diagnostics.mping.api_key.clone(),
         );
         self.apply_effects(ctx, effects);

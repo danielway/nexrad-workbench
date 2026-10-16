@@ -44,6 +44,7 @@ pub(crate) mod overview;
 pub(crate) mod panels;
 pub(crate) mod persist;
 pub(crate) mod playback_manager;
+pub(crate) mod prefs;
 pub(crate) mod projection;
 pub(crate) mod recency;
 pub(crate) mod render;
@@ -89,7 +90,6 @@ pub(crate) use domain::playback::{
     PlaybackState, RebuildCause, Selection, TimeModel, TimeSelection, TimelineTier,
     TIMELINE_ZOOM_MAX,
 };
-pub(crate) use domain::prefs::UserPreferences;
 pub(crate) use domain::radar::{
     LiveVolume, RadarTimeline, Scan, ScanBoundary, ScanMetadata, Sweep,
 };
@@ -118,6 +118,7 @@ pub(crate) use live_mode::{
 pub(crate) use live_radar_model::LiveRadarModel;
 pub(crate) use live_status::{derive_live_status, LiveStatus, LiveStatusInputs};
 pub(crate) use persist::{decide_persist, persist_due, PersistDecision};
+pub(crate) use prefs::Preferences;
 pub(crate) use streaming_filter::StreamingFilter;
 pub(crate) use streaming_plan::{ChunkProjectedTimes, ChunkProjectionInfo, StreamingPlan};
 pub(crate) use timeline_geometry::{

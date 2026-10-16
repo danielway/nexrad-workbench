@@ -617,7 +617,7 @@ impl LoopPreset {
 /// Loop behavior when playback bounds are set (the loop style, chosen from
 /// the selection chip's menu). A standing preference: it survives across
 /// ranges, fixed or pinned to now.
-#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum LoopMode {
     /// Play forward, jump to start when reaching end
     #[default]
@@ -776,6 +776,12 @@ pub(crate) struct PlaybackState {
     /// Current playback speed
     pub speed: PlaybackSpeed,
 
+    /// The Rays speed the user had chosen when going live locked `speed` to
+    /// real time (one-instrument §14). Given back on leaving live, and it is
+    /// what the preferences save, so the lock never overwrites the saved
+    /// speed. `None` outside the lock.
+    pub held_speed: Option<PlaybackSpeed>,
+
     /// The user's chosen playback mode (Frames or Rays). Never derived from
     /// zoom; changed only through [`Self::set_play_mode`], which keeps
     /// `speed` valid for the mode.
@@ -916,7 +922,18 @@ impl PlaybackState {
         self.pending_loop_window = None;
         self.time_model.direction = PlaybackDirection::Forward;
         self.time_model.playback_position = now;
-        self.speed = self.live_speed();
+        let live = self.live_speed();
+        if self.play_mode == PlaybackMode::Micro && self.speed != live && self.held_speed.is_none()
+        {
+            self.held_speed = Some(self.speed);
+        }
+        self.speed = live;
+    }
+
+    /// The speed the user chose: the held one while Rays is locked to real
+    /// time by live, else the current one. What the preferences save.
+    pub(crate) fn chosen_speed(&self) -> PlaybackSpeed {
+        self.held_speed.unwrap_or(self.speed)
     }
 
     /// Leave the live edge for the archive. A live point becomes a fixed
@@ -924,6 +941,11 @@ impl PlaybackState {
     /// now). A fixed range is untouched. `freeze` picks the landing position.
     /// Idempotent when already off live.
     pub(crate) fn exit_live(&mut self, freeze: FreezeAt) {
+        if let Some(held) = self.held_speed.take() {
+            if self.play_mode == PlaybackMode::Micro {
+                self.speed = held;
+            }
+        }
         if self.selection.is_live() {
             self.selection = Selection::Point { live: false };
             self.pending_loop_window = None;
@@ -1096,6 +1118,7 @@ impl PlaybackState {
             return;
         }
         self.play_mode = mode;
+        self.held_speed = None;
         if self.is_pinned() {
             self.speed = match mode {
                 PlaybackMode::Micro => PlaybackSpeed::Realtime,

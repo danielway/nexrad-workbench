@@ -710,12 +710,19 @@ fn settings_tab(ui: &mut egui::Ui, state: &mut AppState, chrome: &mut crate::sub
     }
 
     section(ui, "Developer");
-    ui.checkbox(&mut state.dev_mode, "Developer mode")
+    let mut dev = state.dev_mode;
+    if ui
+        .checkbox(&mut dev, "Developer mode")
         .on_hover_text(
-            "Add deep diagnostics — per-phase timings, worker queue depth, \
-             FPS, and cross-origin isolation — to the activity sheet's Details \
-             section. Adds ?dev=true to the URL when enabled.",
-        );
+            "Add deep diagnostics — request counts, per-phase timings, worker \
+             queue depth, FPS, and cross-origin isolation — to the activity \
+             sheet's Details section. Saved; a link with ?dev=true turns it on \
+             for that session only.",
+        )
+        .changed()
+    {
+        state.push_command(Intent::SetDeveloperMode(dev));
+    }
 
     ui.add_space(8.0);
     if ui
