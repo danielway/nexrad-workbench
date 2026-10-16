@@ -557,15 +557,18 @@ pub(crate) fn decide_canvas_caption(
 /// - Latest shows every sweep, so one frame is a sweep.
 ///
 /// The volume's duration is the gap to the next cached volume when there is
-/// one, else its own span; the newest volume may still be filling, so it
-/// never counts as shorter than the one before it. Floored at
-/// [`MIN_FRAME_STEP_SECS`]; [`DEFAULT_FRAME_STEP_SECS`] when the frame's
-/// volume is not in the timeline.
+/// one, else its own span projected to its VCP's full duration
+/// ([`crate::core::Scan::display_end_time`]): a volume still filling, or one
+/// cached for a single tilt, otherwise spans only the sweeps it holds. The
+/// newest volume never counts as shorter than the gap from the one before
+/// it. Floored at [`MIN_FRAME_STEP_SECS`]; [`DEFAULT_FRAME_STEP_SECS`] when
+/// the frame's volume is not in the timeline.
 pub(crate) fn frame_step_secs(
     timeline: &crate::core::RadarTimeline,
     displayed: &crate::core::DisplayedSweep,
     latest: bool,
 ) -> f64 {
+    use crate::core::recency::RECENCY_SECS;
     let sweep_secs = (displayed.end_time - displayed.start_time).max(0.0);
     if latest {
         return sweep_secs.max(MIN_FRAME_STEP_SECS);
@@ -576,14 +579,18 @@ pub(crate) fn frame_step_secs(
         return DEFAULT_FRAME_STEP_SECS;
     };
     let scan = &scans[i];
-    let own = (scan.end_time - scan.start_time).max(0.0);
+    let span = |s: &crate::core::Scan| (s.display_end_time() - s.start_time).max(0.0);
+    let own = span(scan);
     let volume_secs = match scans.get(i + 1) {
-        Some(next) if next.start_time - scan.start_time <= crate::core::recency::RECENCY_SECS => {
+        Some(next) if next.start_time - scan.start_time <= RECENCY_SECS => {
             next.start_time - scan.start_time
         }
         Some(_) => own,
         None => match i.checked_sub(1).map(|p| &scans[p]) {
-            Some(prev) => own.max(prev.end_time - prev.start_time),
+            Some(prev) if scan.start_time - prev.start_time <= RECENCY_SECS => {
+                own.max(scan.start_time - prev.start_time)
+            }
+            Some(prev) => own.max(span(prev)),
             None => own,
         },
     };
@@ -2118,6 +2125,47 @@ mod caption_tests {
         // The newest volume is never shorter than the one before it.
         let d = shown(280.0, 1, 280.0, 300.0);
         assert!((frame_step_secs(&tl, &d, false) - 280.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_filling_volume_counts_its_whole_vcp() {
+        use crate::data::{ExtractedVcp, ExtractedVcpElevation};
+        // Just after going live: the newest (and only) volume holds its
+        // first cut. Three cuts at 3°/s plan a 360 s volume, so a 0.5° frame
+        // 90 s old is still the newest 0.5° frame, not a minute behind.
+        let cut = |angle| ExtractedVcpElevation {
+            angle,
+            waveform: "CS".to_string(),
+            prf_number: 1,
+            is_sails: false,
+            is_mrle: false,
+            is_base_tilt: false,
+            azimuth_rate: Some(3.0),
+        };
+        let mut filling = scan(1000.0, 1020.0, vec![sweep(1, 1000.0, 1020.0)]);
+        filling.vcp_pattern = Some(ExtractedVcp {
+            number: 212,
+            elevations: vec![cut(0.5), cut(0.9), cut(1.3)],
+        });
+        let tl = RadarTimeline {
+            scans: vec![filling],
+        };
+        let d = shown(1000.0, 1, 1000.0, 1020.0);
+        assert!((frame_step_secs(&tl, &d, false) - 360.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_newest_volume_counts_the_gap_from_the_last() {
+        // A fixed tilt caches one cut per volume, so each volume's own span
+        // is a single sweep; the period between volumes is the frame step.
+        let tl = RadarTimeline {
+            scans: vec![
+                scan(0.0, 20.0, vec![sweep(1, 0.0, 20.0)]),
+                scan(300.0, 320.0, vec![sweep(1, 300.0, 320.0)]),
+            ],
+        };
+        let d = shown(300.0, 1, 300.0, 320.0);
+        assert!((frame_step_secs(&tl, &d, false) - 300.0).abs() < 1e-9);
     }
 
     #[wasm_bindgen_test]
