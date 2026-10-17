@@ -371,6 +371,23 @@ Day center on the playhead and never show more than the ghost room past now;
 going live returns to Cuts. The strip's press area reaches 12 px up into the
 map, which neither pans on that press nor zooms on the strip's pinch.
 
+The phone's overview is the calendar sheet, "Go to a day"
+(`ui/mobile/go_to_day.rs` on the dialog component's `Sheet` and the Esc
+stack; its state, `Chrome::go_to_day`, changes only through
+`Intent::OpenGoToDay` / `Intent::Calendar`). Everything it shows is
+`core::calendar::calendar_vm`: the Monday-first month grid with each day's
+storm level from the `ActivityBook` (index days, scaled over the month by
+`ViewScale`; unknown is not quiet), the on-device flag from the scan index's
+held spans, today and future flags in the chosen zone (handed in as a
+`calendar::Zone`), the year and years views clamped to the archive and the
+site's index range, and the swipe rule. It makes no S3 request. A tapped day
+(`Intent::GoToDay`) sets the strip to Day, seeks as a typed seek does and
+pauses; `calendar::land_on_day` picks the day's stormiest volume from
+`ActivityBook::listing` (the per-day listing Day zoom makes), or local
+midday plus a pending `Landing` that `app::calendar::settle_go_to_day`
+finishes once per frame with one re-seek, dropped by `landing_after` on any
+playhead intent or by a moved or playing playhead.
+
 Canvas overlays live in `ui/canvas_overlays/` — one module per overlay
 (national mosaic, alerts, mPING reports, GPS location, sweep line/donut, site
 markers, info text, color scale, scale bar, compass, globe). `ui/canvas.rs`
