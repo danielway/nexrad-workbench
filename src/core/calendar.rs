@@ -54,7 +54,7 @@ pub(crate) const LEGEND: [&str; 3] = ["storm activity", "on device", "today"];
 
 /// The portrait sheet's height: header, month row, weekdays, six weeks of
 /// 40 px rows and the legend, with the frame's margins.
-pub(crate) const CALENDAR_SHEET_H: f32 = 430.0;
+pub(crate) const CALENDAR_SHEET_H: f32 = 384.0;
 
 /// A horizontal drag at least this long (points) on the grid moves a month.
 pub(crate) const SWIPE_MIN_PX: f32 = 40.0;

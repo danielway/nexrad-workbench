@@ -32,8 +32,9 @@ impl Layer for MobileTopBarLayer {
     }
 }
 
-/// The frame's date, time and zone. A tap on the date opens "Go to a day";
-/// a tap on the time or the zone toggles local / UTC.
+/// The frame's time, with its date stacked over the zone at its right so
+/// the bar still fits 390 px. A tap on the date opens "Go to a day"; a tap
+/// on the time or the zone toggles local / UTC.
 fn mobile_readout(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
     let r = &vm.readout;
     let color = if r.has_frame {
@@ -41,35 +42,32 @@ fn mobile_readout(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
     } else {
         theme::TEXT_FAINT
     };
-    let spacing = ui.spacing().item_spacing.x;
-    ui.spacing_mut().item_spacing.x = 4.0;
-    if ui
-        .add(
-            egui::Button::new(
-                RichText::new(&r.day)
-                    .size(theme::LABEL)
-                    .color(theme::TEXT_DIM),
-            )
-            .frame(false),
-        )
-        .clicked()
-    {
-        state.push_command(crate::core::Intent::OpenGoToDay);
-    }
+    let spacing = ui.spacing().item_spacing;
+    ui.spacing_mut().item_spacing.x = 2.0;
     let mut tapped = ui
         .add(egui::Button::new(theme::readout(&r.time).color(color)).frame(false))
         .clicked();
-    tapped |= ui
-        .add(
+    let mut open_day = false;
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
+        let small = |text: &str| {
             egui::Button::new(
-                RichText::new(&r.zone)
+                RichText::new(text)
                     .size(theme::CAPTION)
                     .color(theme::TEXT_DIM),
             )
-            .frame(false),
-        )
-        .clicked();
-    ui.spacing_mut().item_spacing.x = spacing;
+            .frame(false)
+            .min_size(egui::vec2(0.0, 20.0))
+        };
+        let resp = ui.add(small(&r.day));
+        open_day = resp.on_hover_text("Go to a day").clicked();
+        tapped |= ui.add(small(&r.zone)).clicked();
+    });
+    ui.spacing_mut().item_spacing = spacing;
+    if open_day {
+        state.push_command(crate::core::Intent::OpenGoToDay);
+    }
     if tapped {
         emit(state, TopBarIntent::ToggleTimeZone);
     }

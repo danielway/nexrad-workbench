@@ -28,6 +28,10 @@ const CELL_W: f32 = 44.0;
 const CELL_H: f32 = 32.0;
 /// A grid row: the cell and the room for its underline.
 const ROW_H: f32 = 40.0;
+/// The tightest a grid row gets (a six-week month in a landscape sheet).
+const MIN_ROW_H: f32 = 34.0;
+/// The legend row and the space above it.
+const LEGEND_H: f32 = 24.0;
 /// The on-device underline under a cell.
 const UNDERLINE_H: f32 = 2.0;
 /// The header row (arrows and the month name).
@@ -188,15 +192,19 @@ fn month(ui: &mut egui::Ui, vm: &MonthVm, legend: &[&str; 3], state: &mut AppSta
         );
     }
 
+    // Six weeks in a landscape sheet: rows give up their gap before the
+    // legend leaves the sheet.
     let rows = vm.weeks.len() as f32;
-    let (grid, resp) = ui.allocate_exact_size(Vec2::new(w, ROW_H * rows), Sense::click_and_drag());
+    let row_h = ((ui.available_height() - LEGEND_H) / rows).clamp(MIN_ROW_H, ROW_H);
+    let cell_h = CELL_H.min(row_h - 6.0);
+    let (grid, resp) = ui.allocate_exact_size(Vec2::new(w, row_h * rows), Sense::click_and_drag());
     let cell_w = CELL_W.min(col_w - 4.0).max(16.0);
     let cell_rect = |r: usize, c: usize| {
         let center = Pos2::new(
             grid.left() + col_w * (c as f32 + 0.5),
-            grid.top() + ROW_H * r as f32 + CELL_H / 2.0 + 2.0,
+            grid.top() + row_h * r as f32 + cell_h / 2.0 + 2.0,
         );
-        Rect::from_center_size(center, Vec2::new(cell_w, CELL_H))
+        Rect::from_center_size(center, Vec2::new(cell_w, cell_h))
     };
     let painter = ui.painter_at(grid);
     for (r, week) in vm.weeks.iter().enumerate() {
