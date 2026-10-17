@@ -88,6 +88,10 @@ pub(crate) fn dispatch_state_only(
     outcome: &mut CommandOutcome,
 ) -> Option<crate::core::Intent> {
     use crate::core::Intent;
+    // A playhead or selection intent takes over from a calendar landing
+    // still waiting for its day's listing.
+    s.chrome.go_to_day_landing =
+        crate::core::calendar::landing_after(s.chrome.go_to_day_landing.take(), &intent);
     match intent {
         // ---- Live mode / transport --------------------------------
         Intent::StopLive(placement) => {
@@ -238,6 +242,19 @@ pub(crate) fn dispatch_state_only(
                 crate::core::phone_strip::strip_zoom_after(s.chrome.phone_strip_zoom, &intent);
         }
 
+        // ---- Calendar sheet ---------------------------------------
+        Intent::OpenGoToDay => {
+            s.chrome.go_to_day = Some(crate::core::calendar::CalendarSheet::default());
+            super::dialogs::sync_dialogs(s.chrome, s.diagnostics);
+        }
+        Intent::Calendar(nav) => {
+            let current = crate::core::calendar::latest_month(s.state.frame_now.secs());
+            if let Some(sheet) = s.chrome.go_to_day.as_mut() {
+                crate::core::calendar::reduce_nav(sheet, nav, current);
+            }
+        }
+        intent @ Intent::GoToDay(day) => s.go_to_day(day, &intent),
+
         // ---- Needs the shell --------------------------------------
         // Listed explicitly (not `_`) so a new intent forces a decision
         // about which half of the partition owns it. The reason each one
@@ -281,7 +298,7 @@ impl DispatchState<'_> {
     /// The reducers ([`crate::core::transport::reduce_toggle_play_pause`],
     /// [`crate::core::transport::reduce_stop_live`]) share an Env/Slices/Actions
     /// signature, so the shell side is this one adapter.
-    fn transport(
+    pub(super) fn transport(
         &mut self,
         reduce: impl FnOnce(
             &crate::core::transport::TransportEnv,
@@ -703,7 +720,10 @@ impl WorkbenchApp {
             | Intent::SetDeveloperMode(_)
             | Intent::Dialog(_)
             | Intent::LoopFromScan(_)
-            | Intent::SetPhoneStripZoom(_) => {
+            | Intent::SetPhoneStripZoom(_)
+            | Intent::OpenGoToDay
+            | Intent::Calendar(_)
+            | Intent::GoToDay(_) => {
                 unreachable!("state-only intent was not consumed by dispatch_state_only")
             }
         }
@@ -1115,8 +1135,14 @@ mod dispatch_tests {
             Intent::Dialog(crate::core::dialogs::DialogIntent::Escape),
             Intent::LoopFromScan(1_000.0),
             Intent::SetPhoneStripZoom(crate::core::phone_strip::StripZoom::Day),
+            Intent::OpenGoToDay,
+            Intent::Calendar(crate::core::calendar::CalendarNav::Years),
+            Intent::GoToDay(crate::core::calendar::CalendarDay::of(
+                chrono::NaiveDate::from_ymd_opt(2024, 5, 6).unwrap(),
+                &crate::core::calendar::FixedZone(0),
+            )),
         ];
-        assert_eq!(state_only.len(), 33);
+        assert_eq!(state_only.len(), 36);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -2012,5 +2038,95 @@ mod dispatch_tests {
         assert_eq!(f.chrome.phone_strip_zoom, StripZoom::Day);
         assert_eq!(f.playback.state.selection_range(), range);
         assert_eq!(f.playback.state.playback_position(), pos);
+    }
+
+    // ---- calendar sheet -----------------------------------------------
+
+    /// The calendar sheet opens from its intent, is an entry on the dialog
+    /// stack (so Escape closes it), and moves between its views by intent.
+    #[wasm_bindgen_test]
+    fn the_calendar_sheet_opens_navigates_and_closes_on_escape() {
+        use crate::core::calendar::{CalendarMode, CalendarNav, YearMonth};
+        use crate::core::dialogs::{DialogId, DialogIntent};
+        let mut f = Fixture::new();
+        // 2026-10-17.
+        f.state.frame_now = FrameNow(1_792_238_400.0);
+        f.apply(Intent::OpenGoToDay);
+        assert_eq!(f.chrome.go_to_day.map(|s| s.month), Some(None));
+        assert!(f.chrome.dialogs.contains(DialogId::GoToDay));
+
+        f.apply(Intent::Calendar(CalendarNav::Year(2013)));
+        let sheet = f.chrome.go_to_day.unwrap();
+        assert_eq!(sheet.mode, CalendarMode::Year);
+        assert_eq!(sheet.month.map(|m| m.year), Some(2013));
+        f.apply(Intent::Calendar(CalendarNav::Month(YearMonth::new(
+            2013, 5,
+        ))));
+        assert_eq!(
+            f.chrome.go_to_day.unwrap().month,
+            Some(YearMonth::new(2013, 5))
+        );
+
+        f.apply(Intent::Dialog(DialogIntent::Escape));
+        assert_eq!(f.chrome.go_to_day, None);
+        // Navigation with the sheet closed does nothing.
+        f.apply(Intent::Calendar(CalendarNav::Years));
+        assert_eq!(f.chrome.go_to_day, None);
+    }
+
+    /// A tapped day: Day zoom, the playhead detached and paused at the
+    /// day's midday while its listing is out, the sheet closed, and a
+    /// landing left to settle. A later seek takes over from the landing.
+    #[wasm_bindgen_test]
+    fn go_to_day_lands_at_midday_pauses_and_zooms_to_day() {
+        use crate::core::calendar::{CalendarDay, FixedZone};
+        use crate::core::phone_strip::StripZoom;
+        let mut f = Fixture::new();
+        f.state.frame_now = FrameNow(1_792_238_400.0);
+        f.state.viz_state.site_id = "KTLX".to_string();
+        f.playback.state.playing = true;
+        f.apply(Intent::OpenGoToDay);
+        let day = CalendarDay::of(
+            chrono::NaiveDate::from_ymd_opt(2024, 5, 6).unwrap(),
+            &FixedZone(-5 * 3600),
+        );
+        f.apply(Intent::GoToDay(day));
+        assert_eq!(f.chrome.phone_strip_zoom, StripZoom::Day);
+        assert_eq!(f.chrome.go_to_day, None, "the sheet closes");
+        assert!(!f.playback.state.playing, "paused on the day");
+        assert_eq!(f.playback.state.playback_position(), day.midday());
+        let landing = f.chrome.go_to_day_landing.clone().expect("waits");
+        assert_eq!(landing.landed_at, day.midday());
+
+        f.apply(Intent::Seek {
+            ts: day.midday() + 600.0,
+            gesture: crate::core::transport::SeekGesture::Press,
+        });
+        assert_eq!(f.chrome.go_to_day_landing, None, "the user took over");
+    }
+
+    /// A day already listed lands on its stormiest volume at once.
+    #[wasm_bindgen_test]
+    fn go_to_a_listed_day_lands_on_its_stormiest_volume() {
+        use crate::core::calendar::{CalendarDay, FixedZone};
+        let mut f = Fixture::new();
+        f.state.frame_now = FrameNow(1_792_238_400.0);
+        f.state.viz_state.site_id = "KTLX".to_string();
+        let date = chrono::NaiveDate::from_ymd_opt(2024, 5, 6).unwrap();
+        let day = CalendarDay::of(date, &FixedZone(0));
+        f.timeline.activity.insert_many([crate::data::DayActivity {
+            site: crate::data::SiteId::new("KTLX"),
+            day_start: day.start as i64,
+            volumes: 3,
+            mean_bytes: 6_000_000,
+            format: "V06".into(),
+            fetched_at_ms: (day.start as i64 + 2 * 86_400) * 1000,
+            has_scans: true,
+            scan_secs: vec![600, 7_200, 30_000],
+            scan_bytes: vec![3_000_000, 12_000_000, 3_000_000],
+        }]);
+        f.apply(Intent::GoToDay(day));
+        assert_eq!(f.playback.state.playback_position(), day.start + 7_200.0);
+        assert_eq!(f.chrome.go_to_day_landing, None);
     }
 }

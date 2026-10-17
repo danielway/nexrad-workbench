@@ -98,6 +98,15 @@ pub(crate) struct Chrome {
     /// not persisted and not in the link. Changed only through
     /// [`crate::core::phone_strip::strip_zoom_after`].
     pub phone_strip_zoom: crate::core::phone_strip::StripZoom,
+    /// The phone's calendar sheet, "Go to a day" (phone timeline §2): the
+    /// month or year on screen. `Some` doubles as the open flag. Changed
+    /// only by [`crate::core::Intent::OpenGoToDay`],
+    /// [`crate::core::Intent::Calendar`] and closing it.
+    pub go_to_day: Option<crate::core::calendar::CalendarSheet>,
+    /// A day landed on from the calendar sheet that may still move to its
+    /// stormiest volume once its listing arrives
+    /// ([`crate::core::calendar::settle_landing`]).
+    pub go_to_day_landing: Option<crate::core::calendar::Landing>,
     /// The phone strip's window and lane width this frame, written by the
     /// strip and read by the storm-activity pump at the Day stop.
     pub phone_strip_view: Option<(crate::core::phone::MiniWindow, f32)>,

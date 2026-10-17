@@ -104,11 +104,13 @@ pub(crate) fn next_stop(stop: StripZoom) -> StripZoom {
 /// The stop after an intent. [`Intent::SetPhoneStripZoom`] sets it; going
 /// live ([`Intent::GoLive`], [`Intent::ReturnToLive`]: the cap, the chip's
 /// Go live) returns to Cuts, the one stop where a live volume filling cut by
-/// cut is worth watching. Nothing else moves it: zoom never changes the
-/// selection, and the selection never changes the zoom.
+/// cut is worth watching. A day picked in the calendar sheet
+/// ([`Intent::GoToDay`]) opens at Day. Nothing else moves it: zoom never
+/// changes the selection, and the selection never changes the zoom.
 pub(crate) fn strip_zoom_after(stop: StripZoom, intent: &Intent) -> StripZoom {
     match intent {
         Intent::SetPhoneStripZoom(next) => *next,
+        Intent::GoToDay(_) => StripZoom::Day,
         Intent::GoLive | Intent::ReturnToLive => StripZoom::Cuts,
         _ => stop,
     }

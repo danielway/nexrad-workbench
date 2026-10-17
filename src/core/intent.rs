@@ -176,6 +176,18 @@ pub(crate) enum Intent {
     /// the chrome, not in preferences or the link; decided by
     /// [`crate::core::phone_strip::strip_zoom_after`].
     SetPhoneStripZoom(crate::core::phone_strip::StripZoom),
+    /// Open the phone's calendar sheet, "Go to a day" (the chip menu's
+    /// entry, a tap on the date in the phone's top bar). It opens on the
+    /// playhead's month ([`crate::core::calendar::calendar_vm`]).
+    OpenGoToDay,
+    /// Move the calendar sheet to a month, a year's months or the years
+    /// ([`crate::core::calendar::reduce_nav`]).
+    Calendar(crate::core::calendar::CalendarNav),
+    /// A day tapped in the calendar sheet: the strip goes to Day zoom, the
+    /// playhead detaches and pauses on the day's stormiest volume (or its
+    /// local midday until the day's listing arrives), and the sheet closes.
+    /// Decided by [`crate::core::calendar::land_on_day`].
+    GoToDay(crate::core::calendar::CalendarDay),
     /// "Loop from here → now" on the scan inspector: a range from this scan
     /// start to now, the playhead at the scan. Closes the inspector only when
     /// the range was made.

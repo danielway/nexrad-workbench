@@ -32,7 +32,8 @@ impl Layer for MobileTopBarLayer {
     }
 }
 
-/// The frame time and zone; a tap toggles local / UTC.
+/// The frame's date, time and zone. A tap on the date opens "Go to a day";
+/// a tap on the time or the zone toggles local / UTC.
 fn mobile_readout(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
     let r = &vm.readout;
     let color = if r.has_frame {
@@ -42,6 +43,19 @@ fn mobile_readout(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
     };
     let spacing = ui.spacing().item_spacing.x;
     ui.spacing_mut().item_spacing.x = 4.0;
+    if ui
+        .add(
+            egui::Button::new(
+                RichText::new(&r.day)
+                    .size(theme::LABEL)
+                    .color(theme::TEXT_DIM),
+            )
+            .frame(false),
+        )
+        .clicked()
+    {
+        state.push_command(crate::core::Intent::OpenGoToDay);
+    }
     let mut tapped = ui
         .add(egui::Button::new(theme::readout(&r.time).color(color)).frame(false))
         .clicked();

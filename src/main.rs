@@ -1012,6 +1012,9 @@ impl eframe::App for WorkbenchApp {
         // Storm activity for the zoomed-out overview's bars: one listing
         // per day it shows, stored so each day is listed once.
         self.pump_storm_activity(ctx);
+        // A day picked in the calendar sheet moves to its stormiest volume
+        // once the day's listing (made by the strip's Day zoom) is in.
+        self.settle_go_to_day();
         // Selection = the fetch: resolve any range the user just selected
         // (arm the bulk fetch directly, or open the confirm modal if the span
         // is large), then pump the armed target's scans into the queue.

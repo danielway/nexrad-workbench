@@ -53,6 +53,8 @@ pub(crate) enum DialogId {
     Mping,
     /// The phone's settings sheet.
     MobileSettings,
+    /// The phone's calendar sheet, "Go to a day".
+    GoToDay,
     /// A destructive confirmation ([`Confirm`]).
     Confirm,
 }
@@ -60,7 +62,7 @@ pub(crate) enum DialogId {
 impl DialogId {
     /// Every id, in the order [`DialogFlags::open`] reports simultaneous
     /// opens (a stable tie-break for entries that open on the same frame).
-    pub(crate) const ALL: [DialogId; 13] = [
+    pub(crate) const ALL: [DialogId; 14] = [
         DialogId::SitePicker,
         DialogId::PickSiteOnMap,
         DialogId::ShortcutsHelp,
@@ -73,6 +75,7 @@ impl DialogId {
         DialogId::AlertDetail,
         DialogId::Mping,
         DialogId::MobileSettings,
+        DialogId::GoToDay,
         DialogId::Confirm,
     ];
 
@@ -91,6 +94,7 @@ impl DialogId {
             DialogId::AlertDetail => "alert_detail",
             DialogId::Mping => "mping",
             DialogId::MobileSettings => "mobile_settings",
+            DialogId::GoToDay => "go_to_day",
             DialogId::Confirm => "confirm",
         }
     }
@@ -136,6 +140,7 @@ pub(crate) struct DialogFlags {
     pub alert_detail: bool,
     pub mping: bool,
     pub mobile_settings: bool,
+    pub go_to_day: bool,
     pub confirm: bool,
 }
 
@@ -168,6 +173,7 @@ impl DialogFlags {
             DialogId::AlertDetail => self.alert_detail,
             DialogId::Mping => self.mping,
             DialogId::MobileSettings => self.mobile_settings,
+            DialogId::GoToDay => self.go_to_day,
             DialogId::Confirm => self.confirm,
         }
     }

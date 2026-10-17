@@ -474,6 +474,8 @@ impl ActivityWindow {
 pub(crate) struct ActivityBook {
     days: HashMap<SiteId, BTreeMap<i64, DayActivity>>,
     baselines: HashMap<(SiteId, String), f64>,
+    /// Each site's first and last day in its published index, as read.
+    index_range: HashMap<SiteId, (i64, i64)>,
 }
 
 impl ActivityBook {
@@ -502,6 +504,15 @@ impl ActivityBook {
     /// keeping any final live listing that has per-volume sizes
     /// ([`index_replaces`]). Returns how many were taken.
     pub(crate) fn insert_index(&mut self, days: impl IntoIterator<Item = DayActivity>) -> usize {
+        let days: Vec<DayActivity> = days.into_iter().collect();
+        for d in &days {
+            let range = self
+                .index_range
+                .entry(d.site.clone())
+                .or_insert((d.day_start, d.day_start));
+            range.0 = range.0.min(d.day_start);
+            range.1 = range.1.max(d.day_start);
+        }
         let fresh: Vec<DayActivity> = days
             .into_iter()
             .filter(|d| index_replaces(self.day(&d.site, d.day_start)))
@@ -509,6 +520,54 @@ impl ActivityBook {
         let taken = fresh.len();
         self.insert_many(fresh);
         taken
+    }
+
+    /// The first and last day (UTC midnights) of `site`'s published index,
+    /// once it has been read; `None` without one.
+    pub(crate) fn index_range(&self, site: &SiteId) -> Option<(i64, i64)> {
+        self.index_range.get(site).copied()
+    }
+
+    /// Every known day starting in `[first, last]` (UTC midnights) with its
+    /// level, `None` for an outage day, in time order.
+    pub(crate) fn levels(&self, site: &SiteId, first: i64, last: i64) -> Vec<(i64, Option<f32>)> {
+        let Some(days) = self.days.get(site) else {
+            return Vec::new();
+        };
+        if last < first {
+            return Vec::new();
+        }
+        days.range(first..=last)
+            .map(|(start, day)| (*start, self.level_of(day)))
+            .collect()
+    }
+
+    /// The volumes starting in `[start, end)` (Unix seconds), once every UTC
+    /// day the span touches has been listed with per-volume sizes (or is a
+    /// known outage); `None` while any of them is unknown or known only
+    /// from the index. This is the listing the phone strip's Day stop makes
+    /// for a day in view.
+    pub(crate) fn listing(&self, site: &SiteId, start: f64, end: f64) -> Option<Vec<ScanActivity>> {
+        if end <= start {
+            return Some(Vec::new());
+        }
+        let days = self.days.get(site)?;
+        let mut day = day_start_of(start);
+        let last = day_start_of(end - 0.001);
+        while day <= last {
+            let known = days.get(&day)?;
+            if !(known.has_scans || known.volumes == 0) {
+                return None;
+            }
+            day += DAY_SECS;
+        }
+        Some(
+            self.scans(site, start, end)
+                .scans
+                .into_iter()
+                .filter(|s| s.start >= start && s.start < end)
+                .collect(),
+        )
     }
 
     /// The summary for the day starting at `day_start`, if known.
@@ -1241,6 +1300,60 @@ mod tests {
         assert_eq!(sizes.at(t0 + 400.0).map(|s| s.start), Some(t0 + 300.0));
         assert_eq!(sizes.at(t0 + 300.0 + MAX_SCAN_SECS + 1.0), None);
         assert_eq!(sizes.at(t0 - 1.0), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_index_range_and_levels_read_back_per_site() {
+        let mut book = ActivityBook::default();
+        assert_eq!(book.index_range(&site()), None);
+        book.insert_index([
+            index_day(OCT_9_2024, 4_000_000),
+            index_day(OCT_9_2024 + 3 * DAY_SECS, 0),
+            index_day(OCT_9_2024 - 400 * DAY_SECS, 4_000_000),
+        ]);
+        assert_eq!(
+            book.index_range(&site()),
+            Some((OCT_9_2024 - 400 * DAY_SECS, OCT_9_2024 + 3 * DAY_SECS))
+        );
+        let levels = book.levels(&site(), OCT_9_2024, OCT_9_2024 + 3 * DAY_SECS);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[0].0, OCT_9_2024);
+        assert!(levels[0].1.is_some());
+        assert_eq!(levels[1], (OCT_9_2024 + 3 * DAY_SECS, None), "an outage");
+        assert!(book.levels(&SiteId::new("KFWS"), 0, i64::MAX).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn a_span_is_listed_once_every_day_it_touches_has_volume_sizes() {
+        let t0 = OCT_9_2024 as f64;
+        // A local day 05:00–05:00 UTC touches two UTC days.
+        let (start, end) = (t0 + 5.0 * 3600.0, t0 + 29.0 * 3600.0);
+        let mut book = ActivityBook::default();
+        assert_eq!(book.listing(&site(), start, end), None);
+        let mut first = day(OCT_9_2024, 4_000_000, "V06");
+        first.scan_secs = vec![3600, 6 * 3600, 20 * 3600];
+        first.scan_bytes = vec![3_000_000, 9_000_000, 4_000_000];
+        book.insert_many([first]);
+        // The second day is only in the index: no per-volume sizes yet.
+        book.insert_index([index_day(OCT_9_2024 + DAY_SECS, 4_000_000)]);
+        assert_eq!(book.listing(&site(), start, end), None);
+        let mut second = day(OCT_9_2024 + DAY_SECS, 4_000_000, "V06");
+        second.scan_secs = vec![3600, 10 * 3600];
+        second.scan_bytes = vec![5_000_000, 6_000_000];
+        book.insert_many([second]);
+        let listed = book.listing(&site(), start, end).expect("listed");
+        let starts: Vec<f64> = listed.iter().map(|s| s.start - t0).collect();
+        // 01:00 on the first day is before the span; 10:00 on the second
+        // is after it.
+        assert_eq!(starts, vec![6.0 * 3600.0, 20.0 * 3600.0, 25.0 * 3600.0]);
+        // An outage day counts as listed (nothing to wait for).
+        book.insert_many([day(OCT_9_2024 + 2 * DAY_SECS, 0, "V06")]);
+        let out = book.listing(
+            &site(),
+            t0 + 2.0 * DAY_SECS as f64,
+            t0 + 3.0 * DAY_SECS as f64,
+        );
+        assert_eq!(out, Some(Vec::new()));
     }
 
     #[wasm_bindgen_test]

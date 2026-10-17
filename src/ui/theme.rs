@@ -85,6 +85,11 @@ pub(crate) const SELECTED: Color32 = Color32::from_rgb(138, 162, 255);
 /// not an accent: it is the fill channel.
 pub(crate) const ON_DEVICE: Color32 = Color32::from_rgb(70, 96, 127);
 
+/// Storm blue — the calendar sheet's day shade: how much echo a day held,
+/// from the nightly storm-activity index. Its strength is the level; the
+/// hue is not a status color, so it never competes with now or a loop.
+pub(crate) const STORM: Color32 = Color32::from_rgb(79, 127, 217);
+
 /// `c` with its alpha replaced (unmultiplied), for washes over another surface.
 pub(crate) fn alpha(c: Color32, a: u8) -> Color32 {
     let [r, g, b, _] = c.to_srgba_unmultiplied();
