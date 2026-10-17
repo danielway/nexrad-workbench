@@ -388,6 +388,26 @@ midday plus a pending `Landing` that `app::calendar::settle_go_to_day`
 finishes once per frame with one re-seek, dropped by `landing_after` on any
 playhead intent or by a moved or playing playhead.
 
+Ranges on the phone are never drawn (`core::phone_range`). A long-press on
+the strip emits `Intent::OpenPressSheet` with the snapped time and the scan
+under the finger; the sheet (`ui/mobile/press_sheet.rs`, a `Sheet` on the Esc
+stack as `DialogId::PressSheet`) draws `press_sheet_vm` — the heading and
+four rows, each disabled with its reason — and a tapped row emits
+`Intent::PressSheetRow`, which the dispatcher turns into `row_intent`'s
+intent: `InspectScan`, `SelectRange` (so `transport::select_range` applies
+the "ends at now" pin and the paused start), `ParkRangeStart` (a half range,
+as the I key parks one) or `SaveEventAt` / `SaveSelectionAsEvent` (the event
+dialog's prefill is `dialogs::event_prefill`). On the strip a range draws as
+an amber band and handles at every stop; `StripTouch` gives a press that
+begins inside a handle's 24 px target (`phone_range::handle_at`) to the
+handle, so it moves that end instead of scrubbing, and `HandleDrag` previews
+the snapped end (`phone_strip::snap_scrub`) and turns the drop into one
+`SelectRange`, pinned within a frame of now. The cost line above the strip
+while it moves is `TimelineView::range_cost_sized`, the desktop label's.
+The selection-fetch gate asks over `acquisition::bulk_confirm_secs` — 6 h on
+the desktop, 2 h on the phone — and the confirmation shows
+`range_download_text` from a `RangeDownloadPrompt` priced at release.
+
 Canvas overlays live in `ui/canvas_overlays/` — one module per overlay
 (national mosaic, alerts, mPING reports, GPS location, sweep line/donut, site
 markers, info text, color scale, scale bar, compass, globe). `ui/canvas.rs`

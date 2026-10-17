@@ -634,7 +634,7 @@ Interactive measurement and analysis affordances on the 2D canvas:
 |---|---|---|
 | Desktop ≥1200px | Overview + full strip (~56px) + transport row + readouts | Inspector as popover or side panel; hover tooltips |
 | Touch ≥600px | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
-| Phone | Condensed transport (play · selection chip · speed) under a ~56px strip at three zoom stops; the calendar sheet stands in for the overview | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; custom loop dragging replaced by presets; 3D view is desktop-only |
+| Phone | Condensed transport (play · selection chip · speed) under a ~56px strip at three zoom stops; the calendar sheet stands in for the overview | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; ranges are never drawn (presets, the long-press sheet, and handles on an existing range); 3D view is desktop-only |
 
 **The phone strip's zoom stops.** A thumb gets three stops rather than a
 continuous zoom, so the strip is predictable and a scrub snaps to a unit the
@@ -672,6 +672,31 @@ volume (its largest file) from the one listing Day zoom makes; until that
 listing arrives the playhead waits at the day's local midday, then moves to
 the stormiest volume once, unless the user has touched the playhead since.
 The sheet's month is not persisted or in the link.
+
+**Ranges without drawing.** On the phone a horizontal drag on the strip is a
+scrub, so a range is never drawn. It is made from the chip's presets, from
+the **long-press sheet**, or by saving one as an event. A long-press on the
+strip opens a small sheet headed by the time under the finger, the tilt and
+the product (`16:42:17 · 0.5° · reflectivity`) with four rows: **Inspect this
+scan** (first, so the inspector the long-press used to open is one tap
+away), **Start range here**, **End range here** and **Save event here** (the
+event dialog around that time, or over the range when one exists). A row that
+makes no sense is disabled and says why beside it (no scan under the finger;
+an end before the start; no start yet; longer than 7 days). Start with no
+range parks a start, drawn as one amber handle, for End to pair with. End
+within a frame of now pins the range (the one "ends at now" rule), and a new
+range starts paused, as on the desktop. Once a range exists its band and two
+handles draw on the strip at every stop — amber, the pinned end the red dot
+on the now line — and each handle is a 24 px touch target however small its
+mark. A press inside a target moves that end (never the playhead), snapped to
+the stop's unit like a scrub, with the desktop's cost line (`1:30:00 · 18
+scans · 71 MB`) above the strip while it moves; dropped within a frame of
+now it pins. A held press on a handle is still a tap or a long-press. A
+range over **2 hours** on the phone (6 hours on the desktop) asks before it
+downloads, and the confirmation says the real size from the listing. The
+chip menu on the phone keeps presets, the loop style, the range's times and
+Save as event; it drops the key and drag hints and points at the long-press
+sheet, and "Loop what's in view" loops the strip's window.
 
 ### 13.4 Links and preferences
 
