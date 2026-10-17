@@ -75,7 +75,10 @@ pub(crate) const NOW: Color32 = Color32::from_rgb(255, 95, 95);
 /// Red — *now*, low strength: not streaming (the idle now line, "GO LIVE").
 pub(crate) const NOW_IDLE: Color32 = Color32::from_rgb(200, 95, 95);
 
-/// Blue — *weather*: the phone strip's storm-activity bars.
+/// Blue — *weather*: the phone strip's storm-activity bars and the calendar
+/// sheet's day shade (how much echo a day held, from the nightly
+/// storm-activity index). Its strength is the level; the hue is not a status
+/// color, so it never competes with now or a loop.
 pub(crate) const STORM: Color32 = Color32::from_rgb(79, 127, 217);
 
 // ── Selected control and on-device ─────────────────────────────────────────

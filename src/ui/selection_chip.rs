@@ -194,6 +194,20 @@ fn render_menu(
     {
         picked = Some(ChipAction::StopStream);
     }
+    if menu.go_to_day
+        && entry(
+            ui,
+            format!(
+                "{} Go to a day\u{2026}",
+                egui_phosphor::regular::CALENDAR_BLANK
+            ),
+            false,
+            ChipAction::GoToDay,
+            keys,
+        )
+    {
+        picked = Some(ChipAction::GoToDay);
+    }
 
     ui.add_space(4.0);
     group_heading(ui, "A range ending now");

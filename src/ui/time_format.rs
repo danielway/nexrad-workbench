@@ -97,6 +97,20 @@ impl crate::core::session::Clock for ZoneClock {
     }
 }
 
+/// The calendar sheet's [`crate::core::calendar::Zone`]: the chosen zone's
+/// offset east of UTC at a moment, read from the browser (0 in UTC).
+impl crate::core::calendar::Zone for ZoneClock {
+    fn offset_secs(&self, ts: f64) -> i64 {
+        if !self.use_local {
+            return 0;
+        }
+        // getTimezoneOffset() is minutes positive-west.
+        let d = js_sys::Date::new_0();
+        d.set_time(ts * 1000.0);
+        -(d.get_timezone_offset() as i64) * 60
+    }
+}
+
 /// The chosen zone's abbreviation at `ts`: "UTC", or the browser's short
 /// local name ("CDT", "GMT+2"). The top bar shows it once, after the frame
 /// time (one-instrument §4); every other clock inherits it.

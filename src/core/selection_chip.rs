@@ -78,6 +78,8 @@ pub(crate) enum ChipAction {
     EditRange { start: f64, end: f64 },
     /// Open the event dialog for the range.
     SaveAsEvent,
+    /// Open the calendar sheet (phone only).
+    GoToDay,
 }
 
 impl ChipAction {
@@ -114,6 +116,9 @@ pub(crate) struct ChipMenu {
     pub can_save_event: bool,
     /// Show the drag and key hints (not on a touch device).
     pub pointer_hints: bool,
+    /// Offer "Go to a day…", the phone's calendar sheet, under the Go live
+    /// group (a touch device only: the desktop has its overview lane).
+    pub go_to_day: bool,
 }
 
 /// Build the menu from the selection, the stream, and the visible span.
@@ -152,6 +157,7 @@ pub(crate) fn chip_menu(
             .and_then(|r| r.bounds),
         can_save_event: playback.playback_bounds().is_some(),
         pointer_hints: !env.touch,
+        go_to_day: env.touch,
     }
 }
 
@@ -177,6 +183,7 @@ pub(crate) fn intent_for(
         }
         ChipAction::LoopStyle(style) => Intent::SetLoopStyle(style),
         ChipAction::SaveAsEvent => Intent::SaveSelectionAsEvent,
+        ChipAction::GoToDay => Intent::OpenGoToDay,
     }
 }
 
@@ -313,6 +320,22 @@ mod tests {
             touch: true,
         };
         assert!(!chip_menu(&ps, touch, (0.0, 2000.0), 1000.0).pointer_hints);
+    }
+
+    #[wasm_bindgen_test]
+    fn only_the_phone_menu_offers_go_to_a_day() {
+        let ps = PlaybackState::default();
+        let touch = ChipEnv {
+            stream_active: false,
+            touch: true,
+        };
+        assert!(chip_menu(&ps, touch, (0.0, 2000.0), 1000.0).go_to_day);
+        assert!(!chip_menu(&ps, NO_STREAM, (0.0, 2000.0), 1000.0).go_to_day);
+        assert_eq!(
+            intent_for(ChipAction::GoToDay, touch, LiveStopPlacement::LiveEdge),
+            Intent::OpenGoToDay
+        );
+        assert_eq!(ChipAction::GoToDay.key_hint(), None);
     }
 
     #[wasm_bindgen_test]

@@ -116,13 +116,16 @@ pub(crate) fn next_stop(stop: StripZoom) -> StripZoom {
     }
 }
 
-/// The stop after an intent. Only [`Intent::SetPhoneStripZoom`] (the pill,
-/// a pinch) moves it: zoom never changes the selection, and the selection
-/// never changes the zoom, so going live or rejoining from a zoomed-out stop
-/// stays zoomed out.
+/// The stop after an intent. [`Intent::SetPhoneStripZoom`] (the pill, a
+/// pinch) sets it, and a day picked in the calendar sheet
+/// ([`Intent::GoToDay`]) opens at Volumes ("3 H"), centred on the landing
+/// volume with its storm bars around it. Nothing else moves it: zoom never
+/// changes the selection, and the selection never changes the zoom, so going
+/// live or rejoining from a zoomed-out stop stays zoomed out.
 pub(crate) fn strip_zoom_after(stop: StripZoom, intent: &Intent) -> StripZoom {
     match intent {
         Intent::SetPhoneStripZoom(next) => *next,
+        Intent::GoToDay(_) => StripZoom::Volumes,
         _ => stop,
     }
 }
@@ -848,6 +851,20 @@ mod tests {
         for stop in [StripZoom::Cuts, StripZoom::Volumes, StripZoom::Day] {
             assert_eq!(strip_zoom_after(stop, &Intent::GoLive), stop);
             assert_eq!(strip_zoom_after(stop, &Intent::ReturnToLive), stop);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn a_day_from_the_calendar_lands_at_three_hours_from_any_stop() {
+        let day = crate::core::calendar::CalendarDay::of(
+            chrono::NaiveDate::from_ymd_opt(2025, 9, 22).unwrap(),
+            &crate::core::calendar::FixedZone(0),
+        );
+        for stop in [StripZoom::Cuts, StripZoom::Volumes, StripZoom::Day] {
+            assert_eq!(
+                strip_zoom_after(stop, &Intent::GoToDay(day)),
+                StripZoom::Volumes
+            );
         }
     }
 

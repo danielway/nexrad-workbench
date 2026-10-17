@@ -634,7 +634,7 @@ Interactive measurement and analysis affordances on the 2D canvas:
 |---|---|---|
 | Desktop ≥1200px | Overview + full strip (~56px) + transport row + readouts | Inspector as popover or side panel; hover tooltips |
 | Touch ≥600px | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
-| Phone | Condensed transport (play · selection chip · speed) under a ~56px strip at three zoom stops; no overview | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; custom loop dragging replaced by presets; 3D view is desktop-only |
+| Phone | Condensed transport (play · selection chip · speed) under a ~56px strip at three zoom stops; the calendar sheet stands in for the overview | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; custom loop dragging replaced by presets; 3D view is desktop-only |
 
 **The phone strip's zoom stops.** A thumb gets three stops rather than a
 continuous zoom, so the strip is predictable and a scrub snaps to a unit the
@@ -660,6 +660,34 @@ of the selection: zooming never moves the playhead or the pin, and going live or
 rejoining keeps the zoom. Landscape keeps the same spans with more pixels per
 unit. The strip takes presses up to 12 px above it, and the map neither pans on
 those nor zooms on the strip's pinch.
+
+**The calendar sheet is the phone's overview ("Go to a day").** There is no
+room for an overview lane on a phone, so the way to any day since 1991 is a
+calendar: a bottom sheet in portrait, a right sheet in landscape, titled "Go
+to a day" with the site at the right. It opens from the chip menu's "Go to a
+day…" (phone only, under the Go live group) and from a tap on the date in the
+top bar's readout, where the phone stacks the frame's date over the zone. A
+month at a time, Monday first, every day is a 44×32 cell shaded in storm blue
+by its activity from the nightly index, on the month's own scale so one storm
+day reads strong; a 2 px slate underline marks the days held on device; today
+is outlined in red (red is now); days after today are dimmed and inert, and a
+day the index does not know yet (newer than it, or a gap) is drawn as a
+hairline, never as a quiet day. ‹ › and a horizontal swipe move a month
+(June 1991 to this month); the month name opens the years the site's index
+reaches, a year opens its twelve months, a month its grid. Days are the
+chosen zone's (local or UTC). The grid makes no S3 request: it reads the
+index already on device (fetched once per site, as the desktop does). A
+tapped day stops a running stream (an archive day is not live, so nothing
+downloads behind it) and puts the strip at **3 H**, centred on the landing volume with its
+storm bars and an outlined GO LIVE › tab at the edge, and pauses on that
+day's stormiest volume (its largest file) from the one listing the strip
+makes for that day; until that
+listing arrives the playhead waits at the day's local midday, then moves to
+the stormiest volume once, unless the user has touched the playhead since.
+While that volume downloads the playhead waits at its start; when it is in,
+the playhead steps onto its first frame so the map shows it and the ring
+sits on it.
+The sheet's month is not persisted or in the link.
 
 ### 13.4 Links and preferences
 

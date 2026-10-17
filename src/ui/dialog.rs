@@ -216,6 +216,85 @@ impl<'a> Dialog<'a> {
     }
 }
 
+/// A phone sheet: the dialog's frame and header at a fixed rect (bottom in
+/// portrait, right in landscape, placed by the core), over the dimmed
+/// backdrop. `trailing` is a quiet word at the title's right (the site).
+pub(crate) struct Sheet<'a> {
+    id: DialogId,
+    title: &'a str,
+    trailing: Option<&'a str>,
+    rect: Rect,
+}
+
+impl<'a> Sheet<'a> {
+    /// A dismissible sheet for stack entry `id` filling `rect`.
+    pub(crate) fn new(id: DialogId, title: &'a str, rect: Rect) -> Self {
+        Self {
+            id,
+            title,
+            trailing: None,
+            rect,
+        }
+    }
+
+    pub(crate) fn trailing(mut self, text: &'a str) -> Self {
+        self.trailing = Some(text);
+        self
+    }
+
+    /// Draw the sheet. `body` gets the content width and the height left.
+    pub(crate) fn show(
+        self,
+        ctx: &egui::Context,
+        body: impl FnOnce(&mut egui::Ui, f32),
+    ) -> DialogOut {
+        let mut close = backdrop(ctx, self.id, true);
+        let inner = Vec2::new(
+            (self.rect.width() - 2.0 * MARGIN).max(0.0),
+            (self.rect.height() - 2.0 * MARGIN).max(0.0),
+        );
+        egui::Area::new(window_id(self.id))
+            .order(Order::Foreground)
+            .fixed_pos(self.rect.min)
+            .show(ctx, |ui| {
+                frame().show(ui, |ui| {
+                    ui.set_width(inner.x);
+                    ui.set_height(inner.y);
+                    let top = ui.cursor().top();
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(self.title)
+                                .size(theme::TITLE)
+                                .color(theme::TEXT),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            close |= ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new(egui_phosphor::regular::X)
+                                            .size(theme::BODY)
+                                            .color(theme::TEXT_DIM),
+                                    )
+                                    .frame(false)
+                                    .min_size(Vec2::splat(28.0)),
+                                )
+                                .clicked();
+                            if let Some(t) = self.trailing {
+                                ui.label(
+                                    RichText::new(t).size(theme::LABEL).color(theme::TEXT_DIM),
+                                );
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+                    let used = ui.cursor().top() - top;
+                    body(ui, (inner.y - used).max(0.0));
+                });
+            });
+        DialogOut { close }
+    }
+}
+
 /// A popover anchored to the control that opened it.
 pub(crate) struct Popover<'a> {
     id: DialogId,

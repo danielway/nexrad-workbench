@@ -113,6 +113,9 @@ pub(crate) struct TiltPicker {
 pub(crate) struct FrameReadout {
     /// "Oct 3" when the frame is not from today (in the chosen zone).
     pub date: Option<String>,
+    /// The frame's date ("Oct 17"), today's with no frame: the phone's
+    /// readout always shows it, and a tap on it opens "Go to a day".
+    pub day: String,
     /// "11:21:57", or "--:--:--" with no frame.
     pub time: String,
     pub has_frame: bool,
@@ -227,6 +230,7 @@ impl TopBarVm {
             Some(f) => FrameReadout {
                 date: (clock.day(f.time_secs) != clock.day(inputs.now_secs))
                     .then(|| short_date(clock.day(f.time_secs))),
+                day: short_date(clock.day(f.time_secs)),
                 time: clock.hms(f.time_secs),
                 has_frame: true,
                 zone: inputs.zone.to_string(),
@@ -234,6 +238,7 @@ impl TopBarVm {
             },
             None => FrameReadout {
                 date: None,
+                day: short_date(clock.day(inputs.now_secs)),
                 time: "--:--:--".to_string(),
                 has_frame: false,
                 zone: inputs.zone.to_string(),
@@ -648,6 +653,7 @@ mod tests {
         )
         .build();
         assert_eq!(vm.readout.date.as_deref(), Some("Oct 3"));
+        assert_eq!(vm.readout.day, "Oct 3");
         assert_eq!(vm.readout.time, "21:14:08");
     }
 

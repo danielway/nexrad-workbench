@@ -6,10 +6,12 @@
 //! true. Detailed controls live in the settings modal (see [`settings_modal`]).
 
 pub(crate) mod gestures;
+mod go_to_day;
 mod settings_modal;
 mod tabs;
 mod top_bar;
 
+pub(in crate::ui) use go_to_day::GoToDayLayer;
 pub(in crate::ui) use settings_modal::MobileSettingsModalLayer;
 pub(in crate::ui) use tabs::MobileChromeLayer;
 pub(in crate::ui) use top_bar::MobileTopBarLayer;
