@@ -87,6 +87,10 @@ pub(crate) struct Chrome {
     pub event_modal_open: bool,
     /// Event ID being edited (`None` = creating new).
     pub event_modal_editing_id: Option<u64>,
+    /// A new event's time, when the dialog was opened at a time rather than
+    /// over the range (the long-press sheet's Save event here). Read by
+    /// [`crate::core::dialogs::event_prefill`].
+    pub event_modal_seed: Option<f64>,
     /// Whether the phone's sheet (the rail's tabs, opened from the
     /// transport row) is open. Its tab is [`Self::rail_tab`].
     pub mobile_settings_open: bool,
@@ -103,6 +107,9 @@ pub(crate) struct Chrome {
     /// only by [`crate::core::Intent::OpenGoToDay`],
     /// [`crate::core::Intent::Calendar`] and closing it.
     pub go_to_day: Option<crate::core::calendar::CalendarSheet>,
+    /// The phone strip's long-press sheet, with the time and scan it caught
+    /// (phone timeline §4). `Some` doubles as the open flag.
+    pub press_sheet: Option<crate::core::phone_range::PressSheet>,
     /// A day landed on from the calendar sheet that may still move to its
     /// stormiest volume once its listing arrives
     /// ([`crate::core::calendar::settle_landing`]).

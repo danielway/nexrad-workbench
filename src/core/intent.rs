@@ -188,6 +188,24 @@ pub(crate) enum Intent {
     /// local midday until the day's listing arrives), and the sheet closes.
     /// Decided by [`crate::core::calendar::land_on_day`].
     GoToDay(crate::core::calendar::CalendarDay),
+    /// A long-press on the phone strip: open the action sheet for the time
+    /// and scan under the finger ([`crate::core::phone_range::press_sheet_vm`]).
+    OpenPressSheet(crate::core::phone_range::PressSheet),
+    /// A row of the long-press sheet. The intent it stands for is the core's
+    /// ([`crate::core::phone_range::row_intent`]); a disabled row does
+    /// nothing, any other closes the sheet.
+    PressSheetRow(crate::core::phone_range::PressRow),
+    /// Open the scan inspector on the scan starting at this time (Unix
+    /// seconds): the long-press sheet's Inspect this scan.
+    InspectScan(f64),
+    /// Park a range's start at this time, with no end yet (Start range here
+    /// with no range selected), as the I key parks one at the playhead. A
+    /// no-op while a range is selected. Decided by
+    /// [`crate::core::transport::park_range_start`].
+    ParkRangeStart(f64),
+    /// Open the event dialog for a new event around this time (Save event
+    /// here with no range selected).
+    SaveEventAt(f64),
     /// "Loop from here → now" on the scan inspector: a range from this scan
     /// start to now, the playhead at the scan. Closes the inspector only when
     /// the range was made.

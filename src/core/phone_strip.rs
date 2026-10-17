@@ -25,6 +25,7 @@
 //! All pure; `ui::timeline::mini` draws what these return.
 
 use crate::core::phone::{mini_lead_secs, mini_window, MiniWindow, PressOut, PressTrack};
+use crate::core::phone_range::RangeEnd;
 use crate::core::storm_activity::ScanActivity;
 use crate::core::timeline_view::{FrameCell, FrameCellState, ScanContainer};
 use crate::core::Intent;
@@ -347,11 +348,15 @@ impl PinchTrack {
     }
 }
 
-/// The strip's touch state between frames: one press and one pinch.
+/// The strip's touch state between frames: one press, one pinch, and the
+/// range handle the press began on.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct StripTouch {
     pub press: Option<PressTrack>,
     pub pinch: Option<PinchTrack>,
+    /// The press began inside this handle's touch target: a drag moves the
+    /// range's end, never the playhead.
+    pub grabbed: Option<RangeEnd>,
 }
 
 /// One frame of input on the strip.
@@ -367,6 +372,9 @@ pub(crate) struct StripTouchInput {
     pub pinch: Option<PinchInput>,
     /// The stop on screen.
     pub stop: StripZoom,
+    /// The range handle whose touch target holds the finger
+    /// ([`crate::core::phone_range::handle_at`]); read when a press begins.
+    pub handle: Option<RangeEnd>,
 }
 
 /// What the strip's touch did this frame.
@@ -379,16 +387,26 @@ pub(crate) struct StripTouchOut {
     /// A pinch ended and the strip goes to this stop.
     pub settle: Option<StripZoom>,
     /// This frame may seek (a tap or a scrub): the press is neither a
-    /// long-press nor taken over by a pinch.
+    /// long-press nor taken over by a pinch, and is not moving a handle.
     pub may_seek: bool,
+    /// A range handle is moving with the finger this frame.
+    pub moving: Option<RangeEnd>,
+    /// A moving handle was let go this frame: drop it.
+    pub dropped: Option<RangeEnd>,
 }
 
 impl StripTouch {
     /// Advance the press and the pinch together. A pinch the strip owns
     /// cancels the press under it (and any press that starts during it), so
-    /// a pinch never seeks, scrubs or opens the inspector; the press stays
+    /// a pinch never seeks, scrubs or opens the sheet; the press stays
     /// cancelled until its finger lifts.
+    ///
+    /// A press that begins inside a range handle's target belongs to the
+    /// handle: once it moves it moves that end and never scrubs; let go, it
+    /// drops. Held still it is still a tap (a seek) or a long-press (the
+    /// sheet), so the handle's target costs neither.
     pub(crate) fn step(&mut self, i: StripTouchInput) -> StripTouchOut {
+        let was = self.press;
         let (pinch, pinch_out) = PinchTrack::step(self.pinch, i.pinch, i.stop);
         self.pinch = pinch;
         let prev = self.press.map(|mut p| {
@@ -409,15 +427,30 @@ impl StripTouch {
             press_out.waiting = false;
         }
         self.press = press;
+        if was.is_none() && press.is_some() {
+            self.grabbed = i.handle;
+        }
+        let dragging = |p: Option<PressTrack>| p.is_some_and(|p| p.scrubbing() && p.seeks());
+        let moving = self.grabbed.filter(|_| dragging(press));
+        let dropped = self
+            .grabbed
+            .filter(|_| press.is_none() && dragging(was) && !pinch_out.claimed);
+        if press.is_none() {
+            self.grabbed = None;
+        }
         let may_seek = !pinch_out.claimed
             && !press_out.swallow_release
             && press_out.long_press.is_none()
-            && press.is_none_or(|p| p.seeks());
+            && press.is_none_or(|p| p.seeks())
+            && moving.is_none()
+            && dropped.is_none();
         StripTouchOut {
             press: press_out,
             claimed: pinch_out.claimed,
             settle: pinch_out.settle,
             may_seek,
+            moving,
+            dropped,
         }
     }
 }
@@ -936,7 +969,82 @@ mod tests {
             now,
             pinch,
             stop: StripZoom::Volumes,
+            handle: None,
         }
+    }
+
+    fn on_handle(i: StripTouchInput, end: RangeEnd) -> StripTouchInput {
+        StripTouchInput {
+            handle: Some(end),
+            ..i
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn a_press_on_a_handle_moves_the_end_and_never_scrubs() {
+        let mut t = StripTouch::default();
+        // Lands inside the start handle's target.
+        let out = t.step(on_handle(touch(true, 100.0, 0.0, None), RangeEnd::Start));
+        assert_eq!(t.grabbed, Some(RangeEnd::Start));
+        assert_eq!(out.moving, None, "not moving until it moves");
+        // It moves past the slop: the handle moves, the playhead does not.
+        let out = t.step(touch(true, 120.0, 0.1, None));
+        assert_eq!(out.moving, Some(RangeEnd::Start));
+        assert!(!out.may_seek);
+        let out = t.step(touch(true, 160.0, 0.2, None));
+        assert_eq!(out.moving, Some(RangeEnd::Start));
+        assert!(!out.may_seek);
+        // Let go: it drops, and that is not a tap.
+        let out = t.step(touch(false, 0.0, 0.3, None));
+        assert_eq!(out.dropped, Some(RangeEnd::Start));
+        assert!(!out.may_seek);
+        assert_eq!(t.grabbed, None);
+        // The next press, off the handles, scrubs as usual.
+        t.step(touch(true, 200.0, 1.0, None));
+        let out = t.step(touch(true, 230.0, 1.1, None));
+        assert_eq!(out.moving, None);
+        assert!(out.may_seek);
+    }
+
+    #[wasm_bindgen_test]
+    fn only_where_the_press_began_decides_the_handle() {
+        let mut t = StripTouch::default();
+        // A scrub that passes over a handle stays a scrub.
+        t.step(touch(true, 50.0, 0.0, None));
+        let out = t.step(on_handle(touch(true, 100.0, 0.1, None), RangeEnd::End));
+        assert_eq!(out.moving, None);
+        assert!(out.may_seek);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_still_press_on_a_handle_is_still_a_tap_or_a_long_press() {
+        let mut t = StripTouch::default();
+        t.step(on_handle(touch(true, 100.0, 0.0, None), RangeEnd::End));
+        let out = t.step(touch(false, 0.0, 0.1, None));
+        assert!(out.may_seek, "a tap seeks");
+        assert_eq!(out.dropped, None);
+
+        t.step(on_handle(touch(true, 100.0, 1.0, None), RangeEnd::End));
+        let out = t.step(touch(true, 101.0, 1.6, None));
+        assert!(out.press.long_press.is_some(), "the sheet opens");
+        let out = t.step(touch(false, 0.0, 1.7, None));
+        assert_eq!(out.dropped, None);
+        assert!(!out.may_seek);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_pinch_takes_a_moving_handle_and_drops_nothing() {
+        let mut t = StripTouch::default();
+        t.step(on_handle(touch(true, 100.0, 0.0, None), RangeEnd::Start));
+        assert_eq!(
+            t.step(touch(true, 130.0, 0.1, None)).moving,
+            Some(RangeEnd::Start)
+        );
+        let out = t.step(touch(true, 140.0, 0.2, pinch(1.3, true)));
+        assert_eq!(out.moving, None);
+        t.step(touch(true, 140.0, 0.3, None));
+        let out = t.step(touch(false, 0.0, 0.4, None));
+        assert_eq!(out.dropped, None);
     }
 
     #[wasm_bindgen_test]
