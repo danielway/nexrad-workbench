@@ -729,6 +729,17 @@ pub(crate) fn land_on_day(
     }
 }
 
+/// Whether [`Intent::GoToDay`] stops the stream first, and where it leaves
+/// the playhead. A picked day is the archive: a running stream stops in
+/// place (no status line, no snap to now), so the strip offers GO LIVE, not
+/// REJOIN, and nothing downloads in the background behind the day. With no
+/// stream there is nothing to stop.
+pub(crate) fn landing_stops_stream(
+    stream_active: bool,
+) -> Option<crate::core::transport::LiveStopPlacement> {
+    stream_active.then_some(crate::core::transport::LiveStopPlacement::InPlace)
+}
+
 /// A pending landing after an intent: anything that moves the playhead or
 /// the selection (a seek, a step, play, going live, a range, another site,
 /// another day) means the user has taken over, so it is dropped.
@@ -792,6 +803,16 @@ pub(crate) fn settle_landing(
 
 #[cfg(test)]
 mod tests {
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn a_picked_day_stops_a_running_stream_in_place() {
+        use crate::core::transport::LiveStopPlacement;
+        assert_eq!(
+            super::landing_stops_stream(true),
+            Some(LiveStopPlacement::InPlace)
+        );
+        assert_eq!(super::landing_stops_stream(false), None);
+    }
+
     use super::*;
     use crate::core::{Scan, Sweep};
     use crate::data::DayActivity;

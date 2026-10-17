@@ -390,8 +390,9 @@ storm level from the `ActivityBook` (index days, scaled over the month by
 held spans, today and future flags in the chosen zone (handed in as a
 `calendar::Zone`), the year and years views clamped to the archive and the
 site's index range, and the swipe rule. It makes no S3 request. A tapped day
-(`Intent::GoToDay`) sets the strip to its 3 H stop (`strip_zoom_after`),
-seeks as a typed seek does and pauses, so the strip centres on the landing
+(`Intent::GoToDay`) stops a running stream in place
+(`calendar::landing_stops_stream`, so the strip offers GO LIVE), sets the
+strip to its 3 H stop (`strip_zoom_after`), seeks as a typed seek does and pauses, so the strip centres on the landing
 volume with its storm bars; `calendar::land_on_day` picks the day's stormiest
 volume from `ActivityBook::listing` (the per-day listing the strip asks for
 at 3 H and DAY), or local

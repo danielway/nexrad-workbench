@@ -677,7 +677,8 @@ hairline, never as a quiet day. ‹ › and a horizontal swipe move a month
 reaches, a year opens its twelve months, a month its grid. Days are the
 chosen zone's (local or UTC). The grid makes no S3 request: it reads the
 index already on device (fetched once per site, as the desktop does). A
-tapped day puts the strip at **3 H**, centred on the landing volume with its
+tapped day stops a running stream (an archive day is not live, so nothing
+downloads behind it) and puts the strip at **3 H**, centred on the landing volume with its
 storm bars and an outlined GO LIVE › tab at the edge, and pauses on that
 day's stormiest volume (its largest file) from the one listing the strip
 makes for that day; until that

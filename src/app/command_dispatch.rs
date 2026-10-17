@@ -2100,6 +2100,27 @@ mod dispatch_tests {
         assert_eq!(f.chrome.go_to_day_landing, None, "the user took over");
     }
 
+    /// A day picked while streaming stops the stream: the archive day offers
+    /// GO LIVE, not REJOIN.
+    #[wasm_bindgen_test]
+    fn go_to_day_while_streaming_stops_the_stream() {
+        use crate::core::calendar::{CalendarDay, FixedZone};
+        let mut f = Fixture::new();
+        f.state.frame_now = FrameNow(1_792_238_400.0);
+        f.state.viz_state.site_id = "KTLX".to_string();
+        f.live.mode_state.phase = LivePhase::Streaming;
+        f.playback.state.enter_pinned_live(1_792_238_000.0);
+        let day = CalendarDay::of(
+            chrono::NaiveDate::from_ymd_opt(2024, 5, 6).unwrap(),
+            &FixedZone(0),
+        );
+        f.apply(Intent::GoToDay(day));
+        assert!(!f.live.mode_state.is_active(), "the stream stopped");
+        assert!(!f.playback.state.is_pinned());
+        assert!(!f.playback.state.playing);
+        assert_eq!(f.playback.state.playback_position(), day.midday());
+    }
+
     /// A day already listed lands on its stormiest volume at once.
     #[wasm_bindgen_test]
     fn go_to_a_listed_day_lands_on_its_stormiest_volume() {

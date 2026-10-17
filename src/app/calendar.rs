@@ -10,9 +10,9 @@ use crate::core::Intent;
 use crate::data::SiteId;
 
 impl DispatchState<'_> {
-    /// [`Intent::GoToDay`]: the 3 H stop, the playhead detached and paused on
-    /// the day's stormiest volume (or its midday while the listing is out),
-    /// and the sheet closed.
+    /// [`Intent::GoToDay`]: a running stream stopped, the 3 H stop, the
+    /// playhead paused on the day's stormiest volume (or its midday while the
+    /// listing is out), and the sheet closed.
     pub(crate) fn go_to_day(&mut self, day: CalendarDay, intent: &Intent) {
         let site = SiteId::new(self.state.viz_state.site_id.clone());
         let now = self.state.frame_now.secs();
@@ -20,6 +20,13 @@ impl DispatchState<'_> {
         let (ts, landing) = land_on_day(&site, day, listing.as_deref(), &self.timeline.scans, now);
         self.chrome.phone_strip_zoom =
             crate::core::phone_strip::strip_zoom_after(self.chrome.phone_strip_zoom, intent);
+        if let Some(placement) =
+            crate::core::calendar::landing_stops_stream(self.live.mode_state.is_active())
+        {
+            self.transport(|env, slices| {
+                crate::core::transport::reduce_stop_live(env, slices, placement)
+            });
+        }
         self.transport(|env, slices| {
             crate::core::transport::reduce_seek(env, slices, ts, SeekGesture::Typed)
         });
