@@ -35,21 +35,30 @@ impl crate::WorkbenchApp {
             return;
         }
 
-        // Zoomed out the days size the bars; zoomed in their volumes do.
+        // Zoomed out the days size the bars; zoomed in their volumes do. The
+        // phone strip at Day asks for the day in view instead of the
+        // overview's window.
         let ov = self.playback.state.overview;
-        if self.playback.state.timeline_width_px <= 0.0 {
+        let phone_day = if self.chrome.device_layout.is_phone() {
+            self.chrome.phone_strip_view.and_then(|(window, lane_px)| {
+                crate::core::phone_strip::activity_window(
+                    self.chrome.phone_strip_zoom,
+                    window,
+                    lane_px,
+                )
+            })
+        } else {
+            None
+        };
+        let (start, end, lane_px) =
+            phone_day.unwrap_or((ov.start, ov.end(), self.playback.state.timeline_width_px));
+        if lane_px <= 0.0 {
             return;
         }
         // Zoomed in to volumes, days the index covers still need listing.
-        let need_scans = needs_scans(self.playback.state.timeline_width_px, ov.span);
+        let need_scans = needs_scans(lane_px, end - start);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (
-            &site.0,
-            day_start_of(ov.start),
-            day_start_of(ov.end()),
-            need_scans,
-        )
-            .hash(&mut hasher);
+        (&site.0, day_start_of(start), day_start_of(end), need_scans).hash(&mut hasher);
         if !acq
             .activity_settle
             .poll(hasher.finish(), now_ms, ACTIVITY_SETTLE_MS)
@@ -58,8 +67,8 @@ impl crate::WorkbenchApp {
         }
 
         let window = ActivityWindow {
-            start: ov.start,
-            end: ov.end(),
+            start,
+            end,
             era_start: crate::core::NEXRAD_ARCHIVE_START_SECS,
             now_secs: self.state.frame_now.secs(),
             need_scans,

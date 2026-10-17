@@ -5,9 +5,9 @@
 //!   1. Transport row (~48px) — bottommost. Frame step ‹ ›, Play/Pause, the
 //!      selection chip, the speed, the activity dot and the sheet button —
 //!      the desktop transport's controls from the same view-models.
-//!   2. The mini timeline (~46px) — topmost. The desktop strip's real cells,
-//!      marks, playhead and now cap over the last three volumes
-//!      (`ui::timeline::mini`).
+//!   2. The mini timeline (~56px) — topmost. The desktop strip's real cells,
+//!      marks, playhead and now cap at one of three zoom stops (cuts,
+//!      volumes, the day), with its zoom pill (`ui::timeline::mini`).
 
 use crate::core::transport::{PlayButton, SpeedControl, StepDir};
 use crate::core::Intent;
@@ -53,6 +53,8 @@ fn draw_mobile_chrome(ctx: &mut super::super::layout::LayoutCtx) {
     // decision is `chrome.mobile_auto_hide`, resolved once per frame. A press
     // anywhere resets its clock, so using the transport keeps it up.
     let shown = !chrome.mobile_auto_hide.hidden;
+    // The strip claims its own pinch afresh each frame it draws.
+    chrome.phone_strip_claims_touch = false;
 
     root_ui.style_mut().animation_time = crate::core::phone::CHROME_SLIDE_SECS;
     // Bottommost — the condensed transport row.

@@ -232,6 +232,12 @@ pub(crate) fn dispatch_state_only(
         Intent::Dialog(intent) => s.dialog(intent),
         Intent::LoopFromScan(scan_start) => s.loop_from_scan(scan_start),
 
+        // ---- Phone strip ------------------------------------------
+        intent @ Intent::SetPhoneStripZoom(_) => {
+            s.chrome.phone_strip_zoom =
+                crate::core::phone_strip::strip_zoom_after(s.chrome.phone_strip_zoom, &intent);
+        }
+
         // ---- Needs the shell --------------------------------------
         // Listed explicitly (not `_`) so a new intent forces a decision
         // about which half of the partition owns it. The reason each one
@@ -606,6 +612,11 @@ impl WorkbenchApp {
         let Some(cmd) = cmd else {
             return;
         };
+        // Going live returns the phone strip to Cuts (the rule is the
+        // core's; GoLive and ReturnToLive are shell intents, so it runs here
+        // rather than half-applying them in the state half).
+        self.chrome.phone_strip_zoom =
+            crate::core::phone_strip::strip_zoom_after(self.chrome.phone_strip_zoom, &cmd);
 
         match cmd {
             // ---- Site selection + external links ----------------------
@@ -691,7 +702,8 @@ impl WorkbenchApp {
             | Intent::SetResetForgetsKeyAndSite(_)
             | Intent::SetDeveloperMode(_)
             | Intent::Dialog(_)
-            | Intent::LoopFromScan(_) => {
+            | Intent::LoopFromScan(_)
+            | Intent::SetPhoneStripZoom(_) => {
                 unreachable!("state-only intent was not consumed by dispatch_state_only")
             }
         }
@@ -1102,8 +1114,9 @@ mod dispatch_tests {
             Intent::SetDeveloperMode(true),
             Intent::Dialog(crate::core::dialogs::DialogIntent::Escape),
             Intent::LoopFromScan(1_000.0),
+            Intent::SetPhoneStripZoom(crate::core::phone_strip::StripZoom::Day),
         ];
-        assert_eq!(state_only.len(), 32);
+        assert_eq!(state_only.len(), 33);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -1976,5 +1989,28 @@ mod dispatch_tests {
             item.elevation_filter, None,
             "Latest fetches the whole volume"
         );
+    }
+
+    /// `SetPhoneStripZoom` moves the phone strip's stop and nothing else: the
+    /// selection and the playhead stay where they were.
+    #[wasm_bindgen_test]
+    fn phone_strip_zoom_changes_the_stop_not_the_selection() {
+        use crate::core::phone_strip::StripZoom;
+        let mut f = Fixture::new();
+        assert_eq!(f.chrome.phone_strip_zoom, StripZoom::Cuts);
+        f.apply(Intent::SelectRange {
+            start: 100.0,
+            end: 400.0,
+            to_live: false,
+        });
+        let range = f.playback.state.selection_range();
+        let pos = f.playback.state.playback_position();
+        assert!(range.is_some());
+
+        f.apply(Intent::SetPhoneStripZoom(StripZoom::Day));
+
+        assert_eq!(f.chrome.phone_strip_zoom, StripZoom::Day);
+        assert_eq!(f.playback.state.selection_range(), range);
+        assert_eq!(f.playback.state.playback_position(), pos);
     }
 }
