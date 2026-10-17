@@ -361,14 +361,23 @@ rail's four tabs (bottom in portrait, right in landscape). The phone's
 decisions — layout, sheet rect, chrome auto-hide, press tracking, the mini
 timeline's window, pick radii and the site-switch confirmation — are pure and
 tested in `core::phone`, `core::canvas` and `core::dialogs`. The mini
-timeline has three zoom stops (`core::phone_strip`): Cuts (the last three
-volumes, every cut), Volumes (3 h, one cell per volume) and Day (24 h of
-storm bars from the day's listing, over the on-device underline). A zoom pill
-at its left edge names the stop and taps to the next, a pinch moves one stop
-on release (`Intent::SetPhoneStripZoom`; the stop lives on `Chrome`, not in
-preferences or the link), and a scrub snaps to the stop's unit. Volumes and
-Day center on the playhead and never show more than the ghost room past now;
-going live returns to Cuts. The strip's press area reaches 12 px up into the
+timeline has three zoom stops (`core::phone_strip`), named on a pill at its
+left edge by what the strip spans: 15 MIN (the last three volumes, every cut),
+3 H (storm-activity bars, one per volume) and DAY (the same bars, one per half
+hour). The bars come from the volumes' sizes in the day's listing, the data the
+desktop overview draws zoomed in, with the slate on-device underline under them
+and a quiet wash where no sizes are known yet. Every stop draws the periwinkle
+ring on the frame on screen, the white playhead line when detached, the now
+line and a small tab under it (filled red only for LIVE, outlined for REJOIN
+and GO LIVE, an outlined edge tab at the right when now is off the window); the
+bar layout, ring, tab, ruler labels and window are pure functions there, and
+`ui/timeline/mini.rs` only paints them. The pill taps to the next stop and a
+pinch moves one stop on release (`Intent::SetPhoneStripZoom`; the stop lives on
+`Chrome`, not in preferences or the link); a scrub snaps to the stop's unit.
+Zoom and selection are independent: going live keeps the zoom. Pinned, the
+window ends just past now; detached, it centres on a playhead that lands off
+it, holds still while the finger works inside it and slides near the edges.
+The strip's press area reaches 12 px up into the
 map, which neither pans on that press nor zooms on the strip's pinch.
 
 The phone's overview is the calendar sheet, "Go to a day"
@@ -381,9 +390,11 @@ storm level from the `ActivityBook` (index days, scaled over the month by
 held spans, today and future flags in the chosen zone (handed in as a
 `calendar::Zone`), the year and years views clamped to the archive and the
 site's index range, and the swipe rule. It makes no S3 request. A tapped day
-(`Intent::GoToDay`) sets the strip to Day, seeks as a typed seek does and
-pauses; `calendar::land_on_day` picks the day's stormiest volume from
-`ActivityBook::listing` (the per-day listing Day zoom makes), or local
+(`Intent::GoToDay`) sets the strip to its 3 H stop (`strip_zoom_after`),
+seeks as a typed seek does and pauses, so the strip centres on the landing
+volume with its storm bars; `calendar::land_on_day` picks the day's stormiest
+volume from `ActivityBook::listing` (the per-day listing the strip asks for
+at 3 H and DAY), or local
 midday plus a pending `Landing` that `app::calendar::settle_go_to_day`
 finishes once per frame with one re-seek, dropped by `landing_after` on any
 playhead intent or by a moved or playing playhead.

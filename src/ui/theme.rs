@@ -75,6 +75,12 @@ pub(crate) const NOW: Color32 = Color32::from_rgb(255, 95, 95);
 /// Red — *now*, low strength: not streaming (the idle now line, "GO LIVE").
 pub(crate) const NOW_IDLE: Color32 = Color32::from_rgb(200, 95, 95);
 
+/// Blue — *weather*: the phone strip's storm-activity bars and the calendar
+/// sheet's day shade (how much echo a day held, from the nightly
+/// storm-activity index). Its strength is the level; the hue is not a status
+/// color, so it never competes with now or a loop.
+pub(crate) const STORM: Color32 = Color32::from_rgb(79, 127, 217);
+
 // ── Selected control and on-device ─────────────────────────────────────────
 
 /// Periwinkle — the one *selected control* color (pressed product, chosen
@@ -84,11 +90,6 @@ pub(crate) const SELECTED: Color32 = Color32::from_rgb(138, 162, 255);
 /// Slate — *on device*: cached cells, received cuts, held days. A neutral,
 /// not an accent: it is the fill channel.
 pub(crate) const ON_DEVICE: Color32 = Color32::from_rgb(70, 96, 127);
-
-/// Storm blue — the calendar sheet's day shade: how much echo a day held,
-/// from the nightly storm-activity index. Its strength is the level; the
-/// hue is not a status color, so it never competes with now or a loop.
-pub(crate) const STORM: Color32 = Color32::from_rgb(79, 127, 217);
 
 /// `c` with its alpha replaced (unmultiplied), for washes over another surface.
 pub(crate) fn alpha(c: Color32, a: u8) -> Color32 {
@@ -355,6 +356,12 @@ pub(crate) mod timeline {
     /// competes with the height (held time is the underline).
     pub(crate) fn activity_fill() -> Color32 {
         alpha(TEXT_DIM, 120)
+    }
+    /// The phone strip's storm-activity bars at its zoomed-out stops: the
+    /// storm blue, so a bar's height reads as weather at a glance on the
+    /// small strip.
+    pub(crate) fn storm_fill() -> Color32 {
+        alpha(super::STORM, 217)
     }
     /// The stub of an overview bar whose days are still being listed.
     pub(crate) fn activity_pending() -> Color32 {

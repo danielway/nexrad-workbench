@@ -17,9 +17,10 @@
 //! index day of the same date, the UTC day that holds its local midday for
 //! any zone within ±12 h.
 //!
-//! **Landing.** A tapped day ([`Intent::GoToDay`]) puts the strip at Day
-//! zoom and pauses on the day's stormiest volume ([`land_on_day`]). Its
-//! volumes come from the one per-day listing Day zoom already makes; until
+//! **Landing.** A tapped day ([`Intent::GoToDay`]) puts the strip at its
+//! 3 H stop and pauses on the day's stormiest volume ([`land_on_day`]). Its
+//! volumes come from the one per-day listing the strip already makes at
+//! 3 H; until
 //! that arrives the playhead waits at the day's local midday, and when it
 //! arrives it moves to the stormiest volume once, only if the playhead has
 //! not been touched since ([`Landing`], [`landing_after`],

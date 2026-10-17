@@ -629,11 +629,6 @@ impl WorkbenchApp {
         let Some(cmd) = cmd else {
             return;
         };
-        // Going live returns the phone strip to Cuts (the rule is the
-        // core's; GoLive and ReturnToLive are shell intents, so it runs here
-        // rather than half-applying them in the state half).
-        self.chrome.phone_strip_zoom =
-            crate::core::phone_strip::strip_zoom_after(self.chrome.phone_strip_zoom, &cmd);
 
         match cmd {
             // ---- Site selection + external links ----------------------
@@ -2074,11 +2069,11 @@ mod dispatch_tests {
         assert_eq!(f.chrome.go_to_day, None);
     }
 
-    /// A tapped day: Day zoom, the playhead detached and paused at the
+    /// A tapped day: the 3 H stop, the playhead detached and paused at the
     /// day's midday while its listing is out, the sheet closed, and a
     /// landing left to settle. A later seek takes over from the landing.
     #[wasm_bindgen_test]
-    fn go_to_day_lands_at_midday_pauses_and_zooms_to_day() {
+    fn go_to_day_lands_at_midday_pauses_and_zooms_to_volumes() {
         use crate::core::calendar::{CalendarDay, FixedZone};
         use crate::core::phone_strip::StripZoom;
         let mut f = Fixture::new();
@@ -2091,7 +2086,7 @@ mod dispatch_tests {
             &FixedZone(-5 * 3600),
         );
         f.apply(Intent::GoToDay(day));
-        assert_eq!(f.chrome.phone_strip_zoom, StripZoom::Day);
+        assert_eq!(f.chrome.phone_strip_zoom, StripZoom::Volumes);
         assert_eq!(f.chrome.go_to_day, None, "the sheet closes");
         assert!(!f.playback.state.playing, "paused on the day");
         assert_eq!(f.playback.state.playback_position(), day.midday());

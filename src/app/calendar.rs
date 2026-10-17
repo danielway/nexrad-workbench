@@ -10,7 +10,7 @@ use crate::core::Intent;
 use crate::data::SiteId;
 
 impl DispatchState<'_> {
-    /// [`Intent::GoToDay`]: Day zoom, the playhead detached and paused on
+    /// [`Intent::GoToDay`]: the 3 H stop, the playhead detached and paused on
     /// the day's stormiest volume (or its midday while the listing is out),
     /// and the sheet closed.
     pub(crate) fn go_to_day(&mut self, day: CalendarDay, intent: &Intent) {
