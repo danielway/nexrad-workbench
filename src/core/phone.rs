@@ -16,7 +16,7 @@
 //!   volumes up to now and the ghost of the next, or the playhead's own
 //!   three volumes when it is far from now.
 //! - **What a press on it is** ([`PressTrack`]): a tap, a scrub, or a
-//!   long-press that opens the inspector, never two of them. Its zoom stops,
+//!   long-press that opens the action sheet, never two of them. Its zoom stops,
 //!   pinch and snapping are [`crate::core::phone_strip`]'s.
 //! - **What the phone cannot show**: 3D ([`NO_3D_NOTICE`]).
 //!
@@ -357,7 +357,7 @@ pub(crate) const LONG_PRESS_SECS: f64 = 0.5;
 pub(crate) const PRESS_SLOP_PX: f32 = 6.0;
 
 /// One press on a surface that seeks on a tap, scrubs on a drag and opens
-/// the inspector on a long-press.
+/// the long-press sheet on a long-press.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PressTrack {
     start_secs: f64,
@@ -428,6 +428,12 @@ impl PressTrack {
     #[cfg(test)]
     pub(crate) fn fired(&self) -> bool {
         self.fired
+    }
+
+    /// The press moved past [`PRESS_SLOP_PX`]: a drag for the rest of its
+    /// life (a scrub, or a range handle moving).
+    pub(crate) fn scrubbing(&self) -> bool {
+        self.scrubbing
     }
 
     /// A pinch took this press over ([`Self::cancel`]).

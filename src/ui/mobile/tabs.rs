@@ -142,13 +142,19 @@ fn render_transport_row(
         }
 
         ui.add_space(2.0);
+        // "Loop what's in view" loops the strip's window on the phone.
         let view_start = playback.state.timeline_view_start;
+        let view = crate::core::selection_chip::menu_view(
+            true,
+            (view_start, view_start + playback.state.view_width_secs()),
+            chrome.phone_strip_view.map(|(w, _)| (w.start, w.end)),
+        );
         crate::ui::selection_chip::render_selection_chip(
             ui,
             state,
             live,
             playback,
-            (view_start, view_start + playback.state.view_width_secs()),
+            view,
             &crate::ui::selection_chip::ChipStyle {
                 text_size: 12.0,
                 min_height: btn_h,

@@ -20,11 +20,22 @@
 //! at 40 and labels down to the baseline; the tab from 37 to 53, below the
 //! cells, so it never hides a cell, the ring or the now line.
 //!
+//! A selected range ([`crate::core::phone_range::range_marks`]) draws as an
+//! amber band from 8 to 36 over the cells, an amber edge line at each fixed
+//! end, and round handles centred at 45 in the tab's row: start and end for
+//! a fixed range, only the start for one pinned to now, a lone tick and
+//! handle for a parked start. The tab steps aside from the handles'
+//! targets ([`crate::core::phone_range::cap_clear_of_handles`]) and the
+//! ruler labels give way to both.
+//!
 //! A tap seeks (`Intent::Seek`, Press), a drag scrubs (the same reducer,
 //! synchronously, like the desktop strip), both snapped to the stop's unit
-//! ([`crate::core::phone_strip::snap_scrub`]); a long-press opens the scan
-//! inspector; a pinch moves one stop on release
-//! ([`crate::core::phone_strip::StripTouch`]). The strip and its gestures
+//! ([`crate::core::phone_strip::snap_scrub`]); a long-press opens the action
+//! sheet ([`Intent::OpenPressSheet`]); a pinch moves one stop on release
+//! ([`crate::core::phone_strip::StripTouch`]). A press inside a handle's
+//! 24 px target moves that end, snapped like a scrub, with the desktop's
+//! cost label above the strip while it moves; the drop selects the range
+//! ([`crate::core::phone_range::HandleDrag`]). The strip and its gestures
 //! sit in an area that reaches [`STRIP_REACH_PX`] above it into the map, so
 //! a thumb that lands just short still gets the strip, and the map neither
 //! pans on that press nor zooms on the strip's pinch.
@@ -32,6 +43,10 @@
 use super::frame_cells::{paint_container, CellAnim};
 use super::marks::paint_strip_marks;
 use super::{reduced_motion, style, TimelineFrame, TrackRects};
+use crate::core::phone_range::{
+    cap_clear_of_handles, handle_at, range_marks, HandleDrag, HandleDrop, PressSheet, RangeFacts,
+    RangeMarks, BAND_BOTTOM, BAND_TOP, HANDLE_CY, HANDLE_R, HANDLE_TARGET_PX,
+};
 use crate::core::phone_strip::{
     activity_bars, cap_intents, next_stop, on_device_spans, quiet_spans, ring_center,
     ruler_labels_shown, ruler_ticks, snap_scrub, strip_cap, strip_window, zoom_pill_label,
@@ -240,6 +255,66 @@ fn draw_strip(
         ScanSizes::default()
     };
     let bars = activity_bars(stop, window, &sizes);
+    let units = StripUnits::from_containers(&containers).with_listed(&sizes.scans);
+    let snapped = |x: f32| snap_scrub(stop, frame.x_to_ts(x), &units, now);
+
+    // The touch, stepped before the range draws so a moving handle's band
+    // never trails the finger. A press that begins in a handle's target is
+    // the handle's.
+    let lane_x = (lane.left(), lane.right());
+    let to_x = |t: f64| frame.ts_to_x(t);
+    let facts = RangeFacts::of(&playback.state, now);
+    let drag_key = response.id.with("mini_handle");
+    let mut drag: Option<HandleDrag> = ui.ctx().memory(|m| m.data.get_temp(drag_key));
+    let held = range_marks(&facts, drag.as_ref(), &to_x, lane_x);
+    let key = response.id.with("mini_touch");
+    let mut touch: StripTouch = ui
+        .ctx()
+        .memory(|m| m.data.get_temp(key))
+        .unwrap_or_default();
+    let gesture_area = Rect::from_min_max(
+        Pos2::new(strip.left(), strip.top() - STRIP_REACH_PX),
+        strip.max,
+    );
+    let pinch = ui.input(|i| i.multi_touch()).map(|t| PinchInput {
+        zoom_delta: t.zoom_delta,
+        began_on_strip: gesture_area.contains(t.start_pos),
+    });
+    let pos = response.interact_pointer_pos();
+    let out = touch.step(StripTouchInput {
+        down: response.is_pointer_button_down_on(),
+        pos: pos.map(|p| (p.x, p.y)),
+        now: ui.ctx().input(|i| i.time),
+        pinch,
+        stop,
+        handle: pos.and_then(|p| handle_at(&held.handles, p.x, p.y - top)),
+    });
+    ui.ctx().memory_mut(|m| m.data.insert_temp(key, touch));
+
+    // A moving handle previews its range; the drop selects it.
+    if let Some(end) = out.moving {
+        if drag.is_none() {
+            drag = HandleDrag::grab(end, &facts);
+        }
+        if let (Some(d), Some(p)) = (drag.as_mut(), pos) {
+            d.drag_to(snapped(p.x), now);
+        }
+    }
+    let dropped = out
+        .dropped
+        .and_then(|_| drag.take())
+        .map(|d| d.drop_at(&facts));
+    if touch.press.is_none() {
+        drag = None;
+    }
+    ui.ctx().memory_mut(|m| match drag {
+        Some(d) => {
+            m.data.insert_temp(drag_key, d);
+        }
+        None => m.data.remove::<HandleDrag>(drag_key),
+    });
+    let marks = range_marks(&facts, drag.as_ref(), &to_x, lane_x);
+
     let span_x = |s: f64, e: f64, gap: f32| {
         let x0 = frame.ts_to_x(s);
         let x1 = frame.ts_to_x(e);
@@ -322,8 +397,9 @@ fn draw_strip(
     } else {
         TimelineTier::Micro
     };
-    let marks = crate::core::timeline_view::strip_marks(&containers, zoom, tier);
-    let failed_ticks = paint_strip_marks(&lane_painter, &frame, &marks, None);
+    let strip_marks = crate::core::timeline_view::strip_marks(&containers, zoom, tier);
+    let failed_ticks = paint_strip_marks(&lane_painter, &frame, &strip_marks, None);
+    paint_band(&lane_painter, top, &marks);
     if !reduced && (state.download_progress.is_active() || frame.view.live_volume().is_some()) {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(250));
@@ -341,12 +417,15 @@ fn draw_strip(
             .size()
             .x
     };
-    let cap = strip_cap(
+    let mut cap = strip_cap(
         session.now_cap,
         now_in_lane.then_some(now_x),
         lane.right(),
         &measure,
     );
+    // The tab shares its row with the range handles: it steps aside so both
+    // stay tappable.
+    cap.x0 = cap_clear_of_handles(cap.x0, cap.width, &marks.handle_xs(), lane_x);
 
     // The ruler on the baseline, in the chosen zone.
     let offset = super::tz_offset_secs(window.start + window.span() / 2.0, state.use_local_time);
@@ -365,12 +444,14 @@ fn draw_strip(
         .filter(|(_, l)| !l.is_empty())
         .map(|(x, l)| (x + 2.0, measure(l)))
         .collect();
-    let mut shown = ruler_labels_shown(
-        &labelled,
-        (lane.left(), lane.right()),
-        Some((cap.x0, cap.x0 + cap.width)),
-    )
-    .into_iter();
+    let mut avoid = vec![(cap.x0, cap.x0 + cap.width)];
+    avoid.extend(
+        marks
+            .handles
+            .iter()
+            .map(|h| (h.x - HANDLE_R, h.x + HANDLE_R)),
+    );
+    let mut shown = ruler_labels_shown(&labelled, lane_x, &avoid).into_iter();
     for (x, label) in ticks {
         lane_painter.line_segment(
             [
@@ -462,6 +543,19 @@ fn draw_strip(
         }
     }
 
+    // The range handles, in the tab's row; the moving one shows its target.
+    let moving = drag.filter(|d| d.moved).map(|d| d.end);
+    paint_handles(&lane_painter, top, &marks, moving);
+    // While a handle moves, the desktop's cost line above the strip.
+    let preview = crate::core::phone_range::strip_range(&facts, drag.as_ref());
+    if let (Some(d), Some(r)) = (drag.filter(|d| d.moved && !d.parked), preview) {
+        let sizes = timeline.activity.scans(&site, r.start, r.end);
+        let label = frame.view.range_cost_sized(r.start, r.end, &sizes).label();
+        let x = frame.ts_to_x(if d.at <= d.anchor { r.start } else { r.end });
+        paint_cost_label(ui, strip, x, &label);
+        ui.ctx().request_repaint();
+    }
+
     // The zoom pill: says what the strip spans, a tap goes to the next stop.
     let pill_col = Rect::from_min_max(strip.min, Pos2::new(lane.left(), strip.bottom()));
     let pill = Rect::from_min_size(strip.min + PILL_MIN, PILL_SIZE);
@@ -492,28 +586,6 @@ fn draw_strip(
 
     // Gestures. A press on the tab or a failure mark belongs to it.
     let owned = |p: Pos2| cap_rect.contains(p) || failed_ticks.iter().any(|t| t.rect.contains(p));
-    let key = response.id.with("mini_touch");
-    let mut touch: StripTouch = ui
-        .ctx()
-        .memory(|m| m.data.get_temp(key))
-        .unwrap_or_default();
-    let gesture_area = Rect::from_min_max(
-        Pos2::new(strip.left(), strip.top() - STRIP_REACH_PX),
-        strip.max,
-    );
-    let pinch = ui.input(|i| i.multi_touch()).map(|t| PinchInput {
-        zoom_delta: t.zoom_delta,
-        began_on_strip: gesture_area.contains(t.start_pos),
-    });
-    let pos = response.interact_pointer_pos();
-    let out = touch.step(StripTouchInput {
-        down: response.is_pointer_button_down_on(),
-        pos: pos.map(|p| (p.x, p.y)),
-        now: ui.ctx().input(|i| i.time),
-        pinch,
-        stop,
-    });
-    ui.ctx().memory_mut(|m| m.data.insert_temp(key, touch));
     chrome.phone_strip_claims_touch |= out.claimed;
     if let Some(next) = out.settle {
         state.push_command(Intent::SetPhoneStripZoom(next));
@@ -521,10 +593,19 @@ fn draw_strip(
     if out.press.waiting || out.claimed {
         ui.ctx().request_repaint();
     }
+    match dropped {
+        Some(HandleDrop::Select(intent)) => state.push_command(intent),
+        Some(HandleDrop::TooLong) => state.toasts.notice(format!(
+            "Range too long \u{2014} select at most {} days",
+            (crate::core::MAX_SELECTION_SPAN_SECS / 86_400.0) as i64
+        )),
+        Some(HandleDrop::Nothing) | None => {}
+    }
     if let Some((x, _)) = out.press.long_press {
-        if let Some(scan_start) = frame.view.scan_start_at(frame.x_to_ts(x)) {
-            chrome.scan_inspector = Some(scan_start);
-        }
+        state.push_command(Intent::OpenPressSheet(PressSheet {
+            ts: snapped(x),
+            scan_start: frame.view.scan_start_at(frame.x_to_ts(x)),
+        }));
         return;
     }
     state.pointer_scrub_active = response.dragged() && out.may_seek;
@@ -532,8 +613,7 @@ fn draw_strip(
         return;
     }
     if let Some(p) = pos.filter(|p| !owned(*p)) {
-        let units = StripUnits::from_containers(&containers).with_listed(&sizes.scans);
-        let ts = snap_scrub(stop, frame.x_to_ts(p.x), &units, now);
+        let ts = snapped(p.x);
         if response.dragged() {
             // A scrub runs the seek reducer synchronously so the playhead
             // keeps up with the finger.
@@ -567,4 +647,82 @@ fn draw_strip(
             }
         }
     }
+}
+
+/// The range's band: a translucent wash over the cells from [`BAND_TOP`] to
+/// [`BAND_BOTTOM`], with an amber edge line at each fixed end; or a parked
+/// start's amber tick.
+fn paint_band(painter: &egui::Painter, top: f32, marks: &RangeMarks) {
+    let edge = |x: f32, w: f32| {
+        painter.line_segment(
+            [
+                Pos2::new(x, top + BAND_TOP - 1.0),
+                Pos2::new(x, top + BAND_BOTTOM + 1.0),
+            ],
+            Stroke::new(w, tl_colors::RANGE),
+        );
+    };
+    if let Some((sx, ex)) = marks.band {
+        let band = Rect::from_min_max(
+            Pos2::new(sx, top + BAND_TOP),
+            Pos2::new(ex, top + BAND_BOTTOM),
+        );
+        if band.width() > 0.0 {
+            painter.rect_filled(band, 3.0, tl_colors::selection_fill());
+        }
+        edge(sx, 1.5);
+        if !marks.pinned {
+            edge(ex, 1.5);
+        }
+    }
+    if let Some(x) = marks.parked_tick {
+        edge(x, 2.0);
+    }
+}
+
+/// The round amber handles below the band; the moving one shows its
+/// [`HANDLE_TARGET_PX`] target as a faint ring.
+fn paint_handles(
+    painter: &egui::Painter,
+    top: f32,
+    marks: &RangeMarks,
+    moving: Option<crate::core::phone_range::RangeEnd>,
+) {
+    for h in &marks.handles {
+        let c = Pos2::new(h.x, top + HANDLE_CY);
+        painter.circle_filled(c, HANDLE_R, tl_colors::RANGE);
+        if moving == Some(h.end) {
+            painter.circle_stroke(
+                c,
+                HANDLE_TARGET_PX / 2.0,
+                Stroke::new(1.0_f32, tl_colors::RANGE.gamma_multiply(0.6)),
+            );
+        }
+    }
+}
+
+/// The cost line (`1:30:00 · 18 scans · 71 MB`) on a scrim above the strip,
+/// over the moving handle and kept inside the strip's width.
+fn paint_cost_label(ui: &egui::Ui, strip: Rect, x: f32, label: &str) {
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        ui.id().with("mini_cost_label"),
+    ));
+    let galley = painter.layout_no_wrap(label.to_string(), style::tick_font(), theme::TEXT);
+    let size = galley.size() + Vec2::new(12.0, 6.0);
+    let left = (x - size.x / 2.0)
+        .min(strip.right() - size.x)
+        .max(strip.left());
+    let bg = Rect::from_min_size(
+        Pos2::new(left, strip.top() - STRIP_REACH_PX - size.y - 4.0),
+        size,
+    );
+    painter.rect_filled(bg, 3.0, theme::map::scrim());
+    painter.rect_stroke(
+        bg,
+        3.0,
+        Stroke::new(1.0_f32, tl_colors::RANGE),
+        StrokeKind::Inside,
+    );
+    painter.galley(bg.min + Vec2::new(6.0, 3.0), galley, theme::TEXT);
 }

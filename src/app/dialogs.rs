@@ -28,6 +28,7 @@ pub(crate) fn dialog_flags(chrome: &Chrome, diagnostics: &Diagnostics) -> Dialog
         mping: diagnostics.mping.settings_modal_open,
         mobile_settings: chrome.mobile_settings_open,
         go_to_day: chrome.go_to_day.is_some(),
+        press_sheet: chrome.press_sheet.is_some(),
         confirm: chrome.confirm.is_some(),
     }
 }
@@ -164,12 +165,14 @@ impl DispatchState<'_> {
             DialogId::Event => {
                 c.event_modal_open = false;
                 c.event_modal_editing_id = None;
+                c.event_modal_seed = None;
             }
             DialogId::AlertsList => self.diagnostics_close(DiagnosticsIntent::CloseAlertList),
             DialogId::AlertDetail => self.diagnostics_close(DiagnosticsIntent::ClearAlertSelection),
             DialogId::Mping => self.diagnostics_close(DiagnosticsIntent::CloseMpingSettings),
             DialogId::MobileSettings => c.mobile_settings_open = false,
             DialogId::GoToDay => c.go_to_day = None,
+            DialogId::PressSheet => c.press_sheet = None,
             DialogId::Confirm => c.confirm = None,
         }
     }

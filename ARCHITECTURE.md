@@ -403,6 +403,31 @@ once ingested, so a frame shows. The shell applies those re-seeks directly
 (a queued `Seek` would read as a touch); the landing is dropped by
 `landing_after` on any playhead intent or by a moved or playing playhead.
 
+Ranges on the phone are never drawn (`core::phone_range`). A long-press on
+the strip emits `Intent::OpenPressSheet` with the snapped time and the scan
+under the finger; the sheet (`ui/mobile/press_sheet.rs`, a `Sheet` on the Esc
+stack as `DialogId::PressSheet`) draws `press_sheet_vm` — the heading and
+four rows, each disabled with its reason — and a tapped row emits
+`Intent::PressSheetRow`, which the dispatcher turns into `row_intent`'s
+intent: `InspectScan`, `SelectRange` (so `transport::select_range` applies
+the "ends at now" pin and the paused start), `ParkRangeStart` (a half range,
+as the I key parks one) or `SaveEventAt` / `SaveSelectionAsEvent` (the event
+dialog's prefill is `dialogs::event_prefill`). On the strip a range draws
+(`phone_range::range_marks`) as an amber band over the cells and round
+handles below it in the now tab's row at every stop: start and end for a
+fixed range, the start only when pinned (the now line is the end), one tick
+and handle for a parked start. The tab steps aside from the handles'
+targets (`phone_range::cap_clear_of_handles`) and the ruler labels give way
+to both. `StripTouch` gives a press that begins inside a handle's 24 px
+square target (`phone_range::handle_at`) to the handle, so it moves that end
+instead of scrubbing, and `HandleDrag` previews the snapped end
+(`phone_strip::snap_scrub`) and turns the drop into one `SelectRange`,
+pinned within a frame of now (or `ParkRangeStart` for a parked start). The cost line above the strip
+while it moves is `TimelineView::range_cost_sized`, the desktop label's.
+The selection-fetch gate asks over `acquisition::bulk_confirm_secs` — 6 h on
+the desktop, 2 h on the phone — and the confirmation shows
+`range_download_text` from a `RangeDownloadPrompt` priced at release.
+
 Canvas overlays live in `ui/canvas_overlays/` — one module per overlay
 (national mosaic, alerts, mPING reports, GPS location, sweep line/donut, site
 markers, info text, color scale, scale bar, compass, globe). `ui/canvas.rs`

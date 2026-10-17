@@ -46,6 +46,7 @@ pub(crate) mod overview;
 pub(crate) mod panels;
 pub(crate) mod persist;
 pub(crate) mod phone;
+pub(crate) mod phone_range;
 pub(crate) mod phone_strip;
 pub(crate) mod playback_manager;
 pub(crate) mod prefs;
