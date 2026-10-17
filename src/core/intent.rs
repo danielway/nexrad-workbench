@@ -172,6 +172,10 @@ pub(crate) enum Intent {
     /// A dialog intent: Escape, close, confirm, the event dialog's writes
     /// (one-instrument §12, [`crate::core::dialogs`]).
     Dialog(crate::core::dialogs::DialogIntent),
+    /// Put the phone strip at a zoom stop (the zoom pill, a pinch). Lives on
+    /// the chrome, not in preferences or the link; decided by
+    /// [`crate::core::phone_strip::strip_zoom_after`].
+    SetPhoneStripZoom(crate::core::phone_strip::StripZoom),
     /// "Loop from here → now" on the scan inspector: a range from this scan
     /// start to now, the playhead at the scan. Closes the inspector only when
     /// the range was made.

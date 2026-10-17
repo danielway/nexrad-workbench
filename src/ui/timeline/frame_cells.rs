@@ -186,7 +186,7 @@ pub(super) fn paint_container(
 /// Paint a single frame cell. Returns true when this cell consumed the
 /// container's countdown slot (i.e. it was the first projected cell that drew
 /// the countdown), so the caller marks the countdown as placed.
-fn paint_cell(
+pub(super) fn paint_cell(
     painter: &Painter,
     cell: &FrameCell,
     rect: Rect,

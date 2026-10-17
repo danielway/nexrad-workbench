@@ -360,7 +360,25 @@ view-models, the mini timeline (`ui/timeline/mini.rs`), and a sheet with the
 rail's four tabs (bottom in portrait, right in landscape). The phone's
 decisions — layout, sheet rect, chrome auto-hide, press tracking, the mini
 timeline's window, pick radii and the site-switch confirmation — are pure and
-tested in `core::phone`, `core::canvas` and `core::dialogs`.
+tested in `core::phone`, `core::canvas` and `core::dialogs`. The mini
+timeline has three zoom stops (`core::phone_strip`), named on a pill at its
+left edge by what the strip spans: 15 MIN (the last three volumes, every cut),
+3 H (storm-activity bars, one per volume) and DAY (the same bars, one per half
+hour). The bars come from the volumes' sizes in the day's listing, the data the
+desktop overview draws zoomed in, with the slate on-device underline under them
+and a quiet wash where no sizes are known yet. Every stop draws the periwinkle
+ring on the frame on screen, the white playhead line when detached, the now
+line and a small tab under it (filled red only for LIVE, outlined for REJOIN
+and GO LIVE, an outlined edge tab at the right when now is off the window); the
+bar layout, ring, tab, ruler labels and window are pure functions there, and
+`ui/timeline/mini.rs` only paints them. The pill taps to the next stop and a
+pinch moves one stop on release (`Intent::SetPhoneStripZoom`; the stop lives on
+`Chrome`, not in preferences or the link); a scrub snaps to the stop's unit.
+Zoom and selection are independent: going live keeps the zoom. Pinned, the
+window ends just past now; detached, it centres on a playhead that lands off
+it, holds still while the finger works inside it and slides near the edges.
+The strip's press area reaches 12 px up into the
+map, which neither pans on that press nor zooms on the strip's pinch.
 
 Canvas overlays live in `ui/canvas_overlays/` — one module per overlay
 (national mosaic, alerts, mPING reports, GPS location, sweep line/donut, site

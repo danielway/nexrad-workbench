@@ -634,7 +634,32 @@ Interactive measurement and analysis affordances on the 2D canvas:
 |---|---|---|
 | Desktop ≥1200px | Overview + full strip (~56px) + transport row + readouts | Inspector as popover or side panel; hover tooltips |
 | Touch ≥600px | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
-| Phone | Condensed transport (play · selection chip · speed) over ~44px strip; no overview (the scrubber plays its role) | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; custom loop dragging replaced by presets; 3D view is desktop-only |
+| Phone | Condensed transport (play · selection chip · speed) under a ~56px strip at three zoom stops; no overview | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; custom loop dragging replaced by presets; 3D view is desktop-only |
+
+**The phone strip's zoom stops.** A thumb gets three stops rather than a
+continuous zoom, so the strip is predictable and a scrub snaps to a unit the
+finger can hit. A pill at the strip's left edge says what the strip spans —
+**15 MIN**, **3 H**, **DAY** — and a tap goes to the next; a pinch moves one
+stop and settles on release. 15 MIN is the last three volumes with every cut
+(the scrub snaps to cuts). 3 H and DAY answer "where was the weather" the way
+the desktop overview does: storm-activity bars in the storm blue, one per volume
+at 3 H and one per half hour at DAY, as tall as the weather the volume held
+(its file size in the day's listing), a slate underline under the volumes
+already on the device, and a quiet wash where no sizes are known yet; the scrub
+snaps to volumes, and a tap on a volume seeks to its first cut, fetching it if
+needed. Every stop keeps the same marks: the periwinkle ring on the frame on
+screen, the white playhead line when detached, the red now line, and the
+desktop's small tab under it — filled red only for LIVE, outlined for REJOIN
+and GO LIVE, and an outlined `GO LIVE ›` (or `REJOIN ›`) edge tab at the right
+when now is off-screen. The tab sits below the cells, so it never hides a cell,
+the ring or the now line, and the ruler's labels give way to it. Pinned, now
+sits near the right edge with the ring on it and the window slides with now;
+detached, the window centres on the playhead when it lands somewhere new, holds
+still while you scrub inside it and slides near the edges. Zoom is independent
+of the selection: zooming never moves the playhead or the pin, and going live or
+rejoining keeps the zoom. Landscape keeps the same spans with more pixels per
+unit. The strip takes presses up to 12 px above it, and the map neither pans on
+those nor zooms on the strip's pinch.
 
 ### 13.4 Links and preferences
 

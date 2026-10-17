@@ -75,6 +75,9 @@ pub(crate) const NOW: Color32 = Color32::from_rgb(255, 95, 95);
 /// Red — *now*, low strength: not streaming (the idle now line, "GO LIVE").
 pub(crate) const NOW_IDLE: Color32 = Color32::from_rgb(200, 95, 95);
 
+/// Blue — *weather*: the phone strip's storm-activity bars.
+pub(crate) const STORM: Color32 = Color32::from_rgb(79, 127, 217);
+
 // ── Selected control and on-device ─────────────────────────────────────────
 
 /// Periwinkle — the one *selected control* color (pressed product, chosen
@@ -350,6 +353,12 @@ pub(crate) mod timeline {
     /// competes with the height (held time is the underline).
     pub(crate) fn activity_fill() -> Color32 {
         alpha(TEXT_DIM, 120)
+    }
+    /// The phone strip's storm-activity bars at its zoomed-out stops: the
+    /// storm blue, so a bar's height reads as weather at a glance on the
+    /// small strip.
+    pub(crate) fn storm_fill() -> Color32 {
+        alpha(super::STORM, 217)
     }
     /// The stub of an overview bar whose days are still being listed.
     pub(crate) fn activity_pending() -> Color32 {

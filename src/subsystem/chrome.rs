@@ -94,6 +94,17 @@ pub(crate) struct Chrome {
     /// [`crate::core::phone::ChromeAutoHide::step`] once a frame before the
     /// layout, and read by the phone bars and the canvas. Inert on desktop.
     pub mobile_auto_hide: crate::core::phone::ChromeAutoHide,
+    /// The phone strip's zoom stop (phone timeline §1). Cuts by default;
+    /// not persisted and not in the link. Changed only through
+    /// [`crate::core::phone_strip::strip_zoom_after`].
+    pub phone_strip_zoom: crate::core::phone_strip::StripZoom,
+    /// The phone strip's window and lane width this frame, written by the
+    /// strip, read back by it as the last window (so a detached window holds
+    /// still) and by the storm-activity pump at the zoomed-out stops.
+    pub phone_strip_view: Option<(crate::core::phone::MiniWindow, f32)>,
+    /// The phone strip owns a two-finger gesture this frame: the map must
+    /// not zoom or pan on it. Reset before the strip draws each frame.
+    pub phone_strip_claims_touch: bool,
     /// The canvas's frame on the last phone frame, so the map can hold still
     /// while the chrome slides ([`crate::core::phone::hold_map_still`]).
     pub last_canvas: Option<crate::core::phone::CanvasFrame>,

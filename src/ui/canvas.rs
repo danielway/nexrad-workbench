@@ -524,7 +524,10 @@ pub(crate) fn render_canvas_with_geo(
                 // hidden, the resolver latched this frame's press as a reveal.
                 // Swallow it here so the same tap doesn't also pan/zoom the
                 // map — the chrome is already coming back this frame.
-                if !chrome.mobile_auto_hide.revealed_this_frame {
+                // Likewise a pinch the phone strip owns zooms the strip,
+                // not the map.
+                if !chrome.mobile_auto_hide.revealed_this_frame && !chrome.phone_strip_claims_touch
+                {
                     handle_canvas_interaction(
                         &response,
                         &rect,
