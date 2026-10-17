@@ -16,7 +16,7 @@ on:
         required: false
         default: "100000"
       max_minutes:
-        description: "Stop starting new days after this many minutes"
+        description: "Stop starting new days after this many minutes (at most 330; the job gets 20 more)"
         required: false
         default: "40"
 
@@ -28,9 +28,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  # The builder stops starting new days at max_minutes, then finishes the
+  # batch in flight and writes its files; Publish runs after that. The build
+  # job's timeout must outlast all of it or the listing is thrown away, so
+  # it is max_minutes + 20 (40 -> 60 by default). Expressions can't add, so
+  # this job computes it. 330 + 20 stays under the 360-minute runner limit.
+  limits:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 5
+    outputs:
+      max_minutes: ${{ steps.calc.outputs.max_minutes }}
+      job_minutes: ${{ steps.calc.outputs.job_minutes }}
+    steps:
+      - id: calc
+        env:
+          MAX_MINUTES: ${{ inputs.max_minutes || '40' }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import math, os
+          m = float(os.environ["MAX_MINUTES"])
+          if not 0 < m <= 330:
+              raise SystemExit("max_minutes must be in (0, 330], got %s" % m)
+          print("max_minutes=%g" % m)
+          print("job_minutes=%d" % (math.ceil(m) + 20))
+          PY
+
+  build:
+    needs: limits
+    runs-on: ubuntu-latest
+    # max_minutes + 20: see the limits job.
+    timeout-minutes: ${{ fromJSON(needs.limits.outputs.job_minutes) }}
     steps:
       - name: Checkout builder
         uses: actions/checkout@v7
@@ -47,7 +74,10 @@ jobs:
       - name: Build index
         env:
           BUDGET: ${{ inputs.budget || '100000' }}
-          MAX_MINUTES: ${{ inputs.max_minutes || '40' }}
+          # The job timeout is derived from this; see the limits job.
+          MAX_MINUTES: ${{ needs.limits.outputs.max_minutes }}
+          # Print checkpoints as they happen, not all at exit.
+          PYTHONUNBUFFERED: "1"
         run: |
           python3 tools/activity_index/build_index.py \
             --out pages/activity-index \
