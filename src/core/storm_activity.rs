@@ -403,6 +403,42 @@ impl ScanSizes {
         let i = self.scans.partition_point(|s| s.start <= ts);
         self.scans[..i].last().filter(|s| ts < s.end)
     }
+
+    /// The volumes overlapping `[start, end]`, each with its height as a
+    /// fraction of the lane on the scale of the volumes in view
+    /// ([`ViewScale`]): one bar per volume, as the zoomed-in overview and
+    /// the phone strip's Day stop draw them.
+    pub(crate) fn bars(&self, start: f64, end: f64) -> Vec<(ScanActivity, f32)> {
+        let lo = self.scans.partition_point(|s| s.end < start);
+        let hi = self.scans.partition_point(|s| s.start <= end);
+        let visible = &self.scans[lo..hi.max(lo)];
+        let scale = ViewScale::from_levels(visible.iter().map(|s| s.level));
+        visible
+            .iter()
+            .map(|s| (*s, scale.height_frac(s.level)))
+            .collect()
+    }
+
+    /// The parts of `spans` (Unix seconds) on days whose sizes aren't
+    /// known, split at UTC midnights: where a lane shows plain coverage
+    /// because there are no bars to show yet.
+    pub(crate) fn unknown_pieces(
+        &self,
+        spans: impl IntoIterator<Item = (f64, f64)>,
+    ) -> Vec<(f64, f64)> {
+        let mut out = Vec::new();
+        for (start, end) in spans {
+            let mut t = start;
+            while t < end {
+                let piece_end = end.min((day_start_of(t) + DAY_SECS) as f64);
+                if !self.knows(t) {
+                    out.push((t, piece_end));
+                }
+                t = piece_end;
+            }
+        }
+        out
+    }
 }
 
 /// The overview's time window, for deciding which days to list (Unix
@@ -1220,5 +1256,57 @@ mod tests {
         assert_eq!(day_start_of(OCT_9_2024 as f64 + 3600.5), OCT_9_2024);
         assert_eq!(day_start_of(OCT_9_2024 as f64), OCT_9_2024);
         assert_eq!(day_start_of(-1.0), -DAY_SECS);
+    }
+
+    fn scan(start: f64, level: f32) -> ScanActivity {
+        ScanActivity {
+            start,
+            end: start + 300.0,
+            bytes: 1,
+            level,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn bars_are_the_volumes_in_view_on_the_views_scale() {
+        let sizes = ScanSizes {
+            scans: vec![
+                scan(0.0, 0.9),
+                scan(300.0, 0.1),
+                scan(600.0, 0.2),
+                scan(900.0, 0.6),
+                scan(1_200.0, 0.1),
+            ],
+            known_days: vec![0],
+        };
+        let bars = sizes.bars(350.0, 1_000.0);
+        // The one ending before the window is out; the one starting after
+        // it is out; the ones touching it are in.
+        assert_eq!(
+            bars.iter().map(|(s, _)| s.start).collect::<Vec<_>>(),
+            vec![300.0, 600.0, 900.0]
+        );
+        // Stretched to what is in view: the median at the floor, the
+        // stormiest near the top.
+        let scale = ViewScale::from_levels([0.1, 0.2, 0.6]);
+        for (s, frac) in &bars {
+            assert_eq!(*frac, scale.height_frac(s.level));
+        }
+        assert_eq!(bars[1].1, MIN_BAR_FRAC);
+        assert!(bars[2].1 > 0.95);
+        assert!(sizes.bars(5_000.0, 6_000.0).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn unknown_pieces_split_at_midnight_and_drop_known_days() {
+        let d = DAY_SECS as f64;
+        let sizes = ScanSizes {
+            scans: Vec::new(),
+            known_days: vec![DAY_SECS],
+        };
+        // A span from the evening of day 0 into day 2: day 1 is known.
+        let pieces = sizes.unknown_pieces([(0.75 * d, 2.25 * d)]);
+        assert_eq!(pieces, vec![(0.75 * d, d), (2.0 * d, 2.25 * d)]);
+        assert!(sizes.unknown_pieces([(d + 10.0, d + 20.0)]).is_empty());
     }
 }
