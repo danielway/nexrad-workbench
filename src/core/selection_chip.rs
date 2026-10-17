@@ -121,6 +121,47 @@ pub(crate) struct ChipMenu {
     pub go_to_day: bool,
 }
 
+impl ChipMenu {
+    /// The quiet lines under "A range ending now": how else such a range
+    /// is made on this device. None on the phone, whose range ends are set
+    /// from the strip's long-press sheet (see [`Self::fixed_range_hints`]).
+    pub(crate) fn ending_now_hints(&self) -> &'static [&'static str] {
+        if self.pointer_hints {
+            &["Or drop a range's right handle on the live edge."]
+        } else {
+            &[]
+        }
+    }
+
+    /// The quiet lines under "A fixed range". The desktop draws a range on
+    /// the strip or with I and O; the phone never draws one (a drag there
+    /// is a scrub), so it points at the long-press sheet instead.
+    pub(crate) fn fixed_range_hints(&self) -> &'static [&'static str] {
+        if self.pointer_hints {
+            &[
+                "Or drag along the strip above the frames.",
+                "I and O set the start and end at the playhead.",
+            ]
+        } else {
+            &["Or long-press the strip to start or end a range there."]
+        }
+    }
+}
+
+/// The span "Loop what's in view" offers: the desktop timeline's view, or on
+/// the phone the strip's window (the desktop timeline is not on screen
+/// there), once the strip has drawn.
+pub(crate) fn menu_view(
+    touch: bool,
+    timeline_view: (f64, f64),
+    strip_window: Option<(f64, f64)>,
+) -> (f64, f64) {
+    match strip_window {
+        Some(w) if touch => w,
+        _ => timeline_view,
+    }
+}
+
 /// Build the menu from the selection, the stream, and the visible span.
 pub(crate) fn chip_menu(
     playback: &PlaybackState,
@@ -319,7 +360,62 @@ mod tests {
             stream_active: false,
             touch: true,
         };
-        assert!(!chip_menu(&ps, touch, (0.0, 2000.0), 1000.0).pointer_hints);
+        let menu = chip_menu(&ps, touch, (0.0, 2000.0), 1000.0);
+        assert!(!menu.pointer_hints);
+        for hint in menu
+            .ending_now_hints()
+            .iter()
+            .chain(menu.fixed_range_hints())
+        {
+            let h = hint.to_lowercase();
+            assert!(!h.contains("drag") && !h.contains("drop"), "{hint}");
+            assert!(!h.contains("i and o"), "{hint}: no keys on the phone");
+        }
+        assert!(menu.fixed_range_hints()[0].contains("long-press"));
+        // The desktop keeps its pointer and key hints.
+        let desktop = chip_menu(&ps, NO_STREAM, (0.0, 2000.0), 1000.0);
+        assert_eq!(desktop.fixed_range_hints().len(), 2);
+        assert_eq!(desktop.ending_now_hints().len(), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_phone_loops_the_strips_window_not_the_hidden_timelines() {
+        let timeline = (0.0, 10_000.0);
+        let strip = Some((7_000.0, 8_000.0));
+        assert_eq!(menu_view(true, timeline, strip), (7_000.0, 8_000.0));
+        assert_eq!(menu_view(false, timeline, strip), timeline);
+        assert_eq!(menu_view(true, timeline, None), timeline);
+    }
+
+    #[wasm_bindgen_test]
+    fn presets_loop_style_and_save_work_the_same_on_the_phone() {
+        let touch = ChipEnv {
+            stream_active: true,
+            touch: true,
+        };
+        let mut ps = PlaybackState::default();
+        assert!(ps.select_range(100.0, 400.0, false));
+        let menu = chip_menu(&ps, touch, (0.0, 2000.0), 1000.0);
+        assert_eq!(menu.presets.len(), LoopPreset::menu().len());
+        assert!(menu.loop_style.is_some());
+        assert!(menu.can_save_event);
+        let placement = LiveStopPlacement::InPlace;
+        assert_eq!(
+            intent_for(
+                ChipAction::Preset(LoopPreset::LastFrames(6)),
+                touch,
+                placement
+            ),
+            Intent::ApplyLoopPreset(LoopPreset::LastFrames(6))
+        );
+        assert_eq!(
+            intent_for(ChipAction::LoopStyle(LoopMode::PingPong), touch, placement),
+            Intent::SetLoopStyle(LoopMode::PingPong)
+        );
+        assert_eq!(
+            intent_for(ChipAction::SaveAsEvent, touch, placement),
+            Intent::SaveSelectionAsEvent
+        );
     }
 
     #[wasm_bindgen_test]

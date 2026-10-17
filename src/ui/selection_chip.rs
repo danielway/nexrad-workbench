@@ -223,8 +223,8 @@ fn render_menu(
             picked = Some(action);
         }
     }
-    if menu.pointer_hints {
-        hint(ui, "Or drop a range's right handle on the live edge.");
+    for line in menu.ending_now_hints() {
+        hint(ui, line);
     }
 
     ui.add_space(4.0);
@@ -244,9 +244,8 @@ fn render_menu(
             picked = Some(action);
         }
     }
-    if menu.pointer_hints {
-        hint(ui, "Or drag along the strip above the frames.");
-        hint(ui, "I and O set the start and end at the playhead.");
+    for line in menu.fixed_range_hints() {
+        hint(ui, line);
     }
     picked
 }
