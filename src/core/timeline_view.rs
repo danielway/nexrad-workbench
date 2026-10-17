@@ -2488,6 +2488,41 @@ mod marks_tests {
         assert_eq!((cost.scans, cost.fetch_bytes), (1, 7_000_000));
     }
 
+    /// The label the phone's moving handle and the desktop's range both
+    /// show, priced from the listing's sizes.
+    #[wasm_bindgen_test]
+    fn the_cost_label_prices_listed_volumes_from_the_listing() {
+        use crate::core::storm_activity::{ScanActivity, ScanSizes};
+        let shadows: Vec<ScanBoundary> = (0..18)
+            .map(|i| ScanBoundary {
+                start: 10_000 + i * 300,
+                end: 10_300 + i * 300,
+            })
+            .collect();
+        let empty = RadarTimeline { scans: vec![] };
+        let view = TimelineView::build(&empty, &shadows, None, None);
+        let listed = |start: f64| ScanActivity {
+            start,
+            end: start + 300.0,
+            bytes: 4_000_000,
+            level: 0.0,
+        };
+        let sizes = ScanSizes {
+            // Listed a few seconds off the boundaries, as listings are.
+            scans: (0..18)
+                .map(|i| listed(9_997.0 + i as f64 * 300.0))
+                .collect(),
+            known_days: vec![0],
+        };
+        let cost = view.range_cost_sized(10_000.0, 15_400.0, &sizes);
+        assert_eq!(cost.scans, 18);
+        assert_eq!(cost.fetch_bytes, 18 * 4_000_000);
+        assert_eq!(cost.label(), "1:30:00 \u{00B7} 18 scans \u{00B7} 72 MB");
+        // Unlisted volumes fall back to the estimate.
+        let unknown = view.range_cost_sized(10_000.0, 15_400.0, &ScanSizes::default());
+        assert_eq!(unknown.fetch_bytes, 18 * crate::core::AVG_SCAN_BYTES);
+    }
+
     #[wasm_bindgen_test]
     fn a_pinned_range_ends_on_the_now_line() {
         let cost = RangeCost::default();
