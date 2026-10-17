@@ -82,7 +82,7 @@ pub(crate) fn render_canvas_with_geo(
                 // Corner-chrome overlays (color scale + info + compass)
                 // dispatched through the typed registry. The trait's
                 // `visible` predicate keeps the scale bar (2D-only) out.
-                render_chrome_overlays(
+                let bottom_scrims = render_chrome_overlays(
                     ui,
                     &OverlayContext {
                         rect,
@@ -95,7 +95,7 @@ pub(crate) fn render_canvas_with_geo(
                 );
 
                 // The caption is the same chrome in 3D (§7).
-                render_canvas_caption(ui, &rect, state, live);
+                render_canvas_caption(ui, &rect, state, live, &bottom_scrims);
 
                 // Handle orbit/zoom interactions
                 handle_globe_interaction(&response, &rect, state);
@@ -505,7 +505,7 @@ pub(crate) fn render_canvas_with_geo(
                 // bar) dispatched through the typed registry. The
                 // trait's `visible` predicate keeps the compass
                 // (3D-only) out.
-                render_chrome_overlays(
+                let bottom_scrims = render_chrome_overlays(
                     ui,
                     &OverlayContext {
                         rect,
@@ -517,7 +517,7 @@ pub(crate) fn render_canvas_with_geo(
                     },
                 );
 
-                render_canvas_caption(ui, &rect, state, live);
+                render_canvas_caption(ui, &rect, state, live, &bottom_scrims);
                 render_map_toolbar(ui, &rect, state);
 
                 // Mobile chrome reveal tap (spec §13): when the chrome was
@@ -771,8 +771,10 @@ pub(super) fn format_unix_timestamp(ts: f64, use_local: bool) -> String {
     )
 }
 
-/// Paint the canvas caption (§7) on a scrim at the center of the map —
-/// the only text that ever sits over it. The words and their roles are the
+/// Paint the canvas caption (§7) on a scrim at the bottom center of the map,
+/// lifted over any corner scrim it would cover
+/// ([`crate::core::canvas::caption_bottom_inset`]) — the only text that ever
+/// sits over it. The words and their roles are the
 /// session view-model's ([`crate::core::session::SessionVm::canvas_caption_line`]);
 /// a "fetch" segment emits the line's intent.
 fn render_canvas_caption(
@@ -780,6 +782,7 @@ fn render_canvas_caption(
     rect: &Rect,
     state: &mut AppState,
     live: &crate::subsystem::Live,
+    bottom_scrims: &[crate::core::canvas::BottomScrim],
 ) {
     use crate::core::canvas::CaptionRole;
     let Some(line) = live
@@ -791,10 +794,17 @@ fn render_canvas_caption(
         return;
     };
     let font = theme::readout_font();
-    egui::Area::new(egui::Id::new("canvas_caption"))
+    let id = egui::Id::new("canvas_caption");
+    // The caption's width is known once laid out: last frame's.
+    let width = ui
+        .ctx()
+        .memory(|m| m.area_rect(id))
+        .map_or(0.0, |r| r.width());
+    let inset = crate::core::canvas::caption_bottom_inset(rect.width(), width, bottom_scrims);
+    egui::Area::new(id)
         .order(egui::Order::Middle)
-        .pivot(egui::Align2::CENTER_CENTER)
-        .fixed_pos(rect.center())
+        .pivot(egui::Align2::CENTER_BOTTOM)
+        .fixed_pos(egui::pos2(rect.center().x, rect.bottom() - inset))
         .interactable(line.action.is_some())
         .show(ui.ctx(), |ui| {
             egui::Frame::new()

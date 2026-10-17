@@ -20,9 +20,9 @@ impl super::Overlay for FrameStampOverlay {
         crate::core::canvas::CANVAS_FALLBACKS.frame_stamp
     }
 
-    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) -> Option<egui::Rect> {
         let state = ctx.state;
-        let Some(stamp) = crate::core::canvas::frame_stamp(
+        let stamp = crate::core::canvas::frame_stamp(
             crate::core::canvas::CANVAS_FALLBACKS,
             &state.viz_state.site_id,
             state.viz_state.product,
@@ -36,9 +36,7 @@ impl super::Overlay for FrameStampOverlay {
             &crate::ui::time_format::ZoneClock {
                 use_local: state.use_local_time,
             },
-        ) else {
-            return;
-        };
+        )?;
         let painter = ui.painter();
         let font = theme::readout_font();
         let line = painter.layout_no_wrap(stamp.line, font.clone(), theme::SEEN);
@@ -67,5 +65,6 @@ impl super::Overlay for FrameStampOverlay {
             at.y += line_h + 2.0;
             painter.galley(at, p, theme::TEXT_DIM);
         }
+        None
     }
 }

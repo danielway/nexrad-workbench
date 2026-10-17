@@ -85,14 +85,20 @@ pub(crate) trait Overlay {
     }
 
     /// Paint the overlay onto `ui`. `ctx` is also passed so impls can
-    /// access state without taking it twice.
-    fn draw(&self, ui: &mut egui::Ui, ctx: &OverlayContext);
+    /// access state without taking it twice. Returns the scrim it painted
+    /// along the map's bottom edge, if any, for the canvas caption to keep
+    /// clear of.
+    fn draw(&self, ui: &mut egui::Ui, ctx: &OverlayContext) -> Option<egui::Rect>;
 }
 
 /// Dispatch all corner-chrome overlays in z-order. Called once per
 /// frame from [`super::canvas::render_canvas_with_geo`] after the
-/// data-flow overlays (radar, alerts, sites, etc.) have drawn.
-pub(crate) fn render_chrome_overlays(ui: &mut egui::Ui, ctx: &OverlayContext) {
+/// data-flow overlays (radar, alerts, sites, etc.) have drawn. Returns the
+/// scrims they painted along the map's bottom edge.
+pub(crate) fn render_chrome_overlays(
+    ui: &mut egui::Ui,
+    ctx: &OverlayContext,
+) -> Vec<crate::core::canvas::BottomScrim> {
     // Static registry. Array order must match ascending `z_order` —
     // checked once per build in debug. Adding an overlay is one new
     // struct + one new entry here, placed at its z-order position.
@@ -111,9 +117,14 @@ pub(crate) fn render_chrome_overlays(ui: &mut egui::Ui, ctx: &OverlayContext) {
         "OVERLAYS array must be sorted by z_order ascending",
     );
 
-    for overlay in overlays {
-        if overlay.visible(ctx) {
-            overlay.draw(ui, ctx);
-        }
-    }
+    overlays
+        .iter()
+        .filter(|overlay| overlay.visible(ctx))
+        .filter_map(|overlay| overlay.draw(ui, ctx))
+        .map(|r| crate::core::canvas::BottomScrim {
+            left: r.left() - ctx.rect.left(),
+            right: r.right() - ctx.rect.left(),
+            top: ctx.rect.bottom() - r.top(),
+        })
+        .collect()
 }

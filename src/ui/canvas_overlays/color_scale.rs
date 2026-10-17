@@ -18,8 +18,9 @@ impl super::Overlay for ColorScaleOverlay {
         20
     }
 
-    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) -> Option<egui::Rect> {
         draw_color_scale(ui, &ctx.rect, &ctx.state.viz_state.product);
+        None
     }
 }
 

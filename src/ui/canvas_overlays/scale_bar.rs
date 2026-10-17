@@ -23,7 +23,7 @@ impl super::Overlay for ScaleBarOverlay {
         ctx.state.viz_state.view_mode() == crate::geo::ViewMode::Flat2D
     }
 
-    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) -> Option<Rect> {
         let mut projection = MapProjection::new(
             ctx.state.viz_state.center_lat,
             ctx.state.viz_state.center_lon,
@@ -33,16 +33,13 @@ impl super::Overlay for ScaleBarOverlay {
             ctx.state.viz_state.pan_offset(),
             ctx.rect,
         );
-        draw_scale_bar(ui, &ctx.rect, &projection);
+        draw_scale_bar(ui, &ctx.rect, &projection)
     }
 }
 
-fn draw_scale_bar(ui: &mut egui::Ui, rect: &Rect, projection: &MapProjection) {
-    let Some(vm) =
-        compute_km_per_pixel(projection, rect).and_then(crate::core::canvas::scale_bar_vm)
-    else {
-        return;
-    };
+/// Returns the scrim's bounds.
+fn draw_scale_bar(ui: &mut egui::Ui, rect: &Rect, projection: &MapProjection) -> Option<Rect> {
+    let vm = compute_km_per_pixel(projection, rect).and_then(crate::core::canvas::scale_bar_vm)?;
 
     let painter = ui.painter();
 
@@ -92,6 +89,7 @@ fn draw_scale_bar(ui: &mut egui::Ui, rect: &Rect, projection: &MapProjection) {
         label_pad,
         &vm.mi_label,
     );
+    Some(scrim)
 }
 
 #[allow(clippy::too_many_arguments)]
