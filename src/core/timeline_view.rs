@@ -1034,6 +1034,24 @@ impl TimelineView<'_> {
         }
         cost
     }
+
+    /// [`Self::range_cost`] priced from a day listing's volume sizes (a
+    /// listed volume is the one starting within a minute of the time asked):
+    /// the cost the desktop's range label, the phone's handle label and the
+    /// range-download confirmation all show.
+    pub(crate) fn range_cost_sized(
+        &self,
+        start: f64,
+        end: f64,
+        sizes: &crate::core::storm_activity::ScanSizes,
+    ) -> RangeCost {
+        self.range_cost(start, end, |t| {
+            sizes
+                .at(t)
+                .filter(|v| (v.start - t).abs() < 60.0)
+                .map(|v| v.bytes)
+        })
+    }
 }
 
 /// Which end of a range carries the right handle.

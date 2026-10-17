@@ -60,10 +60,10 @@ pub(crate) struct Chrome {
     /// Holds whether the layer was on before, to restore it.
     pub site_map_pick: Option<bool>,
     /// When set, the range-download confirm modal is open and carries the
-    /// pending `(start, end)` selection range to bulk-download on confirm.
-    /// `Some` doubles as the open flag; the range is the modal's own snapshot,
-    /// independent of the live selection.
-    pub range_download_modal: Option<(f64, f64)>,
+    /// pending `(start, end)` selection range to bulk-download on confirm,
+    /// with its cost priced at release. `Some` doubles as the open flag; the
+    /// range is the modal's own snapshot, independent of the live selection.
+    pub range_download_modal: Option<crate::core::acquisition::RangeDownloadPrompt>,
     /// Whether the VCP forecast diagnostics modal is open.
     pub vcp_forecast_open: bool,
     /// Whether the activity sheet (spec §5/§10: pipeline stages, active /

@@ -66,6 +66,83 @@ pub(crate) fn decide_selection_gate(start: f64, end: f64, confirm_threshold: f64
     }
 }
 
+/// The span over which a range asks before it downloads, on the desktop: six
+/// hours is about 70 volumes, a sensible "are you sure" line.
+pub(crate) const DESKTOP_BULK_CONFIRM_SECS: f64 = 6.0 * 3600.0;
+
+/// The same line on the phone: two hours (about 24 volumes, a few hundred MB
+/// of mobile data), as the answers page set out.
+pub(crate) const PHONE_BULK_CONFIRM_SECS: f64 = 2.0 * 3600.0;
+
+/// The span over which a finalized range asks before it downloads, by the
+/// chrome on screen ([`decide_selection_gate`]'s threshold).
+pub(crate) fn bulk_confirm_secs(layout: crate::core::phone::DeviceLayout) -> f64 {
+    if layout.is_phone() {
+        PHONE_BULK_CONFIRM_SECS
+    } else {
+        DESKTOP_BULK_CONFIRM_SECS
+    }
+}
+
+/// The range-download confirmation: the range and what it costs, priced
+/// when the range was released ([`crate::core::TimelineView::range_cost_sized`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RangeDownloadPrompt {
+    pub range: (f64, f64),
+    pub cost: crate::core::timeline_view::RangeCost,
+}
+
+/// The confirmation's words.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RangeDownloadText {
+    /// `2.5 hours selected`.
+    pub subtitle: String,
+    /// The real size when the listing knows the range's volumes
+    /// (`30 scans, 210 MB to download`), else an estimate from the volume
+    /// cadence (`About 30 scans, roughly 180 MB`).
+    pub size: String,
+}
+
+/// The confirmation's words for `prompt`. `fallback_scan_secs` is the volume
+/// cadence the estimate assumes when no volume inside the range is known.
+pub(crate) fn range_download_text(
+    prompt: &RangeDownloadPrompt,
+    fallback_scan_secs: f64,
+) -> RangeDownloadText {
+    let (start, end) = prompt.range;
+    let dur = (end - start).abs();
+    let subtitle = format!("{:.1} hours selected", dur / 3600.0);
+    let cost = prompt.cost;
+    let scans = |n: u64| {
+        if n == 1 {
+            "1 scan".to_string()
+        } else {
+            format!("{n} scans")
+        }
+    };
+    let size = if cost.scans > 0 {
+        if cost.fetch_bytes == 0 {
+            format!("{}, all on this device", scans(cost.scans as u64))
+        } else {
+            format!(
+                "{}, {} to download",
+                scans(cost.scans as u64),
+                crate::core::timeline_view::format_bytes(cost.fetch_bytes)
+            )
+        }
+    } else {
+        let count = (dur / fallback_scan_secs.max(1.0)).ceil().max(1.0) as u64;
+        format!(
+            "About {}, roughly {}",
+            scans(count),
+            crate::core::timeline_view::format_bytes(
+                count.saturating_mul(crate::core::AVG_SCAN_BYTES)
+            )
+        )
+    };
+    RangeDownloadText { subtitle, size }
+}
+
 /// The distinct UTC dates a `[start, end]` second-range touches (one, or two
 /// across a midnight boundary — the prefetch window is always well under 24h).
 pub(crate) fn dates_spanning(start_secs: i64, end_secs: i64) -> Vec<NaiveDate> {
@@ -95,7 +172,7 @@ pub(crate) const MAX_ENUMERATED_DATES: usize = 400;
 /// The user explicitly accepts limits at extreme zooms: a range selection
 /// spanning years is not a meaningful request, it is a way to accidentally
 /// queue a decade of downloads. Well above any real event (the 6-hour
-/// [`SELECTION_BULK_CONFIRM_SECS`] modal still guards everything below it) and
+/// [`DESKTOP_BULK_CONFIRM_SECS`] modal still guards everything below it) and
 /// well below the point where enumeration gets expensive.
 pub(crate) const MAX_SELECTION_SPAN_SECS: f64 = 7.0 * 86_400.0;
 
@@ -1147,6 +1224,68 @@ mod tests {
     fn prefetch_suppressed_when_attached_or_paused() {
         assert!(!reactive_prefetch_allowed(true, false, true, false));
         assert!(!reactive_prefetch_allowed(false, true, true, false));
+    }
+
+    // ── the confirmation's threshold and words ──
+
+    #[wasm_bindgen_test]
+    fn the_phone_asks_over_two_hours_and_the_desktop_over_six() {
+        use crate::core::phone::DeviceLayout;
+        let desktop = bulk_confirm_secs(DeviceLayout::Desktop);
+        let phone = bulk_confirm_secs(DeviceLayout::Phone { landscape: false });
+        assert_eq!(desktop, 6.0 * 3600.0);
+        assert_eq!(phone, 2.0 * 3600.0);
+        assert_eq!(
+            bulk_confirm_secs(DeviceLayout::Phone { landscape: true }),
+            phone,
+            "landscape is still the phone"
+        );
+        // Three hours: silent on the desktop, asks on the phone.
+        let three = 3.0 * 3600.0;
+        assert_eq!(
+            decide_selection_gate(0.0, three, desktop),
+            SelectionGate::Arm
+        );
+        assert_eq!(
+            decide_selection_gate(0.0, three, phone),
+            SelectionGate::Confirm
+        );
+        // Exactly two hours (the 2 h preset's span) does not ask.
+        assert_eq!(decide_selection_gate(0.0, phone, phone), SelectionGate::Arm);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_confirmation_says_the_real_size_when_the_listing_knows_it() {
+        use crate::core::timeline_view::RangeCost;
+        let prompt = RangeDownloadPrompt {
+            range: (0.0, 2.5 * 3600.0),
+            cost: RangeCost {
+                duration_secs: 2.5 * 3600.0,
+                scans: 30,
+                fetch_bytes: 210_000_000,
+            },
+        };
+        let t = range_download_text(&prompt, 300.0);
+        assert_eq!(t.subtitle, "2.5 hours selected");
+        assert_eq!(t.size, "30 scans, 210 MB to download");
+        let held = RangeDownloadPrompt {
+            cost: RangeCost {
+                fetch_bytes: 0,
+                ..prompt.cost
+            },
+            ..prompt
+        };
+        assert_eq!(
+            range_download_text(&held, 300.0).size,
+            "30 scans, all on this device"
+        );
+        // Nothing known inside it yet: the cadence estimate.
+        let unknown = RangeDownloadPrompt {
+            cost: RangeCost::default(),
+            ..prompt
+        };
+        let t = range_download_text(&unknown, 300.0);
+        assert!(t.size.starts_with("About 30 scans, roughly "), "{}", t.size);
     }
 
     // ── decide_selection_gate ──

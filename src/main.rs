@@ -78,11 +78,6 @@ const LIVE_DEFAULT_ZOOM: f64 = crate::core::timeline_interaction::LIVE_ZOOM;
 /// one number governing "same scan" decisions across acquisition and the strip.
 const SCAN_CACHE_MATCH_TOLERANCE_SECS: i64 = crate::core::SCAN_JOIN_TOLERANCE_SECS;
 
-/// A finalized timeline selection at or under this span downloads its scans
-/// immediately; a longer span first asks for confirmation (the bulk download
-/// could be large). 6 hours ≈ 70+ volumes — a sensible "are you sure" line.
-const SELECTION_BULK_CONFIRM_SECS: f64 = 6.0 * 3600.0;
-
 /// Hard backstop for the selection-fetch pump: if a date's listing never
 /// arrives within this window, the pump disarms rather than staying armed
 /// forever. Guarantees termination regardless of network outcome.
