@@ -10,9 +10,9 @@ use crate::core::Intent;
 use crate::data::SiteId;
 
 impl DispatchState<'_> {
-    /// [`Intent::GoToDay`]: Day zoom, the playhead detached and paused on
-    /// the day's stormiest volume (or its midday while the listing is out),
-    /// and the sheet closed.
+    /// [`Intent::GoToDay`]: a running stream stopped, the 3 H stop, the
+    /// playhead paused on the day's stormiest volume (or its midday while the
+    /// listing is out), and the sheet closed.
     pub(crate) fn go_to_day(&mut self, day: CalendarDay, intent: &Intent) {
         let site = SiteId::new(self.state.viz_state.site_id.clone());
         let now = self.state.frame_now.secs();
@@ -20,6 +20,13 @@ impl DispatchState<'_> {
         let (ts, landing) = land_on_day(&site, day, listing.as_deref(), &self.timeline.scans, now);
         self.chrome.phone_strip_zoom =
             crate::core::phone_strip::strip_zoom_after(self.chrome.phone_strip_zoom, intent);
+        if let Some(placement) =
+            crate::core::calendar::landing_stops_stream(self.live.mode_state.is_active())
+        {
+            self.transport(|env, slices| {
+                crate::core::transport::reduce_stop_live(env, slices, placement)
+            });
+        }
         self.transport(|env, slices| {
             crate::core::transport::reduce_seek(env, slices, ts, SeekGesture::Typed)
         });
@@ -31,8 +38,11 @@ impl DispatchState<'_> {
 }
 
 impl crate::WorkbenchApp {
-    /// Finish a calendar landing once its day's listing has arrived: one
-    /// re-seek to the stormiest volume, unless the playhead was touched.
+    /// Finish a calendar landing: a re-seek to the stormiest volume once the
+    /// day's listing is in, and onto its first frame once it is held, unless
+    /// the playhead was touched. The re-seek is applied here rather than
+    /// queued as an intent, which would read as a touch and drop the landing
+    /// still waiting for its volume.
     pub(crate) fn settle_go_to_day(&mut self) {
         let Some(landing) = self.chrome.go_to_day_landing.take() else {
             return;
@@ -55,9 +65,17 @@ impl crate::WorkbenchApp {
         );
         self.chrome.go_to_day_landing = pending;
         if let Some(ts) = seek {
-            self.state.push_command(Intent::Seek {
-                ts,
-                gesture: SeekGesture::Typed,
+            let mut s = DispatchState {
+                state: &mut self.state,
+                playback: &mut self.playback,
+                acquisition: &mut self.acquisition,
+                live: &mut self.live,
+                diagnostics: &mut self.diagnostics,
+                chrome: &mut self.chrome,
+                timeline: &self.timeline,
+            };
+            s.transport(|env, slices| {
+                crate::core::transport::reduce_seek(env, slices, ts, SeekGesture::Typed)
             });
         }
     }

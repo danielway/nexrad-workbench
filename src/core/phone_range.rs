@@ -12,12 +12,18 @@
 //!   end within a frame of now and a new range starts paused; a start with
 //!   no range yet is parked as the desktop's I key parks one
 //!   ([`Intent::ParkRangeStart`]).
-//! - **The handles** ([`handle_at`], [`HandleDrag`]): once a range exists
-//!   its two ends draw on the strip at every zoom stop, each a
-//!   [`HANDLE_TARGET_PX`] touch target however small the drawn mark. A
-//!   press inside a target moves that end, snapped like a scrub
+//! - **The handles** ([`range_marks`], [`handle_at`], [`HandleDrag`]): a
+//!   range draws as an amber band over the cells with a round handle below
+//!   each fixed end, in the now tab's row ([`HANDLE_CY`]), at every zoom
+//!   stop: start and end for a fixed range, only the start for one pinned
+//!   to now (the now line is its end), and a lone amber tick and handle for
+//!   a parked start. Each handle is a [`HANDLE_TARGET_PX`] square touch
+//!   target however small the drawn mark. A press inside a target moves
+//!   that end (or the parked start), snapped like a scrub
 //!   ([`crate::core::phone_strip::snap_scrub`]), and never scrubs the
-//!   playhead; a drop within a frame of now pins.
+//!   playhead; a drop within a frame of now pins. The now tab shares the
+//!   row, so it steps aside from the handles' targets
+//!   ([`cap_clear_of_handles`]) and both stay tappable.
 //!
 //! All pure; `ui::mobile::press_sheet` and `ui::timeline::mini` draw what
 //! these return.
@@ -275,20 +281,137 @@ pub(crate) enum RangeEnd {
     End,
 }
 
-/// The handle whose target holds a press at `x`, given the range's ends on
-/// screen (`edges_px`, the end at the now line when pinned). The nearer one
-/// wins when both targets hold it (a range a few points wide). A press
-/// inside a target is the handle's, never a scrub.
-pub(crate) fn handle_at(edges_px: Option<(f32, f32)>, x: f32) -> Option<RangeEnd> {
-    let (sx, ex) = edges_px?;
-    let reach = HANDLE_TARGET_PX / 2.0;
-    let (ds, de) = ((x - sx).abs(), (x - ex).abs());
-    match (ds <= reach, de <= reach) {
-        (true, true) if ds < de => Some(RangeEnd::Start),
-        (_, true) => Some(RangeEnd::End),
-        (true, false) => Some(RangeEnd::Start),
-        _ => None,
+/// The handles' row: their centre, in points from the strip's top. It is
+/// the now tab's row, below the band, so a handle never hides a cell.
+pub(crate) const HANDLE_CY: f32 = 45.0;
+
+/// A handle's drawn radius.
+pub(crate) const HANDLE_R: f32 = 6.0;
+
+/// The band's rows, from the strip's top: a little taller than the cells.
+pub(crate) const BAND_TOP: f32 = 8.0;
+pub(crate) const BAND_BOTTOM: f32 = 36.0;
+
+/// One handle on the strip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HandleMark {
+    pub end: RangeEnd,
+    /// Its centre's x, in points.
+    pub x: f32,
+}
+
+/// What the strip draws for the range, in points.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct RangeMarks {
+    /// The band's left and right x, with an edge line at each fixed end.
+    pub band: Option<(f32, f32)>,
+    /// The band's end rides now: no edge line or handle there.
+    pub pinned: bool,
+    /// A parked start's tick.
+    pub parked_tick: Option<f32>,
+    /// The handles within the lane, each a touch target.
+    pub handles: Vec<HandleMark>,
+}
+
+impl RangeMarks {
+    /// The handles' x.
+    pub(crate) fn handle_xs(&self) -> Vec<f32> {
+        self.handles.iter().map(|h| h.x).collect()
     }
+}
+
+/// Where a parked start sits: under the finger while its handle moves.
+pub(crate) fn parked_at(f: &RangeFacts, drag: Option<&HandleDrag>) -> Option<f64> {
+    if f.range.is_some() {
+        return None;
+    }
+    match drag {
+        Some(d) if d.parked && d.moved => Some(d.at),
+        _ => f.parked,
+    }
+}
+
+/// The range's marks: the band ([`strip_range`]) with a start handle, and an
+/// end handle unless the end rides now; or a parked start's tick and its
+/// handle. `to_x` places a time; a handle outside `lane` (left, right) is
+/// off the strip and not drawn or tappable.
+pub(crate) fn range_marks(
+    f: &RangeFacts,
+    drag: Option<&HandleDrag>,
+    to_x: &dyn Fn(f64) -> f32,
+    lane: (f32, f32),
+) -> RangeMarks {
+    let on_lane = |x: f32| x >= lane.0 && x <= lane.1;
+    let mut marks = RangeMarks::default();
+    if let Some(r) = strip_range(f, drag) {
+        let (sx, ex) = (to_x(r.start), to_x(r.end));
+        marks.band = Some((sx, ex));
+        marks.pinned = r.pinned;
+        if on_lane(sx) {
+            marks.handles.push(HandleMark {
+                end: RangeEnd::Start,
+                x: sx,
+            });
+        }
+        if !r.pinned && on_lane(ex) {
+            marks.handles.push(HandleMark {
+                end: RangeEnd::End,
+                x: ex,
+            });
+        }
+    } else if let Some(p) = parked_at(f, drag) {
+        let x = to_x(p);
+        if on_lane(x) {
+            marks.parked_tick = Some(x);
+            marks.handles.push(HandleMark {
+                end: RangeEnd::Start,
+                x,
+            });
+        }
+    }
+    marks
+}
+
+/// The handle whose target holds a press at (`x`, `y`), `y` in points from
+/// the strip's top: a [`HANDLE_TARGET_PX`] square centred on the handle.
+/// The nearer one wins when both targets hold it (a range a few points
+/// wide). A press inside a target is the handle's, never a scrub.
+pub(crate) fn handle_at(handles: &[HandleMark], x: f32, y: f32) -> Option<RangeEnd> {
+    let reach = HANDLE_TARGET_PX / 2.0;
+    if (y - HANDLE_CY).abs() > reach {
+        return None;
+    }
+    handles
+        .iter()
+        .filter(|h| (x - h.x).abs() <= reach)
+        .min_by(|a, b| (x - a.x).abs().total_cmp(&(x - b.x).abs()))
+        .map(|h| h.end)
+}
+
+/// Where the now tab goes so it clears every handle's target in their
+/// shared row: its preferred left edge `x0` when that is clear, else the
+/// clear spot nearest it, just right or just left of a handle's target,
+/// inside `lane` (left, right). With no clear spot (a lane too narrow for
+/// both), it keeps `x0`.
+pub(crate) fn cap_clear_of_handles(x0: f32, width: f32, handles: &[f32], lane: (f32, f32)) -> f32 {
+    const GAP: f32 = 1.0;
+    let reach = HANDLE_TARGET_PX / 2.0;
+    let clear = |l: f32| {
+        l >= lane.0
+            && l + width <= lane.1
+            && handles
+                .iter()
+                .all(|&h| l + width + GAP <= h - reach || l >= h + reach + GAP)
+    };
+    if clear(x0) {
+        return x0;
+    }
+    handles
+        .iter()
+        .flat_map(|&h| [h + reach + GAP, h - reach - GAP - width])
+        .filter(|&l| clear(l))
+        .min_by(|a, b| (a - x0).abs().total_cmp(&(b - x0).abs()))
+        .unwrap_or(x0)
 }
 
 /// A handle being moved. The range is not touched until the drop: the strip
@@ -296,6 +419,8 @@ pub(crate) fn handle_at(edges_px: Option<(f32, f32)>, x: f32) -> Option<RangeEnd
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct HandleDrag {
     pub end: RangeEnd,
+    /// It moves a parked start, not a range's end.
+    pub parked: bool,
     /// The end that stays put.
     pub anchor: f64,
     /// Where the moving end is: snapped, never past now.
@@ -311,7 +436,8 @@ pub(crate) enum HandleDrop {
     Nothing,
     /// The range would span longer than a selection may.
     TooLong,
-    /// Select this range (pinned when it ends within a frame of now).
+    /// Select this range (pinned when it ends within a frame of now), or
+    /// park the moved start.
     Select(Intent),
 }
 
@@ -325,15 +451,28 @@ pub(crate) struct StripRange {
 }
 
 impl HandleDrag {
-    /// Take hold of one end of the selected range; `None` without a range.
+    /// Take hold of one end of the selected range, or of a parked start;
+    /// `None` without either, or for the end of a range pinned to now (the
+    /// now line is that end; it has no handle).
     pub(crate) fn grab(end: RangeEnd, f: &RangeFacts) -> Option<Self> {
-        let (s, e) = f.effective()?;
+        let Some((s, e)) = f.effective() else {
+            let p = f.parked.filter(|_| end == RangeEnd::Start)?;
+            return Some(HandleDrag {
+                end,
+                parked: true,
+                anchor: p,
+                at: p,
+                moved: false,
+            });
+        };
         let (anchor, at) = match end {
             RangeEnd::Start => (e, s),
+            RangeEnd::End if f.pinned => return None,
             RangeEnd::End => (s, e),
         };
         Some(HandleDrag {
             end,
+            parked: false,
             anchor,
             at,
             moved: false,
@@ -366,6 +505,9 @@ impl HandleDrag {
         if !self.moved {
             return HandleDrop::Nothing;
         }
+        if self.parked {
+            return HandleDrop::Select(Intent::ParkRangeStart(self.at));
+        }
         let r = self.preview(f);
         if r.end - r.start <= 1.0 {
             return HandleDrop::Nothing;
@@ -384,7 +526,7 @@ impl HandleDrag {
 /// The range the strip draws: the moving handle's preview while one moves,
 /// else the selection (its end on the now line when pinned).
 pub(crate) fn strip_range(f: &RangeFacts, drag: Option<&HandleDrag>) -> Option<StripRange> {
-    if let Some(d) = drag.filter(|d| d.moved) {
+    if let Some(d) = drag.filter(|d| d.moved && !d.parked) {
         return Some(d.preview(f));
     }
     f.effective().map(|(start, end)| StripRange {
@@ -602,22 +744,141 @@ mod tests {
 
     // ── handles ───────────────────────────────────────────────────────
 
+    fn marks(xs: &[(RangeEnd, f32)]) -> Vec<HandleMark> {
+        xs.iter().map(|&(end, x)| HandleMark { end, x }).collect()
+    }
+
     #[wasm_bindgen_test]
     fn a_press_within_twelve_points_takes_the_handle_not_the_scrub() {
-        let edges = Some((100.0, 300.0));
-        assert_eq!(handle_at(edges, 100.0 + 11.9), Some(RangeEnd::Start));
-        assert_eq!(handle_at(edges, 100.0 - 12.0), Some(RangeEnd::Start));
-        assert_eq!(handle_at(edges, 300.0 - 12.0), Some(RangeEnd::End));
+        let h = marks(&[(RangeEnd::Start, 100.0), (RangeEnd::End, 300.0)]);
+        let y = HANDLE_CY;
+        assert_eq!(handle_at(&h, 100.0 + 11.9, y), Some(RangeEnd::Start));
+        assert_eq!(handle_at(&h, 100.0 - 12.0, y), Some(RangeEnd::Start));
+        assert_eq!(handle_at(&h, 300.0 - 12.0, y), Some(RangeEnd::End));
         // Outside both targets: a scrub.
-        assert_eq!(handle_at(edges, 100.0 + 12.5), None);
-        assert_eq!(handle_at(edges, 200.0), None);
-        assert_eq!(handle_at(None, 100.0), None);
+        assert_eq!(handle_at(&h, 100.0 + 12.5, y), None);
+        assert_eq!(handle_at(&h, 200.0, y), None);
+        assert_eq!(handle_at(&[], 100.0, y), None);
+        // The target is a square below the band: a press on the cells
+        // above a handle scrubs.
+        assert_eq!(
+            handle_at(&h, 100.0, HANDLE_CY - 12.0),
+            Some(RangeEnd::Start)
+        );
+        assert_eq!(handle_at(&h, 100.0, 22.0), None, "on the cells");
+        assert_eq!(
+            handle_at(&h, 100.0, HANDLE_CY + 12.0),
+            Some(RangeEnd::Start)
+        );
         // Wider than the desktop's 8 px grab.
         const { assert!(HANDLE_TARGET_PX / 2.0 > crate::core::selection_strip::HANDLE_GRAB_PX) };
         // A range a few points wide: the nearer handle wins.
-        let narrow = Some((100.0, 106.0));
-        assert_eq!(handle_at(narrow, 101.0), Some(RangeEnd::Start));
-        assert_eq!(handle_at(narrow, 105.0), Some(RangeEnd::End));
+        let narrow = marks(&[(RangeEnd::Start, 100.0), (RangeEnd::End, 106.0)]);
+        assert_eq!(handle_at(&narrow, 101.0, y), Some(RangeEnd::Start));
+        assert_eq!(handle_at(&narrow, 105.0, y), Some(RangeEnd::End));
+    }
+
+    /// One point per second from `NOW - 300`, so `NOW` is at x 300.
+    fn to_x(t: f64) -> f32 {
+        (t - (NOW - 300.0)) as f32
+    }
+
+    #[wasm_bindgen_test]
+    fn a_fixed_range_has_two_handles_and_one_pinned_to_now_only_its_start() {
+        let lane = (0.0, 400.0);
+        let fixed = range_marks(
+            &facts(Some((NOW - 200.0, NOW - 50.0)), false),
+            None,
+            &to_x,
+            lane,
+        );
+        assert_eq!(fixed.band, Some((100.0, 250.0)));
+        assert!(!fixed.pinned);
+        assert_eq!(
+            fixed.handles,
+            marks(&[(RangeEnd::Start, 100.0), (RangeEnd::End, 250.0)])
+        );
+        assert_eq!(fixed.parked_tick, None);
+
+        let pinned = range_marks(
+            &facts(Some((NOW - 200.0, NOW - 20.0)), true),
+            None,
+            &to_x,
+            lane,
+        );
+        assert_eq!(pinned.band, Some((100.0, 300.0)), "its end is the now line");
+        assert!(pinned.pinned);
+        assert_eq!(pinned.handles, marks(&[(RangeEnd::Start, 100.0)]));
+        assert_eq!(
+            HandleDrag::grab(RangeEnd::End, &facts(Some((NOW - 200.0, NOW - 20.0)), true)),
+            None,
+            "no end handle to grab"
+        );
+
+        // A handle off the lane is not drawn or tappable; the band still is.
+        let off = range_marks(
+            &facts(Some((NOW - 900.0, NOW - 50.0)), false),
+            None,
+            &to_x,
+            lane,
+        );
+        assert_eq!(off.handles, marks(&[(RangeEnd::End, 250.0)]));
+        assert_eq!(off.band, Some((-600.0, 250.0)));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_parked_start_is_one_tick_and_one_handle_that_moves_it() {
+        let lane = (0.0, 400.0);
+        let mut f = facts(None, false);
+        f.parked = Some(NOW - 120.0);
+        let m = range_marks(&f, None, &to_x, lane);
+        assert_eq!(m.band, None);
+        assert_eq!(m.parked_tick, Some(180.0));
+        assert_eq!(m.handles, marks(&[(RangeEnd::Start, 180.0)]));
+        assert_eq!(HandleDrag::grab(RangeEnd::End, &f), None);
+
+        let mut d = HandleDrag::grab(RangeEnd::Start, &f).unwrap();
+        assert!(d.parked);
+        assert_eq!(d.drop_at(&f), HandleDrop::Nothing, "not moved");
+        d.drag_to(NOW - 60.0, NOW);
+        let moving = range_marks(&f, Some(&d), &to_x, lane);
+        assert_eq!(moving.parked_tick, Some(240.0), "under the finger");
+        assert_eq!(moving.band, None, "still no range");
+        assert_eq!(
+            d.drop_at(&f),
+            HandleDrop::Select(Intent::ParkRangeStart(NOW - 60.0))
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn the_now_tab_steps_aside_from_the_handles_targets() {
+        let lane = (58.0, 382.0);
+        // Clear: it stays where it wants to be.
+        assert_eq!(
+            cap_clear_of_handles(303.0, 40.0, &[100.0, 200.0], lane),
+            303.0
+        );
+        // A fixed range ending just before now: the end handle's target
+        // (288..312) covers the tab's spot right of the now line, so the tab
+        // moves just right of it.
+        let x0 = cap_clear_of_handles(303.0, 40.0, &[100.0, 300.0], lane);
+        assert_eq!(x0, 313.0);
+        // Near the lane's end there is no room right of the handle: it goes
+        // just left of the target instead.
+        let x0 = cap_clear_of_handles(338.0, 40.0, &[350.0], lane);
+        assert_eq!(x0, 350.0 - 12.0 - 1.0 - 40.0);
+        // Whatever it picks, every target stays clear of the tab.
+        for (pref, hs) in [
+            (303.0, vec![290.0, 330.0]),
+            (338.0, vec![340.0, 370.0]),
+            (60.0, vec![70.0]),
+        ] {
+            let l = cap_clear_of_handles(pref, 40.0, &hs, lane);
+            assert!(l >= lane.0 && l + 40.0 <= lane.1, "{pref} {hs:?}");
+            for h in hs {
+                assert!(l + 40.0 <= h - 12.0 || l >= h + 12.0, "{pref} {h}");
+            }
+        }
     }
 
     fn units() -> StripUnits {
@@ -686,7 +947,7 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn dragging_a_pinned_ranges_start_keeps_it_pinned_and_its_end_unpins_it() {
+    fn dragging_a_pinned_ranges_start_keeps_it_pinned_and_its_end_has_no_handle() {
         let f = facts(Some((NOW - 600.0, NOW - 40.0)), true);
         let mut start = HandleDrag::grab(RangeEnd::Start, &f).unwrap();
         assert_eq!(start.anchor, NOW, "the pinned end is the now line");
@@ -699,16 +960,8 @@ mod tests {
                 to_live: true
             })
         );
-        let mut end = HandleDrag::grab(RangeEnd::End, &f).unwrap();
-        end.drag_to(NOW - 300.0, NOW);
-        assert_eq!(
-            end.drop_at(&f),
-            HandleDrop::Select(Intent::SelectRange {
-                start: NOW - 600.0,
-                end: NOW - 300.0,
-                to_live: false
-            })
-        );
+        // The end of a pinned range is the now line: no handle to grab.
+        assert_eq!(HandleDrag::grab(RangeEnd::End, &f), None);
     }
 
     #[wasm_bindgen_test]
@@ -736,16 +989,16 @@ mod tests {
                 pinned: true
             })
         );
-        let mut d = HandleDrag::grab(RangeEnd::End, &f).unwrap();
+        let mut d = HandleDrag::grab(RangeEnd::Start, &f).unwrap();
         // Grabbed but not moved: still the selection.
         assert_eq!(strip_range(&f, Some(&d)), strip_range(&f, None));
-        d.drag_to(NOW - 300.0, NOW);
+        d.drag_to(NOW - 900.0, NOW);
         assert_eq!(
             strip_range(&f, Some(&d)),
             Some(StripRange {
-                start: NOW - 600.0,
-                end: NOW - 300.0,
-                pinned: false
+                start: NOW - 900.0,
+                end: NOW,
+                pinned: true
             })
         );
         assert_eq!(strip_range(&facts(None, false), None), None);

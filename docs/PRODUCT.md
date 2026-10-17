@@ -638,18 +638,28 @@ Interactive measurement and analysis affordances on the 2D canvas:
 
 **The phone strip's zoom stops.** A thumb gets three stops rather than a
 continuous zoom, so the strip is predictable and a scrub snaps to a unit the
-finger can hit. **Cuts** is the last three volumes with every cut (the scrub
-snaps to cuts); **Volumes** is three hours with one cell per volume; **Day**
-is 24 hours of storm bars, one per volume sized by its file size from the
-day's listing, over the on-device underline and an hour ruler (both snap the
-scrub to volumes). A pill at the strip's left edge names the stop (CUTS,
-VOLS, DAY) and a tap goes to the next; a pinch moves one stop and settles on
-release. Volumes and Day are centered on the playhead and slide with it —
-there is no separate pan — but never show more than the room for the next
-volume's ghost past now. Zooming never touches the selection; going live
-(the cap, the chip's Go live) returns to Cuts. Landscape keeps the same spans
-with more pixels per unit. The strip takes presses up to 12 px above it, and
-the map neither pans on those nor zooms on the strip's pinch.
+finger can hit. A pill at the strip's left edge says what the strip spans —
+**15 MIN**, **3 H**, **DAY** — and a tap goes to the next; a pinch moves one
+stop and settles on release. 15 MIN is the last three volumes with every cut
+(the scrub snaps to cuts). 3 H and DAY answer "where was the weather" the way
+the desktop overview does: storm-activity bars in the storm blue, one per volume
+at 3 H and one per half hour at DAY, as tall as the weather the volume held
+(its file size in the day's listing), a slate underline under the volumes
+already on the device, and a quiet wash where no sizes are known yet; the scrub
+snaps to volumes, and a tap on a volume seeks to its first cut, fetching it if
+needed. Every stop keeps the same marks: the periwinkle ring on the frame on
+screen, the white playhead line when detached, the red now line, and the
+desktop's small tab under it — filled red only for LIVE, outlined for REJOIN
+and GO LIVE, and an outlined `GO LIVE ›` (or `REJOIN ›`) edge tab at the right
+when now is off-screen. The tab sits below the cells, so it never hides a cell,
+the ring or the now line, and the ruler's labels give way to it. Pinned, now
+sits near the right edge with the ring on it and the window slides with now;
+detached, the window centres on the playhead when it lands somewhere new, holds
+still while you scrub inside it and slides near the edges. Zoom is independent
+of the selection: zooming never moves the playhead or the pin, and going live or
+rejoining keeps the zoom. Landscape keeps the same spans with more pixels per
+unit. The strip takes presses up to 12 px above it, and the map neither pans on
+those nor zooms on the strip's pinch.
 
 **The calendar sheet is the phone's overview ("Go to a day").** There is no
 room for an overview lane on a phone, so the way to any day since 1991 is a
@@ -667,10 +677,16 @@ hairline, never as a quiet day. ‹ › and a horizontal swipe move a month
 reaches, a year opens its twelve months, a month its grid. Days are the
 chosen zone's (local or UTC). The grid makes no S3 request: it reads the
 index already on device (fetched once per site, as the desktop does). A
-tapped day puts the strip at Day zoom and pauses on that day's stormiest
-volume (its largest file) from the one listing Day zoom makes; until that
+tapped day stops a running stream (an archive day is not live, so nothing
+downloads behind it) and puts the strip at **3 H**, centred on the landing volume with its
+storm bars and an outlined GO LIVE › tab at the edge, and pauses on that
+day's stormiest volume (its largest file) from the one listing the strip
+makes for that day; until that
 listing arrives the playhead waits at the day's local midday, then moves to
 the stormiest volume once, unless the user has touched the playhead since.
+While that volume downloads the playhead waits at its start; when it is in,
+the playhead steps onto its first frame so the map shows it and the ring
+sits on it.
 The sheet's month is not persisted or in the link.
 
 **Ranges without drawing.** On the phone a horizontal drag on the strip is a
@@ -683,12 +699,15 @@ away), **Start range here**, **End range here** and **Save event here** (the
 event dialog around that time, or over the range when one exists). A row that
 makes no sense is disabled and says why beside it (no scan under the finger;
 an end before the start; no start yet; longer than 7 days). Start with no
-range parks a start, drawn as one amber handle, for End to pair with. End
-within a frame of now pins the range (the one "ends at now" rule), and a new
-range starts paused, as on the desktop. Once a range exists its band and two
-handles draw on the strip at every stop — amber, the pinned end the red dot
-on the now line — and each handle is a 24 px touch target however small its
-mark. A press inside a target moves that end (never the playhead), snapped to
+range parks a start, drawn as one amber tick with its handle, for End to
+pair with. End within a frame of now pins the range (the one "ends at now"
+rule), and a new range starts paused, as on the desktop. Once a range exists
+its amber band draws over the cells at every stop, with a round amber handle
+below each fixed end in the now tab's row: two for a fixed range, only the
+start for one pinned to now (the now line is its end). Each handle is a
+24 px touch target however small its mark, and the now tab steps aside so
+both stay tappable. A press inside a target moves that end (or the parked
+start; never the playhead), snapped to
 the stop's unit like a scrub, with the desktop's cost line (`1:30:00 · 18
 scans · 71 MB`) above the strip while it moves; dropped within a frame of
 now it pins. A held press on a handle is still a tap or a long-press. A
