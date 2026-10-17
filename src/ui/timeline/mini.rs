@@ -21,7 +21,7 @@
 //! a thumb that lands just short still gets the strip, and the map neither
 //! pans on that press nor zooms on the strip's pinch.
 
-use super::frame_cells::{paint_container, CellAnim};
+use super::frame_cells::{paint_cell, paint_container, CellAnim};
 use super::marks::paint_strip_marks;
 use super::now_edge::render_now_affordance;
 use super::ruler::render_playback_cursor;
@@ -229,8 +229,19 @@ fn draw_strip(
         }
         StripZoom::Volumes => {
             let gap = VOLUME_GAP_PX / zoom.max(f64::MIN_POSITIVE);
+            // One cell per volume, without the container's box: at a few
+            // points wide the box would only double the cell's outline.
+            let (top, bottom) = (
+                track.top() + style::CONTAINER_INSET_Y + style::CELL_INSET_Y,
+                track.bottom() - style::CONTAINER_INSET_Y - style::CELL_INSET_Y,
+            );
             for c in &containers {
-                paint_container(&clipped, &frame, &volume_cell(c, gap), anim, None, false);
+                let v = volume_cell(c, gap);
+                let cell = &v.cells[0];
+                let x0 = frame.ts_to_x(cell.start_secs);
+                let x1 = frame.ts_to_x(cell.end_secs).max(x0 + 1.0);
+                let rect = Rect::from_min_max(Pos2::new(x0, top), Pos2::new(x1, bottom));
+                paint_cell(&clipped, cell, rect, rect, anim, None);
             }
         }
         StripZoom::Day => {
@@ -268,7 +279,9 @@ fn draw_strip(
     let ruler_painter = painter.with_clip_rect(lane.intersect(ui.clip_rect()));
     for tick in ruler_ticks(stop, window, &in_window, offset) {
         let x = frame.ts_to_x(tick.ts);
-        if x < lane.left() || x > lane.right() - 20.0 {
+        // Keep a label clear of the strip's right edge.
+        let label_w = 2.0 + 5.5 * tick.label.len() as f32;
+        if x < lane.left() || x > lane.right() - label_w {
             continue;
         }
         ruler_painter.line_segment(
