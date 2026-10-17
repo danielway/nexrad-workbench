@@ -36,8 +36,8 @@ impl crate::WorkbenchApp {
         }
 
         // Zoomed out the days size the bars; zoomed in their volumes do. The
-        // phone strip at Day asks for the day in view instead of the
-        // overview's window.
+        // phone strip at 3 H or DAY asks for its window instead of the
+        // overview's.
         let ov = self.playback.state.overview;
         let phone_day = if self.chrome.device_layout.is_phone() {
             self.chrome.phone_strip_view.and_then(|(window, lane_px)| {

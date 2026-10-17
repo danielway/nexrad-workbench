@@ -99,7 +99,8 @@ pub(crate) struct Chrome {
     /// [`crate::core::phone_strip::strip_zoom_after`].
     pub phone_strip_zoom: crate::core::phone_strip::StripZoom,
     /// The phone strip's window and lane width this frame, written by the
-    /// strip and read by the storm-activity pump at the Day stop.
+    /// strip, read back by it as the last window (so a detached window holds
+    /// still) and by the storm-activity pump at the zoomed-out stops.
     pub phone_strip_view: Option<(crate::core::phone::MiniWindow, f32)>,
     /// The phone strip owns a two-finger gesture this frame: the map must
     /// not zoom or pan on it. Reset before the strip draws each frame.
