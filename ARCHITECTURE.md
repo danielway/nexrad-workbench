@@ -360,7 +360,16 @@ view-models, the mini timeline (`ui/timeline/mini.rs`), and a sheet with the
 rail's four tabs (bottom in portrait, right in landscape). The phone's
 decisions — layout, sheet rect, chrome auto-hide, press tracking, the mini
 timeline's window, pick radii and the site-switch confirmation — are pure and
-tested in `core::phone`, `core::canvas` and `core::dialogs`.
+tested in `core::phone`, `core::canvas` and `core::dialogs`. The mini
+timeline has three zoom stops (`core::phone_strip`): Cuts (the last three
+volumes, every cut), Volumes (3 h, one cell per volume) and Day (24 h of
+storm bars from the day's listing, over the on-device underline). A zoom pill
+at its left edge names the stop and taps to the next, a pinch moves one stop
+on release (`Intent::SetPhoneStripZoom`; the stop lives on `Chrome`, not in
+preferences or the link), and a scrub snaps to the stop's unit. Volumes and
+Day center on the playhead and never show more than the ghost room past now;
+going live returns to Cuts. The strip's press area reaches 12 px up into the
+map, which neither pans on that press nor zooms on the strip's pinch.
 
 Canvas overlays live in `ui/canvas_overlays/` — one module per overlay
 (national mosaic, alerts, mPING reports, GPS location, sweep line/donut, site

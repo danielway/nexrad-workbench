@@ -634,7 +634,22 @@ Interactive measurement and analysis affordances on the 2D canvas:
 |---|---|---|
 | Desktop ≥1200px | Overview + full strip (~56px) + transport row + readouts | Inspector as popover or side panel; hover tooltips |
 | Touch ≥600px | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
-| Phone | Condensed transport (play · selection chip · speed) over ~44px strip; no overview (the scrubber plays its role) | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; custom loop dragging replaced by presets; 3D view is desktop-only |
+| Phone | Condensed transport (play · selection chip · speed) under a ~56px strip at three zoom stops; no overview | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; custom loop dragging replaced by presets; 3D view is desktop-only |
+
+**The phone strip's zoom stops.** A thumb gets three stops rather than a
+continuous zoom, so the strip is predictable and a scrub snaps to a unit the
+finger can hit. **Cuts** is the last three volumes with every cut (the scrub
+snaps to cuts); **Volumes** is three hours with one cell per volume; **Day**
+is 24 hours of storm bars, one per volume sized by its file size from the
+day's listing, over the on-device underline and an hour ruler (both snap the
+scrub to volumes). A pill at the strip's left edge names the stop (CUTS,
+VOLS, DAY) and a tap goes to the next; a pinch moves one stop and settles on
+release. Volumes and Day are centered on the playhead and slide with it —
+there is no separate pan — but never show more than the room for the next
+volume's ghost past now. Zooming never touches the selection; going live
+(the cap, the chip's Go live) returns to Cuts. Landscape keeps the same spans
+with more pixels per unit. The strip takes presses up to 12 px above it, and
+the map neither pans on those nor zooms on the strip's pinch.
 
 ### 13.4 Links and preferences
 
