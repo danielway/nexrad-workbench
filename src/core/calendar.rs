@@ -691,20 +691,45 @@ pub(crate) fn volume_landing(start: f64, held: &RadarTimeline) -> f64 {
         .unwrap_or(start)
 }
 
-/// A landing that may still move to the day's stormiest volume, once.
+/// A landing that may still move: to the day's stormiest volume once the
+/// listing is in, then onto that volume's first frame once it is held.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Landing {
     pub site: SiteId,
     pub day: CalendarDay,
     /// Where the playhead was put.
     pub landed_at: f64,
+    /// The landing volume's start, when the playhead sits at it because the
+    /// volume is not held yet: no frame of it has ended there, so nothing
+    /// would show. Once it is held the playhead moves to its first frame's
+    /// end ([`volume_landing`]). `None` while the listing is out.
+    pub volume: Option<f64>,
 }
 
-/// Where [`Intent::GoToDay`] puts the playhead, and whether it waits for the
-/// listing. With the day's volumes known (`listing`), its stormiest volume
-/// ([`stormiest`], [`volume_landing`]); without them, local midday (never
-/// past now) and a [`Landing`] that [`settle_landing`] finishes. A day with
-/// no volumes stays at midday.
+/// The playhead for the day's stormiest volume, and the landing still
+/// pending: one waiting for the volume when it is not held yet.
+fn land_on_volume(
+    site: &SiteId,
+    day: CalendarDay,
+    start: f64,
+    held: &RadarTimeline,
+    now: f64,
+) -> (f64, Option<Landing>) {
+    let ts = volume_landing(start, held).min(now);
+    let waiting = (ts == start && start < now).then(|| Landing {
+        site: site.clone(),
+        day,
+        landed_at: ts,
+        volume: Some(start),
+    });
+    (ts, waiting)
+}
+
+/// Where [`Intent::GoToDay`] puts the playhead, and whether it waits. With
+/// the day's volumes known (`listing`), its stormiest volume ([`stormiest`],
+/// [`volume_landing`]), waiting for that volume when it is not held yet;
+/// without them, local midday (never past now) and a [`Landing`] that
+/// [`settle_landing`] finishes. A day with no volumes stays at midday.
 pub(crate) fn land_on_day(
     site: &SiteId,
     day: CalendarDay,
@@ -714,16 +739,17 @@ pub(crate) fn land_on_day(
 ) -> (f64, Option<Landing>) {
     let midday = day.midday().min(now);
     match listing {
-        Some(volumes) => (
-            stormiest(volumes).map_or(midday, |v| volume_landing(v.start, held).min(now)),
-            None,
-        ),
+        Some(volumes) => match stormiest(volumes) {
+            Some(v) => land_on_volume(site, day, v.start, held, now),
+            None => (midday, None),
+        },
         None => (
             midday,
             Some(Landing {
                 site: site.clone(),
                 day,
                 landed_at: midday,
+                volume: None,
             }),
         ),
     }
@@ -780,8 +806,10 @@ pub(crate) struct LandingFacts<'a> {
 
 /// Finish a pending landing: `(still pending, re-seek to)`. It waits while
 /// the listing is out; when the listing arrives it re-seeks to the stormiest
-/// volume once and is done. It is dropped without a seek when the playhead
-/// was touched (moved, or playing) or the site changed.
+/// volume. A landing on a volume not held yet waits for it, then re-seeks
+/// once onto its first frame so the frame shows. It is dropped without a
+/// seek when the playhead was touched (moved, or playing) or the site
+/// changed.
 pub(crate) fn settle_landing(
     landing: Landing,
     f: &LandingFacts<'_>,
@@ -792,13 +820,23 @@ pub(crate) fn settle_landing(
     {
         return (None, None);
     }
+    if let Some(start) = landing.volume {
+        let ts = volume_landing(start, f.held).min(f.now);
+        return if ts == start {
+            (Some(landing), None)
+        } else {
+            (None, Some(ts))
+        };
+    }
     let Some(volumes) = f.listing else {
         return (Some(landing), None);
     };
-    let target = stormiest(volumes)
-        .map(|v| volume_landing(v.start, f.held).min(f.now))
-        .filter(|ts| (ts - landing.landed_at).abs() > TOUCH_TOLERANCE_SECS);
-    (None, target)
+    let Some(v) = stormiest(volumes) else {
+        return (None, None);
+    };
+    let (ts, pending) = land_on_volume(f.site, landing.day, v.start, f.held, f.now);
+    let seek = ((ts - landing.landed_at).abs() > TOUCH_TOLERANCE_SECS).then_some(ts);
+    (pending, seek)
 }
 
 #[cfg(test)]
@@ -1249,12 +1287,61 @@ mod tests {
             settle_landing(pending.clone(), &f),
             (Some(pending.clone()), None)
         );
-        // Arrived: one re-seek to the stormiest volume, then done.
+        // Arrived: one re-seek to the stormiest volume, which is not held
+        // yet, so the landing now waits for it.
         let arrived = LandingFacts {
             listing: Some(&list),
             ..f
         };
-        assert_eq!(settle_landing(pending, &arrived), (None, Some(storm)));
+        let waiting = Landing {
+            site: s.clone(),
+            day,
+            landed_at: storm,
+            volume: Some(storm),
+        };
+        assert_eq!(
+            settle_landing(pending, &arrived),
+            (Some(waiting), Some(storm))
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_landing_on_a_volume_not_held_moves_onto_its_first_frame_once_held() {
+        let s = site();
+        let day = CalendarDay::of(date(2026, 10, 9), &UTC);
+        let storm = day.start + 900.0;
+        let list = [vol(day.start + 600.0, 3), vol(storm, 8)];
+        let none = RadarTimeline::default();
+        let (ts, pending) = land_on_day(&s, day, Some(&list), &none, now());
+        assert_eq!(ts, storm, "the volume's start while it downloads");
+        let pending = pending.expect("waits for the volume");
+        assert_eq!(pending.volume, Some(storm));
+        let f = LandingFacts {
+            site: &s,
+            listing: Some(&list),
+            held: &none,
+            playhead: ts,
+            playing: false,
+            now: now(),
+        };
+        // Still downloading: keep waiting, no seek.
+        assert_eq!(
+            settle_landing(pending.clone(), &f),
+            (Some(pending.clone()), None)
+        );
+        // Held: one re-seek onto its first frame's end, then done.
+        let held = held_scan(storm);
+        let arrived = LandingFacts { held: &held, ..f };
+        assert_eq!(
+            settle_landing(pending.clone(), &arrived),
+            (None, Some(storm + 18.0))
+        );
+        // Touched while it downloaded: dropped.
+        let moved = LandingFacts {
+            playhead: storm + 300.0,
+            ..arrived
+        };
+        assert_eq!(settle_landing(pending, &moved), (None, None));
     }
 
     #[wasm_bindgen_test]

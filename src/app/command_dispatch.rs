@@ -2143,6 +2143,7 @@ mod dispatch_tests {
         }]);
         f.apply(Intent::GoToDay(day));
         assert_eq!(f.playback.state.playback_position(), day.start + 7_200.0);
-        assert_eq!(f.chrome.go_to_day_landing, None);
+        let landing = f.chrome.go_to_day_landing.clone().expect("waits");
+        assert_eq!(landing.volume, Some(day.start + 7_200.0), "for the volume");
     }
 }

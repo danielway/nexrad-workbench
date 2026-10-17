@@ -38,8 +38,11 @@ impl DispatchState<'_> {
 }
 
 impl crate::WorkbenchApp {
-    /// Finish a calendar landing once its day's listing has arrived: one
-    /// re-seek to the stormiest volume, unless the playhead was touched.
+    /// Finish a calendar landing: a re-seek to the stormiest volume once the
+    /// day's listing is in, and onto its first frame once it is held, unless
+    /// the playhead was touched. The re-seek is applied here rather than
+    /// queued as an intent, which would read as a touch and drop the landing
+    /// still waiting for its volume.
     pub(crate) fn settle_go_to_day(&mut self) {
         let Some(landing) = self.chrome.go_to_day_landing.take() else {
             return;
@@ -62,9 +65,17 @@ impl crate::WorkbenchApp {
         );
         self.chrome.go_to_day_landing = pending;
         if let Some(ts) = seek {
-            self.state.push_command(Intent::Seek {
-                ts,
-                gesture: SeekGesture::Typed,
+            let mut s = DispatchState {
+                state: &mut self.state,
+                playback: &mut self.playback,
+                acquisition: &mut self.acquisition,
+                live: &mut self.live,
+                diagnostics: &mut self.diagnostics,
+                chrome: &mut self.chrome,
+                timeline: &self.timeline,
+            };
+            s.transport(|env, slices| {
+                crate::core::transport::reduce_seek(env, slices, ts, SeekGesture::Typed)
             });
         }
     }

@@ -684,6 +684,9 @@ day's stormiest volume (its largest file) from the one listing the strip
 makes for that day; until that
 listing arrives the playhead waits at the day's local midday, then moves to
 the stormiest volume once, unless the user has touched the playhead since.
+While that volume downloads the playhead waits at its start; when it is in,
+the playhead steps onto its first frame so the map shows it and the ring
+sits on it.
 The sheet's month is not persisted or in the link.
 
 ### 13.4 Links and preferences

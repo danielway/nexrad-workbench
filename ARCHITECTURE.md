@@ -397,8 +397,11 @@ volume with its storm bars; `calendar::land_on_day` picks the day's stormiest
 volume from `ActivityBook::listing` (the per-day listing the strip asks for
 at 3 H and DAY), or local
 midday plus a pending `Landing` that `app::calendar::settle_go_to_day`
-finishes once per frame with one re-seek, dropped by `landing_after` on any
-playhead intent or by a moved or playing playhead.
+finishes once per frame with one re-seek; a landing volume not yet held
+waits at its start (`Landing::volume`) and moves onto its first frame's end
+once ingested, so a frame shows. The shell applies those re-seeks directly
+(a queued `Seek` would read as a touch); the landing is dropped by
+`landing_after` on any playhead intent or by a moved or playing playhead.
 
 Canvas overlays live in `ui/canvas_overlays/` — one module per overlay
 (national mosaic, alerts, mPING reports, GPS location, sweep line/donut, site
