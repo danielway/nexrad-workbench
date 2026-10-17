@@ -612,11 +612,6 @@ impl WorkbenchApp {
         let Some(cmd) = cmd else {
             return;
         };
-        // Going live returns the phone strip to Cuts (the rule is the
-        // core's; GoLive and ReturnToLive are shell intents, so it runs here
-        // rather than half-applying them in the state half).
-        self.chrome.phone_strip_zoom =
-            crate::core::phone_strip::strip_zoom_after(self.chrome.phone_strip_zoom, &cmd);
 
         match cmd {
             // ---- Site selection + external links ----------------------
