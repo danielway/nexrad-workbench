@@ -453,6 +453,42 @@ impl SessionVm {
         compact: bool,
     ) -> String {
         let text = chip_text(&self.selection_chip, clock, glyphs, compact);
+        self.with_style(text)
+    }
+
+    /// The chip's words for a row that may not fit them, longest first: the
+    /// shell draws the first that fits and truncates the last only when
+    /// even that does not. Away from `compact` it is the one form. On the
+    /// phone a range ending now next drops its "→ now" tail (the chip's red
+    /// outline already says it ends at now), then the loop style:
+    /// `⟲ 4 frames → now · Ping-pong`, `⟲ 4 frames · Ping-pong`,
+    /// `⟲ 4 frames`. A fixed range drops only the style.
+    pub(crate) fn selection_chip_forms(
+        &self,
+        clock: &dyn Clock,
+        glyphs: &ChipGlyphs,
+        compact: bool,
+    ) -> Vec<String> {
+        let full = self.selection_chip_text(clock, glyphs, compact);
+        if !compact {
+            return vec![full];
+        }
+        let mut forms = vec![full];
+        let bare = match self.selection_chip {
+            ChipLabel::RangeToNow { basis } => {
+                let short = format!("{} {}", glyphs.loop_mark, basis.label());
+                forms.push(self.with_style(short.clone()));
+                short
+            }
+            _ => chip_text(&self.selection_chip, clock, glyphs, compact),
+        };
+        forms.push(bare);
+        forms.dedup();
+        forms
+    }
+
+    /// A loop style other than Loop rides on the end of the chip's words.
+    fn with_style(&self, text: String) -> String {
         match self.loop_style {
             Some(style) => format!("{text} · {}", style.label()),
             None => text,
@@ -1226,6 +1262,43 @@ mod tests {
         // A loop style still rides on the end.
         s.loop_mode = LoopMode::PingPong;
         assert_eq!(compact(&s), "⟲ 2 h → now · Ping-pong");
+    }
+
+    /// The phone's fallbacks, longest first, before any ellipsis.
+    #[wasm_bindgen_test]
+    fn compact_chip_forms_drop_the_tail_then_the_style() {
+        let forms = |s: &S, compact| s.vm().selection_chip_forms(&Utc, &DESIGN_GLYPHS, compact);
+        let mut s = S::at(t(12, 0, 0));
+        s.selection = Selection::Range(RangeSelection {
+            bounds: Some((t(11, 40, 0), t(12, 0, 0))),
+            live: true,
+            basis: LoopBasis::FrameCount(4),
+        });
+        assert_eq!(forms(&s, true), vec!["⟲ 4 frames → now", "⟲ 4 frames"]);
+        s.loop_mode = LoopMode::PingPong;
+        assert_eq!(
+            forms(&s, true),
+            vec![
+                "⟲ 4 frames → now · Ping-pong",
+                "⟲ 4 frames · Ping-pong",
+                "⟲ 4 frames"
+            ]
+        );
+        // The desktop has the one form.
+        assert_eq!(forms(&s, false), vec!["⟲ Last 4 frames → now · Ping-pong"]);
+
+        // A fixed range drops only its style.
+        s.selection = fixed_range(t(11, 28, 0), t(11, 34, 0));
+        assert_eq!(
+            forms(&s, true),
+            vec!["⟲ 11:28 → 11:34 · Ping-pong", "⟲ 11:28 → 11:34"]
+        );
+        s.loop_mode = LoopMode::Loop;
+        assert_eq!(forms(&s, true), vec!["⟲ 11:28 → 11:34"]);
+
+        // A point has nothing to drop.
+        s.selection = PINNED;
+        assert_eq!(forms(&s, true), vec!["● LIVE"]);
     }
 
     #[wasm_bindgen_test]

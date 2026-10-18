@@ -670,8 +670,9 @@ and GO LIVE, and an outlined `GO LIVE ›` (or `REJOIN ›`) edge tab at the rig
 when now is off-screen. On the phone the selection chip says the lag in short
 words — `15:12 · 20 h behind`, `25 min behind`, `5:33 behind` — and a range
 ending now without "Last" (`⟲ 4 frames → now`); the chip takes what the row
-leaves beside the fixed controls and ends in an ellipsis before it would
-crowd them. The top
+leaves beside the fixed controls: tight, it drops its caret, then a range
+ending now drops "→ now" (its red outline says so) and then its loop style,
+and only then ends in an ellipsis, so it never crowds them. The top
 bar's clock reads the playhead's time, dimmed, while a fixed playhead waits for
 its frame ("no frame yet" stays in the pill). The tab sits below the cells, so it never hides a cell,
 the ring or the now line, and the ruler's labels give way to it. Pinned, now

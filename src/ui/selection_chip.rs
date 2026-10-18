@@ -50,14 +50,12 @@ pub(crate) fn render_selection_chip(
     };
     let label = live.session.selection_chip;
     let use_local = state.use_local_time;
-    let words = live.session.selection_chip_text(
-        &crate::ui::time_format::ZoneClock { use_local },
-        &ICON_GLYPHS,
-        style.compact,
-    );
-    let with_caret = format!("{words} {}", egui_phosphor::regular::CARET_DOWN);
-    // In a tight row the caret goes before any of the words do (the chip's
-    // frame already reads as a button); only then does the label truncate.
+    let clock = crate::ui::time_format::ZoneClock { use_local };
+    let caret = |t: &str| format!("{t} {}", egui_phosphor::regular::CARET_DOWN);
+    // In a tight row the chip takes the longest of the core's forms that
+    // fits: the caret goes first (the chip's frame already reads as a
+    // button), then the words the core lets go of; the shortest form
+    // truncates only when even it does not fit.
     let text = match style.max_width {
         Some(max_w) => {
             let room = max_w - 2.0 * ui.spacing().button_padding.x;
@@ -72,13 +70,26 @@ pub(crate) fn render_selection_chip(
                     .size()
                     .x
             };
-            if width(&with_caret) <= room {
-                with_caret
+            let forms = live
+                .session
+                .selection_chip_forms(&clock, &ICON_GLYPHS, style.compact);
+            let full = caret(&forms[0]);
+            if width(&full) <= room {
+                full
             } else {
-                words
+                forms
+                    .iter()
+                    .find(|f| width(f) <= room)
+                    .or(forms.last())
+                    .cloned()
+                    .unwrap_or_default()
             }
         }
-        None => with_caret,
+        None => caret(
+            &live
+                .session
+                .selection_chip_text(&clock, &ICON_GLYPHS, style.compact),
+        ),
     };
 
     let (fill, text_color, stroke) = match label {
