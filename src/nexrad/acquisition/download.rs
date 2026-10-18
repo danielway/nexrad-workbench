@@ -3,7 +3,7 @@
 //! Uses channel-based communication to bridge async downloads
 //! with egui's synchronous update loop.
 
-use super::archive_index::{current_timestamp_secs, ArchiveFileMeta, ArchiveListing};
+use super::archive_index::{current_timestamp_secs, ArchiveListing};
 use super::types::{CachedScan, DownloadResult};
 use crate::data::{MainThreadStore, ScanCompleteness, ScanKey};
 use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
@@ -265,31 +265,23 @@ async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult 
         }
     };
 
-    let mut file_metas: Vec<ArchiveFileMeta> = files
-        .iter()
-        .filter_map(|f| {
-            let name = f.name().to_string();
-            let timestamp = ArchiveFileMeta::parse_timestamp_from_name(&name, &date)?;
-            Some(ArchiveFileMeta { name, timestamp })
-        })
-        .collect();
-
-    file_metas.sort_by_key(|f| f.timestamp);
+    let listing = ArchiveListing::from_file_names(
+        files.iter().map(|f| f.name().to_string()),
+        &date,
+        current_timestamp_secs(),
+    );
 
     log::debug!(
-        "Archive listing for {}/{}: {} files",
+        "Archive listing for {}/{}: {} volumes",
         site_id,
         date,
-        file_metas.len()
+        listing.files.len()
     );
 
     ListingResult::Success {
         site_id: site_id.to_string(),
         date,
-        listing: ArchiveListing {
-            files: file_metas,
-            fetched_at: current_timestamp_secs(),
-        },
+        listing,
     }
 }
 
@@ -395,6 +387,7 @@ async fn download_specific_file(
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
+    use crate::nexrad::acquisition::archive_index::ArchiveFileMeta;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     #[wasm_bindgen_test]

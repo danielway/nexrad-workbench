@@ -124,7 +124,7 @@ pub(crate) fn volume_format(name: &str) -> &str {
 /// Whether a listed file is a radar volume (not an `_MDM` metadata file or
 /// an empty placeholder).
 fn is_volume(name: &str, size: u64) -> bool {
-    size > 0 && !name.contains("_MDM")
+    size > 0 && crate::core::acquisition::is_volume_file_name(name)
 }
 
 /// When a volume started, in seconds after its UTC midnight, from its file

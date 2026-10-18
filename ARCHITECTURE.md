@@ -100,7 +100,9 @@ occurs, forcing its row to be deleted — the table only shrinks.
 ```
 User selects site/date
   → AcquisitionCoordinator fetches AWS S3 listing
-  → ArchiveIndex caches listing
+  → ArchiveIndex caches listing (radar volumes only: the hourly `_MDM`
+    model-data file listed under a volume's own time is dropped, so it can
+    never stand in for that volume as the scan under the playhead)
   → User selects scan (or range queued in the download queue)
   → Worker ingest: split records → decompress → decode → extract sweep blobs
   → upsert_scan: pre-computed sweep blobs + scan-index entry into IndexedDB

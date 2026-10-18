@@ -135,6 +135,16 @@ pub(crate) fn dates_in_range(start_secs: i64, end_secs: i64) -> Vec<NaiveDate> {
 // Listing queries (shared with `nexrad::archive_index`, which delegates here)
 // ───────────────────────────────────────────────────────────────────────────
 
+/// Whether an archive file name is a radar volume. The archive also lists an
+/// `_MDM` model-data file next to roughly one volume an hour, under the same
+/// timestamp as that volume (`KDMX20261017_185553_V06` and
+/// `KDMX20261017_185553_V06_MDM`). It holds no radials, so it is never a scan:
+/// left in a listing it would take the volume's place as the scan under the
+/// playhead, and its download would fail to split as a truncated archive.
+pub(crate) fn is_volume_file_name(name: &str) -> bool {
+    !name.contains("_MDM")
+}
+
 /// Indices of `bounds` whose span `[start, end)` intersects
 /// `[range_start, range_end]`. Half-open: a scan starting exactly at
 /// `range_end`, or ending exactly at `range_start`, does not intersect.
@@ -1549,6 +1559,15 @@ mod reducer_tests {
     }
 
     // ── listing index queries ───────────────────────────────────────────────
+
+    // Volumes of every format are scans; the `_MDM` model-data file is not.
+    #[wasm_bindgen_test]
+    fn volume_file_names_exclude_model_data_files() {
+        assert!(is_volume_file_name("KDMX20261017_185553_V06"));
+        assert!(is_volume_file_name("KTLX20130101_000258_V06.gz"));
+        assert!(is_volume_file_name("KTLX19950101_000155.gz"));
+        assert!(!is_volume_file_name("KDMX20261017_185553_V06_MDM"));
+    }
 
     // Half-open window predicate over boundaries, preserving listing order.
     #[wasm_bindgen_test]
