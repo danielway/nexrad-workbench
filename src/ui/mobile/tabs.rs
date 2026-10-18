@@ -101,97 +101,11 @@ fn render_transport_row(
     let btn_h = 38.0;
     let vm = crate::core::transport::transport_vm(&playback.state);
 
+    // The trailing cluster (sheet button, activity dot / error badge) lays
+    // out first, right to left, so its real width is known; the leading
+    // controls then take what is left, and the chip gets that minus the
+    // speed, so nothing can draw over anything else at 360 px.
     ui.horizontal_centered(|ui| {
-        ui.add_space(4.0);
-        ui.spacing_mut().item_spacing.x = 3.0;
-
-        if ui
-            .add(
-                egui::Button::new(RichText::new(egui_phosphor::regular::CARET_LEFT).size(15.0))
-                    .min_size(egui::vec2(30.0, btn_h)),
-            )
-            .clicked()
-        {
-            step_frame(state, StepDir::Back);
-        }
-
-        // Play/Pause: the same button as the desktop transport, from the
-        // same view-model.
-        let play_icon = match vm.play {
-            PlayButton::Pause => egui_phosphor::regular::PAUSE,
-            PlayButton::Play => egui_phosphor::regular::PLAY,
-        };
-        if ui
-            .add(
-                egui::Button::new(RichText::new(play_icon).size(20.0))
-                    .min_size(egui::vec2(44.0, btn_h)),
-            )
-            .clicked()
-        {
-            toggle_play(state);
-        }
-
-        if ui
-            .add(
-                egui::Button::new(RichText::new(egui_phosphor::regular::CARET_RIGHT).size(15.0))
-                    .min_size(egui::vec2(30.0, btn_h)),
-            )
-            .clicked()
-        {
-            step_frame(state, StepDir::Forward);
-        }
-
-        ui.add_space(2.0);
-        let view_start = playback.state.timeline_view_start;
-        crate::ui::selection_chip::render_selection_chip(
-            ui,
-            state,
-            live,
-            playback,
-            (view_start, view_start + playback.state.view_width_secs()),
-            &crate::ui::selection_chip::ChipStyle {
-                text_size: 12.0,
-                min_height: btn_h,
-                // The phone's stop leaves the playhead where it is; the
-                // mini timeline's cap is the way back to now.
-                stop_placement: crate::core::transport::LiveStopPlacement::InPlace,
-                compact: true,
-            },
-        );
-
-        // The speed: the desktop's menu, or the fixed readout while pinned in
-        // Rays.
-        match &vm.speed {
-            SpeedControl::Locked { label } => {
-                ui.label(
-                    RichText::new(label)
-                        .size(theme::LABEL)
-                        .color(theme::TEXT_DIM),
-                );
-            }
-            SpeedControl::Menu { selected, choices } => {
-                egui::ComboBox::from_id_salt("mobile_speed")
-                    .selected_text(RichText::new(selected.as_str()).size(13.0))
-                    .width(52.0)
-                    .height(320.0)
-                    .show_ui(ui, |ui| {
-                        for (speed, label) in choices {
-                            let on = *speed == playback.state.speed;
-                            if ui
-                                .add(
-                                    egui::Button::selectable(on, label.as_str())
-                                        .min_size(egui::vec2(80.0, 32.0)),
-                                )
-                                .clicked()
-                                && !on
-                            {
-                                state.push_command(Intent::SetSpeed(*speed));
-                            }
-                        }
-                    });
-            }
-        }
-
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(4.0);
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -221,8 +135,144 @@ fn render_transport_row(
 
             // The activity dot: the desktop chip with its words folded.
             crate::ui::activity_chip::render_activity_chip(ui, activity_vm, state, 13.0, true);
+
+            ui.add_space(4.0);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                render_leading_controls(ui, state, live, playback, &vm, btn_h);
+            });
         });
     });
+}
+
+/// Step, play, step, the selection chip and the speed, in the width the
+/// trailing cluster left.
+fn render_leading_controls(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
+    vm: &crate::core::transport::TransportVm,
+    btn_h: f32,
+) {
+    ui.add_space(4.0);
+    let gap = 3.0;
+    ui.spacing_mut().item_spacing.x = gap;
+
+    if ui
+        .add(
+            egui::Button::new(RichText::new(egui_phosphor::regular::CARET_LEFT).size(15.0))
+                .min_size(egui::vec2(28.0, btn_h)),
+        )
+        .clicked()
+    {
+        step_frame(state, StepDir::Back);
+    }
+
+    // Play/Pause: the same button as the desktop transport, from the same
+    // view-model.
+    let play_icon = match vm.play {
+        PlayButton::Pause => egui_phosphor::regular::PAUSE,
+        PlayButton::Play => egui_phosphor::regular::PLAY,
+    };
+    if ui
+        .add(
+            egui::Button::new(RichText::new(play_icon).size(20.0))
+                .min_size(egui::vec2(40.0, btn_h)),
+        )
+        .clicked()
+    {
+        toggle_play(state);
+    }
+
+    if ui
+        .add(
+            egui::Button::new(RichText::new(egui_phosphor::regular::CARET_RIGHT).size(15.0))
+                .min_size(egui::vec2(28.0, btn_h)),
+        )
+        .clicked()
+    {
+        step_frame(state, StepDir::Forward);
+    }
+
+    // The chip's ceiling: the width left after the speed control.
+    let chip_max = ui.available_width() - speed_width(ui, &vm.speed) - gap;
+    let view_start = playback.state.timeline_view_start;
+    crate::ui::selection_chip::render_selection_chip(
+        ui,
+        state,
+        live,
+        playback,
+        (view_start, view_start + playback.state.view_width_secs()),
+        &crate::ui::selection_chip::ChipStyle {
+            text_size: 12.0,
+            min_height: btn_h,
+            // The phone's stop leaves the playhead where it is; the mini
+            // timeline's cap is the way back to now.
+            stop_placement: crate::core::transport::LiveStopPlacement::InPlace,
+            compact: true,
+            max_width: Some(chip_max),
+        },
+    );
+
+    // The speed: the desktop's menu, or the fixed readout while pinned in
+    // Rays.
+    match &vm.speed {
+        SpeedControl::Locked { label } => {
+            ui.label(
+                RichText::new(label)
+                    .size(theme::LABEL)
+                    .color(theme::TEXT_DIM),
+            );
+        }
+        SpeedControl::Menu { selected, choices } => {
+            egui::ComboBox::from_id_salt("mobile_speed")
+                .selected_text(RichText::new(selected.as_str()).size(13.0))
+                .width(SPEED_MENU_W)
+                .height(320.0)
+                .show_ui(ui, |ui| {
+                    for (speed, label) in choices {
+                        let on = *speed == playback.state.speed;
+                        if ui
+                            .add(
+                                egui::Button::selectable(on, label.as_str())
+                                    .min_size(egui::vec2(80.0, 32.0)),
+                            )
+                            .clicked()
+                            && !on
+                        {
+                            state.push_command(Intent::SetSpeed(*speed));
+                        }
+                    }
+                });
+        }
+    }
+}
+
+/// The speed menu's outer width (wider only if its label needs it).
+const SPEED_MENU_W: f32 = 52.0;
+
+/// The width the speed control will take, measured before it is drawn so
+/// the chip can leave room for it.
+fn speed_width(ui: &egui::Ui, speed: &SpeedControl) -> f32 {
+    let text_w = |label: &str, size: f32| {
+        ui.fonts_mut(|f| {
+            f.layout_no_wrap(
+                label.to_owned(),
+                egui::FontId::proportional(size),
+                egui::Color32::WHITE,
+            )
+            .size()
+            .x
+        })
+    };
+    match speed {
+        SpeedControl::Locked { label } => text_w(label, theme::LABEL),
+        SpeedControl::Menu { selected, .. } => {
+            let s = ui.spacing();
+            let inner = text_w(selected, 13.0) + s.icon_spacing + s.icon_width;
+            (inner + 2.0 * s.button_padding.x).max(SPEED_MENU_W)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

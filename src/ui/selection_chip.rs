@@ -28,8 +28,11 @@ pub(crate) struct ChipStyle {
     pub text_size: f32,
     pub min_height: f32,
     pub stop_placement: LiveStopPlacement,
-    /// Narrow bar: drop the seconds and the lag from a point's label.
+    /// Narrow bar: the core's compact words.
     pub compact: bool,
+    /// The widest the chip may draw; a longer label ends in an ellipsis
+    /// rather than crowding the controls beside it.
+    pub max_width: Option<f32>,
 }
 
 /// Draw the chip and its menu, pushing the intent of any entry picked.
@@ -47,15 +50,47 @@ pub(crate) fn render_selection_chip(
     };
     let label = live.session.selection_chip;
     let use_local = state.use_local_time;
-    let text = format!(
-        "{} {}",
-        live.session.selection_chip_text(
-            &crate::ui::time_format::ZoneClock { use_local },
-            &ICON_GLYPHS,
-            style.compact
+    let clock = crate::ui::time_format::ZoneClock { use_local };
+    let caret = |t: &str| format!("{t} {}", egui_phosphor::regular::CARET_DOWN);
+    // In a tight row the chip takes the longest of the core's forms that
+    // fits: the caret goes first (the chip's frame already reads as a
+    // button), then the words the core lets go of; the shortest form
+    // truncates only when even it does not fit.
+    let text = match style.max_width {
+        Some(max_w) => {
+            let room = max_w - 2.0 * ui.spacing().button_padding.x;
+            let width = |t: &str| {
+                egui::WidgetText::from(RichText::new(t).size(style.text_size).strong())
+                    .into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Extend),
+                        f32::INFINITY,
+                        egui::TextStyle::Button,
+                    )
+                    .size()
+                    .x
+            };
+            let forms = live
+                .session
+                .selection_chip_forms(&clock, &ICON_GLYPHS, style.compact);
+            let full = caret(&forms[0]);
+            if width(&full) <= room {
+                full
+            } else {
+                forms
+                    .iter()
+                    .find(|f| width(f) <= room)
+                    .or(forms.last())
+                    .cloned()
+                    .unwrap_or_default()
+            }
+        }
+        None => caret(
+            &live
+                .session
+                .selection_chip_text(&clock, &ICON_GLYPHS, style.compact),
         ),
-        egui_phosphor::regular::CARET_DOWN
-    );
+    };
 
     let (fill, text_color, stroke) = match label {
         ChipLabel::Live => {
@@ -94,7 +129,18 @@ pub(crate) fn render_selection_chip(
     .fill(fill)
     .stroke(stroke)
     .min_size(egui::vec2(0.0, style.min_height));
-    let response = ui.add(button).on_hover_text(label.hover());
+    let response = match style.max_width {
+        Some(max_w) => {
+            ui.allocate_ui_with_layout(
+                egui::vec2(max_w.max(0.0), style.min_height),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| ui.add(button.truncate()),
+            )
+            .inner
+        }
+        None => ui.add(button),
+    }
+    .on_hover_text(label.hover());
 
     let now = state.frame_now.secs();
     let menu = chip_menu(&playback.state, env, view, now);

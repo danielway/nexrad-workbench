@@ -646,7 +646,12 @@ stop and settles on release. 15 MIN is the same instrument as 3 H, closer in:
 the last three volumes, where a volume on the device shows its cuts (a filled
 cell is a frame you have) and a volume that is not shows the storm bar 3 H draws
 for it, with no underline and no tilt or VCP words; the live volume ends at now
-with a single ghost for its next cut. The scrub snaps cut by cut where cuts are
+with a single ghost for its next cut. A selected range always shows whole at
+15 MIN, with an amber bar along the strip's top and a wash over its cells: the
+window keeps its three volumes and widens just enough for the range (four
+frames pinned to now reach a fourth volume back) with a little room before its
+start, still ending just past now; the pill keeps saying 15 MIN and the ruler
+gives the real times. The scrub snaps cut by cut where cuts are
 known and just inside a volume's start (its first cut) elsewhere, and a still
 finger holds the playhead, so when a volume arrives its cuts appear in place and
 nothing jumps. While the
@@ -663,7 +668,11 @@ screen, the white playhead line when detached, the red now line, and the
 desktop's small tab under it — filled red only for LIVE, outlined for REJOIN
 and GO LIVE, and an outlined `GO LIVE ›` (or `REJOIN ›`) edge tab at the right
 when now is off-screen. On the phone the selection chip says the lag in short
-words — `15:12 · 20 h behind`, `25 min behind`, `5:33 behind` — and the top
+words — `15:12 · 20 h behind`, `25 min behind`, `5:33 behind` — and a range
+ending now without "Last" (`⟲ 4 frames → now`); the chip takes what the row
+leaves beside the fixed controls: tight, it drops its caret, then a range
+ending now drops "→ now" (its red outline says so) and then its loop style,
+and only then ends in an ellipsis, so it never crowds them. The top
 bar's clock reads the playhead's time, dimmed, while a fixed playhead waits for
 its frame ("no frame yet" stays in the pill). The tab sits below the cells, so it never hides a cell,
 the ring or the now line, and the ruler's labels give way to it. Pinned, now
