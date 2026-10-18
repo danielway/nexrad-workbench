@@ -562,6 +562,8 @@ Failures are **per-cell**, not global: a failed download shows an alert tick on
 the affected cell and does not error-pause the whole queue; tapping it
 re-enqueues the download. Transient problems retry automatically with
 **backoff**; persistent ones surface manual retry rather than retrying forever.
+A volume that arrives cut short is downloaded once more without a word, while
+the playhead still wants it; only a second failure is reported.
 Every failure is visible both on the timeline (at the affected position) and in
 the canvas/metadata area, so a user never mistakes "no data available" for "app
 is broken" or vice versa. Red styling is reserved for failures and the live dot

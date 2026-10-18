@@ -540,21 +540,43 @@ impl WorkbenchApp {
             kind,
             message
         );
-        self.state.errors.push(crate::core::AppError::Worker {
-            kind,
-            message: message.clone(),
-            scan_timestamp_secs: failed_scan_timestamp_secs,
-        });
+        match self
+            .acquisition
+            .ingest_retries
+            .decide(failed_scan_timestamp_secs.map(|ts| ts as i64), &message)
+        {
+            // A truncated download: no error, no backoff. Forget the request
+            // and its finished queue item so the pumps download the scan
+            // again if it is still wanted (the anchor pump does so on the
+            // next frame while the playhead is on it).
+            crate::core::acquisition::IngestFailureAction::RetryQuietly { scan_start } => {
+                log::info!("Truncated archive for scan {scan_start}; downloading it again");
+                self.acquisition
+                    .request_ledger
+                    .forget(scan_start, crate::SCAN_CACHE_MATCH_TOLERANCE_SECS);
+                self.acquisition
+                    .coordinator
+                    .download_queue
+                    .forget_done(scan_start);
+            }
+            crate::core::acquisition::IngestFailureAction::Report => {
+                self.state.errors.push(crate::core::AppError::Worker {
+                    kind,
+                    message: message.clone(),
+                    scan_timestamp_secs: failed_scan_timestamp_secs,
+                });
 
-        // A failed ingest means the fetched scan never reached IDB — move
-        // its ledger entry to the short Failed backoff so re-fetch becomes
-        // possible without a per-frame storm.
-        if let Some(ts) = failed_scan_timestamp_secs {
-            self.acquisition.request_ledger.note_failed(
-                ts as i64,
-                crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
-                js_sys::Date::now(),
-            );
+                // A failed ingest means the fetched scan never reached IDB —
+                // move its ledger entry to the short Failed backoff so
+                // re-fetch becomes possible without a per-frame storm.
+                if let Some(ts) = failed_scan_timestamp_secs {
+                    self.acquisition.request_ledger.note_failed(
+                        ts as i64,
+                        crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+                        js_sys::Date::now(),
+                    );
+                }
+            }
         }
 
         // When the worker reports that the requested (elevation, product) has

@@ -61,6 +61,9 @@ pub(crate) struct Acquisition {
     /// queue clears and bridges the ingest→timeline-refresh blackout (see
     /// [`crate::core::acquisition::RequestLedger`]).
     pub request_ledger: RequestLedger,
+    /// Scans that have had their one quiet re-download after a truncated
+    /// archive (see [`crate::core::acquisition::IngestRetries`]).
+    pub ingest_retries: crate::core::acquisition::IngestRetries,
     /// Storm-activity listings and stored-day reads for the overview's bars.
     pub activity_channel: ActivityChannel,
     /// Which activity listings are in flight or backing off (the plan is
@@ -101,6 +104,7 @@ impl Acquisition {
             listing_backoff: std::collections::HashMap::new(),
             selection_fetch_target: None,
             request_ledger: RequestLedger::default(),
+            ingest_retries: Default::default(),
             activity_channel: ActivityChannel::default(),
             activity_fetcher: ActivityFetcher::default(),
             activity_settle: PrefetchSettle::default(),
