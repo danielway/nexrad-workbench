@@ -372,7 +372,7 @@ and a quiet wash where no sizes are known yet. 15 MIN is 3 H closer in
 same storm bar as at 3 H (scaled over the three hours around the strip) with no
 underline, pulsing under it while it downloads; the live volume's box stops at
 now and carries only the ghost of its next cut. A scrub there snaps per cut
-where cuts are known and to a volume's start elsewhere
+where cuts are known and lands just inside a volume's start elsewhere
 (`StripUnits::landing_units`), a still finger never seeks again, and far from
 now the window holds still like the other stops'. While the playhead's frame
 is not on screen yet, a dashed ring marks where it will land

@@ -261,12 +261,26 @@ pub(crate) struct StripUnits {
     pub volumes: Vec<SnapUnit>,
 }
 
+/// How far into a volume whose cuts aren't known a scrub lands: past the
+/// gap between the volume's listed time and its first sweep, and inside its
+/// first cut, so once it arrives the playhead is on that cut (a playhead on
+/// the listed time itself resolves to the volume before).
+pub(crate) const VOLUME_LAND_SECS: f64 = 10.0;
+
+/// Where a scrub lands in a volume with no known cuts.
+fn volume_landing(start: f64, end: f64) -> f64 {
+    (start + VOLUME_LAND_SECS)
+        .min((start + end) / 2.0)
+        .max(start)
+}
+
 impl StripUnits {
     /// The units of the strip's containers. Projected cells and ghost
     /// volumes are not landing places: nothing is there yet. A volume not on
     /// the device has no cuts here (its one cell is a placeholder for the
-    /// tilt, not a frame) and lands on its start, which is what fetching it
+    /// tilt, not a frame) and lands just past its start, which is what fetching it
     /// asks for; its cuts join once it arrives.
+    /// ([`VOLUME_LAND_SECS`] in, so the first cut is what shows.)
     pub(crate) fn from_containers(containers: &[ScanContainer]) -> Self {
         let mut out = StripUnits::default();
         for c in containers.iter().filter(|c| !c.is_projected) {
@@ -286,9 +300,10 @@ impl StripUnits {
             out.volumes.push(SnapUnit {
                 start: c.start_secs,
                 end: c.end_secs.max(c.start_secs),
-                land: cells
-                    .first()
-                    .map_or(c.start_secs, |cell| cell.end_secs.max(cell.start_secs)),
+                land: cells.first().map_or_else(
+                    || volume_landing(c.start_secs, c.end_secs),
+                    |cell| cell.end_secs.max(cell.start_secs),
+                ),
             });
         }
         out.cuts.sort_by(|a, b| a.start.total_cmp(&b.start));
@@ -307,7 +322,7 @@ impl StripUnits {
                 .map(|s| SnapUnit {
                     start: s.start,
                     end: s.end.max(s.start),
-                    land: s.start,
+                    land: volume_landing(s.start, s.end),
                 }),
         );
         self.volumes.sort_by(|a, b| a.start.total_cmp(&b.start));
@@ -1362,12 +1377,15 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn a_volume_without_known_cuts_lands_on_its_start() {
+    fn a_volume_without_known_cuts_lands_just_inside_its_start() {
         let u = StripUnits::from_containers(&[ScanContainer {
             is_available: true,
             ..container(0.0, 300.0, Vec::new())
         }]);
-        assert_eq!(snap_scrub(StripZoom::Volumes, 200.0, &u, 10_000.0), 0.0);
+        assert_eq!(
+            snap_scrub(StripZoom::Volumes, 200.0, &u, 10_000.0),
+            VOLUME_LAND_SECS
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1388,7 +1406,7 @@ mod tests {
         ];
         let u = StripUnits::from_containers(&strip()).with_listed(&listed);
         assert_eq!(u.volumes.len(), 3, "the covered one is not added twice");
-        assert_eq!(snap_scrub(StripZoom::Day, 5_100.0, &u, 10_000.0), 5_000.0);
+        assert_eq!(snap_scrub(StripZoom::Day, 5_100.0, &u, 10_000.0), 5_010.0);
         assert_eq!(snap_scrub(StripZoom::Day, 100.0, &u, 10_000.0), 40.0);
     }
 
@@ -2051,7 +2069,11 @@ mod tests {
             vec![30.0, 180.0, 630.0]
         );
         let shadow_volume = u.volumes.iter().find(|v| v.start == 300.0).unwrap();
-        assert_eq!(shadow_volume.land, 300.0, "not its placeholder's end");
+        assert_eq!(
+            shadow_volume.land,
+            300.0 + VOLUME_LAND_SECS,
+            "just inside its start, not its placeholder's end"
+        );
     }
 
     #[wasm_bindgen_test]
@@ -2060,10 +2082,10 @@ mod tests {
         // Inside the held volume: cut by cut.
         assert_eq!(snap_scrub(StripZoom::Cuts, 10.0, &u, 10_000.0), 30.0);
         assert_eq!(snap_scrub(StripZoom::Cuts, 160.0, &u, 10_000.0), 180.0);
-        // Anywhere over the volume not on the device: its start, the same
+        // Anywhere over the volume not on the device: just past its start, the same
         // spot all the way across (no hop to the next volume).
         for ts in [305.0, 450.0, 595.0] {
-            assert_eq!(snap_scrub(StripZoom::Cuts, ts, &u, 10_000.0), 300.0);
+            assert_eq!(snap_scrub(StripZoom::Cuts, ts, &u, 10_000.0), 310.0);
         }
         // The live volume's cut.
         assert_eq!(snap_scrub(StripZoom::Cuts, 615.0, &u, 10_000.0), 630.0);
@@ -2074,9 +2096,9 @@ mod tests {
         let mut cs = cuts_strip();
         let before = StripUnits::from_containers(&cs);
         let landed = snap_scrub(StripZoom::Cuts, 450.0, &before, 10_000.0);
-        assert_eq!(landed, 300.0);
+        assert_eq!(landed, 310.0);
         // The volume downloads: its cuts are there now, and the first one
-        // starts where the playhead already is.
+        // holds the playhead where it already is.
         cs[1] = container(
             300.0,
             600.0,
