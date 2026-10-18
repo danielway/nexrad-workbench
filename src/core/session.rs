@@ -46,8 +46,8 @@ use crate::core::live_status::LiveStatus;
 use crate::core::selection_chip::ChipLabel;
 use crate::core::transport::LiveStopPlacement;
 use crate::core::{
-    format_lag, DisplayedSweep, FrameNow, Intent, LiveExitReason, LivePhase, LoopBasis, LoopMode,
-    Selection, StreamActivity,
+    format_behind_short, format_lag, DisplayedSweep, FrameNow, Intent, LiveExitReason, LivePhase,
+    LoopBasis, LoopMode, Selection, StreamActivity,
 };
 use crate::data::ScanKey;
 
@@ -442,8 +442,8 @@ impl SessionVm {
 
     /// The selection chip's words. `compact` (the phone bar) drops the
     /// seconds from a point and keeps the lag in short form
-    /// (`11:30 · −5:33`), so a detached phone still says how far behind it
-    /// is. A loop style other than Loop rides
+    /// in short words (`11:30 · 5:33 behind`, `15:12 · 20 h behind`), so a
+    /// detached phone still says how far behind it is. A loop style other than Loop rides
     /// on the end: `⟲ 11:28 → 11:34 · Ping-pong`.
     pub(crate) fn selection_chip_text(
         &self,
@@ -498,7 +498,7 @@ fn chip_text(label: &ChipLabel, clock: &dyn Clock, g: &ChipGlyphs, compact: bool
         ChipLabel::At {
             ts,
             behind_secs: Some(lag),
-        } if compact => format!("{} · −{}", clock.hm(ts), format_lag(lag)),
+        } if compact => format!("{} · {} behind", clock.hm(ts), format_behind_short(lag)),
         ChipLabel::At { ts, .. } if compact => format!("At {}", clock.hm(ts)),
         ChipLabel::At {
             ts,
@@ -1166,7 +1166,12 @@ mod tests {
         s.playhead = t(11, 30, 49);
         assert_eq!(
             s.vm().selection_chip_text(&Utc, &DESIGN_GLYPHS, true),
-            "11:30 · −5:33"
+            "11:30 · 5:33 behind"
+        );
+        s.playhead = t(11, 10, 0);
+        assert_eq!(
+            s.vm().selection_chip_text(&Utc, &DESIGN_GLYPHS, true),
+            "11:10 · 26 min behind"
         );
     }
 
