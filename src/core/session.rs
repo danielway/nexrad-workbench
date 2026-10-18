@@ -440,11 +440,12 @@ impl SessionVm {
         }
     }
 
-    /// The selection chip's words. `compact` (the phone bar) drops the
-    /// seconds from a point and keeps the lag in short form
+    /// The selection chip's words. `compact` (the phone bar) is as short
+    /// as the words still read: a point drops its seconds and keeps the lag
     /// in short words (`11:30 · 5:33 behind`, `15:12 · 20 h behind`), so a
-    /// detached phone still says how far behind it is. A loop style other than Loop rides
-    /// on the end: `⟲ 11:28 → 11:34 · Ping-pong`.
+    /// detached phone still says how far behind it is, and a range to now
+    /// drops "Last" (`⟲ 4 frames → now`, `⟲ 30 min → now`). A loop style
+    /// other than Loop rides on the end: `⟲ 11:28 → 11:34 · Ping-pong`.
     pub(crate) fn selection_chip_text(
         &self,
         clock: &dyn Clock,
@@ -531,6 +532,12 @@ fn chip_text(label: &ChipLabel, clock: &dyn Clock, g: &ChipGlyphs, compact: bool
                     clock.hm(end)
                 )
             }
+        }
+        // The phone bar drops "Last": the count and "→ now" already say
+        // it is the newest frames. The unit stays, since a bare "4 → now"
+        // could be minutes as well as frames.
+        ChipLabel::RangeToNow { basis } if compact => {
+            format!("{} {} {} now", g.loop_mark, basis.label(), g.arrow)
         }
         ChipLabel::RangeToNow { basis } => {
             format!("{} Last {} {} now", g.loop_mark, basis.label(), g.arrow)
@@ -1183,6 +1190,42 @@ mod tests {
             s.vm().selection_chip_text(&Utc, &DESIGN_GLYPHS, true),
             "At 11:30"
         );
+    }
+
+    /// Every compact shape the phone bar can show, each as short as it
+    /// reads.
+    #[wasm_bindgen_test]
+    fn compact_chip_labels_for_every_selection_shape() {
+        let compact = |s: &S| s.vm().selection_chip_text(&Utc, &DESIGN_GLYPHS, true);
+        let mut s = S::at(t(12, 0, 0));
+        s.selection = PINNED;
+        assert_eq!(compact(&s), "● LIVE");
+
+        s.selection = fixed_range(t(11, 28, 0), t(11, 34, 0));
+        assert_eq!(compact(&s), "⟲ 11:28 → 11:34");
+
+        for (n, text) in [(2, "⟲ 2 frames → now"), (4, "⟲ 4 frames → now")] {
+            s.selection = Selection::Range(RangeSelection {
+                bounds: Some((t(11, 40, 0), t(12, 0, 0))),
+                live: true,
+                basis: LoopBasis::FrameCount(n),
+            });
+            assert_eq!(compact(&s), text);
+        }
+        for (secs, text) in [(1800.0, "⟲ 30 min → now"), (7200.0, "⟲ 2 h → now")] {
+            s.selection = Selection::Range(RangeSelection {
+                bounds: Some((t(12, 0, 0) - secs, t(12, 0, 0))),
+                live: true,
+                basis: LoopBasis::Duration(secs),
+            });
+            assert_eq!(compact(&s), text);
+        }
+        // The desktop keeps "Last".
+        assert_eq!(chip(&s.vm()), "⟲ Last 2 h → now");
+
+        // A loop style still rides on the end.
+        s.loop_mode = LoopMode::PingPong;
+        assert_eq!(compact(&s), "⟲ 2 h → now · Ping-pong");
     }
 
     #[wasm_bindgen_test]

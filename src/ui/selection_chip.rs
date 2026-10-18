@@ -28,8 +28,11 @@ pub(crate) struct ChipStyle {
     pub text_size: f32,
     pub min_height: f32,
     pub stop_placement: LiveStopPlacement,
-    /// Narrow bar: drop the seconds and the lag from a point's label.
+    /// Narrow bar: the core's compact words.
     pub compact: bool,
+    /// The widest the chip may draw; a longer label ends in an ellipsis
+    /// rather than crowding the controls beside it.
+    pub max_width: Option<f32>,
 }
 
 /// Draw the chip and its menu, pushing the intent of any entry picked.
@@ -94,7 +97,18 @@ pub(crate) fn render_selection_chip(
     .fill(fill)
     .stroke(stroke)
     .min_size(egui::vec2(0.0, style.min_height));
-    let response = ui.add(button).on_hover_text(label.hover());
+    let response = match style.max_width {
+        Some(max_w) => {
+            ui.allocate_ui_with_layout(
+                egui::vec2(max_w.max(0.0), style.min_height),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| ui.add(button.truncate()),
+            )
+            .inner
+        }
+        None => ui.add(button),
+    }
+    .on_hover_text(label.hover());
 
     let now = state.frame_now.secs();
     let menu = chip_menu(&playback.state, env, view, now);
