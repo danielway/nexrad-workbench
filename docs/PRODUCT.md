@@ -646,7 +646,12 @@ stop and settles on release. 15 MIN is the same instrument as 3 H, closer in:
 the last three volumes, where a volume on the device shows its cuts (a filled
 cell is a frame you have) and a volume that is not shows the storm bar 3 H draws
 for it, with no underline and no tilt or VCP words; the live volume ends at now
-with a single ghost for its next cut. The scrub snaps cut by cut where cuts are
+with a single ghost for its next cut. A selected range always shows whole at
+15 MIN, with an amber bar along the strip's top and a wash over its cells: the
+window keeps its three volumes and widens just enough for the range (four
+frames pinned to now reach a fourth volume back) with a little room before its
+start, still ending just past now; the pill keeps saying 15 MIN and the ruler
+gives the real times. The scrub snaps cut by cut where cuts are
 known and just inside a volume's start (its first cut) elsewhere, and a still
 finger holds the playhead, so when a volume arrives its cuts appear in place and
 nothing jumps. While the
