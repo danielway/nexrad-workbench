@@ -212,6 +212,17 @@ impl DownloadQueueManager {
         }
     }
 
+    /// Drop a finished (Done) item, so the pumps may queue its scan again.
+    /// A Pending or Active item is left alone. Returns whether one was
+    /// dropped.
+    pub(crate) fn forget_done(&mut self, scan_start: i64) -> bool {
+        let before = self.queue.len();
+        self.queue.retain(|item| {
+            !(matches!(item.state, QueueItemState::Done) && item.scan_start == scan_start)
+        });
+        self.queue.len() != before
+    }
+
     /// Number of items currently in the Active state.
     pub(crate) fn active_count(&self) -> usize {
         self.queue
@@ -469,6 +480,22 @@ mod tests {
             order.push(scan_start);
         }
         assert_eq!(order, vec![600, 3000, 9000]);
+    }
+
+    #[wasm_bindgen_test]
+    fn forget_done_drops_only_a_finished_item() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue(vec![item(1000, None), item(2000, None)]);
+        // Start 1000 and finish it; 2000 stays Pending.
+        let _ = q.advance(false);
+        q.mark_active_done(1000);
+        assert!(!q.forget_done(2000));
+        assert!(q.forget_done(1000));
+        assert_eq!(q.queued_scan_starts(), vec![2000]);
+        // An Active item survives.
+        let _ = q.advance(false);
+        assert!(!q.forget_done(2000));
+        assert_eq!(q.queued_scan_starts(), vec![2000]);
     }
 
     #[wasm_bindgen_test]

@@ -62,6 +62,27 @@ pub(crate) struct ArchiveListing {
 }
 
 impl ArchiveListing {
+    /// A listing from the archive's file names for `date`: radar volumes only
+    /// (no `_MDM` files, see [`crate::core::acquisition::is_volume_file_name`]),
+    /// each with a parsable time, sorted by time.
+    pub(crate) fn from_file_names<I, S>(names: I, date: &NaiveDate, fetched_at: f64) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut files: Vec<ArchiveFileMeta> = names
+            .into_iter()
+            .map(Into::into)
+            .filter(|name| crate::core::acquisition::is_volume_file_name(name))
+            .filter_map(|name| {
+                let timestamp = ArchiveFileMeta::parse_timestamp_from_name(&name, date)?;
+                Some(ArchiveFileMeta { name, timestamp })
+            })
+            .collect();
+        files.sort_by_key(|f| f.timestamp);
+        Self { files, fetched_at }
+    }
+
     /// Compute scan time boundaries from adjacent file start times.
     ///
     /// Each scan starts at its own timestamp and ends at the next scan's
@@ -214,6 +235,60 @@ mod tests {
             files,
             fetched_at: 0.0,
         }
+    }
+
+    // --- from_file_names ---
+
+    /// The archive lists an `_MDM` file under the same time as roughly one
+    /// volume an hour. It is dropped, so the scan under a playhead just inside
+    /// that volume is the volume itself, not the metadata file.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn from_file_names_drops_mdm_files_sharing_a_volume_time() {
+        let date = NaiveDate::from_ymd_opt(2026, 10, 17).unwrap();
+        let l = ArchiveListing::from_file_names(
+            [
+                "KDMX20261017_184907_V06",
+                "KDMX20261017_185553_V06",
+                "KDMX20261017_185553_V06_MDM",
+                "KDMX20261017_190240_V06",
+            ],
+            &date,
+            0.0,
+        );
+        let names: Vec<&str> = l.files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "KDMX20261017_184907_V06",
+                "KDMX20261017_185553_V06",
+                "KDMX20261017_190240_V06",
+            ]
+        );
+        let start = l.files[1].timestamp;
+        let (file, b) = l.scan_at_or_before(start + 10).unwrap();
+        assert_eq!(file.name, "KDMX20261017_185553_V06");
+        assert_eq!((b.start, b.end), (start, l.files[2].timestamp));
+    }
+
+    /// Unparsable names are skipped and the rest come out in time order.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn from_file_names_sorts_and_skips_unparsable_names() {
+        let date = NaiveDate::from_ymd_opt(2026, 10, 17).unwrap();
+        let l = ArchiveListing::from_file_names(
+            [
+                "KDMX20261017_190240_V06".to_string(),
+                "garbage".to_string(),
+                "KDMX20261017_184907_V06".to_string(),
+            ],
+            &date,
+            5.0,
+        );
+        let names: Vec<&str> = l.files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["KDMX20261017_184907_V06", "KDMX20261017_190240_V06"]
+        );
+        assert_eq!(l.fetched_at, 5.0);
     }
 
     // --- parse_timestamp_from_name ---
