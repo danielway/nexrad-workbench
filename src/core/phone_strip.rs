@@ -3,9 +3,11 @@
 //! Continuous zoom suits a wheel, not a thumb, so the phone's mini timeline
 //! has three stops, each with its own window rule and scrub unit:
 //!
-//! - **Cuts** (pill "15 MIN") — today's strip
-//!   ([`crate::core::phone::mini_window`]): the last three volumes and the
-//!   ghost of the next. A scrub snaps to cuts.
+//! - **Cuts** (pill "15 MIN") — 3 H closer in: the last three volumes
+//!   ([`crate::core::phone::mini_window`]), each on the device as its cut
+//!   cells and each not on it as its storm bar ([`cut_volumes`]). A scrub
+//!   snaps per cut where cuts are known and per volume elsewhere
+//!   ([`StripUnits::landing_units`]).
 //! - **Volumes** (pill "3 H") — three hours of storm-activity bars, one per
 //!   volume, as tall as the weather the volume held ([`activity_bars`]).
 //! - **Day** (pill "DAY") — 24 hours of the same bars, one per half-hour
@@ -18,7 +20,8 @@
 //! there snaps to volumes.
 //!
 //! Every stop keeps the same marks: the periwinkle ring on the frame on
-//! screen ([`ring_center`]), the white playhead line when detached, the now
+//! screen ([`ring_center`]), a dashed ring where the playhead's frame will
+//! land while it is not there yet ([`pending_mark`]), the white playhead line when detached, the now
 //! line, and a small tab under it ([`strip_cap`]): filled red only for LIVE,
 //! outlined for REJOIN and GO LIVE, and an outlined edge tab at the right
 //! (`GO LIVE ›`, `REJOIN ›`) when now is off the window. Ruler labels give
@@ -38,7 +41,9 @@
 //!
 //! All pure; `ui::timeline::mini` draws what these return.
 
-use crate::core::phone::{mini_lead_secs, mini_window, MiniWindow, PressOut, PressTrack};
+use crate::core::phone::{
+    mini_lead_secs, mini_near_now, mini_window, MiniWindow, PressOut, PressTrack,
+};
 use crate::core::session::NowCap;
 use crate::core::storm_activity::{ScanActivity, ScanSizes, ViewScale};
 use crate::core::timeline_view::{FrameCell, FrameCellState, ScanContainer};
@@ -138,11 +143,18 @@ pub(crate) fn strip_zoom_after(stop: StripZoom, intent: &Intent) -> StripZoom {
 /// the playhead may come before the window slides to keep it in.
 pub(crate) const EDGE_SHARE: f64 = 0.1;
 
+/// How close (as a share of the span) the last window's span must be to
+/// this stop's for the window to be held rather than re-centred.
+const SAME_STOP_SHARE: f64 = 0.3;
+
 /// The strip's window at a stop, in Unix seconds. `volume_starts` are the
 /// containers' starts, oldest first; `prev` is the window the strip drew
 /// last frame.
 ///
-/// Cuts is [`mini_window`]. At Volumes and Day, pinned, the window ends at
+/// Cuts near now is [`mini_window`] (anchored to now). Further back it
+/// follows the same rule as the other stops over three volumes, so a scrub
+/// moves the playhead under a still strip instead of re-centring the strip
+/// on every hop. At Volumes and Day, pinned, the window ends at
 /// now plus the ghost room Cuts leaves ([`mini_lead_secs`]), so now sits
 /// near the right edge with the ring on it and the window slides with now.
 /// Detached, it centres on the playhead when the playhead lands off the
@@ -162,7 +174,10 @@ pub(crate) fn strip_window(
     prev: Option<MiniWindow>,
 ) -> MiniWindow {
     let span = match stop {
-        StripZoom::Cuts => return mini_window(now, playhead, pinned, volume_starts),
+        StripZoom::Cuts if mini_near_now(now, playhead, pinned, volume_starts) => {
+            return mini_window(now, playhead, pinned, volume_starts)
+        }
+        StripZoom::Cuts => mini_window(now, playhead, pinned, volume_starts).span(),
         StripZoom::Volumes => VOLUMES_SPAN_SECS,
         StripZoom::Day => DAY_SPAN_SECS,
     };
@@ -170,9 +185,14 @@ pub(crate) fn strip_window(
     let end = if pinned {
         limit
     } else {
-        match prev
-            .filter(|p| (p.span() - span).abs() < 1.0 && playhead >= p.start && playhead <= p.end)
-        {
+        // The last window is kept when it is this stop's (a 15 MIN window
+        // near now spans a little more or less than three volumes) and the
+        // playhead is still inside it.
+        match prev.filter(|p| {
+            (p.span() - span).abs() < SAME_STOP_SHARE * span
+                && playhead >= p.start
+                && playhead <= p.end
+        }) {
             Some(p) => {
                 let margin = span * EDGE_SHARE;
                 let start = if playhead < p.start + margin {
@@ -193,18 +213,33 @@ pub(crate) fn strip_window(
     }
 }
 
-/// The storm-activity listing the phone strip asks for: at the zoomed-out
-/// stops, the window in view and the lane's width, which decide (through
+/// The span whose volume sizes a stop reads: the window at Volumes and
+/// Day; at Cuts the three hours around the window's middle, so a volume's
+/// bar is as tall at 15 MIN as at 3 H (bars are scaled to the volumes in
+/// view, and three volumes alone would exaggerate any difference).
+pub(crate) fn sizes_span(stop: StripZoom, window: MiniWindow) -> (f64, f64) {
+    match stop {
+        StripZoom::Cuts => {
+            let mid = (window.start + window.end) / 2.0;
+            (mid - VOLUMES_SPAN_SECS / 2.0, mid + VOLUMES_SPAN_SECS / 2.0)
+        }
+        StripZoom::Volumes | StripZoom::Day => (window.start, window.end),
+    }
+}
+
+/// The storm-activity listing the phone strip asks for: the span it reads
+/// sizes over ([`sizes_span`]) and the lane's width, which decide (through
 /// [`crate::core::storm_activity::needs_scans`]) that its days are listed
 /// for their volumes' sizes, as the desktop overview does zoomed in (days
-/// the nightly index covers have no per-volume sizes). `None` at Cuts,
-/// which draws the strip's own cells.
+/// the nightly index covers have no per-volume sizes). Cuts asks as 3 H
+/// does, for the volumes it draws as bars.
 pub(crate) fn activity_window(
     stop: StripZoom,
     window: MiniWindow,
     lane_px: f32,
 ) -> Option<(f64, f64, f64)> {
-    (stop.per_volume() && lane_px > 0.0).then_some((window.start, window.end, lane_px as f64))
+    let (start, end) = sizes_span(stop, window);
+    (lane_px > 0.0).then_some((start, end, lane_px as f64))
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -229,17 +264,37 @@ pub(crate) struct StripUnits {
     pub volumes: Vec<SnapUnit>,
 }
 
+/// How far into a volume whose cuts aren't known a scrub lands: past the
+/// gap between the volume's listed time and its first sweep, and inside its
+/// first cut, so once it arrives the playhead is on that cut (a playhead on
+/// the listed time itself resolves to the volume before).
+pub(crate) const VOLUME_LAND_SECS: f64 = 10.0;
+
+/// Where a scrub lands in a volume with no known cuts.
+pub(crate) fn volume_landing(start: f64, end: f64) -> f64 {
+    (start + VOLUME_LAND_SECS)
+        .min((start + end) / 2.0)
+        .max(start)
+}
+
 impl StripUnits {
     /// The units of the strip's containers. Projected cells and ghost
-    /// volumes are not landing places: nothing is there yet.
+    /// volumes are not landing places: nothing is there yet. A volume not on
+    /// the device has no cuts here (its one cell is a placeholder for the
+    /// tilt, not a frame) and lands just past its start, which is what fetching it
+    /// asks for; its cuts join once it arrives.
+    /// ([`VOLUME_LAND_SECS`] in, so the first cut is what shows.)
     pub(crate) fn from_containers(containers: &[ScanContainer]) -> Self {
         let mut out = StripUnits::default();
         for c in containers.iter().filter(|c| !c.is_projected) {
-            let cells: Vec<&FrameCell> = c
-                .cells
-                .iter()
-                .filter(|cell| cell.state != FrameCellState::Projected)
-                .collect();
+            let cells: Vec<&FrameCell> = if c.is_available {
+                Vec::new()
+            } else {
+                c.cells
+                    .iter()
+                    .filter(|cell| cell.state != FrameCellState::Projected)
+                    .collect()
+            };
             out.cuts.extend(cells.iter().map(|cell| SnapUnit {
                 start: cell.start_secs,
                 end: cell.end_secs.max(cell.start_secs),
@@ -248,9 +303,10 @@ impl StripUnits {
             out.volumes.push(SnapUnit {
                 start: c.start_secs,
                 end: c.end_secs.max(c.start_secs),
-                land: cells
-                    .first()
-                    .map_or(c.start_secs, |cell| cell.end_secs.max(cell.start_secs)),
+                land: cells.first().map_or_else(
+                    || volume_landing(c.start_secs, c.end_secs),
+                    |cell| cell.end_secs.max(cell.start_secs),
+                ),
             });
         }
         out.cuts.sort_by(|a, b| a.start.total_cmp(&b.start));
@@ -259,7 +315,7 @@ impl StripUnits {
     }
 
     /// Add the volumes a day's listing knows of that no container covers
-    /// (the zoomed-out stops' bars reach volumes the strip has no container for).
+    /// (bars reach volumes the strip has no container for).
     pub(crate) fn with_listed(mut self, listed: &[ScanActivity]) -> Self {
         let known = self.volumes.clone();
         self.volumes.extend(
@@ -269,24 +325,46 @@ impl StripUnits {
                 .map(|s| SnapUnit {
                     start: s.start,
                     end: s.end.max(s.start),
-                    land: s.start,
+                    land: volume_landing(s.start, s.end),
                 }),
         );
         self.volumes.sort_by(|a, b| a.start.total_cmp(&b.start));
         self
     }
+
+    /// What a scrub can land on at `stop`: volumes at Volumes and Day; at
+    /// Cuts every cut the strip knows, and each volume with no known cut as
+    /// one unit. Oldest first.
+    pub(crate) fn landing_units(&self, stop: StripZoom) -> Vec<SnapUnit> {
+        if stop.per_volume() {
+            return self.volumes.clone();
+        }
+        let mut out = self.cuts.clone();
+        out.extend(self.volumes.iter().copied().filter(|v| {
+            !self
+                .cuts
+                .iter()
+                .any(|c| c.start >= v.start - 1.0 && c.start < v.end)
+        }));
+        out.sort_by(|a, b| a.start.total_cmp(&b.start));
+        out
+    }
+
+    /// The volume holding `ts`: the newest that starts by then and has not
+    /// ended.
+    fn volume_at(&self, ts: f64) -> Option<&SnapUnit> {
+        self.volumes
+            .iter()
+            .filter(|v| v.start <= ts + 1.0 && ts < v.end.max(v.start + 1.0))
+            .max_by(|a, b| a.start.total_cmp(&b.start))
+    }
 }
 
 /// Where a scrub at `ts` puts the playhead at `stop`: the landing time of
-/// the unit under the finger (cuts at Cuts, volumes at Volumes and Day), or
-/// of the nearest unit when the finger is in a gap, never past `now`. With
-/// no units on the strip the scrub goes where the finger is.
+/// the unit under the finger ([`StripUnits::landing_units`]), or of the
+/// nearest unit when the finger is in a gap, never past `now`. With no
+/// units on the strip the scrub goes where the finger is.
 pub(crate) fn snap_scrub(stop: StripZoom, ts: f64, units: &StripUnits, now: f64) -> f64 {
-    let list = if stop.per_volume() {
-        &units.volumes
-    } else {
-        &units.cuts
-    };
     let distance = |u: &SnapUnit| {
         if ts < u.start {
             u.start - ts
@@ -296,9 +374,47 @@ pub(crate) fn snap_scrub(stop: StripZoom, ts: f64, units: &StripUnits, now: f64)
             0.0
         }
     };
-    list.iter()
+    units
+        .landing_units(stop)
+        .iter()
         .min_by(|a, b| distance(a).total_cmp(&distance(b)))
         .map_or(ts, |u| u.land.min(now))
+}
+
+/// Where the strip marks a playhead whose frame has not arrived (the volume
+/// under it is downloading, or nothing is on screen yet), so a scrub has a
+/// visible result: the landing cut under the playhead at Cuts (else the
+/// playhead itself), the volume at Volumes, the half-hour at Day. `None`
+/// while pinned, when the frame on screen (`active_ts`, the displayed
+/// scan's time) is in the playhead's volume, or when no volume holds the
+/// playhead.
+pub(crate) fn pending_mark(
+    stop: StripZoom,
+    playhead: f64,
+    pinned: bool,
+    active_ts: Option<f64>,
+    units: &StripUnits,
+) -> Option<f64> {
+    if pinned {
+        return None;
+    }
+    let v = units.volume_at(playhead)?;
+    if active_ts.is_some_and(|ts| ts >= v.start - 1.0 && ts < v.end.max(v.start + 1.0)) {
+        return None;
+    }
+    let mid = |a: f64, b: f64| (a + b) / 2.0;
+    Some(match stop {
+        StripZoom::Cuts => units
+            .cuts
+            .iter()
+            .filter(|c| c.start >= v.start - 1.0 && c.start < v.end)
+            .find(|c| playhead >= c.start - 1.0 && playhead <= c.end + 1.0)
+            .map_or(playhead, |c| mid(c.start, c.end)),
+        StripZoom::Volumes => mid(v.start, v.end),
+        StripZoom::Day => {
+            (playhead / DAY_BUCKET_SECS).floor() * DAY_BUCKET_SECS + DAY_BUCKET_SECS / 2.0
+        }
+    })
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -398,6 +514,8 @@ impl PinchTrack {
 pub(crate) struct StripTouch {
     pub press: Option<PressTrack>,
     pub pinch: Option<PinchTrack>,
+    /// Where the finger was the last time the press scrubbed (points).
+    scrub_x: Option<f32>,
 }
 
 /// One frame of input on the strip.
@@ -430,6 +548,19 @@ pub(crate) struct StripTouchOut {
 }
 
 impl StripTouch {
+    /// Whether a drag frame with the finger at `x` scrubs: only when the
+    /// finger has moved since the last scrub (or this is the press's first).
+    /// A still finger never seeks again, so the playhead holds while the
+    /// strip changes under it: a volume's cuts arriving, the window sliding
+    /// near an edge.
+    pub(crate) fn scrub_moved(&mut self, x: f32) -> bool {
+        let moved = self.scrub_x.is_none_or(|last| (x - last).abs() >= 0.5);
+        if moved {
+            self.scrub_x = Some(x);
+        }
+        moved
+    }
+
     /// Advance the press and the pinch together. A pinch the strip owns
     /// cancels the press under it (and any press that starts during it), so
     /// a pinch never seeks, scrubs or opens the inspector; the press stays
@@ -455,6 +586,9 @@ impl StripTouch {
             press_out.waiting = false;
         }
         self.press = press;
+        if press.is_none() {
+            self.scrub_x = None;
+        }
         let may_seek = !pinch_out.claimed
             && !press_out.swallow_release
             && press_out.long_press.is_none()
@@ -534,6 +668,133 @@ pub(crate) fn activity_bars(
                 .collect()
         }
     }
+}
+
+/// How far before a container's start a listed volume's start may fall and
+/// still be that container (a volume's key time can lead its first sweep).
+const KEY_SLACK_SECS: f64 = 30.0;
+
+/// How one volume looks at the Cuts stop.
+#[derive(Clone, Debug)]
+pub(crate) enum CutLook {
+    /// On the device (or the live volume): its cut cells, a filled cell
+    /// being a frame on the device. The live volume's last cell may be the
+    /// ghost of its next cut (`Projected`), the only cell past now.
+    Cells(Vec<FrameCell>),
+    /// Not on the device: the 3 H stop's storm bar (`frac`, as a fraction
+    /// of the lane), or a quiet wash when its size isn't known; `fetching`
+    /// while it is queued or downloading.
+    Bar { frac: Option<f32>, fetching: bool },
+}
+
+/// One volume on the Cuts stop.
+#[derive(Clone, Debug)]
+pub(crate) struct CutVolume {
+    pub start: f64,
+    /// Where its box ends: the volume's end, or for the live volume now
+    /// (or its last cut, if later), so nothing but the ghost draws past
+    /// now.
+    pub end: f64,
+    pub look: CutLook,
+}
+
+/// What the Cuts stop draws (15 MIN is 3 H closer in): each volume on the
+/// device as its cut cells, each volume that is not as the storm bar 3 H
+/// draws for it (from `sizes`, scaled over [`sizes_span`] so it is as tall
+/// as at 3 H; a quiet wash when unknown), with no tilt or VCP words and no
+/// dashed shell. Volumes the day's listing knows that no container covers
+/// draw as bars too. The next volume's ghost is not drawn; the live
+/// volume carries only the ghost of its next cut (else the ghost volume's
+/// first), and its box stops at now. Oldest first.
+pub(crate) fn cut_volumes(
+    containers: &[ScanContainer],
+    sizes: &ScanSizes,
+    window: MiniWindow,
+    now: f64,
+) -> Vec<CutVolume> {
+    let (lo, hi) = sizes_span(StripZoom::Cuts, window);
+    let scale = ViewScale::from_levels(
+        sizes
+            .scans
+            .iter()
+            .filter(|s| s.end >= lo && s.start <= hi)
+            .map(|s| s.level),
+    );
+    let frac_at = |start: f64, end: f64| {
+        sizes
+            .at((start + end) / 2.0)
+            .map(|s| scale.height_frac(s.level))
+    };
+    let next_ghost_volume = containers
+        .iter()
+        .filter(|c| c.is_projected)
+        .min_by(|a, b| a.start_secs.total_cmp(&b.start_secs));
+    let mut out: Vec<CutVolume> = Vec::new();
+    for c in containers.iter().filter(|c| !c.is_projected) {
+        if c.is_available {
+            out.push(CutVolume {
+                start: c.start_secs,
+                end: c.end_secs.max(c.start_secs),
+                look: CutLook::Bar {
+                    frac: frac_at(c.start_secs, c.end_secs),
+                    fetching: c.cells.iter().any(|cell| {
+                        matches!(
+                            cell.state,
+                            FrameCellState::InFlight | FrameCellState::Queued
+                        )
+                    }),
+                },
+            });
+            continue;
+        }
+        let mut cells: Vec<FrameCell> = c
+            .cells
+            .iter()
+            .filter(|cell| cell.state != FrameCellState::Projected)
+            .cloned()
+            .collect();
+        let mut end = c.end_secs.max(c.start_secs);
+        if c.is_live {
+            let last = cells.iter().map(|cell| cell.end_secs).fold(now, f64::max);
+            end = end.min(last).max(c.start_secs);
+            let ghost = c
+                .cells
+                .iter()
+                .filter(|cell| cell.state == FrameCellState::Projected)
+                .min_by(|a, b| a.start_secs.total_cmp(&b.start_secs))
+                .or_else(|| next_ghost_volume.and_then(|g| g.cells.first()));
+            if let Some(g) = ghost {
+                cells.push(g.clone());
+            }
+        }
+        out.push(CutVolume {
+            start: c.start_secs,
+            end,
+            look: CutLook::Cells(cells),
+        });
+    }
+    let covered = |ts: f64| {
+        containers
+            .iter()
+            .any(|c| ts >= c.start_secs - KEY_SLACK_SECS && ts < c.end_secs.max(c.start_secs + 1.0))
+    };
+    out.extend(
+        sizes
+            .scans
+            .iter()
+            .filter(|s| s.end >= window.start && s.start <= window.end && s.start <= now)
+            .filter(|s| !covered(s.start))
+            .map(|s| CutVolume {
+                start: s.start,
+                end: s.end.max(s.start),
+                look: CutLook::Bar {
+                    frac: Some(scale.height_frac(s.level)),
+                    fetching: false,
+                },
+            }),
+    );
+    out.sort_by(|a, b| a.start.total_cmp(&b.start));
+    out
 }
 
 /// The strip's volumes (containers) that no volume in `sizes` covers: the
@@ -1001,7 +1262,19 @@ mod tests {
             activity_window(StripZoom::Volumes, w, 330.0),
             Some((0.0, DAY_SPAN_SECS, 330.0))
         );
-        assert_eq!(activity_window(StripZoom::Cuts, w, 330.0), None);
+        // Cuts asks for the three hours around its middle, as 3 H would.
+        let cuts = MiniWindow {
+            start: 10_000.0,
+            end: 11_000.0,
+        };
+        assert_eq!(
+            activity_window(StripZoom::Cuts, cuts, 330.0),
+            Some((
+                10_500.0 - VOLUMES_SPAN_SECS / 2.0,
+                10_500.0 + VOLUMES_SPAN_SECS / 2.0,
+                330.0
+            ))
+        );
         assert_eq!(activity_window(StripZoom::Day, w, 0.0), None);
         // A phone's Day lane is wide enough to draw each volume, so the
         // day is listed for its volume sizes.
@@ -1121,12 +1394,15 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn a_volume_without_known_cuts_lands_on_its_start() {
+    fn a_volume_without_known_cuts_lands_just_inside_its_start() {
         let u = StripUnits::from_containers(&[ScanContainer {
             is_available: true,
             ..container(0.0, 300.0, Vec::new())
         }]);
-        assert_eq!(snap_scrub(StripZoom::Volumes, 200.0, &u, 10_000.0), 0.0);
+        assert_eq!(
+            snap_scrub(StripZoom::Volumes, 200.0, &u, 10_000.0),
+            VOLUME_LAND_SECS
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1147,7 +1423,7 @@ mod tests {
         ];
         let u = StripUnits::from_containers(&strip()).with_listed(&listed);
         assert_eq!(u.volumes.len(), 3, "the covered one is not added twice");
-        assert_eq!(snap_scrub(StripZoom::Day, 5_100.0, &u, 10_000.0), 5_000.0);
+        assert_eq!(snap_scrub(StripZoom::Day, 5_100.0, &u, 10_000.0), 5_010.0);
         assert_eq!(snap_scrub(StripZoom::Day, 100.0, &u, 10_000.0), 40.0);
     }
 
@@ -1662,5 +1938,278 @@ mod tests {
         assert_eq!(labelled(&cdt), vec!["18", "00", "06", "12"]);
         let midnight = cdt.iter().find(|t| t.label == "00").unwrap();
         assert_eq!((midnight.ts + (-5.0 * 3600.0)).rem_euclid(86_400.0), 0.0);
+    }
+
+    // ── 15 MIN is 3 H closer in ───────────────────────────────────────
+
+    fn shadow(start: f64, end: f64, state: FrameCellState) -> ScanContainer {
+        ScanContainer {
+            is_available: true,
+            vcp: 0,
+            sweep_spans: Vec::new(),
+            // The one placeholder cell for the tilt, spanning the volume.
+            ..container(start, end, vec![cell(start, end, state)])
+        }
+    }
+
+    /// A held volume, a volume not on the device, the live volume with one
+    /// cut in and its next cut projected, and the next volume's ghost.
+    fn cuts_strip() -> Vec<ScanContainer> {
+        let mut live = container(
+            600.0,
+            900.0,
+            vec![
+                cell(600.0, 630.0, FrameCellState::Cached),
+                cell(700.0, 730.0, FrameCellState::Projected),
+                cell(800.0, 830.0, FrameCellState::Projected),
+            ],
+        );
+        live.is_live = true;
+        vec![
+            container(
+                0.0,
+                300.0,
+                vec![
+                    cell(0.0, 30.0, FrameCellState::Cached),
+                    cell(150.0, 180.0, FrameCellState::Cached),
+                ],
+            ),
+            shadow(300.0, 600.0, FrameCellState::Available),
+            live,
+            ScanContainer {
+                is_projected: true,
+                ..container(
+                    900.0,
+                    1_200.0,
+                    vec![cell(900.0, 930.0, FrameCellState::Projected)],
+                )
+            },
+        ]
+    }
+
+    #[wasm_bindgen_test]
+    fn a_volume_not_on_the_device_is_a_storm_bar_with_no_cells() {
+        let sz = sizes(vec![
+            scan(0.0, 300.0, 0.2),
+            scan(300.0, 600.0, 0.9),
+            scan(600.0, 900.0, 0.1),
+        ]);
+        let w = MiniWindow {
+            start: 0.0,
+            end: 1_000.0,
+        };
+        let v = cut_volumes(&cuts_strip(), &sz, w, 640.0);
+        assert_eq!(v.len(), 3, "the next volume's ghost is not drawn");
+        assert!(matches!(v[0].look, CutLook::Cells(ref c) if c.len() == 2));
+        match v[1].look {
+            CutLook::Bar { frac, fetching } => {
+                let scale = ViewScale::from_levels([0.2, 0.9, 0.1]);
+                assert_eq!(frac, Some(scale.height_frac(0.9)), "as tall as at 3 H");
+                assert!(!fetching);
+            }
+            _ => panic!("a volume not on the device is a bar"),
+        }
+        // Unknown size: a quiet wash.
+        let v = cut_volumes(&cuts_strip(), &ScanSizes::default(), w, 640.0);
+        assert!(matches!(
+            v[1].look,
+            CutLook::Bar {
+                frac: None,
+                fetching: false
+            }
+        ));
+        // Downloading: still a bar, marked as on its way.
+        let mut cs = cuts_strip();
+        cs[1] = shadow(300.0, 600.0, FrameCellState::InFlight);
+        let v = cut_volumes(&cs, &ScanSizes::default(), w, 640.0);
+        assert!(matches!(v[1].look, CutLook::Bar { fetching: true, .. }));
+    }
+
+    #[wasm_bindgen_test]
+    fn the_live_volume_shows_one_ghost_and_stops_at_now() {
+        let w = MiniWindow {
+            start: 0.0,
+            end: 1_000.0,
+        };
+        let v = cut_volumes(&cuts_strip(), &ScanSizes::default(), w, 640.0);
+        let live = &v[2];
+        assert_eq!(live.end, 640.0, "the box stops at now");
+        let CutLook::Cells(cells) = &live.look else {
+            panic!("the live volume draws cells");
+        };
+        let states: Vec<_> = cells.iter().map(|c| (c.start_secs, c.state)).collect();
+        assert_eq!(
+            states,
+            vec![
+                (600.0, FrameCellState::Cached),
+                (700.0, FrameCellState::Projected)
+            ],
+            "only the next cut is a ghost"
+        );
+        // Its cuts all in: the next volume's first cut is the ghost.
+        let mut cs = cuts_strip();
+        cs[2].cells.truncate(1);
+        let v = cut_volumes(&cs, &ScanSizes::default(), w, 640.0);
+        let CutLook::Cells(cells) = &v[2].look else {
+            panic!()
+        };
+        assert_eq!(cells.last().unwrap().start_secs, 900.0);
+        assert_eq!(cells.len(), 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn listed_volumes_with_no_container_are_bars_too() {
+        let sz = sizes(vec![
+            scan(-300.0, 0.0, 0.5),
+            scan(0.0, 300.0, 0.5),
+            scan(2_000.0, 2_300.0, 0.5),
+        ]);
+        let w = MiniWindow {
+            start: -400.0,
+            end: 1_000.0,
+        };
+        let v = cut_volumes(&cuts_strip(), &sz, w, 640.0);
+        assert_eq!(v[0].start, -300.0);
+        assert!(matches!(v[0].look, CutLook::Bar { frac: Some(_), .. }));
+        assert_eq!(
+            v.len(),
+            4,
+            "covered and out-of-window volumes are not added"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_placeholder_cell_is_not_a_cut_and_its_volume_lands_on_its_start() {
+        let u = StripUnits::from_containers(&cuts_strip());
+        assert_eq!(
+            u.cuts.iter().map(|c| c.land).collect::<Vec<_>>(),
+            vec![30.0, 180.0, 630.0]
+        );
+        let shadow_volume = u.volumes.iter().find(|v| v.start == 300.0).unwrap();
+        assert_eq!(
+            shadow_volume.land,
+            300.0 + VOLUME_LAND_SECS,
+            "just inside its start, not its placeholder's end"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn cuts_snaps_per_cut_where_known_and_per_volume_elsewhere() {
+        let u = StripUnits::from_containers(&cuts_strip());
+        // Inside the held volume: cut by cut.
+        assert_eq!(snap_scrub(StripZoom::Cuts, 10.0, &u, 10_000.0), 30.0);
+        assert_eq!(snap_scrub(StripZoom::Cuts, 160.0, &u, 10_000.0), 180.0);
+        // Anywhere over the volume not on the device: just past its start, the same
+        // spot all the way across (no hop to the next volume).
+        for ts in [305.0, 450.0, 595.0] {
+            assert_eq!(snap_scrub(StripZoom::Cuts, ts, &u, 10_000.0), 310.0);
+        }
+        // The live volume's cut.
+        assert_eq!(snap_scrub(StripZoom::Cuts, 615.0, &u, 10_000.0), 630.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn once_a_volume_arrives_its_cuts_appear_around_where_the_playhead_landed() {
+        let mut cs = cuts_strip();
+        let before = StripUnits::from_containers(&cs);
+        let landed = snap_scrub(StripZoom::Cuts, 450.0, &before, 10_000.0);
+        assert_eq!(landed, 310.0);
+        // The volume downloads: its cuts are there now, and the first one
+        // holds the playhead where it already is.
+        cs[1] = container(
+            300.0,
+            600.0,
+            vec![
+                cell(300.0, 330.0, FrameCellState::Cached),
+                cell(450.0, 480.0, FrameCellState::Cached),
+            ],
+        );
+        let after = StripUnits::from_containers(&cs);
+        assert_eq!(
+            pending_mark(StripZoom::Cuts, landed, false, None, &after),
+            Some(315.0),
+            "the landing cut, until its frame is on screen"
+        );
+        assert_eq!(
+            pending_mark(StripZoom::Cuts, landed, false, Some(300.0), &after),
+            None
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_still_finger_does_not_scrub_again() {
+        let mut t = StripTouch::default();
+        t.step(touch(true, 100.0, 0.0, None));
+        assert!(t.scrub_moved(100.0), "the first scrub of a press");
+        assert!(!t.scrub_moved(100.0), "units arriving under a still finger");
+        assert!(!t.scrub_moved(100.2));
+        assert!(t.scrub_moved(104.0));
+        // A new press starts fresh.
+        t.step(touch(false, 0.0, 0.5, None));
+        t.step(touch(true, 104.0, 1.0, None));
+        assert!(t.scrub_moved(104.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn the_strip_marks_where_a_pending_frame_will_land() {
+        let u = StripUnits::from_containers(&cuts_strip());
+        // Scrubbed into the volume not on the device, the frame on screen
+        // still the held volume's: a mark at the playhead.
+        assert_eq!(
+            pending_mark(StripZoom::Cuts, 300.0, false, Some(0.0), &u),
+            Some(300.0)
+        );
+        assert_eq!(
+            pending_mark(StripZoom::Volumes, 300.0, false, Some(0.0), &u),
+            Some(450.0)
+        );
+        assert_eq!(
+            pending_mark(StripZoom::Day, 300.0, false, None, &u),
+            Some(900.0)
+        );
+        // Pinned, or the frame already there: no mark.
+        assert_eq!(pending_mark(StripZoom::Cuts, 300.0, true, None, &u), None);
+        assert_eq!(
+            pending_mark(StripZoom::Cuts, 180.0, false, Some(0.0), &u),
+            None
+        );
+        // Nothing holds the playhead: nothing to mark.
+        assert_eq!(
+            pending_mark(StripZoom::Cuts, 5_000.0, false, None, &u),
+            None
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn cuts_far_back_holds_its_window_while_the_finger_scrubs() {
+        let s = starts(NOW - 50_000.0, NOW);
+        let playhead = NOW - 20_000.0;
+        let first = strip_window(StripZoom::Cuts, NOW, playhead, false, &s, None);
+        assert_eq!(
+            first,
+            mini_window(NOW, playhead, false, &s),
+            "lands centred"
+        );
+        // A hop of one volume inside it: the strip stays put.
+        let next = strip_window(
+            StripZoom::Cuts,
+            NOW,
+            playhead + 300.0,
+            false,
+            &s,
+            Some(first),
+        );
+        assert_eq!(next, first);
+        // Near the right edge it slides just enough.
+        let edge = first.end - 10.0;
+        let slid = strip_window(StripZoom::Cuts, NOW, edge, false, &s, Some(first));
+        assert!(slid.start > first.start);
+        assert!((slid.end - (edge + first.span() * EDGE_SHARE)).abs() < 1e-6);
+        // A window from another stop is not held.
+        let day = strip_window(StripZoom::Day, NOW, playhead, false, &s, None);
+        assert_eq!(
+            strip_window(StripZoom::Cuts, NOW, playhead, false, &s, Some(day)),
+            first
+        );
     }
 }

@@ -362,11 +362,21 @@ decisions — layout, sheet rect, chrome auto-hide, press tracking, the mini
 timeline's window, pick radii and the site-switch confirmation — are pure and
 tested in `core::phone`, `core::canvas` and `core::dialogs`. The mini
 timeline has three zoom stops (`core::phone_strip`), named on a pill at its
-left edge by what the strip spans: 15 MIN (the last three volumes, every cut),
-3 H (storm-activity bars, one per volume) and DAY (the same bars, one per half
+left edge by what the strip spans: 15 MIN (the last three volumes), 3 H
+(storm-activity bars, one per volume) and DAY (the same bars, one per half
 hour). The bars come from the volumes' sizes in the day's listing, the data the
 desktop overview draws zoomed in, with the slate on-device underline under them
-and a quiet wash where no sizes are known yet. Every stop draws the periwinkle
+and a quiet wash where no sizes are known yet. 15 MIN is 3 H closer in
+(`core::phone_strip::cut_volumes`): a volume on the device shows its cut cells
+(filled = on the device, no tilt or VCP words), a volume that is not shows the
+same storm bar as at 3 H (scaled over the three hours around the strip) with no
+underline, pulsing under it while it downloads; the live volume's box stops at
+now and carries only the ghost of its next cut. A scrub there snaps per cut
+where cuts are known and lands just inside a volume's start elsewhere
+(`StripUnits::landing_units`), a still finger never seeks again, and far from
+now the window holds still like the other stops'. While the playhead's frame
+is not on screen yet, a dashed ring marks where it will land
+(`pending_mark`). Every stop draws the periwinkle
 ring on the frame on screen, the white playhead line when detached, the now
 line and a small tab under it (filled red only for LIVE, outlined for REJOIN
 and GO LIVE, an outlined edge tab at the right when now is off the window); the
@@ -398,7 +408,8 @@ volume from `ActivityBook::listing` (the per-day listing the strip asks for
 at 3 H and DAY), or local
 midday plus a pending `Landing` that `app::calendar::settle_go_to_day`
 finishes once per frame with one re-seek; a landing volume not yet held
-waits at its start (`Landing::volume`) and moves onto its first frame's end
+waits just inside its listed start, as the strip lands a volume with no
+known cuts (`phone_strip::volume_landing`, `Landing::volume`), and moves onto its first frame's end
 once ingested, so a frame shows. The shell applies those re-seeks directly
 (a queued `Seek` would read as a touch); the landing is dropped by
 `landing_after` on any playhead intent or by a moved or playing playhead.

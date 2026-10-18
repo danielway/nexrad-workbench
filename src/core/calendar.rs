@@ -675,10 +675,9 @@ pub(crate) fn stormiest(listing: &[ScanActivity]) -> Option<&ScanActivity> {
         .reduce(|best, v| if v.bytes > best.bytes { v } else { best })
 }
 
-/// Where the playhead goes for a volume starting at `start`, as the strip's
-/// snapping lands it: the end of its first frame when the volume is held
-/// (so that frame shows whole), else its start.
-pub(crate) fn volume_landing(start: f64, held: &RadarTimeline) -> f64 {
+/// The end of the first frame of the volume starting at `start`, when that
+/// volume is held (so the frame shows whole).
+fn held_landing(start: f64, held: &RadarTimeline) -> Option<f64> {
     held.find_scan_at_timestamp(start + 0.5)
         .filter(|scan| (scan.key_timestamp - start).abs() < 60.0)
         .and_then(|scan| {
@@ -688,7 +687,15 @@ pub(crate) fn volume_landing(start: f64, held: &RadarTimeline) -> f64 {
                 .map(|first| first.end_time)
                 .filter(|end| *end > start)
         })
-        .unwrap_or(start)
+}
+
+/// Where the playhead goes for volume `v`, as the strip's snapping lands it:
+/// the end of its first frame when the volume is held, else just past its
+/// listed start ([`crate::core::phone_strip::volume_landing`]), never on it:
+/// a playhead on the listed start resolves to the volume before.
+pub(crate) fn volume_landing(v: &ScanActivity, held: &RadarTimeline) -> f64 {
+    held_landing(v.start, held)
+        .unwrap_or_else(|| crate::core::phone_strip::volume_landing(v.start, v.end))
 }
 
 /// A landing that may still move: to the day's stormiest volume once the
@@ -699,11 +706,11 @@ pub(crate) struct Landing {
     pub day: CalendarDay,
     /// Where the playhead was put.
     pub landed_at: f64,
-    /// The landing volume's start, when the playhead sits at it because the
-    /// volume is not held yet: no frame of it has ended there, so nothing
-    /// would show. Once it is held the playhead moves to its first frame's
-    /// end ([`volume_landing`]). `None` while the listing is out.
-    pub volume: Option<f64>,
+    /// The landing volume, when the playhead sits just inside its start
+    /// because it is not held yet. Once it is held the playhead moves to its
+    /// first frame's end ([`volume_landing`]). `None` while the listing is
+    /// out.
+    pub volume: Option<ScanActivity>,
 }
 
 /// The playhead for the day's stormiest volume, and the landing still
@@ -711,16 +718,16 @@ pub(crate) struct Landing {
 fn land_on_volume(
     site: &SiteId,
     day: CalendarDay,
-    start: f64,
+    v: &ScanActivity,
     held: &RadarTimeline,
     now: f64,
 ) -> (f64, Option<Landing>) {
-    let ts = volume_landing(start, held).min(now);
-    let waiting = (ts == start && start < now).then(|| Landing {
+    let ts = volume_landing(v, held).min(now);
+    let waiting = (held_landing(v.start, held).is_none() && v.start < now).then(|| Landing {
         site: site.clone(),
         day,
         landed_at: ts,
-        volume: Some(start),
+        volume: Some(*v),
     });
     (ts, waiting)
 }
@@ -740,7 +747,7 @@ pub(crate) fn land_on_day(
     let midday = day.midday().min(now);
     match listing {
         Some(volumes) => match stormiest(volumes) {
-            Some(v) => land_on_volume(site, day, v.start, held, now),
+            Some(v) => land_on_volume(site, day, v, held, now),
             None => (midday, None),
         },
         None => (
@@ -820,12 +827,10 @@ pub(crate) fn settle_landing(
     {
         return (None, None);
     }
-    if let Some(start) = landing.volume {
-        let ts = volume_landing(start, f.held).min(f.now);
-        return if ts == start {
-            (Some(landing), None)
-        } else {
-            (None, Some(ts))
+    if let Some(v) = landing.volume {
+        return match held_landing(v.start, f.held) {
+            Some(ts) => (None, Some(ts.min(f.now))),
+            None => (Some(landing), None),
         };
     }
     let Some(volumes) = f.listing else {
@@ -834,7 +839,7 @@ pub(crate) fn settle_landing(
     let Some(v) = stormiest(volumes) else {
         return (None, None);
     };
-    let (ts, pending) = land_on_volume(f.site, landing.day, v.start, f.held, f.now);
+    let (ts, pending) = land_on_volume(f.site, landing.day, v, f.held, f.now);
     let seek = ((ts - landing.landed_at).abs() > TOUCH_TOLERANCE_SECS).then_some(ts);
     (pending, seek)
 }
@@ -1258,9 +1263,16 @@ mod tests {
     #[wasm_bindgen_test]
     fn a_held_volume_lands_on_its_first_frames_end() {
         let t = 1_000_000.0;
-        assert_eq!(volume_landing(t, &held_scan(t)), t + 18.0);
-        assert_eq!(volume_landing(t + 3_000.0, &held_scan(t)), t + 3_000.0);
-        assert_eq!(volume_landing(t, &RadarTimeline::default()), t);
+        assert_eq!(volume_landing(&vol(t, 1), &held_scan(t)), t + 18.0);
+        // Not held: just past the listed start, as the strip lands it.
+        assert_eq!(
+            volume_landing(&vol(t + 3_000.0, 1), &held_scan(t)),
+            t + 3_010.0
+        );
+        assert_eq!(
+            volume_landing(&vol(t, 1), &RadarTimeline::default()),
+            t + 10.0
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1296,12 +1308,12 @@ mod tests {
         let waiting = Landing {
             site: s.clone(),
             day,
-            landed_at: storm,
-            volume: Some(storm),
+            landed_at: storm + 10.0,
+            volume: Some(list[1]),
         };
         assert_eq!(
             settle_landing(pending, &arrived),
-            (Some(waiting), Some(storm))
+            (Some(waiting), Some(storm + 10.0))
         );
     }
 
@@ -1313,9 +1325,13 @@ mod tests {
         let list = [vol(day.start + 600.0, 3), vol(storm, 8)];
         let none = RadarTimeline::default();
         let (ts, pending) = land_on_day(&s, day, Some(&list), &none, now());
-        assert_eq!(ts, storm, "the volume's start while it downloads");
+        assert_eq!(
+            ts,
+            storm + 10.0,
+            "just inside the volume while it downloads"
+        );
         let pending = pending.expect("waits for the volume");
-        assert_eq!(pending.volume, Some(storm));
+        assert_eq!(pending.volume, Some(list[1]));
         let f = LandingFacts {
             site: &s,
             listing: Some(&list),

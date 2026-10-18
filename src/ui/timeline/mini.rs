@@ -3,12 +3,14 @@
 //! [`crate::core::phone_strip`].
 //!
 //! Its window is [`crate::core::phone_strip::strip_window`]. At 15 MIN it
-//! draws the desktop strip's real cells (the last three volumes and the
-//! ghost of the next); at 3 H and DAY the storm-activity bars of
+//! draws [`crate::core::phone_strip::cut_volumes`]: cut cells for volumes
+//! on the device, storm bars for those not, the live volume up to now with
+//! one ghost cut; at 3 H and DAY the storm-activity bars of
 //! [`crate::core::phone_strip::activity_bars`] (one per volume, one per
 //! half hour) in the storm blue, the slate on-device underline under them
 //! and a quiet wash where no sizes are known yet. Every stop draws the
-//! periwinkle ring on the frame on screen, the white playhead line when
+//! periwinkle ring on the frame on screen (dashed where a pending frame will
+//! land), the white playhead line when
 //! detached, the red now line and the small now tab under it
 //! ([`crate::core::phone_strip::strip_cap`]); the ruler
 //! ([`crate::core::phone_strip::ruler_ticks`]) sits on the baseline and its
@@ -29,15 +31,15 @@
 //! a thumb that lands just short still gets the strip, and the map neither
 //! pans on that press nor zooms on the strip's pinch.
 
-use super::frame_cells::{paint_container, CellAnim};
+use super::frame_cells::{paint_phone_cell, CellAnim};
 use super::marks::paint_strip_marks;
 use super::{reduced_motion, style, TimelineFrame, TrackRects};
 use crate::core::phone_strip::{
-    activity_bars, cap_intents, next_stop, on_device_spans, quiet_spans, ring_center,
-    ruler_labels_shown, ruler_ticks, snap_scrub, strip_cap, strip_window, zoom_pill_label,
-    PinchInput, StripTouch, StripTouchInput, StripUnits, StripZoom, STRIP_REACH_PX,
+    activity_bars, cap_intents, cut_volumes, next_stop, on_device_spans, pending_mark, quiet_spans,
+    ring_center, ruler_labels_shown, ruler_ticks, sizes_span, snap_scrub, strip_cap, strip_window,
+    zoom_pill_label, CutLook, PinchInput, StripTouch, StripTouchInput, StripUnits, StripZoom,
+    STRIP_REACH_PX,
 };
-use crate::core::storm_activity::ScanSizes;
 use crate::core::transport::SeekGesture;
 use crate::core::{FrameJoinInputs, Intent, TimelineTier};
 use crate::data::SiteId;
@@ -234,11 +236,8 @@ fn draw_strip(
     let reduced = reduced_motion(ui.ctx());
     let lane_painter = painter.with_clip_rect(lane.intersect(ui.clip_rect()));
     let site = SiteId::new(state.viz_state.site_id.clone());
-    let sizes = if stop.per_volume() {
-        timeline.activity.scans(&site, window.start, window.end)
-    } else {
-        ScanSizes::default()
-    };
+    let (sizes_from, sizes_to) = sizes_span(stop, window);
+    let sizes = timeline.activity.scans(&site, sizes_from, sizes_to);
     let bars = activity_bars(stop, window, &sizes);
     let span_x = |s: f64, e: f64, gap: f32| {
         let x0 = frame.ts_to_x(s);
@@ -253,23 +252,90 @@ fn draw_strip(
                 reduced_motion: reduced,
                 morph: 1.0,
             };
-            let countdown = live.countdown_remaining_secs(now);
-            let countdown_idx = crate::core::timeline_view::countdown_container(&containers, now);
-            for (i, c) in containers.iter().enumerate() {
-                // The ring is the strip's own circle, drawn below.
-                let mut c = c.clone();
-                for cell in &mut c.cells {
-                    cell.is_active = false;
-                    cell.is_prev_active = false;
-                }
-                paint_container(
-                    &lane_painter,
-                    &frame,
-                    &c,
-                    anim,
-                    countdown,
-                    countdown_idx == Some(i),
+            let underline = |x0: f32, x1: f32, color: egui::Color32| {
+                lane_painter.rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(x0, top + UNDERLINE_TOP),
+                        Pos2::new(x1, top + UNDERLINE_TOP + UNDERLINE_H),
+                    ),
+                    0.0,
+                    color,
                 );
+            };
+            for v in cut_volumes(&containers, &sizes, window, now) {
+                let (x0, x1) = span_x(v.start, v.end, BAR_GAP_PX / 2.0);
+                match &v.look {
+                    CutLook::Bar { frac, fetching } => {
+                        let full = Rect::from_min_max(
+                            Pos2::new(x0, track.top()),
+                            Pos2::new(x1, track.bottom()),
+                        );
+                        match frac {
+                            Some(f) => {
+                                let h = track.height() * f;
+                                lane_painter.rect_filled(
+                                    Rect::from_min_max(
+                                        Pos2::new(x0, track.bottom() - h),
+                                        Pos2::new(x1, track.bottom()),
+                                    ),
+                                    0.0,
+                                    tl_colors::storm_fill(),
+                                );
+                            }
+                            None => {
+                                lane_painter.rect_filled(full, 0.0, tl_colors::available_fill());
+                            }
+                        }
+                        if *fetching {
+                            // On its way to the device: the underline pulses.
+                            let base = tl_colors::cell_inflight();
+                            let a = if reduced {
+                                160
+                            } else {
+                                (90.0 + 120.0 * anim.pulse) as u8
+                            };
+                            underline(
+                                x0,
+                                x1,
+                                egui::Color32::from_rgba_unmultiplied(
+                                    base.r(),
+                                    base.g(),
+                                    base.b(),
+                                    a,
+                                ),
+                            );
+                        }
+                    }
+                    CutLook::Cells(cells) => {
+                        let inset = style::CONTAINER_INSET_Y;
+                        let box_rect = Rect::from_min_max(
+                            Pos2::new(x0, track.top() + inset),
+                            Pos2::new(x1, track.bottom() - inset),
+                        );
+                        lane_painter.rect_stroke(
+                            box_rect,
+                            2.0,
+                            Stroke::new(1.0_f32, tl_colors::container_border()),
+                            StrokeKind::Inside,
+                        );
+                        let cell_top = box_rect.top() + style::CELL_INSET_Y;
+                        let cell_bot = box_rect.bottom() - style::CELL_INSET_Y;
+                        for cell in cells {
+                            let cx0 = frame.ts_to_x(cell.start_secs);
+                            let cx1 = frame.ts_to_x(cell.end_secs).max(cx0 + 2.0);
+                            paint_phone_cell(
+                                &lane_painter,
+                                cell,
+                                Rect::from_min_max(
+                                    Pos2::new(cx0, cell_top),
+                                    Pos2::new(cx1, cell_bot),
+                                ),
+                                anim,
+                            );
+                        }
+                        underline(x0, x1, tl_colors::HELD);
+                    }
+                }
             }
         }
         StripZoom::Volumes | StripZoom::Day => {
@@ -394,6 +460,15 @@ fn draw_strip(
     // The ring on the frame on screen, the playhead line when detached and
     // the now line.
     let active_ts = active.map(|(ts, _)| ts);
+    let units = StripUnits::from_containers(&containers).with_listed(&sizes.scans);
+    // Where the playhead's frame will land while it is not there yet: a
+    // dashed ring, so a scrub always shows where it went.
+    if let Some(c) = pending_mark(stop, playhead, pinned, active_ts, &units) {
+        let x = frame.ts_to_x(c);
+        if x >= lane.left() && x <= lane.right() + RING_R {
+            dashed_ring(&painter, Pos2::new(x, top + RING_CY));
+        }
+    }
     if let Some(c) = ring_center(stop, active_ts, &containers, &bars) {
         let x = frame.ts_to_x(c);
         if x >= lane.left() && x <= lane.right() + RING_R {
@@ -532,9 +607,12 @@ fn draw_strip(
         return;
     }
     if let Some(p) = pos.filter(|p| !owned(*p)) {
-        let units = StripUnits::from_containers(&containers).with_listed(&sizes.scans);
         let ts = snap_scrub(stop, frame.x_to_ts(p.x), &units, now);
-        if response.dragged() {
+        // A still finger does not seek again (the playhead holds while the
+        // strip changes under it).
+        let moved = response.dragged() && touch.scrub_moved(p.x);
+        ui.ctx().memory_mut(|m| m.data.insert_temp(key, touch));
+        if moved {
             // A scrub runs the seek reducer synchronously so the playhead
             // keeps up with the finger.
             live.seek(
@@ -544,7 +622,7 @@ fn draw_strip(
                 ts,
                 SeekGesture::Scrub,
             );
-        } else if response.clicked() {
+        } else if response.clicked() && !response.dragged() {
             state.push_command(Intent::Seek {
                 ts,
                 gesture: SeekGesture::Press,
@@ -566,5 +644,18 @@ fn draw_strip(
                 }
             }
         }
+    }
+}
+
+/// The ring's dashed form: where the playhead's frame will be once it
+/// arrives.
+fn dashed_ring(painter: &egui::Painter, center: Pos2) {
+    const DASHES: usize = 12;
+    let stroke = Stroke::new(1.5_f32, theme::SELECTED);
+    for i in 0..DASHES {
+        let a0 = i as f32 / DASHES as f32 * std::f32::consts::TAU;
+        let a1 = a0 + 0.55 * std::f32::consts::TAU / DASHES as f32;
+        let at = |a: f32| center + Vec2::new(a.cos(), a.sin()) * RING_R;
+        painter.line_segment([at(a0), at(a1)], stroke);
     }
 }
