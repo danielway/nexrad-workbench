@@ -2193,9 +2193,14 @@ mod dispatch_tests {
             scan_bytes: vec![3_000_000, 12_000_000, 3_000_000],
         }]);
         f.apply(Intent::GoToDay(day));
-        assert_eq!(f.playback.state.playback_position(), day.start + 7_200.0);
+        // Just inside the volume's listed start, as the strip lands it.
+        assert_eq!(f.playback.state.playback_position(), day.start + 7_210.0);
         let landing = f.chrome.go_to_day_landing.clone().expect("waits");
-        assert_eq!(landing.volume, Some(day.start + 7_200.0), "for the volume");
+        assert_eq!(
+            landing.volume.map(|v| v.start),
+            Some(day.start + 7_200.0),
+            "for the volume"
+        );
     }
     // ---- the long-press sheet -----------------------------------------
 

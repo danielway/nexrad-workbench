@@ -113,10 +113,12 @@ pub(crate) struct TiltPicker {
 pub(crate) struct FrameReadout {
     /// "Oct 3" when the frame is not from today (in the chosen zone).
     pub date: Option<String>,
-    /// The frame's date ("Oct 17"), today's with no frame: the phone's
-    /// readout always shows it, and a tap on it opens "Go to a day".
+    /// The frame's date ("Oct 17"); with no frame, the fixed playhead's,
+    /// else today's: the phone's readout always shows it, and a tap on it
+    /// opens "Go to a day".
     pub day: String,
-    /// "11:21:57", or "--:--:--" with no frame.
+    /// "11:21:57"; with no frame, the fixed playhead's time (dimmed), or
+    /// "--:--:--" when the playhead rides now.
     pub time: String,
     pub has_frame: bool,
     /// The zone, shown once here; every other clock inherits it.
@@ -236,10 +238,16 @@ impl TopBarVm {
                 zone: inputs.zone.to_string(),
                 zone_hover: zone_hover(inputs.zone, inputs.use_local_time),
             },
+            // No frame yet but a fixed playhead: the clock says where the
+            // playhead is (dimmed); "no frame yet" is the pill's, the frame
+            // state, not the clock's.
             None => FrameReadout {
-                date: None,
-                day: short_date(clock.day(inputs.now_secs)),
-                time: "--:--:--".to_string(),
+                date: fixed_playhead(session)
+                    .filter(|&ts| clock.day(ts) != clock.day(inputs.now_secs))
+                    .map(|ts| short_date(clock.day(ts))),
+                day: short_date(clock.day(fixed_playhead(session).unwrap_or(inputs.now_secs))),
+                time: fixed_playhead(session)
+                    .map_or_else(|| "--:--:--".to_string(), |ts| clock.hms(ts)),
                 has_frame: false,
                 zone: inputs.zone.to_string(),
                 zone_hover: zone_hover(inputs.zone, inputs.use_local_time),
@@ -281,6 +289,18 @@ impl TopBarVm {
             view_mode: inputs.view_mode,
             version: inputs.version.to_string(),
         }
+    }
+}
+
+/// The playhead's time when it is a fixed point (a single moment, not
+/// riding now): what the clock reads before a frame exists.
+fn fixed_playhead(session: &SessionVm) -> Option<f64> {
+    match (session.selection, session.playhead) {
+        (
+            crate::core::session::SelectionFact::Point,
+            crate::core::session::Playhead::AtTime { ts, .. },
+        ) => Some(ts),
+        _ => None,
     }
 }
 
@@ -666,6 +686,24 @@ mod tests {
         let pill = vm.pill.unwrap();
         assert_eq!(pill.mark, PillMark::None);
         assert_eq!(pill.text, "no frame yet");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_fixed_playhead_with_no_frame_yet_still_reads_on_the_clock() {
+        let now = t(12, 0, 0);
+        // Detached ten minutes back, the volume still downloading.
+        let vm = Fixture::new(session(Selection::Point { live: false }, None, now), now).build();
+        assert!(
+            !vm.readout.has_frame,
+            "dimmed: it is the playhead, not a frame"
+        );
+        assert_eq!(vm.readout.time, "11:50:00");
+        assert_eq!(vm.readout.date, None);
+        let pill = vm.pill.unwrap();
+        assert_eq!(
+            pill.text, "no frame yet",
+            "the frame state stays in the pill"
+        );
     }
 
     #[wasm_bindgen_test]

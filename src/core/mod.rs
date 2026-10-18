@@ -90,9 +90,9 @@ pub(crate) use domain::ops::{
     DownloadPhase, OperationId, OperationKind, OperationStatus, AVG_SCAN_BYTES,
 };
 pub(crate) use domain::playback::{
-    format_lag, macro_frame_bounds, BucketGranularity, FreezeAt, LoopBasis, LoopMode, LoopPreset,
-    MacroFrameInputs, MacroPlaybackState, PlaybackDirection, PlaybackMode, PlaybackSpeed,
-    PlaybackState, RebuildCause, Selection, TimeModel, TimeSelection, TimelineTier,
+    format_behind_short, format_lag, macro_frame_bounds, BucketGranularity, FreezeAt, LoopBasis,
+    LoopMode, LoopPreset, MacroFrameInputs, MacroPlaybackState, PlaybackDirection, PlaybackMode,
+    PlaybackSpeed, PlaybackState, RebuildCause, Selection, TimeModel, TimeSelection, TimelineTier,
     TIMELINE_ZOOM_MAX,
 };
 pub(crate) use domain::radar::{

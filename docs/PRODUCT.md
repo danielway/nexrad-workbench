@@ -640,8 +640,17 @@ Interactive measurement and analysis affordances on the 2D canvas:
 continuous zoom, so the strip is predictable and a scrub snaps to a unit the
 finger can hit. A pill at the strip's left edge says what the strip spans —
 **15 MIN**, **3 H**, **DAY** — and a tap goes to the next; a pinch moves one
-stop and settles on release. 15 MIN is the last three volumes with every cut
-(the scrub snaps to cuts). 3 H and DAY answer "where was the weather" the way
+stop and settles on release. 15 MIN is the same instrument as 3 H, closer in:
+the last three volumes, where a volume on the device shows its cuts (a filled
+cell is a frame you have) and a volume that is not shows the storm bar 3 H draws
+for it, with no underline and no tilt or VCP words; the live volume ends at now
+with a single ghost for its next cut. The scrub snaps cut by cut where cuts are
+known and just inside a volume's start (its first cut) elsewhere, and a still
+finger holds the playhead, so when a volume arrives its cuts appear in place and
+nothing jumps. While the
+frame under the playhead is downloading, the white playhead line and a dashed
+ring show where it will land, and the canvas caption says what it waits for.
+3 H and DAY answer "where was the weather" the way
 the desktop overview does: storm-activity bars in the storm blue, one per volume
 at 3 H and one per half hour at DAY, as tall as the weather the volume held
 (its file size in the day's listing), a slate underline under the volumes
@@ -651,7 +660,10 @@ needed. Every stop keeps the same marks: the periwinkle ring on the frame on
 screen, the white playhead line when detached, the red now line, and the
 desktop's small tab under it — filled red only for LIVE, outlined for REJOIN
 and GO LIVE, and an outlined `GO LIVE ›` (or `REJOIN ›`) edge tab at the right
-when now is off-screen. The tab sits below the cells, so it never hides a cell,
+when now is off-screen. On the phone the selection chip says the lag in short
+words — `15:12 · 20 h behind`, `25 min behind`, `5:33 behind` — and the top
+bar's clock reads the playhead's time, dimmed, while a fixed playhead waits for
+its frame ("no frame yet" stays in the pill). The tab sits below the cells, so it never hides a cell,
 the ring or the now line, and the ruler's labels give way to it. Pinned, now
 sits near the right edge with the ring on it and the window slides with now;
 detached, the window centres on the playhead when it lands somewhere new, holds
@@ -684,7 +696,8 @@ day's stormiest volume (its largest file) from the one listing the strip
 makes for that day; until that
 listing arrives the playhead waits at the day's local midday, then moves to
 the stormiest volume once, unless the user has touched the playhead since.
-While that volume downloads the playhead waits at its start; when it is in,
+While that volume downloads the playhead waits just inside its start (10 s
+in, as a scrub lands there, never on the listed time); when it is in,
 the playhead steps onto its first frame so the map shows it and the ring
 sits on it.
 The sheet's month is not persisted or in the link.

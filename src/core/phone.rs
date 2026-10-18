@@ -304,6 +304,13 @@ pub(crate) fn mini_lead_secs(volume_starts: &[f64]) -> f64 {
     MINI_VOLUMES * typical_volume_secs(volume_starts) * MINI_LEAD_SHARE
 }
 
+/// Whether the mini timeline's window is anchored to now: pinned, or a
+/// playhead within two volumes of now (and not past the ghost room).
+pub(crate) fn mini_near_now(now: f64, playhead: f64, pinned: bool, volume_starts: &[f64]) -> bool {
+    let vol = typical_volume_secs(volume_starts);
+    pinned || (playhead <= now + mini_lead_secs(volume_starts) && now - playhead <= 2.0 * vol)
+}
+
 /// The mini timeline's window. `volume_starts` are the containers' starts,
 /// oldest first (received, archived, live and the next volume's ghost).
 ///
@@ -320,8 +327,7 @@ pub(crate) fn mini_window(
     let vol = typical_volume_secs(volume_starts);
     let span = MINI_VOLUMES * vol;
     let lead = mini_lead_secs(volume_starts);
-    let near_now = pinned || (playhead <= now + lead && now - playhead <= 2.0 * vol);
-    if !near_now {
+    if !mini_near_now(now, playhead, pinned, volume_starts) {
         return MiniWindow {
             start: playhead - span / 2.0,
             end: playhead + span / 2.0,
