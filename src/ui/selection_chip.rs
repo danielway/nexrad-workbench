@@ -50,15 +50,36 @@ pub(crate) fn render_selection_chip(
     };
     let label = live.session.selection_chip;
     let use_local = state.use_local_time;
-    let text = format!(
-        "{} {}",
-        live.session.selection_chip_text(
-            &crate::ui::time_format::ZoneClock { use_local },
-            &ICON_GLYPHS,
-            style.compact
-        ),
-        egui_phosphor::regular::CARET_DOWN
+    let words = live.session.selection_chip_text(
+        &crate::ui::time_format::ZoneClock { use_local },
+        &ICON_GLYPHS,
+        style.compact,
     );
+    let with_caret = format!("{words} {}", egui_phosphor::regular::CARET_DOWN);
+    // In a tight row the caret goes before any of the words do (the chip's
+    // frame already reads as a button); only then does the label truncate.
+    let text = match style.max_width {
+        Some(max_w) => {
+            let room = max_w - 2.0 * ui.spacing().button_padding.x;
+            let width = |t: &str| {
+                egui::WidgetText::from(RichText::new(t).size(style.text_size).strong())
+                    .into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Extend),
+                        f32::INFINITY,
+                        egui::TextStyle::Button,
+                    )
+                    .size()
+                    .x
+            };
+            if width(&with_caret) <= room {
+                with_caret
+            } else {
+                words
+            }
+        }
+        None => with_caret,
+    };
 
     let (fill, text_color, stroke) = match label {
         ChipLabel::Live => {

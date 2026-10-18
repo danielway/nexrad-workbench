@@ -161,7 +161,7 @@ fn render_leading_controls(
     if ui
         .add(
             egui::Button::new(RichText::new(egui_phosphor::regular::CARET_LEFT).size(15.0))
-                .min_size(egui::vec2(30.0, btn_h)),
+                .min_size(egui::vec2(28.0, btn_h)),
         )
         .clicked()
     {
@@ -177,7 +177,7 @@ fn render_leading_controls(
     if ui
         .add(
             egui::Button::new(RichText::new(play_icon).size(20.0))
-                .min_size(egui::vec2(44.0, btn_h)),
+                .min_size(egui::vec2(40.0, btn_h)),
         )
         .clicked()
     {
@@ -187,14 +187,13 @@ fn render_leading_controls(
     if ui
         .add(
             egui::Button::new(RichText::new(egui_phosphor::regular::CARET_RIGHT).size(15.0))
-                .min_size(egui::vec2(30.0, btn_h)),
+                .min_size(egui::vec2(28.0, btn_h)),
         )
         .clicked()
     {
         step_frame(state, StepDir::Forward);
     }
 
-    ui.add_space(2.0);
     // The chip's ceiling: the width left after the speed control.
     let chip_max = ui.available_width() - speed_width(ui, &vm.speed) - gap;
     let view_start = playback.state.timeline_view_start;
