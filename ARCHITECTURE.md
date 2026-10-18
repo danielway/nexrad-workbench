@@ -378,7 +378,12 @@ underline, pulsing under it while it downloads; the live volume's box stops at
 now and carries only the ghost of its next cut. A scrub there snaps per cut
 where cuts are known and lands just inside a volume's start elsewhere
 (`StripUnits::landing_units`), a still finger never seeks again, and far from
-now the window holds still like the other stops'. While the playhead's frame
+now the window holds still like the other stops'. With a range selected the
+15 MIN window follows the range rather than the playhead looping in it
+(`cuts_range_window`): three volumes at least, widened so the whole range
+shows with 5 % of the span before its start, ending at now plus the ghost
+room near now and centred on the range further back; the strip marks the
+range with an amber bar and wash. While the playhead's frame
 is not on screen yet, a dashed ring marks where it will land
 (`pending_mark`). Every stop draws the periwinkle
 ring on the frame on screen, the white playhead line when detached, the now

@@ -17,7 +17,8 @@
 //! labels give way to the tab. The zoom pill at the left edge says what the
 //! strip spans and taps to the next stop.
 //!
-//! Rows, from the strip's top: the now line from 4 to 52; cells and bars
+//! Rows, from the strip's top: the now line from 4 to 52; the selected
+//! range's amber bar from 5 to 8 (its wash over the cells); cells and bars
 //! from 10 to 34 (the ring centred at 22); the underline at 36; ruler ticks
 //! at 40 and labels down to the baseline; the tab from 37 to 53, below the
 //! cells, so it never hides a cell, the ring or the now line.
@@ -79,6 +80,10 @@ const UNDERLINE_H: f32 = 3.0;
 const TICK_TOP: f32 = 40.0;
 const TICK_H: f32 = 3.0;
 const LABEL_TOP: f32 = 42.0;
+
+/// The selected range's bar, above the cells.
+const RANGE_BAR_TOP: f32 = 5.0;
+const RANGE_BAR_H: f32 = 3.0;
 
 /// The now and playhead lines' extent.
 const LINE_TOP: f32 = 4.0;
@@ -226,7 +231,17 @@ fn draw_strip(
     let all = view.frame_containers_in_range(look_from, now.max(playhead) + 3600.0, join);
     let starts: Vec<f64> = all.iter().map(|c| c.start_secs).collect();
     let prev = chrome.phone_strip_view.map(|(w, _)| w);
-    let window = strip_window(stop, now, playhead, pinned, &starts, prev);
+    // The selected range as the desktop strip draws it (its end on now
+    // when pinned): the window shows all of it, and the band marks it.
+    let range = crate::core::timeline_view::range_marks(
+        playback.state.selection_range(),
+        playback.state.is_live_range(),
+        playback.state.selection_in_progress(),
+        now,
+        crate::core::timeline_view::RangeCost::default(),
+    )
+    .map(|m| (m.start, m.end));
+    let window = strip_window(stop, now, playhead, pinned, &starts, prev, range);
     chrome.phone_strip_view = Some((window, lane.width()));
     let zoom = track.width() as f64 / window.span().max(1.0);
 
@@ -458,6 +473,24 @@ fn draw_strip(
                 );
             }
         }
+    }
+    // The selected range: the desktop's amber wash over the cells and its
+    // bar along the strip's top.
+    if let Some((rs, re)) = range {
+        let (x0, x1) = (frame.ts_to_x(rs), frame.ts_to_x(re));
+        lane_painter.rect_filled(
+            Rect::from_min_max(Pos2::new(x0, track.top()), Pos2::new(x1, track.bottom())),
+            0.0,
+            tl_colors::selection_fill(),
+        );
+        lane_painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(x0, top + RANGE_BAR_TOP),
+                Pos2::new(x1, top + RANGE_BAR_TOP + RANGE_BAR_H),
+            ),
+            1.0,
+            tl_colors::RANGE,
+        );
     }
     let tier = if stop.per_volume() {
         TimelineTier::Macro
