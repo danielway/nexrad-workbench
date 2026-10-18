@@ -25,7 +25,7 @@
 //! line, and a small tab under it ([`strip_cap`]): filled red only for LIVE,
 //! outlined for REJOIN and GO LIVE, and an outlined edge tab at the right
 //! (`GO LIVE ›`, `REJOIN ›`) when now is off the window. Ruler labels give
-//! way to the tab ([`ruler_labels_shown`]).
+//! way to the tab and step aside for range handles ([`ruler_label_xs`]).
 //!
 //! Pinned, the window ends just past now and slides with it. Detached, it
 //! centres on the playhead when the playhead arrives from off the window,
@@ -1004,27 +1004,51 @@ pub(crate) fn cap_intents(cap: NowCap, edge: bool) -> Vec<Intent> {
     }
 }
 
-/// Which ruler labels draw. `labels` are each label's left x and width;
-/// a label draws when it fits inside `lane` (left, right), clears every
-/// span in `avoid` (left, right: the now tab, the range handles in its row)
-/// and the label before it that drew.
-pub(crate) fn ruler_labels_shown(
+/// Where each ruler label draws, as its left x, or `None` when it does
+/// not. `labels` are each label's natural left x and width; `tab` is the
+/// now tab's span and `handles` the range handles' tap targets in its row
+/// (left, right). A label draws at its natural x when that fits inside
+/// `lane` (left, right), clears the tab, every handle and the label before
+/// it that drew. A label under the tab gives way. A label blocked only by a
+/// handle steps aside to the nearest clear place just left or right of a
+/// handle (inside the lane, clear of the tab, the handles and the label
+/// before it), and gives way only when there is none.
+pub(crate) fn ruler_label_xs(
     labels: &[(f32, f32)],
     lane: (f32, f32),
-    avoid: &[(f32, f32)],
-) -> Vec<bool> {
+    tab: Option<(f32, f32)>,
+    handles: &[(f32, f32)],
+) -> Vec<Option<f32>> {
     const GAP: f32 = 3.0;
+    let clear_of = |x: f32, w: f32, (l, r): (f32, f32)| x + w + GAP <= l || x >= r + GAP;
     let mut last_right = f32::NEG_INFINITY;
     labels
         .iter()
         .map(|&(x, w)| {
-            let fits = x >= lane.0 && x + w <= lane.1;
-            let clear = avoid.iter().all(|&(l, r)| x + w + GAP <= l || x >= r + GAP);
-            let show = fits && clear && x >= last_right + GAP;
-            if show {
-                last_right = x + w;
+            let ok = |x: f32| {
+                x >= lane.0
+                    && x + w <= lane.1
+                    && x >= last_right + GAP
+                    && tab.is_none_or(|t| clear_of(x, w, t))
+                    && handles.iter().all(|&h| clear_of(x, w, h))
+            };
+            let under_tab = tab.is_some_and(|t| !clear_of(x, w, t));
+            let blocked_by_handle = handles.iter().any(|&h| !clear_of(x, w, h));
+            let at = if ok(x) {
+                Some(x)
+            } else if blocked_by_handle && !under_tab {
+                handles
+                    .iter()
+                    .flat_map(|&(l, r)| [l - GAP - w, r + GAP])
+                    .filter(|&c| ok(c))
+                    .min_by(|a, b| (a - x).abs().total_cmp(&(b - x).abs()))
+            } else {
+                None
+            };
+            if let Some(at) = at {
+                last_right = at + w;
             }
-            show
+            at
         })
         .collect()
 }
@@ -1900,26 +1924,86 @@ mod tests {
             (330.0, 27.0),
             (360.0, 27.0),
         ];
+        let tab = Some((320.0, 360.0));
         // The last one would cross the lane's end; the one under the cap
         // gives way.
         assert_eq!(
-            ruler_labels_shown(&labels, (58.0, 380.0), &[(320.0, 360.0)]),
-            vec![true, true, true, false, false]
+            ruler_label_xs(&labels, (58.0, 380.0), tab, &[]),
+            vec![Some(60.0), Some(150.0), Some(240.0), None, None]
         );
         assert_eq!(
-            ruler_labels_shown(&labels, (58.0, 380.0), &[]),
-            vec![true, true, true, true, false]
-        );
-        // A range handle's mark in the row gives way too.
-        assert_eq!(
-            ruler_labels_shown(&labels, (58.0, 380.0), &[(320.0, 360.0), (154.0, 166.0)]),
-            vec![true, false, true, false, false]
+            ruler_label_xs(&labels, (58.0, 380.0), None, &[]),
+            vec![Some(60.0), Some(150.0), Some(240.0), Some(330.0), None]
         );
         // Two labels too close: the later one gives way.
         assert_eq!(
-            ruler_labels_shown(&[(60.0, 27.0), (80.0, 27.0)], (0.0, 400.0), &[]),
-            vec![true, false]
+            ruler_label_xs(&[(60.0, 27.0), (80.0, 27.0)], (0.0, 400.0), None, &[]),
+            vec![Some(60.0), None]
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_label_under_a_handle_steps_to_the_nearest_clear_side() {
+        let lane = (58.0, 380.0);
+        let tab = Some((320.0, 360.0));
+        // A handle's target over the second label: it steps right, the
+        // nearer side (left would be 124, 26 away; right is 169, 19 away).
+        assert_eq!(
+            ruler_label_xs(
+                &[(60.0, 27.0), (150.0, 27.0), (240.0, 27.0)],
+                lane,
+                tab,
+                &[(142.0, 166.0)]
+            ),
+            vec![Some(60.0), Some(169.0), Some(240.0)]
+        );
+        // Nearer on the left: it steps left.
+        assert_eq!(
+            ruler_label_xs(&[(150.0, 27.0)], lane, tab, &[(170.0, 194.0)]),
+            vec![Some(140.0)]
+        );
+        // The tab is still a hard rule: a label under it gives way even
+        // when a handle is there too.
+        assert_eq!(
+            ruler_label_xs(&[(330.0, 27.0)], lane, tab, &[(318.0, 342.0)]),
+            vec![None]
+        );
+        // A side that would cross the lane, the tab or the label before is
+        // not clear; with neither side clear the label gives way.
+        assert_eq!(
+            ruler_label_xs(&[(60.0, 27.0)], lane, None, &[(52.0, 76.0)]),
+            vec![Some(79.0)]
+        );
+        assert_eq!(
+            ruler_label_xs(&[(290.0, 27.0)], lane, tab, &[(282.0, 306.0)]),
+            vec![Some(252.0)]
+        );
+        assert_eq!(
+            ruler_label_xs(
+                &[(60.0, 27.0), (100.0, 27.0)],
+                (58.0, 140.0),
+                None,
+                &[(92.0, 116.0)]
+            ),
+            vec![Some(60.0), None]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn fifteen_minutes_with_a_range_keeps_every_label() {
+        // The 15 MIN case: handles sit on the only ticks (label x = tick +
+        // 2, target = tick +- 12). Every label still draws, beside its
+        // handle, without overlapping another.
+        let ticks = [90.0_f32, 200.0, 310.0];
+        let labels: Vec<_> = ticks.iter().map(|t| (t + 2.0, 32.0)).collect();
+        let handles = [(90.0 - 12.0, 90.0 + 12.0), (310.0 - 12.0, 310.0 + 12.0)];
+        let xs = ruler_label_xs(&labels, (58.0, 380.0), Some((350.0, 380.0)), &handles);
+        assert_eq!(xs, vec![Some(105.0), Some(202.0), Some(263.0)]);
+        // Two handles on the only two ticks: both labels still draw, each
+        // on the clear side nearest its tick.
+        let handles = [(78.0, 102.0), (188.0, 212.0)];
+        let xs = ruler_label_xs(&labels[..2], (58.0, 380.0), None, &handles);
+        assert_eq!(xs, vec![Some(105.0), Some(215.0)]);
     }
 
     #[wasm_bindgen_test]

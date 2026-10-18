@@ -28,7 +28,8 @@
 //! a fixed range, only the start for one pinned to now, a lone tick and
 //! handle for a parked start. The tab steps aside from the handles'
 //! targets ([`crate::core::phone_range::cap_clear_of_handles`]) and the
-//! ruler labels give way to both.
+//! ruler labels give way to the tab and step aside from the handles
+//! ([`crate::core::phone_strip::ruler_label_xs`]).
 //!
 //! A tap seeks (`Intent::Seek`, Press), a drag scrubs (the same reducer,
 //! synchronously, like the desktop strip), both snapped to the stop's unit
@@ -51,7 +52,7 @@ use crate::core::phone_range::{
 };
 use crate::core::phone_strip::{
     activity_bars, cap_intents, cut_volumes, next_stop, on_device_spans, pending_mark, quiet_spans,
-    ring_center, ruler_labels_shown, ruler_ticks, sizes_span, snap_scrub, strip_cap, strip_window,
+    ring_center, ruler_label_xs, ruler_ticks, sizes_span, snap_scrub, strip_cap, strip_window,
     zoom_pill_label, CutLook, PinchInput, StripTouch, StripTouchInput, StripUnits, StripZoom,
     STRIP_REACH_PX,
 };
@@ -510,14 +511,13 @@ fn draw_strip(
         .filter(|(_, l)| !l.is_empty())
         .map(|(x, l)| (x + 2.0, measure(l)))
         .collect();
-    let mut avoid = vec![(cap.x0, cap.x0 + cap.width)];
-    avoid.extend(
-        marks
-            .handles
-            .iter()
-            .map(|h| (h.x - HANDLE_R, h.x + HANDLE_R)),
-    );
-    let mut shown = ruler_labels_shown(&labelled, lane_x, &avoid).into_iter();
+    let handles: Vec<(f32, f32)> = marks
+        .handles
+        .iter()
+        .map(|h| (h.x - HANDLE_TARGET_PX / 2.0, h.x + HANDLE_TARGET_PX / 2.0))
+        .collect();
+    let tab = Some((cap.x0, cap.x0 + cap.width));
+    let mut label_xs = ruler_label_xs(&labelled, lane_x, tab, &handles).into_iter();
     for (x, label) in ticks {
         lane_painter.line_segment(
             [
@@ -526,11 +526,14 @@ fn draw_strip(
             ],
             Stroke::new(1.0_f32, tl_colors::TICK_MINOR),
         );
-        if label.is_empty() || !shown.next().unwrap_or(false) {
+        if label.is_empty() {
             continue;
         }
+        let Some(label_x) = label_xs.next().flatten() else {
+            continue;
+        };
         lane_painter.text(
-            Pos2::new(x + 2.0, top + LABEL_TOP),
+            Pos2::new(label_x, top + LABEL_TOP),
             egui::Align2::LEFT_TOP,
             label,
             font.clone(),
