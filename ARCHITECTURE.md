@@ -105,6 +105,8 @@ User selects site/date
     never stand in for that volume as the scan under the playhead)
   → User selects scan (or range queued in the download queue)
   → Worker ingest: split records → decompress → decode → extract sweep blobs
+    (an archive that splits as truncated is downloaded once more, quietly —
+    core::acquisition::IngestRetries — and reported only if it fails again)
   → upsert_scan: pre-computed sweep blobs + scan-index entry into IndexedDB
   → Return sweep metadata to main thread
   → RenderCoordinator sends worker.render(scan_key, elevation, product)

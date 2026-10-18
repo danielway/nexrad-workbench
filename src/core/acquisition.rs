@@ -474,6 +474,13 @@ impl RequestLedger {
         self.entries.clear();
     }
 
+    /// Forget the request for one scan, so the pumps may ask for it again at
+    /// once (a quiet retry, see [`IngestRetries`]).
+    pub(crate) fn forget(&mut self, scan_start: i64, tolerance_secs: i64) {
+        self.entries
+            .retain(|&k, _| (k - scan_start).abs() >= tolerance_secs);
+    }
+
     /// Count the ledger's live states for the activity surface.
     ///
     /// Expired entries are excluded rather than reported: an entry past its
@@ -532,6 +539,52 @@ impl RequestLedger {
             .min_by_key(|&&k| (k - scan_start).abs())
             .copied()?;
         self.entries.get_mut(&key)
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Failed ingests — one quiet retry for a truncated download
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Whether a failed ingest says the downloaded archive was cut short: its
+/// last record runs past the end of the bytes (`Failed to split archive:
+/// truncated record: expected N bytes, got M`). A complete volume never splits
+/// that way, so the bytes are worth downloading once more.
+pub(crate) fn ingest_failure_is_truncated(message: &str) -> bool {
+    message.contains("truncated record")
+}
+
+/// What the shell does with a failed archive ingest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IngestFailureAction {
+    /// Drop the failure quietly (no error, no toast, no backoff): forget the
+    /// scan's request and its finished queue item, so the pumps download it
+    /// again while it is still wanted. A scan the playhead has left is then
+    /// simply not asked for again.
+    RetryQuietly { scan_start: i64 },
+    /// Report it: record the error and back off automatic requests.
+    Report,
+}
+
+/// Which scans have had their one quiet retry after a truncated download.
+/// Pure and headless.
+#[derive(Debug, Default)]
+pub(crate) struct IngestRetries {
+    retried: std::collections::HashSet<i64>,
+}
+
+impl IngestRetries {
+    /// Decide a failed ingest of the scan listed at `scan_start` (`None` when
+    /// the failure could not be tied to a scan). A truncated archive gets
+    /// one quiet retry per scan; anything else, or a second truncation, is
+    /// reported.
+    pub(crate) fn decide(&mut self, scan_start: Option<i64>, message: &str) -> IngestFailureAction {
+        match scan_start {
+            Some(s) if ingest_failure_is_truncated(message) && self.retried.insert(s) => {
+                IngestFailureAction::RetryQuietly { scan_start: s }
+            }
+            _ => IngestFailureAction::Report,
+        }
     }
 }
 
@@ -1556,6 +1609,62 @@ mod reducer_tests {
             product_worker_string: "reflectivity",
             fallback_scan_duration_secs: 300,
         }
+    }
+
+    // ── failed ingests ──────────────────────────────────────────────────────
+
+    const TRUNCATED: &str =
+        "Failed to split archive: truncated record: expected 1723139 bytes, got 587040";
+
+    // A truncated download is retried once, quietly; the second is reported.
+    #[wasm_bindgen_test]
+    fn truncated_ingest_retries_once_then_reports() {
+        let mut r = IngestRetries::default();
+        assert_eq!(
+            r.decide(Some(600), TRUNCATED),
+            IngestFailureAction::RetryQuietly { scan_start: 600 }
+        );
+        assert_eq!(r.decide(Some(600), TRUNCATED), IngestFailureAction::Report);
+        // Another scan still gets its own retry.
+        assert_eq!(
+            r.decide(Some(900), TRUNCATED),
+            IngestFailureAction::RetryQuietly { scan_start: 900 }
+        );
+    }
+
+    // Other failures, and failures not tied to a scan, are reported at once.
+    #[wasm_bindgen_test]
+    fn other_ingest_failures_are_reported() {
+        let mut r = IngestRetries::default();
+        assert_eq!(
+            r.decide(Some(600), "No records found"),
+            IngestFailureAction::Report
+        );
+        assert_eq!(r.decide(None, TRUNCATED), IngestFailureAction::Report);
+        // A reported failure does not use up the scan's retry.
+        assert_eq!(
+            r.decide(Some(600), TRUNCATED),
+            IngestFailureAction::RetryQuietly { scan_start: 600 }
+        );
+    }
+
+    // Forgetting a failed request lets the anchor pump ask for it again at
+    // once, instead of after the failure backoff.
+    #[wasm_bindgen_test]
+    fn forgetting_a_failed_request_lifts_its_backoff() {
+        let mut ledger = RequestLedger::default();
+        ledger.note_enqueued(600, None, 0.0);
+        ledger.note_failed(600, 30, 1_000.0);
+        let intent = ScanFetchIntent {
+            date: NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
+            file_name: "f600".to_string(),
+            scan_start: 600,
+            scan_end: 900,
+            elevation_filter: None,
+        };
+        assert!(ledger.suppresses(&intent, 30, 2_000.0));
+        ledger.forget(605, 30);
+        assert!(!ledger.suppresses(&intent, 30, 2_000.0));
     }
 
     // ── listing index queries ───────────────────────────────────────────────
