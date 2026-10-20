@@ -230,7 +230,18 @@ pub(crate) struct ErrorSummary {
     pub unseen: u32,
     /// Newest first, at most [`SHEET_ERRORS`]. Empty unless the sheet is
     /// open.
-    pub recent: Vec<String>,
+    pub recent: Vec<SheetLine>,
+    /// The list's heading: "Recent errors", or "Notes" when every listed
+    /// line is a note.
+    pub heading: &'static str,
+}
+
+/// One line of the sheet's recent list.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SheetLine {
+    pub text: String,
+    /// An informational note, drawn with an info mark instead of a warning.
+    pub note: bool,
 }
 
 /// How many recent errors the sheet lists.
@@ -243,19 +254,34 @@ pub(crate) fn error_summary(errors: &ErrorContext, acked: u64, sheet_open: bool)
     let unseen = errors
         .iter()
         .skip(errors.len() - fresh)
+        .filter(|e| !crate::core::toast::is_note(&e.error))
         .filter(|e| crate::core::toast::error_text(&e.error).is_some())
         .count() as u32;
-    let recent = if sheet_open {
+    let recent: Vec<SheetLine> = if sheet_open {
         errors
             .iter()
             .rev()
-            .filter_map(|e| crate::core::toast::error_text(&e.error))
+            .filter_map(|e| {
+                crate::core::toast::error_text(&e.error).map(|text| SheetLine {
+                    text,
+                    note: crate::core::toast::is_note(&e.error),
+                })
+            })
             .take(SHEET_ERRORS)
             .collect()
     } else {
         Vec::new()
     };
-    ErrorSummary { unseen, recent }
+    let heading = if !recent.is_empty() && recent.iter().all(|l| l.note) {
+        "Notes"
+    } else {
+        "Recent errors"
+    };
+    ErrorSummary {
+        unseen,
+        recent,
+        heading,
+    }
 }
 
 /// The acknowledged count after this frame: an open sheet has shown every
@@ -1404,6 +1430,10 @@ mod coverage_tests {
         }
     }
 
+    fn texts(vm: &ActivityVm) -> Vec<&str> {
+        vm.errors.recent.iter().map(|l| l.text.as_str()).collect()
+    }
+
     #[wasm_bindgen_test]
     fn unseen_errors_count_on_the_chip_and_skip_downloads() {
         let mut f = Fixture::new();
@@ -1417,16 +1447,42 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
+    fn a_note_is_listed_in_the_sheet_but_never_unseen() {
+        let mut f = Fixture::new();
+        let (_, note) = crate::core::RadarProduct::from_link_code("CFP").unwrap();
+        f.errors.push(crate::core::AppError::Note {
+            message: note.unwrap(),
+        });
+        assert_eq!(f.vm().errors.unseen, 0, "no dot on the bell for a note");
+        f.sheet_open = true;
+        let vm = f.vm();
+        assert_eq!(
+            texts(&vm),
+            vec![
+                "Note: Clutter Filter Power (CFP) isn\u{2019}t available yet; showing reflectivity"
+            ]
+        );
+        assert!(vm.errors.recent[0].note);
+        assert_eq!(vm.errors.heading, "Notes");
+        // Alongside a real error the list is headed as errors again, and
+        // only the error carries a warning.
+        f.errors.push(alerts_error("503"));
+        let vm = f.vm();
+        assert_eq!(vm.errors.heading, "Recent errors");
+        assert_eq!(
+            vm.errors.recent.iter().map(|l| l.note).collect::<Vec<_>>(),
+            vec![false, true]
+        );
+    }
+
+    #[wasm_bindgen_test]
     fn the_open_sheet_lists_errors_newest_first_and_acknowledges_them() {
         let mut f = Fixture::new();
         f.errors.push(alerts_error("first"));
         f.errors.push(alerts_error("second"));
         f.sheet_open = true;
         let vm = f.vm();
-        assert_eq!(
-            vm.errors.recent,
-            vec!["NWS alerts: second", "NWS alerts: first"]
-        );
+        assert_eq!(texts(&vm), vec!["NWS alerts: second", "NWS alerts: first"]);
         f.errors_acked = errors_acked(&f.errors, f.errors_acked, f.sheet_open);
         f.sheet_open = false;
         assert_eq!(f.vm().errors.unseen, 0);
@@ -1452,7 +1508,7 @@ mod coverage_tests {
         assert_eq!(f.vm().errors.unseen as usize, f.errors.len());
         f.sheet_open = true;
         assert_eq!(f.vm().errors.recent.len(), SHEET_ERRORS);
-        assert_eq!(f.vm().errors.recent[0], "NWS alerts: 79");
+        assert_eq!(f.vm().errors.recent[0].text, "NWS alerts: 79");
     }
 
     #[wasm_bindgen_test]

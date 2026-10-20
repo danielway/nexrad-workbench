@@ -407,7 +407,11 @@ tilt selected, the reveal pauses while the antenna is on other tilts.
 ### 9.1 Filters
 
 The user selects a **tilt** (an angle; every visit of it in the volume is a
-frame — §3) and a **product** from the available set. The filter does double duty: it **drives
+frame — §3) and a **product** from the available set: reflectivity (REF),
+velocity (VEL), spectrum width (SW), differential reflectivity (ZDR),
+correlation coefficient (CC) and differential phase (KDP). Clutter Filter
+Power is not offered until the worker decodes it as its own product (the
+decoder keeps its moment for that day). The filter does double duty: it **drives
 sweep matching** for rendering (below) and it **scopes acquisition** (§10) — only
 matching data is fetched/cached.
 
@@ -777,7 +781,7 @@ decision are `core::link`; preferences are `core::prefs`.
 | Playhead time | `t` | Unix seconds; not written while pinned |
 | Selection | `sel` | `now` (pinned point), `last6f` / `last1800s` (range ending now), `START~END` (fixed range); absent = a point at `t` |
 | Play mode | `mode` | `frames` or `rays` |
-| Product | `product` | Short code (`REF`, `VEL`, …) |
+| Product | `product` | Short code: `REF`, `VEL`, `SW`, `ZDR`, `CC` or `KDP`. `CFP` (Clutter Filter Power) is not offered yet, so a link naming it opens on `REF` with a one-line note in the activity sheet (no toast) |
 | Tilt | `tilt` | An angle (`0.5`) or `latest` |
 | Map center | `lat`, `lon` | |
 | 2D/3D, camera, map and timeline zoom, volume rendering and cutoff | `v` | Base64 JSON blob; its old `rt` flag is read as `sel=now` |

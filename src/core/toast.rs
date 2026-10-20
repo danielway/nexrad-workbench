@@ -175,6 +175,7 @@ impl ToastQueue {
         let texts: Vec<String> = errors
             .iter()
             .skip(skip)
+            .filter(|e| !is_note(&e.error))
             .filter_map(|e| error_text(&e.error))
             .collect();
         for text in texts {
@@ -192,9 +193,16 @@ pub(crate) fn error_text(error: &AppError) -> Option<String> {
         AppError::Worker { .. } => "Decode worker",
         AppError::Alerts { .. } => "NWS alerts",
         AppError::Mping { .. } => "mPING reports",
+        AppError::Note { .. } => "Note",
         AppError::Other { .. } => "Error",
     };
     Some(format!("{source}: {}", error.message()))
+}
+
+/// A note is listed in the activity sheet but is not a failure: it never
+/// toasts and never counts as unseen.
+pub(crate) fn is_note(error: &AppError) -> bool {
+    matches!(error, AppError::Note { .. })
 }
 
 #[cfg(test)]
@@ -326,6 +334,17 @@ mod tests {
         assert_eq!(v.text, "No scan to inspect at that time");
         // An empty port adds nothing.
         q.absorb_status(&mut status);
+        assert!(q.pending.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn a_note_is_never_a_toast() {
+        let mut errors = ErrorContext::default();
+        let mut q = ToastQueue::default();
+        errors.push(AppError::Note {
+            message: "Clutter Filter Power (CFP) isn\u{2019}t available yet".into(),
+        });
+        q.absorb_errors(&errors);
         assert!(q.pending.is_empty());
     }
 
