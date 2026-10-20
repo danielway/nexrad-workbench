@@ -9,7 +9,7 @@ no account, no server: everything runs on your own device.
 
 ### [▶ Open NEXRAD Workbench](https://danielway.github.io/nexrad-workbench/)
 
-![Hurricane Milton looping over Tampa Bay on 9 October 2024](docs/media/milton-loop.gif)
+![Hurricane Milton looping over Tampa Bay on 9 October 2024](docs/media/milton-loop.webp)
 
 <sub>Hurricane Milton approaching Tampa Bay, 9 October 2024, from the KTBW radar. One volume every seven minutes over 90 minutes.</sub>
 
@@ -32,25 +32,37 @@ no account, no server: everything runs on your own device.
   counties and cities. Probe any point for its value, or measure a distance.
 - **Share exactly what you see.** The page URL carries the site, time, product,
   tilt and view, so a copied link opens the same picture for someone else.
-- **Take it with you.** On a phone it becomes a compact instrument: a row of
-  volumes you can touch, a three-button transport, and the panels in a sheet.
-  You can add it to your home screen like an app.
+- **Use it on your phone.** It works on phones too, and you can add it to
+  your home screen.
+
+## A closer look
+
+![Rays playback of one Milton volume, the sweep line painting each tilt over the last](docs/media/sweep.webp)
+
+<sub>**Ray by ray.** In Rays mode the playhead follows the antenna. The sweep line paints each new tilt over the previous one, which fades, and the tilt ladder on the right tracks which elevation the radar is on.</sub>
+
+![Milton in 3D with every tilt drawn as a volume](docs/media/volume-3d.jpg)
+
+<sub>**Every tilt at once.** On the 3D globe, volume rendering draws all 23 tilts of a scan together, here with a 25 dBZ cutoff so the tall cells in Milton's outer bands stand out.</sub>
+
+![Four months of storm activity at KTLX in 2024](docs/media/storm-activity.png)
+
+<sub>**Where the weather was.** The overview strip zoomed out to four months at KTLX in 2024: a quiet March, then the busy weeks of late April through June.</sub>
 
 <table>
   <tr>
-    <td width="68%"><img src="docs/media/site-picker.jpg" alt="Choosing a radar site from the site picker"></td>
-    <td><img src="docs/media/phone.jpg" alt="NEXRAD Workbench on a phone"></td>
+    <td width="50%"><img src="docs/media/phone.jpg" alt="NEXRAD Workbench on a phone"></td>
+    <td width="50%"><img src="docs/media/phone-calendar.jpg" alt="The phone's Go to a day calendar, with stormy days shaded"></td>
   </tr>
   <tr>
-    <td>Search for a radar by ID, city, state or zip, use your location, or pick one on the map.</td>
-    <td>The same instrument on a phone.</td>
+    <td>On a phone.</td>
+    <td>Going to a day: stormy days are shaded, so the days around Milton stand out.</td>
   </tr>
 </table>
 
-<p>
-  <img src="docs/media/timeline.png" alt="The transport and timeline: a 90-minute loop selected over a day of storm activity">
-  <br><sub>The timeline: the overview strip with storm activity on top, and a 90-minute loop of downloaded volumes below.</sub>
-</p>
+![Choosing a radar site from the site picker](docs/media/site-picker.jpg)
+
+<sub>Search for a radar by ID, city, state or zip, use your location, or pick one on the map.</sub>
 
 ## Getting around
 
