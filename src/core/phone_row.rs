@@ -186,6 +186,9 @@ pub(crate) struct RowVm {
     pub now_x: Option<f32>,
     pub bracket: Option<Bracket>,
     pub loading: Option<LoadingVm>,
+    /// The start of the volume under the playhead: what the chip names for
+    /// a point, so it reads as the block's label does.
+    pub selected_start: Option<f64>,
 }
 
 /// The download spans the acquisition reports, in whole seconds.
@@ -403,6 +406,7 @@ pub(crate) fn row_vm(i: &RowInputs<'_>) -> RowVm {
     let mut out = RowVm {
         now_x,
         loading: loading.clone(),
+        selected_start: selected.map(|k| vols[k].start),
         ..RowVm::default()
     };
 
@@ -861,6 +865,7 @@ mod tests {
         let l = row.loading.unwrap();
         assert_eq!(l.label, "Loading 00:07");
         assert_eq!(l.start, 420.0);
+        assert_eq!(row.selected_start, Some(420.0));
         // Only the selected block carries the arc.
         assert_eq!(row.blocks.iter().filter(|b| b.arc.is_some()).count(), 1);
     }

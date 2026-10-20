@@ -128,6 +128,8 @@ pub(crate) struct Chrome {
     pub phone_loading: Option<crate::core::phone_row::LoadingVm>,
     /// The row shows now this frame (the LIVE button then needs no jump).
     pub phone_now_in_view: bool,
+    /// The start of the volume under the playhead, for the chip's point.
+    pub phone_selected_start: Option<f64>,
     /// The canvas's frame on the last phone frame, so the map can hold still
     /// while the chrome slides ([`crate::core::phone::hold_map_still`]).
     pub last_canvas: Option<crate::core::phone::CanvasFrame>,

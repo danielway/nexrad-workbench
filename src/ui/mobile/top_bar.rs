@@ -133,20 +133,38 @@ fn draw_mobile_top_bar(
 
 /// The site: a small mono chip that opens the site picker.
 fn site_chip(ui: &mut egui::Ui, id: &str) -> egui::Response {
-    let font = FontId::monospace(13.0);
-    let text = format!("{id} {}", icons::CARET_DOWN);
-    let galley = ui.painter().layout_no_wrap(text, font, theme::TEXT);
-    let size = galley.size() + egui::vec2(16.0, 8.0);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(id.to_string(), FontId::monospace(13.0), theme::TEXT);
+    // The caret is an icon-font glyph: the mono font has none.
+    let caret = ui.painter().layout_no_wrap(
+        icons::CARET_DOWN.to_string(),
+        FontId::proportional(11.0),
+        theme::TEXT_DIM,
+    );
+    let size = egui::vec2(
+        galley.size().x + 5.0 + caret.size().x + 16.0,
+        galley.size().y + 8.0,
+    );
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
-    ui.painter().rect(
+    let p = ui.painter();
+    p.rect(
         rect,
         6.0,
         colors::CONTROL,
         Stroke::new(1.0, theme::LINE),
         StrokeKind::Inside,
     );
-    ui.painter()
-        .galley(rect.min + egui::vec2(8.0, 4.0), galley, theme::TEXT);
+    let gw = galley.size().x;
+    p.galley(rect.min + egui::vec2(8.0, 4.0), galley, theme::TEXT);
+    p.galley(
+        egui::pos2(
+            rect.left() + 8.0 + gw + 5.0,
+            rect.center().y - caret.size().y / 2.0,
+        ),
+        caret,
+        theme::TEXT_DIM,
+    );
     resp.on_hover_text("Choose a radar site")
 }
 

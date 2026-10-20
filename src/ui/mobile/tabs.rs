@@ -137,6 +137,7 @@ fn render_transport_row(
                 };
                 let chip = phone_chip(
                     &live.session.selection_chip,
+                    chrome.phone_selected_start,
                     chrome.phone_loading.is_some(),
                     &clock,
                     egui_phosphor::regular::ARROW_RIGHT,
@@ -179,17 +180,29 @@ fn play_button(ui: &mut egui::Ui, play: PlayButton) -> egui::Response {
         p.circle_filled(c, PLAY_D / 2.0, theme::HOVER);
     }
     p.circle_stroke(c, PLAY_D / 2.0 - 0.75, Stroke::new(1.5, theme::TEXT));
-    let glyph = match play {
-        PlayButton::Pause => egui_phosphor::regular::PAUSE,
-        PlayButton::Play => egui_phosphor::regular::PLAY,
-    };
-    p.text(
-        c,
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        FontId::proportional(17.0),
-        theme::TEXT,
-    );
+    // Drawn, not a glyph: the icon font's play and pause are outlines.
+    match play {
+        PlayButton::Pause => {
+            for dx in [-4.0, 4.0] {
+                p.rect_filled(
+                    egui::Rect::from_center_size(c + egui::vec2(dx, 0.0), egui::vec2(4.0, 14.0)),
+                    1.0,
+                    theme::TEXT,
+                );
+            }
+        }
+        PlayButton::Play => {
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    c + egui::vec2(-4.5, -7.5),
+                    c + egui::vec2(8.0, 0.0),
+                    c + egui::vec2(-4.5, 7.5),
+                ],
+                theme::TEXT,
+                Stroke::NONE,
+            ));
+        }
+    }
     resp.on_hover_text(match play {
         PlayButton::Pause => "Pause",
         PlayButton::Play => "Play",

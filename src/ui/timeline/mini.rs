@@ -208,6 +208,7 @@ fn draw_strip(
     });
     chrome.phone_loading = row.loading.clone();
     chrome.phone_now_in_view = row.now_x.is_some();
+    chrome.phone_selected_start = row.selected_start;
 
     let time = ui.ctx().input(|i| i.time);
     let reduced = reduced_motion(ui.ctx());

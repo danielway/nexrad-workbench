@@ -50,17 +50,20 @@ pub(crate) struct PhoneChip {
     pub loading: bool,
 }
 
-/// The chip for a selection. `arrow` is the glyph between a range's ends
-/// (the shell's font may lack `→`).
+/// The chip for a selection. A point names the start of the volume under
+/// the playhead (`point_start`, the row's), as its block's label does, else
+/// the playhead's minute. `arrow` is the glyph between a range's ends (the
+/// shell's font may lack `→`).
 pub(crate) fn phone_chip(
     label: &ChipLabel,
+    point_start: Option<f64>,
     loading: bool,
     clock: &dyn Clock,
     arrow: &str,
 ) -> PhoneChip {
     let (tone, text) = match *label {
         ChipLabel::Live => (ChipTone::Live, "Live".to_string()),
-        ChipLabel::At { ts, .. } => (ChipTone::Point, clock.hm(ts)),
+        ChipLabel::At { ts, .. } => (ChipTone::Point, clock.hm(point_start.unwrap_or(ts))),
         ChipLabel::RangeToNow { basis } => (ChipTone::Loop, format!("Last {}", basis.label())),
         ChipLabel::Range { start, end } => {
             let (a, b) = (clock.day(start), clock.day(end));
@@ -337,7 +340,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn the_chip_has_one_short_form_per_state() {
-        let chip = |l: ChipLabel| phone_chip(&l, false, &Utc, "→");
+        let chip = |l: ChipLabel| phone_chip(&l, None, false, &Utc, "→");
         assert_eq!(chip(ChipLabel::Live).text, "Live");
         assert_eq!(chip(ChipLabel::Live).tone, ChipTone::Live);
         let at = chip(ChipLabel::At {
@@ -345,6 +348,18 @@ mod tests {
             behind_secs: Some(1_200.0),
         });
         assert_eq!(at.text, "23:49", "no lag, no seconds");
+        // A point names its volume's start, as the block's label does.
+        let at = phone_chip(
+            &ChipLabel::At {
+                ts: T + 30.0,
+                behind_secs: None,
+            },
+            Some(T - 9.0 * 60.0),
+            false,
+            &Utc,
+            "→",
+        );
+        assert_eq!(at.text, "23:40");
         assert_eq!(at.tone, ChipTone::Point);
         let last = chip(ChipLabel::RangeToNow {
             basis: LoopBasis::FrameCount(4),
@@ -373,6 +388,7 @@ mod tests {
                 ts: T,
                 behind_secs: None,
             },
+            None,
             true,
             &Utc,
             "→",
