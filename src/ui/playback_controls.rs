@@ -55,6 +55,7 @@ pub(super) fn render_playback_controls(
             min_height: 0.0,
             stop_placement: crate::core::transport::LiveStopPlacement::LiveEdge,
             compact: false,
+            phone: None,
             max_width: None,
         },
     );

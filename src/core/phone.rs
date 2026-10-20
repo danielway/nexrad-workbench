@@ -436,12 +436,6 @@ impl PressTrack {
         self.fired
     }
 
-    /// The press moved past [`PRESS_SLOP_PX`]: a drag for the rest of its
-    /// life (a scrub, or a range handle moving).
-    pub(crate) fn scrubbing(&self) -> bool {
-        self.scrubbing
-    }
-
     /// A pinch took this press over ([`Self::cancel`]).
     pub(crate) fn cancelled(&self) -> bool {
         self.cancelled

@@ -1,22 +1,30 @@
-//! Mobile bottom chrome: a condensed transport row under the mini timeline
-//! (one-instrument §13).
+//! Mobile bottom chrome (phone timeline v2): the dock, 120 px of it.
 //!
 //! Two stacked `Panel::bottom` panels:
-//!   1. Transport row (~48px) — bottommost. Frame step ‹ ›, Play/Pause, the
-//!      selection chip, the speed, the activity dot and the sheet button —
-//!      the desktop transport's controls from the same view-models.
-//!   2. The mini timeline (~56px) — topmost. The desktop strip's real cells,
-//!      marks, playhead and now cap at one of three zoom stops (cuts,
-//!      volumes, the day), with its zoom pill (`ui::timeline::mini`).
+//!   1. The transport row (54 px) — bottommost. Play/pause, the selection
+//!      chip, the NOW · 3 H · 24 H control and, when the selection is not
+//!      pinned to now, LIVE. Nothing else: stepping is a tap on the next
+//!      block, the speed is in the sheet's View tab, failures are a dot on
+//!      the top bar's bell.
+//!   2. The row (66 px) — topmost. A row of volumes you can touch
+//!      (`ui::timeline::mini`).
 
-use crate::core::transport::{PlayButton, SpeedControl, StepDir};
+use crate::core::phone_dock::{live_button, phone_chip};
+use crate::core::phone_strip::{zoom_pill_label, StripZoom};
+use crate::core::transport::PlayButton;
 use crate::core::Intent;
 use crate::state::AppState;
 use crate::ui::theme;
-use eframe::egui::{self, RichText};
+use crate::ui::theme::phone as colors;
+use eframe::egui::{self, FontId, Sense, Stroke, StrokeKind};
 
-const TRANSPORT_BAR_HEIGHT: f32 = 48.0;
-const MINI_AREA_HEIGHT: f32 = crate::ui::timeline::mini::MINI_TIMELINE_H + 4.0;
+const TRANSPORT_BAR_HEIGHT: f32 = 54.0;
+const MINI_AREA_HEIGHT: f32 = crate::ui::timeline::mini::MINI_TIMELINE_H;
+
+/// The play button's diameter.
+const PLAY_D: f32 = 42.0;
+/// The chip's and LIVE's height.
+const PILL_H: f32 = 38.0;
 
 pub(in crate::ui) struct MobileChromeLayer;
 
@@ -39,9 +47,7 @@ fn draw_mobile_chrome(ctx: &mut super::super::layout::LayoutCtx) {
         timeline,
         live,
         playback,
-        acquisition,
         chrome,
-        activity_vm,
         ..
     } = ctx;
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
@@ -55,248 +61,227 @@ fn draw_mobile_chrome(ctx: &mut super::super::layout::LayoutCtx) {
     let shown = !chrome.mobile_auto_hide.hidden;
     // The strip claims its own pinch afresh each frame it draws.
     chrome.phone_strip_claims_touch = false;
+    let dock = egui::Frame::NONE
+        .fill(colors::DOCK)
+        .inner_margin(egui::Margin::ZERO);
 
     root_ui.style_mut().animation_time = crate::core::phone::CHROME_SLIDE_SECS;
-    // Bottommost — the condensed transport row.
+    // Bottommost — the transport row.
     let mut expanded = shown;
     egui::Panel::bottom("mobile_transport_bar")
         .resizable(false)
         .exact_size(TRANSPORT_BAR_HEIGHT + inset_bottom)
+        .frame(dock)
         .show_collapsible(root_ui, &mut expanded, |ui| {
-            render_transport_row(ui, state, live, playback, chrome, activity_vm);
+            ui.allocate_ui(
+                egui::vec2(ui.available_width(), TRANSPORT_BAR_HEIGHT),
+                |ui| {
+                    render_transport_row(ui, state, live, playback, chrome);
+                },
+            );
         });
 
-    // The mini timeline — just above the transport row.
+    // The row — just above the transport row.
     let mut expanded = shown;
     egui::Panel::bottom("mobile_mini_timeline")
         .resizable(false)
         .exact_size(MINI_AREA_HEIGHT)
+        .frame(dock)
         .show_collapsible(root_ui, &mut expanded, |ui| {
-            ui.add_space(2.0);
             crate::ui::timeline::mini::render_mini_timeline(
-                ui,
-                state,
-                timeline,
-                live,
-                playback,
-                acquisition,
-                chrome,
+                ui, state, timeline, live, playback, chrome,
             );
         });
 }
 
-/// The condensed transport row: step, play, step, the selection chip (with
-/// the lag when detached) and the speed on the leading edge; the activity
-/// dot and the sheet button on the trailing edge. The same controls and
-/// view-models as the desktop transport, folded to 390 px.
+/// The transport row: play, the chip, the stop control and LIVE. The
+/// trailing pair lays out first, right to left, so the chip knows the room
+/// it has; the core keeps its words short enough for it.
 fn render_transport_row(
     ui: &mut egui::Ui,
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
-    activity_vm: &crate::core::activity::ActivityVm,
 ) {
-    // Never disabled: the core decides what each press means (§2).
-    let btn_h = 38.0;
     let vm = crate::core::transport::transport_vm(&playback.state);
     let strip_view = chrome.phone_strip_view.map(|(w, _)| (w.start, w.end));
+    let narrow = ui.available_width() < 380.0;
+    let gap = if narrow { 6.0 } else { 10.0 };
+    let edge = if narrow { 8.0 } else { 12.0 };
+    let live_intents = live_button(live.session.now_cap, chrome.phone_now_in_view);
 
-    // The trailing cluster (sheet button, activity dot / error badge) lays
-    // out first, right to left, so its real width is known; the leading
-    // controls then take what is left, and the chip gets that minus the
-    // speed, so nothing can draw over anything else at 360 px.
     ui.horizontal_centered(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(4.0);
-            ui.spacing_mut().item_spacing.x = 2.0;
-
-            // The sheet: the rail's tabs. It opens on the rail's tab; its
-            // backdrop owns closing.
-            let open = chrome.mobile_settings_open;
-            if ui
-                .add(
-                    egui::Button::new(
-                        RichText::new(egui_phosphor::regular::SLIDERS)
-                            .size(18.0)
-                            .color(if open {
-                                theme::SELECTED
-                            } else {
-                                theme::TEXT_DIM
-                            }),
-                    )
-                    .frame(false)
-                    .min_size(egui::vec2(34.0, btn_h)),
-                )
-                .on_hover_text("View, layers, events and settings")
-                .clicked()
-            {
-                chrome.mobile_settings_open = true;
+            ui.add_space(edge);
+            ui.spacing_mut().item_spacing.x = gap;
+            if let Some(intents) = &live_intents {
+                if live_pill(ui).clicked() {
+                    for intent in intents {
+                        state.push_command(intent.clone());
+                    }
+                }
             }
-
-            // The activity dot: the desktop chip with its words folded.
-            crate::ui::activity_chip::render_activity_chip(ui, activity_vm, state, 13.0, true);
-
-            ui.add_space(4.0);
+            if let Some(stop) = stop_control(ui, chrome.phone_strip_zoom, narrow) {
+                state.push_command(Intent::SetPhoneStripZoom(stop));
+            }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                render_leading_controls(ui, state, live, playback, &vm, btn_h, strip_view);
+                ui.add_space(edge);
+                ui.spacing_mut().item_spacing.x = gap;
+                if play_button(ui, vm.play).clicked() {
+                    toggle_play(state);
+                }
+                let room = ui.available_width() - gap;
+                let clock = crate::ui::time_format::ZoneClock {
+                    use_local: state.use_local_time,
+                };
+                let chip = phone_chip(
+                    &live.session.selection_chip,
+                    chrome.phone_loading.is_some(),
+                    &clock,
+                    egui_phosphor::regular::ARROW_RIGHT,
+                );
+                // "Loop what's in view" loops the row's window on the phone.
+                let view_start = playback.state.timeline_view_start;
+                let view = crate::core::selection_chip::menu_view(
+                    true,
+                    (view_start, view_start + playback.state.view_width_secs()),
+                    strip_view,
+                );
+                crate::ui::selection_chip::render_selection_chip(
+                    ui,
+                    state,
+                    live,
+                    playback,
+                    view,
+                    &crate::ui::selection_chip::ChipStyle {
+                        text_size: 14.0,
+                        min_height: PILL_H,
+                        // The phone's stop leaves the playhead where it is;
+                        // LIVE is the way back to now.
+                        stop_placement: crate::core::transport::LiveStopPlacement::InPlace,
+                        compact: true,
+                        max_width: Some(room),
+                        phone: Some(chip),
+                    },
+                );
             });
         });
     });
 }
 
-/// Step, play, step, the selection chip and the speed, in the width the
-/// trailing cluster left.
-fn render_leading_controls(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
-    vm: &crate::core::transport::TransportVm,
-    btn_h: f32,
-    strip_view: Option<(f64, f64)>,
-) {
-    ui.add_space(4.0);
-    let gap = 3.0;
-    ui.spacing_mut().item_spacing.x = gap;
-
-    if ui
-        .add(
-            egui::Button::new(RichText::new(egui_phosphor::regular::CARET_LEFT).size(15.0))
-                .min_size(egui::vec2(28.0, btn_h)),
-        )
-        .clicked()
-    {
-        step_frame(state, StepDir::Back);
+/// The 42 px round play/pause button.
+fn play_button(ui: &mut egui::Ui, play: PlayButton) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(PLAY_D, PLAY_D), Sense::click());
+    let p = ui.painter();
+    let c = rect.center();
+    if resp.is_pointer_button_down_on() {
+        p.circle_filled(c, PLAY_D / 2.0, theme::HOVER);
     }
-
-    // Play/Pause: the same button as the desktop transport, from the same
-    // view-model.
-    let play_icon = match vm.play {
+    p.circle_stroke(c, PLAY_D / 2.0 - 0.75, Stroke::new(1.5, theme::TEXT));
+    let glyph = match play {
         PlayButton::Pause => egui_phosphor::regular::PAUSE,
         PlayButton::Play => egui_phosphor::regular::PLAY,
     };
-    if ui
-        .add(
-            egui::Button::new(RichText::new(play_icon).size(20.0))
-                .min_size(egui::vec2(40.0, btn_h)),
-        )
-        .clicked()
-    {
-        toggle_play(state);
-    }
-
-    if ui
-        .add(
-            egui::Button::new(RichText::new(egui_phosphor::regular::CARET_RIGHT).size(15.0))
-                .min_size(egui::vec2(28.0, btn_h)),
-        )
-        .clicked()
-    {
-        step_frame(state, StepDir::Forward);
-    }
-
-    // The chip's ceiling: the width left after the speed control.
-    let chip_max = ui.available_width() - speed_width(ui, &vm.speed) - gap;
-    // "Loop what's in view" loops the strip's window on the phone.
-    let view_start = playback.state.timeline_view_start;
-    let view = crate::core::selection_chip::menu_view(
-        true,
-        (view_start, view_start + playback.state.view_width_secs()),
-        strip_view,
+    p.text(
+        c,
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        FontId::proportional(17.0),
+        theme::TEXT,
     );
-    crate::ui::selection_chip::render_selection_chip(
-        ui,
-        state,
-        live,
-        playback,
-        view,
-        &crate::ui::selection_chip::ChipStyle {
-            text_size: 12.0,
-            min_height: btn_h,
-            // The phone's stop leaves the playhead where it is; the mini
-            // timeline's cap is the way back to now.
-            stop_placement: crate::core::transport::LiveStopPlacement::InPlace,
-            compact: true,
-            max_width: Some(chip_max),
-        },
-    );
-
-    // The speed: the desktop's menu, or the fixed readout while pinned in
-    // Rays.
-    match &vm.speed {
-        SpeedControl::Locked { label } => {
-            ui.label(
-                RichText::new(label)
-                    .size(theme::LABEL)
-                    .color(theme::TEXT_DIM),
-            );
-        }
-        SpeedControl::Menu { selected, choices } => {
-            egui::ComboBox::from_id_salt("mobile_speed")
-                .selected_text(RichText::new(selected.as_str()).size(13.0))
-                .width(SPEED_MENU_W)
-                .height(320.0)
-                .show_ui(ui, |ui| {
-                    for (speed, label) in choices {
-                        let on = *speed == playback.state.speed;
-                        if ui
-                            .add(
-                                egui::Button::selectable(on, label.as_str())
-                                    .min_size(egui::vec2(80.0, 32.0)),
-                            )
-                            .clicked()
-                            && !on
-                        {
-                            state.push_command(Intent::SetSpeed(*speed));
-                        }
-                    }
-                });
-        }
-    }
+    resp.on_hover_text(match play {
+        PlayButton::Pause => "Pause",
+        PlayButton::Play => "Play",
+    })
 }
 
-/// The speed menu's outer width (wider only if its label needs it).
-const SPEED_MENU_W: f32 = 52.0;
-
-/// The width the speed control will take, measured before it is drawn so
-/// the chip can leave room for it.
-fn speed_width(ui: &egui::Ui, speed: &SpeedControl) -> f32 {
-    let text_w = |label: &str, size: f32| {
-        ui.fonts_mut(|f| {
-            f.layout_no_wrap(
-                label.to_owned(),
-                egui::FontId::proportional(size),
-                egui::Color32::WHITE,
-            )
-            .size()
-            .x
+/// NOW · 3 H · 24 H: which stop the row is at, and a tap to go to another.
+/// Returns the stop tapped, when it is not the current one. Laid out right
+/// to left, so the segments are placed from the last.
+fn stop_control(ui: &mut egui::Ui, current: StripZoom, narrow: bool) -> Option<StripZoom> {
+    let font = FontId::monospace(10.5);
+    let pad = if narrow { 5.0 } else { 7.0 };
+    let seg_h = 20.0;
+    let widths: Vec<f32> = StripZoom::ALL
+        .iter()
+        .map(|s| {
+            ui.painter()
+                .layout_no_wrap(zoom_pill_label(*s).to_string(), font.clone(), theme::TEXT)
+                .size()
+                .x
+                + 2.0 * pad
         })
-    };
-    match speed {
-        SpeedControl::Locked { label } => text_w(label, theme::LABEL),
-        SpeedControl::Menu { selected, .. } => {
-            let s = ui.spacing();
-            let inner = text_w(selected, 13.0) + s.icon_spacing + s.icon_width;
-            (inner + 2.0 * s.button_padding.x).max(SPEED_MENU_W)
+        .collect();
+    let total = widths.iter().sum::<f32>() + 2.0 * (StripZoom::ALL.len() as f32) + 2.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(total, seg_h + 6.0), Sense::hover());
+    let p = ui.painter().clone();
+    p.rect(
+        rect,
+        6.0,
+        colors::CONTROL,
+        Stroke::new(1.0, theme::LINE),
+        StrokeKind::Inside,
+    );
+    let mut x = rect.left() + 3.0;
+    let mut picked = None;
+    for (stop, w) in StripZoom::ALL.iter().zip(widths) {
+        let seg = egui::Rect::from_min_size(egui::pos2(x, rect.top() + 3.0), egui::vec2(w, seg_h));
+        let resp = ui
+            .interact(
+                seg.expand2(egui::vec2(1.0, 9.0)),
+                ui.id().with(("phone_stop", zoom_pill_label(*stop))),
+                Sense::click(),
+            )
+            .on_hover_text("Zoom: now, 3 hours or the day");
+        let on = *stop == current;
+        if on {
+            p.rect_filled(seg, 4.0, colors::CONTROL_ON);
         }
+        p.text(
+            seg.center(),
+            egui::Align2::CENTER_CENTER,
+            zoom_pill_label(*stop),
+            font.clone(),
+            if on { theme::TEXT } else { theme::TEXT_DIM },
+        );
+        if resp.clicked() && !on {
+            picked = Some(*stop);
+        }
+        x += w + 2.0;
     }
+    picked
+}
+
+/// The red outlined LIVE button.
+fn live_pill(ui: &mut egui::Ui) -> egui::Response {
+    let font = FontId::proportional(13.0);
+    let galley = ui
+        .painter()
+        .layout_no_wrap("LIVE".to_string(), font, colors::NOW);
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(galley.size().x + 28.0, PILL_H), Sense::click());
+    let p = ui.painter();
+    if resp.is_pointer_button_down_on() {
+        p.rect_filled(rect, PILL_H / 2.0, theme::alpha(colors::NOW, 40));
+    }
+    p.rect_stroke(
+        rect,
+        PILL_H / 2.0,
+        Stroke::new(1.5, colors::NOW),
+        StrokeKind::Inside,
+    );
+    let at = rect.center() - galley.size() / 2.0;
+    p.galley(at, galley, colors::NOW);
+    resp.on_hover_text("Back to the newest frame")
 }
 
 // ---------------------------------------------------------------------------
-// Playback helpers (shared with the settings modal).
+// Playback helpers.
 // ---------------------------------------------------------------------------
 
-pub(super) fn toggle_play(state: &mut AppState) {
+fn toggle_play(state: &mut AppState) {
     // Same decoupled play/pause as desktop: in live this freezes the feed;
-    // stopping the stream is the LIVE button's job.
+    // stopping the stream is the chip menu's job.
     state.push_command(crate::core::Intent::TogglePlayPause);
-}
-
-pub(super) fn step_frame(state: &mut AppState, dir: StepDir) {
-    // The same step as the desktop buttons and the arrow keys.
-    state.push_command(crate::core::Intent::Step {
-        dir,
-        unit: crate::core::transport::StepUnit::Frame,
-    });
 }

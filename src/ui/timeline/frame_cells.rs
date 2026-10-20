@@ -332,41 +332,6 @@ pub(super) fn paint_cell(
     consumed_countdown
 }
 
-/// Paint one cell on the phone strip's 15 MIN stop: the fill alone, with
-/// no tilt words and no countdown. A filled slate cell is a frame on the
-/// device; in flight pulses (or fills its chunk slots while streaming);
-/// queued is hatched; the live volume's next-cut ghost is a dashed ghost;
-/// anything else is a faint body.
-pub(super) fn paint_phone_cell(painter: &Painter, cell: &FrameCell, rect: Rect, anim: CellAnim) {
-    match cell.state {
-        FrameCellState::Cached => {
-            painter.rect_filled(rect, 1.0, tl_colors::cell_cached());
-        }
-        FrameCellState::InFlight => paint_inflight(painter, cell, rect, anim, None),
-        FrameCellState::Queued => fill_hatched_rect(
-            painter,
-            rect,
-            Stroke::new(0.75_f32, tl_colors::cell_queued_hatch()),
-            4.0,
-        ),
-        FrameCellState::Projected => {
-            painter.rect_filled(rect, 1.0, tl_colors::cell_projected_fill());
-            stroke_dashed_rect(
-                painter,
-                rect,
-                DashedBorder::uniform(
-                    Stroke::new(0.75_f32, tl_colors::cell_projected_border()),
-                    3.0,
-                    6.0,
-                ),
-            );
-        }
-        FrameCellState::Available | FrameCellState::Failed => {
-            painter.rect_filled(rect, 1.0, tl_colors::cell_available_fill());
-        }
-    }
-}
-
 /// Paint an in-flight cell: faithful chunk slots when live telemetry is
 /// present (3/6, alignment #4), else a pulsing fill for archive downloads
 /// (with the reduced-motion fallback to a static partial fill).

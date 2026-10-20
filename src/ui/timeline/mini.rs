@@ -1,113 +1,55 @@
-//! The phone's mini timeline (one-instrument §13, phone timeline §1): a
-//! small timeline at one of three zoom stops, a thin projection of
-//! [`crate::core::phone_strip`].
+//! The phone's timeline row (phone timeline v2): a row of volumes you can
+//! touch, a thin projection of [`crate::core::phone_row::row_vm`].
 //!
-//! Its window is [`crate::core::phone_strip::strip_window`]. At 15 MIN it
-//! draws [`crate::core::phone_strip::cut_volumes`]: cut cells for volumes
-//! on the device, storm bars for those not, the live volume up to now with
-//! one ghost cut; at 3 H and DAY the storm-activity bars of
-//! [`crate::core::phone_strip::activity_bars`] (one per volume, one per
-//! half hour) in the storm blue, the slate on-device underline under them
-//! and a quiet wash where no sizes are known yet. Every stop draws the
-//! periwinkle ring on the frame on screen (dashed where a pending frame will
-//! land), the white playhead line when
-//! detached, the red now line and the small now tab under it
-//! ([`crate::core::phone_strip::strip_cap`]); the ruler
-//! ([`crate::core::phone_strip::ruler_ticks`]) sits on the baseline and its
-//! labels give way to the tab. The zoom pill at the left edge says what the
-//! strip spans and taps to the next stop.
+//! Its window is [`crate::core::phone_strip::strip_window`] at one of three
+//! stops (NOW, 3 H, 24 H). At NOW each volume is a block (filled on the
+//! device, hollow not, a white outline under the playhead, the live one
+//! growing to the red now line); at 3 H a column as tall as its weather;
+//! at 24 H the storm hill with the held stretch in slate and a white line
+//! at the playhead. A selected range is one amber bracket above. While the
+//! frame under the playhead downloads, its block carries a progress arc;
+//! the row hands the same [`crate::core::phone_row::LoadingVm`] to the map's
+//! dim and pill, the chip and the top bar through
+//! `chrome.phone_loading`.
 //!
-//! Rows, from the strip's top: the now line from 4 to 52; the selected
-//! range's amber bar from 5 to 8 (its wash over the cells); cells and bars
-//! from 10 to 34 (the ring centred at 22); the underline at 36; ruler ticks
-//! at 40 and labels down to the baseline; the tab from 37 to 53, below the
-//! cells, so it never hides a cell, the ring or the now line.
-//!
-//! A selected range ([`crate::core::phone_range::range_marks`]) draws as an
-//! amber band from 8 to 36 over the cells, an amber edge line at each fixed
-//! end, and round handles centred at 45 in the tab's row: start and end for
-//! a fixed range, only the start for one pinned to now, a lone tick and
-//! handle for a parked start. The tab steps aside from the handles'
-//! targets ([`crate::core::phone_range::cap_clear_of_handles`]) and the
-//! ruler labels give way to the tab and step aside from the handles
-//! ([`crate::core::phone_strip::ruler_label_xs`]).
-//!
-//! A tap seeks (`Intent::Seek`, Press), a drag scrubs (the same reducer,
-//! synchronously, like the desktop strip), both snapped to the stop's unit
-//! ([`crate::core::phone_strip::snap_scrub`]); a long-press opens the action
-//! sheet ([`Intent::OpenPressSheet`]); a pinch moves one stop on release
-//! ([`crate::core::phone_strip::StripTouch`]). A press inside a handle's
-//! 24 px target moves that end, snapped like a scrub, with the desktop's
-//! cost label above the strip while it moves; the drop selects the range
-//! ([`crate::core::phone_range::HandleDrag`]). The strip and its gestures
+//! A drag scrubs ([`crate::core::phone_strip::snap_scrub`]: cut by cut in a
+//! block on the device, volume by volume elsewhere) under a window that
+//! holds still; a tap goes to the volume's first cut
+//! ([`crate::core::phone_strip::tap_landing`]); a long-press opens the
+//! action sheet; a pinch moves one stop
+//! ([`crate::core::phone_strip::StripTouch`]). The strip and its gestures
 //! sit in an area that reaches [`STRIP_REACH_PX`] above it into the map, so
 //! a thumb that lands just short still gets the strip, and the map neither
 //! pans on that press nor zooms on the strip's pinch.
 
-use super::frame_cells::{paint_phone_cell, CellAnim};
-use super::marks::paint_strip_marks;
-use super::{reduced_motion, style, TimelineFrame, TrackRects};
-use crate::core::phone_range::{
-    cap_clear_of_handles, handle_at, range_marks, HandleDrag, HandleDrop, PressSheet, RangeFacts,
-    RangeMarks, BAND_BOTTOM, BAND_TOP, HANDLE_CY, HANDLE_R, HANDLE_TARGET_PX,
+use super::reduced_motion;
+use crate::core::phone_range::PressSheet;
+use crate::core::phone_row::{
+    row_vm, Arc, Downloads, RowInputs, RowVm, BLOCK_H, BLOCK_TOP, BRACKET_H, BRACKET_TICK_H,
+    BRACKET_TOP, COLUMN_BOTTOM, HILL_BOTTOM, HILL_H, NOW_BOTTOM, NOW_CAP_TOP, NOW_TOP, ROW_H,
 };
 use crate::core::phone_strip::{
-    activity_bars, cap_intents, cut_volumes, next_stop, on_device_spans, pending_mark, quiet_spans,
-    ring_center, ruler_label_xs, ruler_ticks, sizes_span, snap_scrub, strip_cap, strip_window,
-    zoom_pill_label, CutLook, PinchInput, StripTouch, StripTouchInput, StripUnits, StripZoom,
-    STRIP_REACH_PX,
+    sizes_span, snap_scrub, strip_window, tap_landing, PinchInput, StripTouch, StripTouchInput,
+    StripUnits, StripZoom, STRIP_REACH_PX,
 };
 use crate::core::transport::SeekGesture;
-use crate::core::{FrameJoinInputs, Intent, TimelineTier};
+use crate::core::{FrameJoinInputs, Intent};
 use crate::data::SiteId;
 use crate::state::AppState;
 use crate::ui::theme;
-use crate::ui::theme::timeline as tl_colors;
-use eframe::egui::{self, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use crate::ui::theme::phone as colors;
+use eframe::egui::{self, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
-/// The mini timeline's height.
-pub(crate) const MINI_TIMELINE_H: f32 = 56.0;
+/// The row's height.
+pub(crate) const MINI_TIMELINE_H: f32 = ROW_H;
 
-/// The cells' and bars' row, from the strip's top.
-const TRACK_TOP: f32 = 10.0;
-const TRACK_H: f32 = 24.0;
+/// Room kept at each end of the lane.
+const LANE_PAD: f32 = 6.0;
 
-/// The on-device underline's row and thickness.
-const UNDERLINE_TOP: f32 = 36.0;
-const UNDERLINE_H: f32 = 3.0;
-
-/// The ruler's tick row and the top of its labels.
-const TICK_TOP: f32 = 40.0;
-const TICK_H: f32 = 3.0;
-const LABEL_TOP: f32 = 42.0;
-
-/// The selected range's bar, above the cells.
-const RANGE_BAR_TOP: f32 = 5.0;
-const RANGE_BAR_H: f32 = 3.0;
-
-/// The now and playhead lines' extent.
-const LINE_TOP: f32 = 4.0;
-const LINE_BOTTOM: f32 = 52.0;
-
-/// The now tab's row.
-const CAP_TOP: f32 = 37.0;
-const CAP_H: f32 = 16.0;
-
-/// The ring's radius and centre row.
-const RING_R: f32 = 12.0;
-const RING_CY: f32 = 22.0;
-
-/// The zoom pill's column at the strip's left edge (the whole column is its
-/// target), and the pill drawn in it.
-const PILL_COL_W: f32 = 58.0;
-const PILL_MIN: Vec2 = Vec2::new(8.0, 6.0);
-const PILL_SIZE: Vec2 = Vec2::new(44.0, 16.0);
-
-/// Room kept at the lane's right end.
-const LANE_RIGHT_GAP: f32 = 8.0;
-
-/// The gap between neighbouring bars and underline pieces at 3 H, in points.
-const BAR_GAP_PX: f32 = 1.0;
+/// The labels' font.
+fn label_font() -> FontId {
+    FontId::proportional(11.5)
+}
 
 /// How far back the window's volumes are looked for: past the widest
 /// stop's half-span either side of the playhead.
@@ -118,7 +60,7 @@ fn lookback_secs(stop: StripZoom) -> f64 {
     }
 }
 
-/// Draw the mini timeline at the available width and apply its gestures.
+/// Draw the row at the available width and apply its gestures.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::ui) fn render_mini_timeline(
     ui: &mut egui::Ui,
@@ -126,7 +68,6 @@ pub(in crate::ui) fn render_mini_timeline(
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
-    acquisition: &crate::subsystem::Acquisition,
     chrome: &mut crate::subsystem::Chrome,
 ) {
     let width = ui.available_width();
@@ -149,16 +90,7 @@ pub(in crate::ui) fn render_mini_timeline(
         .interactable(true)
         .show(ui.ctx(), |ui| {
             ui.set_clip_rect(clip);
-            draw_strip(
-                ui,
-                strip,
-                state,
-                timeline,
-                live,
-                playback,
-                acquisition,
-                chrome,
-            );
+            draw_strip(ui, strip, state, timeline, live, playback, chrome);
         });
 }
 
@@ -170,30 +102,21 @@ fn draw_strip(
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
-    acquisition: &crate::subsystem::Acquisition,
     chrome: &mut crate::subsystem::Chrome,
 ) {
     let stop = chrome.phone_strip_zoom;
     let top = strip.top();
     let lane = Rect::from_min_max(
-        Pos2::new(strip.left() + PILL_COL_W, top),
-        Pos2::new(strip.right() - LANE_RIGHT_GAP, strip.bottom()),
+        Pos2::new(strip.left() + LANE_PAD, top),
+        Pos2::new(strip.right() - LANE_PAD, strip.bottom()),
     );
-    let track = Rect::from_min_size(
-        Pos2::new(lane.left(), top + TRACK_TOP),
-        Vec2::new(lane.width(), TRACK_H),
-    );
-    // The press area: the lane and the reach above it. Allocated first so
-    // the pill and the tab, drawn after, sit on top of it.
-    let press_rect = Rect::from_min_max(Pos2::new(lane.left(), top - STRIP_REACH_PX), lane.max);
+    let press_rect = Rect::from_min_max(Pos2::new(strip.left(), top - STRIP_REACH_PX), strip.max);
     let response = ui.allocate_rect(press_rect, Sense::click_and_drag());
     let painter = ui.painter().clone();
-    painter.rect_filled(strip, 2.0, tl_colors::BACKGROUND);
-    painter.rect_stroke(
-        strip,
-        2.0,
-        Stroke::new(1.0_f32, tl_colors::BORDER),
-        StrokeKind::Inside,
+    painter.rect_filled(strip, 0.0, colors::DOCK);
+    painter.line_segment(
+        [strip.left_top(), strip.right_top()],
+        Stroke::new(1.0_f32, theme::LINE),
     );
 
     let now = state.frame_now.secs();
@@ -203,10 +126,9 @@ fn draw_strip(
         Some(&live.mode_state),
         live.radar_model.position.as_ref(),
     );
-
-    // The same join the desktop strip makes: queued, in flight, failed, the
-    // selected product and tilt, and the frame on screen for the ring.
-    let failed = acquisition.state.failed_scan_starts();
+    // The same join the desktop strip makes: queued, in flight, the
+    // selected product and tilt, and the frame on screen.
+    let failed: Vec<i64> = Vec::new();
     let mut in_flight = state.download_progress.in_flight_scans.clone();
     in_flight.extend_from_slice(&state.download_progress.active_scans);
     let active = state.viz_state.displayed.as_ref().map(|d| {
@@ -232,7 +154,7 @@ fn draw_strip(
     let starts: Vec<f64> = all.iter().map(|c| c.start_secs).collect();
     let prev = chrome.phone_strip_view.map(|(w, _)| w);
     // The selected range as the desktop strip draws it (its end on now
-    // when pinned): the window shows all of it, and the band marks it.
+    // when pinned): the window shows all of it, and the bracket marks it.
     let range = crate::core::timeline_view::range_marks(
         playback.state.selection_range(),
         playback.state.is_live_range(),
@@ -243,45 +165,68 @@ fn draw_strip(
     .map(|m| (m.start, m.end));
     let window = strip_window(stop, now, playhead, pinned, &starts, prev, range);
     chrome.phone_strip_view = Some((window, lane.width()));
-    let zoom = track.width() as f64 / window.span().max(1.0);
-
-    let frame = TimelineFrame {
-        view,
-        now_secs: now,
-        view_start: window.start,
-        view_end: window.end,
-        zoom,
-        rects: TrackRects {
-            tick: Rect::from_min_size(track.min, Vec2::new(track.width(), 0.0)),
-            scan: track,
-            overlay: track,
-        },
-        tier: TimelineTier::Micro,
-        use_local: state.use_local_time,
-    };
-
     let containers: Vec<_> = all
         .into_iter()
         .filter(|c| c.end_secs >= window.start && c.start_secs <= window.end)
         .collect();
-    let reduced = reduced_motion(ui.ctx());
-    let lane_painter = painter.with_clip_rect(lane.intersect(ui.clip_rect()));
+
     let site = SiteId::new(state.viz_state.site_id.clone());
     let (sizes_from, sizes_to) = sizes_span(stop, window);
     let sizes = timeline.activity.scans(&site, sizes_from, sizes_to);
-    let bars = activity_bars(stop, window, &sizes);
     let units = StripUnits::from_containers(&containers).with_listed(&sizes.scans);
-    let snapped = |x: f32| snap_scrub(stop, frame.x_to_ts(x), &units, now);
+    let secs_per_px = window.span() / lane.width().max(1.0) as f64;
+    let x_to_ts = |x: f32| window.start + (x - lane.left()) as f64 * secs_per_px;
 
-    // The touch, stepped before the range draws so a moving handle's band
-    // never trails the finger. A press that begins in a handle's target is
-    // the handle's.
-    let lane_x = (lane.left(), lane.right());
-    let to_x = |t: f64| frame.ts_to_x(t);
-    let facts = RangeFacts::of(&playback.state, now);
-    let drag_key = response.id.with("mini_handle");
-    let mut drag: Option<HandleDrag> = ui.ctx().memory(|m| m.data.get_temp(drag_key));
-    let held = range_marks(&facts, drag.as_ref(), &to_x, lane_x);
+    let font = label_font();
+    let measure = |s: &str| {
+        painter
+            .layout_no_wrap(s.to_string(), font.clone(), theme::TEXT)
+            .size()
+            .x
+    };
+    let row = row_vm(&RowInputs {
+        stop,
+        window,
+        lane: (lane.left(), lane.right()),
+        now,
+        playhead,
+        pinned,
+        active_ts: active.map(|(ts, _)| ts),
+        containers: &containers,
+        sizes: &sizes,
+        range,
+        downloads: Downloads {
+            queued: &state.download_progress.pending_scans,
+            downloading: &state.download_progress.active_scans,
+            decoding: &state.download_progress.in_flight_scans,
+        },
+        tz_offset_secs: super::tz_offset_secs(
+            window.start + window.span() / 2.0,
+            state.use_local_time,
+        ),
+        measure: &measure,
+    });
+    chrome.phone_loading = row.loading.clone();
+    chrome.phone_now_in_view = row.now_x.is_some();
+
+    let time = ui.ctx().input(|i| i.time);
+    let reduced = reduced_motion(ui.ctx());
+    let lane_painter = painter.with_clip_rect(lane.expand2(Vec2::new(LANE_PAD, 0.0)));
+    paint_row(&lane_painter, top, &row, &font, time, reduced);
+    if !reduced
+        && (row.loading.is_some()
+            || state.download_progress.is_active()
+            || view.live_volume().is_some())
+    {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(if row.loading.is_some() {
+                33
+            } else {
+                250
+            }));
+    }
+
+    // Gestures.
     let key = response.id.with("mini_touch");
     let mut touch: StripTouch = ui
         .ctx()
@@ -299,403 +244,11 @@ fn draw_strip(
     let out = touch.step(StripTouchInput {
         down: response.is_pointer_button_down_on(),
         pos: pos.map(|p| (p.x, p.y)),
-        now: ui.ctx().input(|i| i.time),
+        now: time,
         pinch,
         stop,
-        handle: pos.and_then(|p| handle_at(&held.handles, p.x, p.y - top)),
     });
     ui.ctx().memory_mut(|m| m.data.insert_temp(key, touch));
-
-    // A moving handle previews its range; the drop selects it.
-    if let Some(end) = out.moving {
-        if drag.is_none() {
-            drag = HandleDrag::grab(end, &facts);
-        }
-        if let (Some(d), Some(p)) = (drag.as_mut(), pos) {
-            d.drag_to(snapped(p.x), now);
-        }
-    }
-    let dropped = out
-        .dropped
-        .and_then(|_| drag.take())
-        .map(|d| d.drop_at(&facts));
-    if touch.press.is_none() {
-        drag = None;
-    }
-    ui.ctx().memory_mut(|m| match drag {
-        Some(d) => {
-            m.data.insert_temp(drag_key, d);
-        }
-        None => m.data.remove::<HandleDrag>(drag_key),
-    });
-    let marks = range_marks(&facts, drag.as_ref(), &to_x, lane_x);
-
-    let span_x = |s: f64, e: f64, gap: f32| {
-        let x0 = frame.ts_to_x(s);
-        let x1 = frame.ts_to_x(e);
-        let g = if x1 - x0 > 2.0 * gap + 1.0 { gap } else { 0.0 };
-        (x0 + g, (x1 - g).max(x0 + g + 1.0))
-    };
-    match stop {
-        StripZoom::Cuts => {
-            let anim = CellAnim {
-                pulse: (0.5 + 0.5 * (ui.ctx().input(|i| i.time) * 3.0).sin()) as f32,
-                reduced_motion: reduced,
-                morph: 1.0,
-            };
-            let underline = |x0: f32, x1: f32, color: egui::Color32| {
-                lane_painter.rect_filled(
-                    Rect::from_min_max(
-                        Pos2::new(x0, top + UNDERLINE_TOP),
-                        Pos2::new(x1, top + UNDERLINE_TOP + UNDERLINE_H),
-                    ),
-                    0.0,
-                    color,
-                );
-            };
-            for v in cut_volumes(&containers, &sizes, window, now) {
-                let (x0, x1) = span_x(v.start, v.end, BAR_GAP_PX / 2.0);
-                match &v.look {
-                    CutLook::Bar { frac, fetching } => {
-                        let full = Rect::from_min_max(
-                            Pos2::new(x0, track.top()),
-                            Pos2::new(x1, track.bottom()),
-                        );
-                        match frac {
-                            Some(f) => {
-                                let h = track.height() * f;
-                                lane_painter.rect_filled(
-                                    Rect::from_min_max(
-                                        Pos2::new(x0, track.bottom() - h),
-                                        Pos2::new(x1, track.bottom()),
-                                    ),
-                                    0.0,
-                                    tl_colors::storm_fill(),
-                                );
-                            }
-                            None => {
-                                lane_painter.rect_filled(full, 0.0, tl_colors::available_fill());
-                            }
-                        }
-                        if *fetching {
-                            // On its way to the device: the underline pulses.
-                            let base = tl_colors::cell_inflight();
-                            let a = if reduced {
-                                160
-                            } else {
-                                (90.0 + 120.0 * anim.pulse) as u8
-                            };
-                            underline(
-                                x0,
-                                x1,
-                                egui::Color32::from_rgba_unmultiplied(
-                                    base.r(),
-                                    base.g(),
-                                    base.b(),
-                                    a,
-                                ),
-                            );
-                        }
-                    }
-                    CutLook::Cells(cells) => {
-                        let inset = style::CONTAINER_INSET_Y;
-                        let box_rect = Rect::from_min_max(
-                            Pos2::new(x0, track.top() + inset),
-                            Pos2::new(x1, track.bottom() - inset),
-                        );
-                        lane_painter.rect_stroke(
-                            box_rect,
-                            2.0,
-                            Stroke::new(1.0_f32, tl_colors::container_border()),
-                            StrokeKind::Inside,
-                        );
-                        let cell_top = box_rect.top() + style::CELL_INSET_Y;
-                        let cell_bot = box_rect.bottom() - style::CELL_INSET_Y;
-                        for cell in cells {
-                            let cx0 = frame.ts_to_x(cell.start_secs);
-                            let cx1 = frame.ts_to_x(cell.end_secs).max(cx0 + 2.0);
-                            paint_phone_cell(
-                                &lane_painter,
-                                cell,
-                                Rect::from_min_max(
-                                    Pos2::new(cx0, cell_top),
-                                    Pos2::new(cx1, cell_bot),
-                                ),
-                                anim,
-                            );
-                        }
-                        underline(x0, x1, tl_colors::HELD);
-                    }
-                }
-            }
-        }
-        StripZoom::Volumes | StripZoom::Day => {
-            let gap = if stop == StripZoom::Volumes {
-                BAR_GAP_PX / 2.0
-            } else {
-                0.0
-            };
-            // Volumes with no sizes yet: the desktop's quiet wash.
-            for (s, e) in quiet_spans(&containers, &sizes) {
-                let (x0, x1) = span_x(s, e, 0.0);
-                lane_painter.rect_filled(
-                    Rect::from_min_max(Pos2::new(x0, track.top()), Pos2::new(x1, track.bottom())),
-                    0.0,
-                    tl_colors::available_fill(),
-                );
-            }
-            for bar in &bars {
-                let (x0, x1) = span_x(bar.start, bar.end, gap);
-                let h = track.height() * bar.frac;
-                lane_painter.rect_filled(
-                    Rect::from_min_max(
-                        Pos2::new(x0, track.bottom() - h),
-                        Pos2::new(x1, track.bottom()),
-                    ),
-                    0.0,
-                    tl_colors::storm_fill(),
-                );
-            }
-            let join_secs = if stop == StripZoom::Day {
-                2.0 / zoom.max(f64::MIN_POSITIVE)
-            } else {
-                0.0
-            };
-            for (s, e) in on_device_spans(&containers, join_secs) {
-                let (x0, x1) = span_x(s, e, gap);
-                lane_painter.rect_filled(
-                    Rect::from_min_max(
-                        Pos2::new(x0, top + UNDERLINE_TOP),
-                        Pos2::new(x1, top + UNDERLINE_TOP + UNDERLINE_H),
-                    ),
-                    0.0,
-                    tl_colors::HELD,
-                );
-            }
-        }
-    }
-    // The selected range: the desktop's amber wash over the cells and its
-    // bar along the strip's top.
-    if let Some((rs, re)) = range {
-        let (x0, x1) = (frame.ts_to_x(rs), frame.ts_to_x(re));
-        lane_painter.rect_filled(
-            Rect::from_min_max(Pos2::new(x0, track.top()), Pos2::new(x1, track.bottom())),
-            0.0,
-            tl_colors::selection_fill(),
-        );
-        lane_painter.rect_filled(
-            Rect::from_min_max(
-                Pos2::new(x0, top + RANGE_BAR_TOP),
-                Pos2::new(x1, top + RANGE_BAR_TOP + RANGE_BAR_H),
-            ),
-            1.0,
-            tl_colors::RANGE,
-        );
-    }
-    let tier = if stop.per_volume() {
-        TimelineTier::Macro
-    } else {
-        TimelineTier::Micro
-    };
-    let strip_marks = crate::core::timeline_view::strip_marks(&containers, zoom, tier);
-    let failed_ticks = paint_strip_marks(&lane_painter, &frame, &strip_marks, None);
-    paint_band(&lane_painter, top, &marks);
-    if !reduced && (state.download_progress.is_active() || frame.view.live_volume().is_some()) {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(250));
-    }
-
-    // The now tab: its place first, so the ruler's labels can give way.
-    let session = &live.session;
-    let running = session.stream.is_running();
-    let now_x = frame.ts_to_x(now);
-    let now_in_lane = now >= window.start && now_x <= lane.right();
-    let font = style::tick_font();
-    let measure = |s: &str| {
-        painter
-            .layout_no_wrap(s.to_string(), font.clone(), theme::TEXT)
-            .size()
-            .x
-    };
-    let mut cap = strip_cap(
-        session.now_cap,
-        now_in_lane.then_some(now_x),
-        lane.right(),
-        &measure,
-    );
-    // The tab shares its row with the range handles: it steps aside so both
-    // stay tappable.
-    cap.x0 = cap_clear_of_handles(cap.x0, cap.width, &marks.handle_xs(), lane_x);
-
-    // The ruler on the baseline, in the chosen zone.
-    let offset = super::tz_offset_secs(window.start + window.span() / 2.0, state.use_local_time);
-    let in_window: Vec<f64> = containers
-        .iter()
-        .filter(|c| !c.is_projected)
-        .map(|c| c.start_secs)
-        .collect();
-    let ticks: Vec<_> = ruler_ticks(stop, window, &in_window, offset)
-        .into_iter()
-        .map(|t| (frame.ts_to_x(t.ts), t.label))
-        .filter(|(x, _)| *x >= lane.left() && *x <= lane.right())
-        .collect();
-    let labelled: Vec<(f32, f32)> = ticks
-        .iter()
-        .filter(|(_, l)| !l.is_empty())
-        .map(|(x, l)| (x + 2.0, measure(l)))
-        .collect();
-    let handles: Vec<(f32, f32)> = marks
-        .handles
-        .iter()
-        .map(|h| (h.x - HANDLE_TARGET_PX / 2.0, h.x + HANDLE_TARGET_PX / 2.0))
-        .collect();
-    let tab = Some((cap.x0, cap.x0 + cap.width));
-    let mut label_xs = ruler_label_xs(&labelled, lane_x, tab, &handles).into_iter();
-    for (x, label) in ticks {
-        lane_painter.line_segment(
-            [
-                Pos2::new(x, top + TICK_TOP),
-                Pos2::new(x, top + TICK_TOP + TICK_H),
-            ],
-            Stroke::new(1.0_f32, tl_colors::TICK_MINOR),
-        );
-        if label.is_empty() {
-            continue;
-        }
-        let Some(label_x) = label_xs.next().flatten() else {
-            continue;
-        };
-        lane_painter.text(
-            Pos2::new(label_x, top + LABEL_TOP),
-            egui::Align2::LEFT_TOP,
-            label,
-            font.clone(),
-            tl_colors::TICK_LABEL,
-        );
-    }
-
-    // The ring on the frame on screen, the playhead line when detached and
-    // the now line.
-    let active_ts = active.map(|(ts, _)| ts);
-    // Where the playhead's frame will land while it is not there yet: a
-    // dashed ring, so a scrub always shows where it went.
-    if let Some(c) = pending_mark(stop, playhead, pinned, active_ts, &units) {
-        let x = frame.ts_to_x(c);
-        if x >= lane.left() && x <= lane.right() + RING_R {
-            dashed_ring(&painter, Pos2::new(x, top + RING_CY));
-        }
-    }
-    if let Some(c) = ring_center(stop, active_ts, &containers, &bars) {
-        let x = frame.ts_to_x(c);
-        if x >= lane.left() && x <= lane.right() + RING_R {
-            // On the strip's painter, so a ring on the newest volume is not
-            // cut off where the lane ends.
-            painter.circle_stroke(
-                Pos2::new(x, top + RING_CY),
-                RING_R,
-                Stroke::new(1.5_f32, theme::SELECTED),
-            );
-        }
-    }
-    let playhead_at_now = live.mode_state.is_active() && playback.state.is_pinned();
-    let red = if running {
-        tl_colors::LIVE_ACTIVE
-    } else {
-        tl_colors::NOW_IDLE
-    };
-    let vline = |x: f32, color: egui::Color32| {
-        lane_painter.line_segment(
-            [
-                Pos2::new(x, top + LINE_TOP),
-                Pos2::new(x, top + LINE_BOTTOM),
-            ],
-            Stroke::new(1.5_f32, color),
-        );
-    };
-    if !playhead_at_now {
-        let x = frame.ts_to_x(playhead);
-        if x >= lane.left() && x <= lane.right() {
-            vline(x, tl_colors::PLAYHEAD);
-        }
-    }
-    if now_in_lane {
-        vline(now_x, red);
-    }
-
-    // The tab: filled red for LIVE, outlined for REJOIN and GO LIVE.
-    let cap_rect = Rect::from_min_size(
-        Pos2::new(cap.x0, top + CAP_TOP),
-        Vec2::new(cap.width, CAP_H),
-    );
-    let cap_resp = ui
-        .interact(cap_rect, ui.id().with("mini_now_tab"), Sense::click())
-        .on_hover_text(match session.now_cap {
-            crate::core::session::NowCap::Live => "Live",
-            crate::core::session::NowCap::Rejoin => "Rejoin live",
-            crate::core::session::NowCap::GoLive => "Go live",
-        });
-    if cap.filled {
-        painter.rect_filled(cap_rect, 4.0, red);
-    } else {
-        painter.rect_filled(cap_rect, 4.0, tl_colors::BACKGROUND);
-        painter.rect_stroke(cap_rect, 4.0, Stroke::new(1.2_f32, red), StrokeKind::Inside);
-    }
-    painter.text(
-        cap_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        &cap.label,
-        font.clone(),
-        if cap.filled { theme::TEXT } else { red },
-    );
-    if cap_resp.clicked() {
-        for intent in cap_intents(session.now_cap, cap.edge) {
-            state.push_command(intent);
-        }
-    }
-
-    // The range handles, in the tab's row; the moving one shows its target.
-    let moving = drag.filter(|d| d.moved).map(|d| d.end);
-    paint_handles(&lane_painter, top, &marks, moving);
-    // While a handle moves, the desktop's cost line above the strip.
-    let preview = crate::core::phone_range::strip_range(&facts, drag.as_ref());
-    if let (Some(d), Some(r)) = (drag.filter(|d| d.moved && !d.parked), preview) {
-        let sizes = timeline.activity.scans(&site, r.start, r.end);
-        let label = frame.view.range_cost_sized(r.start, r.end, &sizes).label();
-        let x = frame.ts_to_x(if d.at <= d.anchor { r.start } else { r.end });
-        paint_cost_label(ui, strip, x, &label);
-        ui.ctx().request_repaint();
-    }
-
-    // The zoom pill: says what the strip spans, a tap goes to the next stop.
-    let pill_col = Rect::from_min_max(strip.min, Pos2::new(lane.left(), strip.bottom()));
-    let pill = Rect::from_min_size(strip.min + PILL_MIN, PILL_SIZE);
-    let pill_resp = ui
-        .interact(pill_col, ui.id().with("mini_zoom_pill"), Sense::click())
-        .on_hover_text("Zoom: 15 minutes, 3 hours or the day");
-    painter.rect_filled(pill, PILL_SIZE.y / 2.0, theme::PANEL);
-    painter.rect_stroke(
-        pill,
-        PILL_SIZE.y / 2.0,
-        Stroke::new(1.0_f32, tl_colors::BORDER),
-        StrokeKind::Inside,
-    );
-    painter.text(
-        pill.center(),
-        egui::Align2::CENTER_CENTER,
-        zoom_pill_label(stop),
-        font,
-        if pill_resp.is_pointer_button_down_on() {
-            theme::SELECTED
-        } else {
-            theme::TEXT_DIM
-        },
-    );
-    if pill_resp.clicked() {
-        state.push_command(Intent::SetPhoneStripZoom(next_stop(stop)));
-    }
-
-    // Gestures. A press on the tab or a failure mark belongs to it.
-    let owned = |p: Pos2| cap_rect.contains(p) || failed_ticks.iter().any(|t| t.rect.contains(p));
     chrome.phone_strip_claims_touch |= out.claimed;
     if let Some(next) = out.settle {
         state.push_command(Intent::SetPhoneStripZoom(next));
@@ -703,18 +256,10 @@ fn draw_strip(
     if out.press.waiting || out.claimed {
         ui.ctx().request_repaint();
     }
-    match dropped {
-        Some(HandleDrop::Select(intent)) => state.push_command(intent),
-        Some(HandleDrop::TooLong) => state.toasts.notice(format!(
-            "Range too long \u{2014} select at most {} days",
-            (crate::core::MAX_SELECTION_SPAN_SECS / 86_400.0) as i64
-        )),
-        Some(HandleDrop::Nothing) | None => {}
-    }
     if let Some((x, _)) = out.press.long_press {
         state.push_command(Intent::OpenPressSheet(PressSheet {
-            ts: snapped(x),
-            scan_start: frame.view.scan_start_at(frame.x_to_ts(x)),
+            ts: snap_scrub(stop, x_to_ts(x), &units, now),
+            scan_start: view.scan_start_at(x_to_ts(x)),
         }));
         return;
     }
@@ -722,8 +267,7 @@ fn draw_strip(
     if !out.may_seek {
         return;
     }
-    if let Some(p) = pos.filter(|p| !owned(*p)) {
-        let ts = snapped(p.x);
+    if let Some(p) = pos {
         // A still finger does not seek again (the playhead holds while the
         // strip changes under it).
         let moved = response.dragged() && touch.scrub_moved(p.x);
@@ -735,121 +279,207 @@ fn draw_strip(
                 &mut playback.state,
                 now,
                 state.pause_stream_while_reviewing,
-                ts,
+                snap_scrub(stop, x_to_ts(p.x), &units, now),
                 SeekGesture::Scrub,
             );
         } else if response.clicked() && !response.dragged() {
+            // A tap goes to the volume: its first cut.
             state.push_command(Intent::Seek {
-                ts,
+                ts: tap_landing(x_to_ts(p.x), &units, now),
                 gesture: SeekGesture::Press,
             });
         }
     }
+}
 
-    // A tap on a failure mark retries the scans it stands for.
-    if response.clicked() {
-        if let Some(p) = pos {
-            if let Some(tick) = failed_ticks.iter().find(|t| t.rect.contains(p)) {
-                for key in &tick.keys {
-                    if let Some(op) = acquisition.state.failed_operation_for_scan_start(
-                        key.round() as i64,
-                        crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
-                    ) {
-                        state.push_command(Intent::RetryFailed(op));
-                    }
-                }
+/// Paint the row's view-model: marks, labels, the bracket and the now line.
+fn paint_row(p: &egui::Painter, top: f32, row: &RowVm, font: &FontId, time: f64, reduced: bool) {
+    let white = theme::SEEN;
+    for b in &row.blocks {
+        let r = Rect::from_min_max(
+            Pos2::new(b.x0, top + BLOCK_TOP),
+            Pos2::new(b.x1, top + BLOCK_TOP + BLOCK_H),
+        );
+        let radius = 6.0_f32.min(r.width() / 2.0);
+        let outline = if b.selected {
+            Stroke::new(2.0_f32, white)
+        } else if b.on_device {
+            Stroke::new(1.5_f32, colors::SLATE)
+        } else {
+            Stroke::new(1.5_f32, colors::SLATE_HI)
+        };
+        let fill = if b.selected {
+            colors::SLATE_HI
+        } else {
+            colors::SLATE
+        };
+        if b.live {
+            // Open at the now line: square on the right, filled by its cuts.
+            let corners = CornerRadius {
+                nw: radius as u8,
+                sw: radius as u8,
+                ne: 0,
+                se: 0,
+            };
+            let filled =
+                Rect::from_min_max(r.min, Pos2::new(r.left() + r.width() * b.fill, r.bottom()));
+            if filled.width() > 0.0 {
+                p.rect_filled(filled, corners, fill);
+            }
+            p.rect_stroke(r, corners, outline, StrokeKind::Inside);
+        } else {
+            if b.on_device {
+                p.rect_filled(r, radius, fill);
+            }
+            if b.selected || !b.on_device {
+                p.rect_stroke(r, radius, outline, StrokeKind::Inside);
             }
         }
-    }
-}
-
-/// The range's band: a translucent wash over the cells from [`BAND_TOP`] to
-/// [`BAND_BOTTOM`], with an amber edge line at each fixed end; or a parked
-/// start's amber tick.
-fn paint_band(painter: &egui::Painter, top: f32, marks: &RangeMarks) {
-    let edge = |x: f32, w: f32| {
-        painter.line_segment(
-            [
-                Pos2::new(x, top + BAND_TOP - 1.0),
-                Pos2::new(x, top + BAND_BOTTOM + 1.0),
-            ],
-            Stroke::new(w, tl_colors::RANGE),
-        );
-    };
-    if let Some((sx, ex)) = marks.band {
-        let band = Rect::from_min_max(
-            Pos2::new(sx, top + BAND_TOP),
-            Pos2::new(ex, top + BAND_BOTTOM),
-        );
-        if band.width() > 0.0 {
-            painter.rect_filled(band, 3.0, tl_colors::selection_fill());
+        for &x in &b.cuts {
+            p.line_segment(
+                [Pos2::new(x, r.top() + 4.0), Pos2::new(x, r.bottom() - 4.0)],
+                Stroke::new(1.0_f32, colors::cut()),
+            );
         }
-        edge(sx, 1.5);
-        if !marks.pinned {
-            edge(ex, 1.5);
+        if let Some(arc) = b.arc {
+            paint_arc(p, r.center(), 7.0, arc, time, reduced);
         }
     }
-    if let Some(x) = marks.parked_tick {
-        edge(x, 2.0);
-    }
-}
-
-/// The round amber handles below the band; the moving one shows its
-/// [`HANDLE_TARGET_PX`] target as a faint ring.
-fn paint_handles(
-    painter: &egui::Painter,
-    top: f32,
-    marks: &RangeMarks,
-    moving: Option<crate::core::phone_range::RangeEnd>,
-) {
-    for h in &marks.handles {
-        let c = Pos2::new(h.x, top + HANDLE_CY);
-        painter.circle_filled(c, HANDLE_R, tl_colors::RANGE);
-        if moving == Some(h.end) {
-            painter.circle_stroke(
-                c,
-                HANDLE_TARGET_PX / 2.0,
-                Stroke::new(1.0_f32, tl_colors::RANGE.gamma_multiply(0.6)),
+    for c in &row.columns {
+        let r = Rect::from_min_max(
+            Pos2::new(c.x0, top + COLUMN_BOTTOM - c.height),
+            Pos2::new(c.x1, top + COLUMN_BOTTOM),
+        );
+        let corners = CornerRadius {
+            nw: 2,
+            ne: 2,
+            sw: 0,
+            se: 0,
+        };
+        if c.selected {
+            p.rect_filled(r, corners, white);
+        } else if c.on_device {
+            p.rect_filled(r, corners, colors::SLATE);
+        } else {
+            p.rect_stroke(
+                r,
+                corners,
+                Stroke::new(1.0_f32, colors::SLATE_HI),
+                StrokeKind::Inside,
             );
         }
     }
-}
-
-/// The cost line (`1:30:00 · 18 scans · 71 MB`) on a scrim above the strip,
-/// over the moving handle and kept inside the strip's width.
-fn paint_cost_label(ui: &egui::Ui, strip: Rect, x: f32, label: &str) {
-    let painter = ui.ctx().layer_painter(egui::LayerId::new(
-        egui::Order::Tooltip,
-        ui.id().with("mini_cost_label"),
-    ));
-    let galley = painter.layout_no_wrap(label.to_string(), style::tick_font(), theme::TEXT);
-    let size = galley.size() + Vec2::new(12.0, 6.0);
-    let left = (x - size.x / 2.0)
-        .min(strip.right() - size.x)
-        .max(strip.left());
-    let bg = Rect::from_min_size(
-        Pos2::new(left, strip.top() - STRIP_REACH_PX - size.y - 4.0),
-        size,
-    );
-    painter.rect_filled(bg, 3.0, theme::map::scrim());
-    painter.rect_stroke(
-        bg,
-        3.0,
-        Stroke::new(1.0_f32, tl_colors::RANGE),
-        StrokeKind::Inside,
-    );
-    painter.galley(bg.min + Vec2::new(6.0, 3.0), galley, theme::TEXT);
-}
-
-/// The ring's dashed form: where the playhead's frame will be once it
-/// arrives.
-fn dashed_ring(painter: &egui::Painter, center: Pos2) {
-    const DASHES: usize = 12;
-    let stroke = Stroke::new(1.5_f32, theme::SELECTED);
-    for i in 0..DASHES {
-        let a0 = i as f32 / DASHES as f32 * std::f32::consts::TAU;
-        let a1 = a0 + 0.55 * std::f32::consts::TAU / DASHES as f32;
-        let at = |a: f32| center + Vec2::new(a.cos(), a.sin()) * RING_R;
-        painter.line_segment([at(a0), at(a1)], stroke);
+    for h in &row.hill {
+        p.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(h.x0, top + HILL_BOTTOM - h.height),
+                Pos2::new(h.x1, top + HILL_BOTTOM),
+            ),
+            0.0,
+            if h.on_device {
+                colors::SLATE_HI
+            } else {
+                colors::HILL
+            },
+        );
     }
+    if let Some(x) = row.playhead_x {
+        p.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(x - 1.0, top + HILL_BOTTOM - HILL_H),
+                Pos2::new(x + 1.0, top + HILL_BOTTOM),
+            ),
+            0.0,
+            white,
+        );
+    }
+    for l in &row.labels {
+        p.text(
+            Pos2::new(l.x, top + l.top),
+            egui::Align2::LEFT_TOP,
+            &l.text,
+            font.clone(),
+            if l.bright {
+                theme::TEXT
+            } else {
+                theme::TEXT_DIM
+            },
+        );
+    }
+    if let Some(b) = row.bracket {
+        p.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(b.x0, top + BRACKET_TOP),
+                Pos2::new(b.x1, top + BRACKET_TOP + BRACKET_H),
+            ),
+            1.5,
+            theme::LOOP,
+        );
+        let tick = |x0: f32| {
+            p.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(x0, top + BRACKET_TOP),
+                    Pos2::new(x0 + 2.0, top + BRACKET_TOP + BRACKET_TICK_H),
+                ),
+                0.0,
+                theme::LOOP,
+            );
+        };
+        if b.start_tick {
+            tick(b.x0);
+        }
+        if b.end_tick {
+            tick(b.x1 - 2.0);
+        }
+    }
+    if let Some(x) = row.now_x {
+        p.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(x - 1.0, top + NOW_TOP),
+                Pos2::new(x + 1.0, top + NOW_BOTTOM),
+            ),
+            0.0,
+            colors::NOW,
+        );
+        let cap = p.layout_no_wrap("NOW".to_string(), FontId::proportional(9.0), colors::NOW);
+        let clip = p.clip_rect();
+        let left = (x - cap.size().x / 2.0)
+            .min(clip.right() - cap.size().x - 1.0)
+            .max(clip.left());
+        p.galley(Pos2::new(left, top + NOW_CAP_TOP - 2.0), cap, colors::NOW);
+    }
+}
+
+/// The progress arc on a loading block (and in the map's pill): a faint
+/// track and a white arc from twelve o'clock, or a spinning third while
+/// nothing is known.
+pub(in crate::ui) fn paint_arc(
+    p: &egui::Painter,
+    center: Pos2,
+    r: f32,
+    arc: Arc,
+    time: f64,
+    reduced: bool,
+) {
+    use std::f32::consts::{FRAC_PI_2, TAU};
+    p.circle_stroke(center, r, Stroke::new(2.0_f32, colors::arc_track()));
+    let (from, sweep) = match arc {
+        Arc::Share(s) => (-FRAC_PI_2, s.clamp(0.0, 1.0) * TAU),
+        Arc::Spinning => {
+            let turn = if reduced {
+                0.0
+            } else {
+                (time * 1.6).fract() as f32 * TAU
+            };
+            (-FRAC_PI_2 + turn, 0.3 * TAU)
+        }
+    };
+    let steps = ((sweep / TAU) * 32.0).ceil().max(2.0) as usize;
+    let pts: Vec<Pos2> = (0..=steps)
+        .map(|k| {
+            let a = from + sweep * k as f32 / steps as f32;
+            center + Vec2::new(a.cos(), a.sin()) * r
+        })
+        .collect();
+    p.add(egui::Shape::line(pts, Stroke::new(2.0_f32, theme::SEEN)));
 }

@@ -121,6 +121,13 @@ pub(crate) struct Chrome {
     /// The phone strip owns a two-finger gesture this frame: the map must
     /// not zoom or pan on it. Reset before the strip draws each frame.
     pub phone_strip_claims_touch: bool,
+    /// The frame under the playhead is on its way (the row decided it,
+    /// [`crate::core::phone_row::LoadingVm`]): written by the strip each
+    /// frame, read by the map's dim and pill, the chip and the top bar's
+    /// clock.
+    pub phone_loading: Option<crate::core::phone_row::LoadingVm>,
+    /// The row shows now this frame (the LIVE button then needs no jump).
+    pub phone_now_in_view: bool,
     /// The canvas's frame on the last phone frame, so the map can hold still
     /// while the chrome slides ([`crate::core::phone::hold_map_still`]).
     pub last_canvas: Option<crate::core::phone::CanvasFrame>,

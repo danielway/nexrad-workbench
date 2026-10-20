@@ -1,33 +1,23 @@
-//! The phone strip's zoom stops (phone timeline §1): 15 MIN, 3 H and DAY.
+//! The phone strip's zoom stops (phone timeline §1): NOW, 3 H and 24 H.
 //!
-//! Continuous zoom suits a wheel, not a thumb, so the phone's mini timeline
-//! has three stops, each with its own window rule and scrub unit:
+//! Continuous zoom suits a wheel, not a thumb, so the phone's row has three
+//! stops, each with its own window rule and scrub unit. What each stop
+//! draws is [`crate::core::phone_row`]; this module owns the windows, the
+//! scrub and tap landings, and the touch.
 //!
-//! - **Cuts** (pill "15 MIN") — 3 H closer in: the last three volumes
-//!   ([`crate::core::phone::mini_window`]), each on the device as its cut
-//!   cells and each not on it as its storm bar ([`cut_volumes`]). A scrub
-//!   snaps per cut where cuts are known and per volume elsewhere
+//! - **Cuts** ("NOW") — the last three volumes
+//!   ([`crate::core::phone::mini_window`]), each a block. A scrub snaps per
+//!   cut where cuts are known and per volume elsewhere
 //!   ([`StripUnits::landing_units`]). A selected range always shows whole:
 //!   the window widens past three volumes when the range needs it
 //!   ([`strip_window`]'s `range`).
-//! - **Volumes** (pill "3 H") — three hours of storm-activity bars, one per
-//!   volume, as tall as the weather the volume held ([`activity_bars`]).
-//! - **Day** (pill "DAY") — 24 hours of the same bars, one per half-hour
-//!   bucket.
+//! - **Volumes** ("3 H") — three hours, one column per volume, as tall as
+//!   the weather the volume held. A scrub snaps to volumes.
+//! - **Day** ("24 H") — 24 hours of storm hill, one step per half-hour
+//!   bucket ([`activity_bars`]). A scrub snaps to volumes.
 //!
-//! The zoomed-out stops draw what the desktop overview draws zoomed in to
-//! volumes: bars from the volumes' sizes in the day's listing, a slate
-//! underline under the volumes already on the device ([`on_device_spans`]),
-//! and stretches with no sizes yet as a quiet wash ([`quiet_spans`]). A scrub
-//! there snaps to volumes.
-//!
-//! Every stop keeps the same marks: the periwinkle ring on the frame on
-//! screen ([`ring_center`]), a dashed ring where the playhead's frame will
-//! land while it is not there yet ([`pending_mark`]), the white playhead line when detached, the now
-//! line, and a small tab under it ([`strip_cap`]): filled red only for LIVE,
-//! outlined for REJOIN and GO LIVE, and an outlined edge tab at the right
-//! (`GO LIVE ›`, `REJOIN ›`) when now is off the window. Ruler labels give
-//! way to the tab and step aside for range handles ([`ruler_label_xs`]).
+//! A tap goes to the volume under the finger, its first cut, at every stop
+//! ([`tap_landing`]).
 //!
 //! Pinned, the window ends just past now and slides with it. Detached, it
 //! centres on the playhead when the playhead arrives from off the window,
@@ -35,11 +25,11 @@
 //! playhead nears an edge ([`strip_window`]). Landscape keeps the spans and
 //! gets more pixels per unit.
 //!
-//! A pinch moves one stop and settles on release ([`PinchTrack`]); the zoom
-//! pill names what the strip spans and taps through the stops
-//! ([`zoom_pill_label`], [`next_stop`]). Zoom and selection are independent:
-//! zooming never touches the playhead or the pin, and going live keeps the
-//! zoom ([`strip_zoom_after`]).
+//! A pinch moves one stop and settles on release ([`PinchTrack`]); the
+//! transport row's NOW · 3 H · 24 H control names the stop and sets it
+//! ([`zoom_pill_label`], [`StripZoom::ALL`]). Zoom and selection are
+//! independent: zooming never touches the playhead or the pin, and going
+//! live keeps the zoom ([`strip_zoom_after`]).
 //!
 //! All pure; `ui::timeline::mini` draws what these return.
 
@@ -47,8 +37,6 @@ use crate::core::phone::{
     mini_lead_secs, mini_near_now, mini_window, typical_volume_secs, MiniWindow, PressOut,
     PressTrack, MINI_VOLUMES,
 };
-use crate::core::phone_range::RangeEnd;
-use crate::core::session::NowCap;
 use crate::core::storm_activity::{ScanActivity, ScanSizes, ViewScale};
 use crate::core::timeline_view::{FrameCell, FrameCellState, ScanContainer};
 use crate::core::Intent;
@@ -72,16 +60,19 @@ pub(crate) const PINCH_OUT_FACTOR: f32 = 0.8;
 /// One of the strip's three zoom stops.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum StripZoom {
-    /// The last three volumes, every cut ("15 MIN").
+    /// The last three volumes, every cut ("NOW").
     #[default]
     Cuts,
     /// Three hours of storm bars, one per volume ("3 H").
     Volumes,
-    /// 24 hours of storm bars, one per half-hour ("DAY").
+    /// 24 hours of storm hill, one step per half-hour ("24 H").
     Day,
 }
 
 impl StripZoom {
+    /// The stops in the segmented control's order: NOW · 3 H · 24 H.
+    pub(crate) const ALL: [StripZoom; 3] = [StripZoom::Cuts, StripZoom::Volumes, StripZoom::Day];
+
     /// One stop closer in (a pinch out): Day → Volumes → Cuts, stopping at
     /// Cuts.
     pub(crate) fn zoom_in(self) -> Self {
@@ -107,21 +98,12 @@ impl StripZoom {
     }
 }
 
-/// The zoom pill's words for a stop: what the strip spans.
+/// The stop control's words for a stop.
 pub(crate) fn zoom_pill_label(stop: StripZoom) -> &'static str {
     match stop {
-        StripZoom::Cuts => "15 MIN",
+        StripZoom::Cuts => "NOW",
         StripZoom::Volumes => "3 H",
-        StripZoom::Day => "DAY",
-    }
-}
-
-/// The stop a tap on the pill goes to: Cuts → Volumes → Day → Cuts.
-pub(crate) fn next_stop(stop: StripZoom) -> StripZoom {
-    match stop {
-        StripZoom::Cuts => StripZoom::Volumes,
-        StripZoom::Volumes => StripZoom::Day,
-        StripZoom::Day => StripZoom::Cuts,
+        StripZoom::Day => "24 H",
     }
 }
 
@@ -403,15 +385,6 @@ impl StripUnits {
         out.sort_by(|a, b| a.start.total_cmp(&b.start));
         out
     }
-
-    /// The volume holding `ts`: the newest that starts by then and has not
-    /// ended.
-    fn volume_at(&self, ts: f64) -> Option<&SnapUnit> {
-        self.volumes
-            .iter()
-            .filter(|v| v.start <= ts + 1.0 && ts < v.end.max(v.start + 1.0))
-            .max_by(|a, b| a.start.total_cmp(&b.start))
-    }
 }
 
 /// Where a scrub at `ts` puts the playhead at `stop`: the landing time of
@@ -435,40 +408,11 @@ pub(crate) fn snap_scrub(stop: StripZoom, ts: f64, units: &StripUnits, now: f64)
         .map_or(ts, |u| u.land.min(now))
 }
 
-/// Where the strip marks a playhead whose frame has not arrived (the volume
-/// under it is downloading, or nothing is on screen yet), so a scrub has a
-/// visible result: the landing cut under the playhead at Cuts (else the
-/// playhead itself), the volume at Volumes, the half-hour at Day. `None`
-/// while pinned, when the frame on screen (`active_ts`, the displayed
-/// scan's time) is in the playhead's volume, or when no volume holds the
-/// playhead.
-pub(crate) fn pending_mark(
-    stop: StripZoom,
-    playhead: f64,
-    pinned: bool,
-    active_ts: Option<f64>,
-    units: &StripUnits,
-) -> Option<f64> {
-    if pinned {
-        return None;
-    }
-    let v = units.volume_at(playhead)?;
-    if active_ts.is_some_and(|ts| ts >= v.start - 1.0 && ts < v.end.max(v.start + 1.0)) {
-        return None;
-    }
-    let mid = |a: f64, b: f64| (a + b) / 2.0;
-    Some(match stop {
-        StripZoom::Cuts => units
-            .cuts
-            .iter()
-            .filter(|c| c.start >= v.start - 1.0 && c.start < v.end)
-            .find(|c| playhead >= c.start - 1.0 && playhead <= c.end + 1.0)
-            .map_or(playhead, |c| mid(c.start, c.end)),
-        StripZoom::Volumes => mid(v.start, v.end),
-        StripZoom::Day => {
-            (playhead / DAY_BUCKET_SECS).floor() * DAY_BUCKET_SECS + DAY_BUCKET_SECS / 2.0
-        }
-    })
+/// Where a tap at `ts` puts the playhead, at every stop: the first cut of
+/// the volume under the finger (or of the nearest one), never past `now`.
+/// A drag goes cut by cut ([`snap_scrub`]); a tap goes to a volume.
+pub(crate) fn tap_landing(ts: f64, units: &StripUnits, now: f64) -> f64 {
+    snap_scrub(StripZoom::Volumes, ts, units, now)
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -563,15 +507,11 @@ impl PinchTrack {
     }
 }
 
-/// The strip's touch state between frames: one press, one pinch, and the
-/// range handle the press began on.
+/// The strip's touch state between frames: one press and one pinch.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct StripTouch {
     pub press: Option<PressTrack>,
     pub pinch: Option<PinchTrack>,
-    /// The press began inside this handle's touch target: a drag moves the
-    /// range's end, never the playhead.
-    pub grabbed: Option<RangeEnd>,
     /// Where the finger was the last time the press scrubbed (points).
     scrub_x: Option<f32>,
 }
@@ -589,9 +529,6 @@ pub(crate) struct StripTouchInput {
     pub pinch: Option<PinchInput>,
     /// The stop on screen.
     pub stop: StripZoom,
-    /// The range handle whose touch target holds the finger
-    /// ([`crate::core::phone_range::handle_at`]); read when a press begins.
-    pub handle: Option<RangeEnd>,
 }
 
 /// What the strip's touch did this frame.
@@ -604,12 +541,8 @@ pub(crate) struct StripTouchOut {
     /// A pinch ended and the strip goes to this stop.
     pub settle: Option<StripZoom>,
     /// This frame may seek (a tap or a scrub): the press is neither a
-    /// long-press nor taken over by a pinch, and is not moving a handle.
+    /// long-press nor taken over by a pinch.
     pub may_seek: bool,
-    /// A range handle is moving with the finger this frame.
-    pub moving: Option<RangeEnd>,
-    /// A moving handle was let go this frame: drop it.
-    pub dropped: Option<RangeEnd>,
 }
 
 impl StripTouch {
@@ -630,13 +563,7 @@ impl StripTouch {
     /// cancels the press under it (and any press that starts during it), so
     /// a pinch never seeks, scrubs or opens the sheet; the press stays
     /// cancelled until its finger lifts.
-    ///
-    /// A press that begins inside a range handle's target belongs to the
-    /// handle: once it moves it moves that end and never scrubs; let go, it
-    /// drops. Held still it is still a tap (a seek) or a long-press (the
-    /// sheet), so the handle's target costs neither.
     pub(crate) fn step(&mut self, i: StripTouchInput) -> StripTouchOut {
-        let was = self.press;
         let (pinch, pinch_out) = PinchTrack::step(self.pinch, i.pinch, i.stop);
         self.pinch = pinch;
         let prev = self.press.map(|mut p| {
@@ -657,31 +584,18 @@ impl StripTouch {
             press_out.waiting = false;
         }
         self.press = press;
-        if was.is_none() && press.is_some() {
-            self.grabbed = i.handle;
-        }
-        let dragging = |p: Option<PressTrack>| p.is_some_and(|p| p.scrubbing() && p.seeks());
-        let moving = self.grabbed.filter(|_| dragging(press));
-        let dropped = self
-            .grabbed
-            .filter(|_| press.is_none() && dragging(was) && !pinch_out.claimed);
         if press.is_none() {
-            self.grabbed = None;
             self.scrub_x = None;
         }
         let may_seek = !pinch_out.claimed
             && !press_out.swallow_release
             && press_out.long_press.is_none()
-            && press.is_none_or(|p| p.seeks())
-            && moving.is_none()
-            && dropped.is_none();
+            && press.is_none_or(|p| p.seeks());
         StripTouchOut {
             press: press_out,
             claimed: pinch_out.claimed,
             settle: pinch_out.settle,
             may_seek,
-            moving,
-            dropped,
         }
     }
 }
@@ -754,416 +668,6 @@ pub(crate) fn activity_bars(
     }
 }
 
-/// How far before a container's start a listed volume's start may fall and
-/// still be that container (a volume's key time can lead its first sweep).
-const KEY_SLACK_SECS: f64 = 30.0;
-
-/// How one volume looks at the Cuts stop.
-#[derive(Clone, Debug)]
-pub(crate) enum CutLook {
-    /// On the device (or the live volume): its cut cells, a filled cell
-    /// being a frame on the device. The live volume's last cell may be the
-    /// ghost of its next cut (`Projected`), the only cell past now.
-    Cells(Vec<FrameCell>),
-    /// Not on the device: the 3 H stop's storm bar (`frac`, as a fraction
-    /// of the lane), or a quiet wash when its size isn't known; `fetching`
-    /// while it is queued or downloading.
-    Bar { frac: Option<f32>, fetching: bool },
-}
-
-/// One volume on the Cuts stop.
-#[derive(Clone, Debug)]
-pub(crate) struct CutVolume {
-    pub start: f64,
-    /// Where its box ends: the volume's end, or for the live volume now
-    /// (or its last cut, if later), so nothing but the ghost draws past
-    /// now.
-    pub end: f64,
-    pub look: CutLook,
-}
-
-/// What the Cuts stop draws (15 MIN is 3 H closer in): each volume on the
-/// device as its cut cells, each volume that is not as the storm bar 3 H
-/// draws for it (from `sizes`, scaled over [`sizes_span`] so it is as tall
-/// as at 3 H; a quiet wash when unknown), with no tilt or VCP words and no
-/// dashed shell. Volumes the day's listing knows that no container covers
-/// draw as bars too. The next volume's ghost is not drawn; the live
-/// volume carries only the ghost of its next cut (else the ghost volume's
-/// first), and its box stops at now. Oldest first.
-pub(crate) fn cut_volumes(
-    containers: &[ScanContainer],
-    sizes: &ScanSizes,
-    window: MiniWindow,
-    now: f64,
-) -> Vec<CutVolume> {
-    let (lo, hi) = sizes_span(StripZoom::Cuts, window);
-    let scale = ViewScale::from_levels(
-        sizes
-            .scans
-            .iter()
-            .filter(|s| s.end >= lo && s.start <= hi)
-            .map(|s| s.level),
-    );
-    let frac_at = |start: f64, end: f64| {
-        sizes
-            .at((start + end) / 2.0)
-            .map(|s| scale.height_frac(s.level))
-    };
-    let next_ghost_volume = containers
-        .iter()
-        .filter(|c| c.is_projected)
-        .min_by(|a, b| a.start_secs.total_cmp(&b.start_secs));
-    let mut out: Vec<CutVolume> = Vec::new();
-    for c in containers.iter().filter(|c| !c.is_projected) {
-        if c.is_available {
-            out.push(CutVolume {
-                start: c.start_secs,
-                end: c.end_secs.max(c.start_secs),
-                look: CutLook::Bar {
-                    frac: frac_at(c.start_secs, c.end_secs),
-                    fetching: c.cells.iter().any(|cell| {
-                        matches!(
-                            cell.state,
-                            FrameCellState::InFlight | FrameCellState::Queued
-                        )
-                    }),
-                },
-            });
-            continue;
-        }
-        let mut cells: Vec<FrameCell> = c
-            .cells
-            .iter()
-            .filter(|cell| cell.state != FrameCellState::Projected)
-            .cloned()
-            .collect();
-        let mut end = c.end_secs.max(c.start_secs);
-        if c.is_live {
-            let last = cells.iter().map(|cell| cell.end_secs).fold(now, f64::max);
-            end = end.min(last).max(c.start_secs);
-            let ghost = c
-                .cells
-                .iter()
-                .filter(|cell| cell.state == FrameCellState::Projected)
-                .min_by(|a, b| a.start_secs.total_cmp(&b.start_secs))
-                .or_else(|| next_ghost_volume.and_then(|g| g.cells.first()));
-            if let Some(g) = ghost {
-                cells.push(g.clone());
-            }
-        }
-        out.push(CutVolume {
-            start: c.start_secs,
-            end,
-            look: CutLook::Cells(cells),
-        });
-    }
-    let covered = |ts: f64| {
-        containers
-            .iter()
-            .any(|c| ts >= c.start_secs - KEY_SLACK_SECS && ts < c.end_secs.max(c.start_secs + 1.0))
-    };
-    out.extend(
-        sizes
-            .scans
-            .iter()
-            .filter(|s| s.end >= window.start && s.start <= window.end && s.start <= now)
-            .filter(|s| !covered(s.start))
-            .map(|s| CutVolume {
-                start: s.start,
-                end: s.end.max(s.start),
-                look: CutLook::Bar {
-                    frac: Some(scale.height_frac(s.level)),
-                    fetching: false,
-                },
-            }),
-    );
-    out.sort_by(|a, b| a.start.total_cmp(&b.start));
-    out
-}
-
-/// The strip's volumes (containers) that no volume in `sizes` covers: the
-/// stretches a zoomed-out stop draws as a quiet wash, as the desktop draws
-/// days whose sizes aren't known yet, rather than as boxes. A volume newer
-/// than the day's listing (the live one, say) is one of them.
-pub(crate) fn quiet_spans(containers: &[ScanContainer], sizes: &ScanSizes) -> Vec<(f64, f64)> {
-    containers
-        .iter()
-        .filter(|c| !c.is_projected && c.end_secs > c.start_secs)
-        .filter(|c| sizes.at((c.start_secs + c.end_secs) / 2.0).is_none())
-        .map(|c| (c.start_secs, c.end_secs))
-        .collect()
-}
-
-/// The on-device underline at a zoomed-out stop: the volumes with any sweep
-/// on this device, oldest first. Runs closer than `join_secs` merge into one
-/// stretch (at Day a volume is a pixel or two wide); at Volumes pass 0 and
-/// each volume keeps its own piece.
-pub(crate) fn on_device_spans(containers: &[ScanContainer], join_secs: f64) -> Vec<(f64, f64)> {
-    let mut held: Vec<(f64, f64)> = containers
-        .iter()
-        .filter(|c| !c.is_projected && !c.is_available)
-        .map(|c| (c.start_secs, c.end_secs.max(c.start_secs)))
-        .collect();
-    held.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut out: Vec<(f64, f64)> = Vec::new();
-    for (s, e) in held {
-        match out.last_mut() {
-            Some(last) if join_secs > 0.0 && s - last.1 <= join_secs => last.1 = last.1.max(e),
-            _ => out.push((s, e)),
-        }
-    }
-    out
-}
-
-/// Where the periwinkle ring sits (Unix seconds, its centre): on the frame
-/// on screen. At Cuts that is the active cell (else the cell of the volume
-/// holding `active_ts`, the displayed scan's time); at Volumes the volume
-/// with the active cell, else the one holding `active_ts`, or the bar that
-/// does when the strip has no container for it; at Day the half-hour bucket
-/// holding it. `None` when nothing is on screen.
-pub(crate) fn ring_center(
-    stop: StripZoom,
-    active_ts: Option<f64>,
-    containers: &[ScanContainer],
-    bars: &[StripBar],
-) -> Option<f64> {
-    let mid = |a: f64, b: f64| (a + b) / 2.0;
-    let active = containers.iter().find_map(|c| {
-        c.cells
-            .iter()
-            .find(|cell| cell.is_active)
-            .map(|cell| (c, cell))
-    });
-    // The volume holding the displayed scan's time: the newest one that
-    // starts by then, while it is still within a volume's reach (a live
-    // volume's display end can trail the frame on screen).
-    let holding = |ts: f64| {
-        containers
-            .iter()
-            .filter(|c| !c.is_projected && c.start_secs <= ts + 1.0)
-            .max_by(|a, b| a.start_secs.total_cmp(&b.start_secs))
-            .filter(|c| ts < c.end_secs.max(c.start_secs + MAX_RING_REACH_SECS))
-    };
-    match stop {
-        StripZoom::Cuts => {
-            if let Some((_, cell)) = active {
-                return Some(mid(cell.start_secs, cell.end_secs));
-            }
-            let ts = active_ts?;
-            let c = holding(ts)?;
-            c.cells
-                .iter()
-                .filter(|cell| cell.state != FrameCellState::Projected)
-                .find(|cell| ts >= cell.start_secs - 1.0 && ts < cell.end_secs)
-                .or_else(|| c.cells.first())
-                .map(|cell| mid(cell.start_secs, cell.end_secs))
-        }
-        StripZoom::Volumes => {
-            if let Some((c, _)) = active {
-                return Some(mid(c.start_secs, c.end_secs));
-            }
-            let ts = active_ts?;
-            holding(ts)
-                .map(|c| mid(c.start_secs, c.end_secs))
-                .or_else(|| {
-                    bars.iter()
-                        .find(|b| ts >= b.start - 1.0 && ts < b.end)
-                        .map(|b| mid(b.start, b.end))
-                })
-        }
-        StripZoom::Day => {
-            let ts = active_ts?;
-            let b = (ts / DAY_BUCKET_SECS).floor() * DAY_BUCKET_SECS;
-            Some(b + DAY_BUCKET_SECS / 2.0)
-        }
-    }
-}
-
-/// How long after a volume's start the displayed scan's time still counts
-/// as that volume's, for the ring, when the volume's display end is
-/// shorter (the live volume).
-const MAX_RING_REACH_SECS: f64 = 900.0;
-
-/// The now tab under the now line.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct StripCap {
-    /// The word: LIVE, REJOIN or GO LIVE, with ` ›` on the edge tab.
-    pub label: String,
-    /// Filled red (LIVE) or outlined (REJOIN, GO LIVE).
-    pub filled: bool,
-    /// The tab's left edge, in points.
-    pub x0: f32,
-    /// Its width, in points.
-    pub width: f32,
-    /// Now is off the window and the tab sits at the lane's right edge.
-    pub edge: bool,
-}
-
-/// The tab's padding around its word, in points (both sides together).
-pub(crate) const CAP_PAD_X: f32 = 8.0;
-
-/// How far the tab keeps from the lane's right end, in points.
-pub(crate) const CAP_EDGE_GAP: f32 = 4.0;
-
-/// The now tab. `now_x` is the now line's x when now is in the window
-/// (`None` when it is off it); `lane_right` the lane's right end;
-/// `measure` a word's width in points. The tab hangs just right of the now
-/// line, or just left of it when the lane ends first, so it never covers
-/// the line; off the window it is an edge tab at the right end pointing at
-/// now. Filled only for LIVE: red means
-/// now, and REJOIN and GO LIVE are invitations, outlined.
-pub(crate) fn strip_cap(
-    cap: NowCap,
-    now_x: Option<f32>,
-    lane_right: f32,
-    measure: &dyn Fn(&str) -> f32,
-) -> StripCap {
-    let edge = now_x.is_none();
-    let label = if edge {
-        format!("{} \u{203a}", cap.label())
-    } else {
-        cap.label().to_string()
-    };
-    let width = measure(&label) + CAP_PAD_X;
-    let right_most = lane_right - CAP_EDGE_GAP - width;
-    let x0 = match now_x {
-        Some(x) if x + 3.0 <= right_most => x + 3.0,
-        Some(x) => x - 3.0 - width,
-        None => right_most,
-    };
-    StripCap {
-        label,
-        filled: cap == NowCap::Live && !edge,
-        x0,
-        width,
-        edge,
-    }
-}
-
-/// What a tap on the now tab does. LIVE does nothing (already live);
-/// REJOIN re-pins to the running stream; GO LIVE starts one. The edge tab
-/// first brings now into view (`CenterTimelineOnNow`, for the desktop
-/// timeline the same session shares).
-pub(crate) fn cap_intents(cap: NowCap, edge: bool) -> Vec<Intent> {
-    let attach = match cap {
-        NowCap::Live => return Vec::new(),
-        NowCap::Rejoin => Intent::ReturnToLive,
-        NowCap::GoLive => Intent::GoLive,
-    };
-    if edge {
-        vec![Intent::CenterTimelineOnNow, attach]
-    } else {
-        vec![attach]
-    }
-}
-
-/// Where each ruler label draws, as its left x, or `None` when it does
-/// not. `labels` are each label's natural left x and width; `tab` is the
-/// now tab's span and `handles` the range handles' tap targets in its row
-/// (left, right). A label draws at its natural x when that fits inside
-/// `lane` (left, right), clears the tab, every handle and the label before
-/// it that drew. A label under the tab gives way. A label blocked only by a
-/// handle steps aside to the nearest clear place just left or right of a
-/// handle (inside the lane, clear of the tab, the handles and the label
-/// before it), and gives way only when there is none.
-pub(crate) fn ruler_label_xs(
-    labels: &[(f32, f32)],
-    lane: (f32, f32),
-    tab: Option<(f32, f32)>,
-    handles: &[(f32, f32)],
-) -> Vec<Option<f32>> {
-    const GAP: f32 = 3.0;
-    let clear_of = |x: f32, w: f32, (l, r): (f32, f32)| x + w + GAP <= l || x >= r + GAP;
-    let mut last_right = f32::NEG_INFINITY;
-    labels
-        .iter()
-        .map(|&(x, w)| {
-            let ok = |x: f32| {
-                x >= lane.0
-                    && x + w <= lane.1
-                    && x >= last_right + GAP
-                    && tab.is_none_or(|t| clear_of(x, w, t))
-                    && handles.iter().all(|&h| clear_of(x, w, h))
-            };
-            let under_tab = tab.is_some_and(|t| !clear_of(x, w, t));
-            let blocked_by_handle = handles.iter().any(|&h| !clear_of(x, w, h));
-            let at = if ok(x) {
-                Some(x)
-            } else if blocked_by_handle && !under_tab {
-                handles
-                    .iter()
-                    .flat_map(|&(l, r)| [l - GAP - w, r + GAP])
-                    .filter(|&c| ok(c))
-                    .min_by(|a, b| (a - x).abs().total_cmp(&(b - x).abs()))
-            } else {
-                None
-            };
-            if let Some(at) = at {
-                last_right = at + w;
-            }
-            at
-        })
-        .collect()
-}
-
-/// One label on the strip's ruler.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct RulerTick {
-    pub ts: f64,
-    pub label: String,
-}
-
-/// The ruler under the strip, in the chosen zone (`tz_offset_secs` east of
-/// UTC; 0 for UTC): each volume's start (`HH:MM`) at Cuts, every hour
-/// (`HH:00`) at Volumes, and every hour at Day, labelled every six hours
-/// (`00 06 12 18`; the other hours are unlabelled ticks, `label` empty).
-pub(crate) fn ruler_ticks(
-    stop: StripZoom,
-    window: MiniWindow,
-    volume_starts: &[f64],
-    tz_offset_secs: i64,
-) -> Vec<RulerTick> {
-    let off = tz_offset_secs as f64;
-    let clock = |ts: f64| {
-        let secs = (ts + off).rem_euclid(86_400.0) as i64;
-        (secs / 3600, (secs % 3600) / 60)
-    };
-    let every = |step: f64, label: &dyn Fn(i64, i64) -> String| {
-        let mut out = Vec::new();
-        let mut t = ((window.start + off) / step).ceil() * step - off;
-        while t <= window.end {
-            let (h, m) = clock(t);
-            out.push(RulerTick {
-                ts: t,
-                label: label(h, m),
-            });
-            t += step;
-        }
-        out
-    };
-    match stop {
-        StripZoom::Cuts => volume_starts
-            .iter()
-            .filter(|&&s| s >= window.start && s <= window.end)
-            .map(|&s| {
-                let (h, m) = clock(s);
-                RulerTick {
-                    ts: s,
-                    label: format!("{h:02}:{m:02}"),
-                }
-            })
-            .collect(),
-        StripZoom::Volumes => every(3600.0, &|h, _| format!("{h:02}:00")),
-        StripZoom::Day => every(3600.0, &|h, _| {
-            if h % 6 == 0 {
-                format!("{h:02}")
-            } else {
-                String::new()
-            }
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,13 +699,14 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn the_pill_names_the_stop_and_cycles_through_all_three() {
-        assert_eq!(zoom_pill_label(StripZoom::Cuts), "15 MIN");
+    fn the_control_names_the_three_stops_in_order() {
+        assert_eq!(zoom_pill_label(StripZoom::Cuts), "NOW");
         assert_eq!(zoom_pill_label(StripZoom::Volumes), "3 H");
-        assert_eq!(zoom_pill_label(StripZoom::Day), "DAY");
-        assert_eq!(next_stop(StripZoom::Cuts), StripZoom::Volumes);
-        assert_eq!(next_stop(StripZoom::Volumes), StripZoom::Day);
-        assert_eq!(next_stop(StripZoom::Day), StripZoom::Cuts);
+        assert_eq!(zoom_pill_label(StripZoom::Day), "24 H");
+        assert_eq!(
+            StripZoom::ALL,
+            [StripZoom::Cuts, StripZoom::Volumes, StripZoom::Day]
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1811,82 +1316,7 @@ mod tests {
             now,
             pinch,
             stop: StripZoom::Volumes,
-            handle: None,
         }
-    }
-
-    fn on_handle(i: StripTouchInput, end: RangeEnd) -> StripTouchInput {
-        StripTouchInput {
-            handle: Some(end),
-            ..i
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn a_press_on_a_handle_moves_the_end_and_never_scrubs() {
-        let mut t = StripTouch::default();
-        // Lands inside the start handle's target.
-        let out = t.step(on_handle(touch(true, 100.0, 0.0, None), RangeEnd::Start));
-        assert_eq!(t.grabbed, Some(RangeEnd::Start));
-        assert_eq!(out.moving, None, "not moving until it moves");
-        // It moves past the slop: the handle moves, the playhead does not.
-        let out = t.step(touch(true, 120.0, 0.1, None));
-        assert_eq!(out.moving, Some(RangeEnd::Start));
-        assert!(!out.may_seek);
-        let out = t.step(touch(true, 160.0, 0.2, None));
-        assert_eq!(out.moving, Some(RangeEnd::Start));
-        assert!(!out.may_seek);
-        // Let go: it drops, and that is not a tap.
-        let out = t.step(touch(false, 0.0, 0.3, None));
-        assert_eq!(out.dropped, Some(RangeEnd::Start));
-        assert!(!out.may_seek);
-        assert_eq!(t.grabbed, None);
-        // The next press, off the handles, scrubs as usual.
-        t.step(touch(true, 200.0, 1.0, None));
-        let out = t.step(touch(true, 230.0, 1.1, None));
-        assert_eq!(out.moving, None);
-        assert!(out.may_seek);
-    }
-
-    #[wasm_bindgen_test]
-    fn only_where_the_press_began_decides_the_handle() {
-        let mut t = StripTouch::default();
-        // A scrub that passes over a handle stays a scrub.
-        t.step(touch(true, 50.0, 0.0, None));
-        let out = t.step(on_handle(touch(true, 100.0, 0.1, None), RangeEnd::End));
-        assert_eq!(out.moving, None);
-        assert!(out.may_seek);
-    }
-
-    #[wasm_bindgen_test]
-    fn a_still_press_on_a_handle_is_still_a_tap_or_a_long_press() {
-        let mut t = StripTouch::default();
-        t.step(on_handle(touch(true, 100.0, 0.0, None), RangeEnd::End));
-        let out = t.step(touch(false, 0.0, 0.1, None));
-        assert!(out.may_seek, "a tap seeks");
-        assert_eq!(out.dropped, None);
-
-        t.step(on_handle(touch(true, 100.0, 1.0, None), RangeEnd::End));
-        let out = t.step(touch(true, 101.0, 1.6, None));
-        assert!(out.press.long_press.is_some(), "the sheet opens");
-        let out = t.step(touch(false, 0.0, 1.7, None));
-        assert_eq!(out.dropped, None);
-        assert!(!out.may_seek);
-    }
-
-    #[wasm_bindgen_test]
-    fn a_pinch_takes_a_moving_handle_and_drops_nothing() {
-        let mut t = StripTouch::default();
-        t.step(on_handle(touch(true, 100.0, 0.0, None), RangeEnd::Start));
-        assert_eq!(
-            t.step(touch(true, 130.0, 0.1, None)).moving,
-            Some(RangeEnd::Start)
-        );
-        let out = t.step(touch(true, 140.0, 0.2, pinch(1.3, true)));
-        assert_eq!(out.moving, None);
-        t.step(touch(true, 140.0, 0.3, None));
-        let out = t.step(touch(false, 0.0, 0.4, None));
-        assert_eq!(out.dropped, None);
     }
 
     #[wasm_bindgen_test]
@@ -2012,256 +1442,6 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn volumes_without_sizes_are_quiet_and_the_ghost_is_not_drawn() {
-        let sz = sizes(vec![scan(0.0, 300.0, 0.2)]);
-        let live = container(
-            300.0,
-            600.0,
-            vec![cell(310.0, 330.0, FrameCellState::Cached)],
-        );
-        let ghost = ScanContainer {
-            is_projected: true,
-            ..container(600.0, 900.0, Vec::new())
-        };
-        let listed = container(0.0, 300.0, Vec::new());
-        assert_eq!(
-            quiet_spans(&[listed, live, ghost], &sz),
-            vec![(300.0, 600.0)]
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn the_underline_marks_held_volumes_and_merges_runs_at_day() {
-        let held = |s: f64| {
-            container(
-                s,
-                s + 300.0,
-                vec![cell(s, s + 20.0, FrameCellState::Cached)],
-            )
-        };
-        let server = ScanContainer {
-            is_available: true,
-            ..container(600.0, 900.0, Vec::new())
-        };
-        let cs = vec![held(0.0), held(300.0), server, held(900.0)];
-        assert_eq!(
-            on_device_spans(&cs, 0.0),
-            vec![(0.0, 300.0), (300.0, 600.0), (900.0, 1_200.0)]
-        );
-        assert_eq!(
-            on_device_spans(&cs, 1.0),
-            vec![(0.0, 600.0), (900.0, 1_200.0)]
-        );
-        assert_eq!(on_device_spans(&cs, 400.0), vec![(0.0, 1_200.0)]);
-    }
-
-    #[wasm_bindgen_test]
-    fn the_ring_sits_on_the_frame_on_screen_at_every_stop() {
-        let mut c = container(
-            0.0,
-            300.0,
-            vec![
-                cell(10.0, 40.0, FrameCellState::Cached),
-                cell(150.0, 180.0, FrameCellState::Cached),
-            ],
-        );
-        c.cells[1].is_active = true;
-        let cs = vec![c];
-        assert_eq!(
-            ring_center(StripZoom::Cuts, Some(0.0), &cs, &[]),
-            Some(165.0)
-        );
-        assert_eq!(
-            ring_center(StripZoom::Volumes, Some(0.0), &cs, &[]),
-            Some(150.0)
-        );
-        // A volume the strip holds no container for: the bar's centre.
-        let bars = [StripBar {
-            start: 900.0,
-            end: 1_200.0,
-            frac: 0.5,
-        }];
-        assert_eq!(
-            ring_center(StripZoom::Volumes, Some(900.0), &[], &bars),
-            Some(1_050.0)
-        );
-        assert_eq!(
-            ring_center(StripZoom::Day, Some(2_000.0), &cs, &[]),
-            Some(2_700.0)
-        );
-        // No cell flagged (the live volume, its display end short of the
-        // frame): the volume that started last before the frame.
-        let live = vec![container(
-            0.0,
-            30.0,
-            vec![cell(5.0, 20.0, FrameCellState::Cached)],
-        )];
-        assert_eq!(
-            ring_center(StripZoom::Volumes, Some(100.0), &live, &[]),
-            Some(15.0)
-        );
-        assert_eq!(
-            ring_center(StripZoom::Cuts, Some(100.0), &live, &[]),
-            Some(12.5)
-        );
-        assert_eq!(
-            ring_center(StripZoom::Volumes, Some(5_000.0), &live, &[]),
-            None
-        );
-        // Nothing on screen, no ring.
-        assert_eq!(ring_center(StripZoom::Day, None, &cs, &[]), None);
-        assert_eq!(ring_center(StripZoom::Cuts, None, &[], &[]), None);
-    }
-
-    fn measure(s: &str) -> f32 {
-        s.chars().count() as f32 * 6.0
-    }
-
-    #[wasm_bindgen_test]
-    fn the_cap_is_a_small_tab_filled_only_for_live() {
-        let live = strip_cap(NowCap::Live, Some(200.0), 380.0, &measure);
-        assert!(live.filled && !live.edge);
-        assert_eq!(live.label, "LIVE");
-        assert_eq!(live.x0, 203.0, "just right of the now line");
-        assert_eq!(live.width, 24.0 + CAP_PAD_X);
-        for cap in [NowCap::Rejoin, NowCap::GoLive] {
-            let c = strip_cap(cap, Some(200.0), 380.0, &measure);
-            assert!(!c.filled, "{cap:?} is outlined");
-            assert_eq!(c.label, cap.label());
-        }
-        // Near the right end the tab hangs left of the line instead, clear
-        // of it.
-        let c = strip_cap(NowCap::Live, Some(375.0), 380.0, &measure);
-        assert_eq!(c.x0 + c.width, 372.0);
-    }
-
-    #[wasm_bindgen_test]
-    fn now_off_the_window_is_an_outlined_edge_tab_pointing_at_it() {
-        let go = strip_cap(NowCap::GoLive, None, 380.0, &measure);
-        assert!(go.edge && !go.filled);
-        assert_eq!(go.label, "GO LIVE \u{203a}");
-        assert_eq!(go.x0 + go.width, 380.0 - CAP_EDGE_GAP);
-        assert_eq!(
-            strip_cap(NowCap::Rejoin, None, 380.0, &measure).label,
-            "REJOIN \u{203a}"
-        );
-        // Even a live selection's edge tab is outlined: it is not at now.
-        assert!(!strip_cap(NowCap::Live, None, 380.0, &measure).filled);
-    }
-
-    #[wasm_bindgen_test]
-    fn the_cap_rejoins_or_goes_live_and_live_does_nothing() {
-        assert!(cap_intents(NowCap::Live, false).is_empty());
-        assert!(matches!(
-            cap_intents(NowCap::Rejoin, false)[..],
-            [Intent::ReturnToLive]
-        ));
-        assert!(matches!(
-            cap_intents(NowCap::GoLive, false)[..],
-            [Intent::GoLive]
-        ));
-        assert!(matches!(
-            cap_intents(NowCap::GoLive, true)[..],
-            [Intent::CenterTimelineOnNow, Intent::GoLive]
-        ));
-        assert!(matches!(
-            cap_intents(NowCap::Rejoin, true)[..],
-            [Intent::CenterTimelineOnNow, Intent::ReturnToLive]
-        ));
-    }
-
-    #[wasm_bindgen_test]
-    fn ruler_labels_give_way_to_the_cap_the_edge_and_each_other() {
-        let labels = [
-            (60.0, 27.0),
-            (150.0, 27.0),
-            (240.0, 27.0),
-            (330.0, 27.0),
-            (360.0, 27.0),
-        ];
-        let tab = Some((320.0, 360.0));
-        // The last one would cross the lane's end; the one under the cap
-        // gives way.
-        assert_eq!(
-            ruler_label_xs(&labels, (58.0, 380.0), tab, &[]),
-            vec![Some(60.0), Some(150.0), Some(240.0), None, None]
-        );
-        assert_eq!(
-            ruler_label_xs(&labels, (58.0, 380.0), None, &[]),
-            vec![Some(60.0), Some(150.0), Some(240.0), Some(330.0), None]
-        );
-        // Two labels too close: the later one gives way.
-        assert_eq!(
-            ruler_label_xs(&[(60.0, 27.0), (80.0, 27.0)], (0.0, 400.0), None, &[]),
-            vec![Some(60.0), None]
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn a_label_under_a_handle_steps_to_the_nearest_clear_side() {
-        let lane = (58.0, 380.0);
-        let tab = Some((320.0, 360.0));
-        // A handle's target over the second label: it steps right, the
-        // nearer side (left would be 124, 26 away; right is 169, 19 away).
-        assert_eq!(
-            ruler_label_xs(
-                &[(60.0, 27.0), (150.0, 27.0), (240.0, 27.0)],
-                lane,
-                tab,
-                &[(142.0, 166.0)]
-            ),
-            vec![Some(60.0), Some(169.0), Some(240.0)]
-        );
-        // Nearer on the left: it steps left.
-        assert_eq!(
-            ruler_label_xs(&[(150.0, 27.0)], lane, tab, &[(170.0, 194.0)]),
-            vec![Some(140.0)]
-        );
-        // The tab is still a hard rule: a label under it gives way even
-        // when a handle is there too.
-        assert_eq!(
-            ruler_label_xs(&[(330.0, 27.0)], lane, tab, &[(318.0, 342.0)]),
-            vec![None]
-        );
-        // A side that would cross the lane, the tab or the label before is
-        // not clear; with neither side clear the label gives way.
-        assert_eq!(
-            ruler_label_xs(&[(60.0, 27.0)], lane, None, &[(52.0, 76.0)]),
-            vec![Some(79.0)]
-        );
-        assert_eq!(
-            ruler_label_xs(&[(290.0, 27.0)], lane, tab, &[(282.0, 306.0)]),
-            vec![Some(252.0)]
-        );
-        assert_eq!(
-            ruler_label_xs(
-                &[(60.0, 27.0), (100.0, 27.0)],
-                (58.0, 140.0),
-                None,
-                &[(92.0, 116.0)]
-            ),
-            vec![Some(60.0), None]
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn fifteen_minutes_with_a_range_keeps_every_label() {
-        // The 15 MIN case: handles sit on the only ticks (label x = tick +
-        // 2, target = tick +- 12). Every label still draws, beside its
-        // handle, without overlapping another.
-        let ticks = [90.0_f32, 200.0, 310.0];
-        let labels: Vec<_> = ticks.iter().map(|t| (t + 2.0, 32.0)).collect();
-        let handles = [(90.0 - 12.0, 90.0 + 12.0), (310.0 - 12.0, 310.0 + 12.0)];
-        let xs = ruler_label_xs(&labels, (58.0, 380.0), Some((350.0, 380.0)), &handles);
-        assert_eq!(xs, vec![Some(105.0), Some(202.0), Some(263.0)]);
-        // Two handles on the only two ticks: both labels still draw, each
-        // on the clear side nearest its tick.
-        let handles = [(78.0, 102.0), (188.0, 212.0)];
-        let xs = ruler_label_xs(&labels[..2], (58.0, 380.0), None, &handles);
-        assert_eq!(xs, vec![Some(105.0), Some(215.0)]);
-    }
-
-    #[wasm_bindgen_test]
     fn detached_the_window_holds_while_the_playhead_stays_inside() {
         let s = starts(NOW - 200_000.0, NOW);
         let first = strip_window(
@@ -2347,76 +1527,6 @@ mod tests {
         assert!(w.end <= NOW + lead() + 1e-9);
     }
 
-    #[wasm_bindgen_test]
-    fn the_ruler_marks_volumes_hours_and_quarter_days_in_the_zone() {
-        // 2024-10-09 18:41:00 UTC.
-        let t0 = 1_728_499_260.0;
-        let cuts = ruler_ticks(
-            StripZoom::Cuts,
-            MiniWindow {
-                start: t0 - 10.0,
-                end: t0 + 900.0,
-            },
-            &[t0 - 300.0, t0, t0 + 300.0, t0 + 600.0],
-            0,
-        );
-        assert_eq!(
-            cuts.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(),
-            vec!["18:41", "18:46", "18:51"]
-        );
-
-        let vols = ruler_ticks(
-            StripZoom::Volumes,
-            MiniWindow {
-                start: t0 - VOLUMES_SPAN_SECS,
-                end: t0,
-            },
-            &[],
-            0,
-        );
-        assert_eq!(
-            vols.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(),
-            vec!["16:00", "17:00", "18:00"]
-        );
-        assert!(vols.iter().all(|t| t.ts.rem_euclid(3600.0) == 0.0));
-
-        let day = ruler_ticks(
-            StripZoom::Day,
-            MiniWindow {
-                start: t0 - DAY_SPAN_SECS,
-                end: t0,
-            },
-            &[],
-            0,
-        );
-        let labelled = |ticks: &[RulerTick]| {
-            ticks
-                .iter()
-                .filter(|t| !t.label.is_empty())
-                .map(|t| t.label.clone())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(labelled(&day), vec!["00", "06", "12", "18"]);
-        // Every hour has a tick.
-        assert_eq!(day.len(), 24);
-        assert!(day.iter().all(|t| t.ts.rem_euclid(3600.0) == 0.0));
-
-        // In US Central daylight time (UTC−5) the same day reads in its
-        // own hours, on its own midnight.
-        let cdt = ruler_ticks(
-            StripZoom::Day,
-            MiniWindow {
-                start: t0 - DAY_SPAN_SECS,
-                end: t0,
-            },
-            &[],
-            -5 * 3600,
-        );
-        assert_eq!(labelled(&cdt), vec!["18", "00", "06", "12"]);
-        let midnight = cdt.iter().find(|t| t.label == "00").unwrap();
-        assert_eq!((midnight.ts + (-5.0 * 3600.0)).rem_euclid(86_400.0), 0.0);
-    }
-
     // ── 15 MIN is 3 H closer in ───────────────────────────────────────
 
     fn shadow(start: f64, end: f64, state: FrameCellState) -> ScanContainer {
@@ -2465,97 +1575,6 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn a_volume_not_on_the_device_is_a_storm_bar_with_no_cells() {
-        let sz = sizes(vec![
-            scan(0.0, 300.0, 0.2),
-            scan(300.0, 600.0, 0.9),
-            scan(600.0, 900.0, 0.1),
-        ]);
-        let w = MiniWindow {
-            start: 0.0,
-            end: 1_000.0,
-        };
-        let v = cut_volumes(&cuts_strip(), &sz, w, 640.0);
-        assert_eq!(v.len(), 3, "the next volume's ghost is not drawn");
-        assert!(matches!(v[0].look, CutLook::Cells(ref c) if c.len() == 2));
-        match v[1].look {
-            CutLook::Bar { frac, fetching } => {
-                let scale = ViewScale::from_levels([0.2, 0.9, 0.1]);
-                assert_eq!(frac, Some(scale.height_frac(0.9)), "as tall as at 3 H");
-                assert!(!fetching);
-            }
-            _ => panic!("a volume not on the device is a bar"),
-        }
-        // Unknown size: a quiet wash.
-        let v = cut_volumes(&cuts_strip(), &ScanSizes::default(), w, 640.0);
-        assert!(matches!(
-            v[1].look,
-            CutLook::Bar {
-                frac: None,
-                fetching: false
-            }
-        ));
-        // Downloading: still a bar, marked as on its way.
-        let mut cs = cuts_strip();
-        cs[1] = shadow(300.0, 600.0, FrameCellState::InFlight);
-        let v = cut_volumes(&cs, &ScanSizes::default(), w, 640.0);
-        assert!(matches!(v[1].look, CutLook::Bar { fetching: true, .. }));
-    }
-
-    #[wasm_bindgen_test]
-    fn the_live_volume_shows_one_ghost_and_stops_at_now() {
-        let w = MiniWindow {
-            start: 0.0,
-            end: 1_000.0,
-        };
-        let v = cut_volumes(&cuts_strip(), &ScanSizes::default(), w, 640.0);
-        let live = &v[2];
-        assert_eq!(live.end, 640.0, "the box stops at now");
-        let CutLook::Cells(cells) = &live.look else {
-            panic!("the live volume draws cells");
-        };
-        let states: Vec<_> = cells.iter().map(|c| (c.start_secs, c.state)).collect();
-        assert_eq!(
-            states,
-            vec![
-                (600.0, FrameCellState::Cached),
-                (700.0, FrameCellState::Projected)
-            ],
-            "only the next cut is a ghost"
-        );
-        // Its cuts all in: the next volume's first cut is the ghost.
-        let mut cs = cuts_strip();
-        cs[2].cells.truncate(1);
-        let v = cut_volumes(&cs, &ScanSizes::default(), w, 640.0);
-        let CutLook::Cells(cells) = &v[2].look else {
-            panic!()
-        };
-        assert_eq!(cells.last().unwrap().start_secs, 900.0);
-        assert_eq!(cells.len(), 2);
-    }
-
-    #[wasm_bindgen_test]
-    fn listed_volumes_with_no_container_are_bars_too() {
-        let sz = sizes(vec![
-            scan(-300.0, 0.0, 0.5),
-            scan(0.0, 300.0, 0.5),
-            scan(2_000.0, 2_300.0, 0.5),
-        ]);
-        let w = MiniWindow {
-            start: -400.0,
-            end: 1_000.0,
-        };
-        let v = cut_volumes(&cuts_strip(), &sz, w, 640.0);
-        assert_eq!(v[0].start, -300.0);
-        assert!(matches!(v[0].look, CutLook::Bar { frac: Some(_), .. }));
-        assert_eq!(
-            v.len(),
-            4,
-            "covered and out-of-window volumes are not added"
-        );
-    }
-
-    #[wasm_bindgen_test]
     fn a_placeholder_cell_is_not_a_cut_and_its_volume_lands_on_its_start() {
         let u = StripUnits::from_containers(&cuts_strip());
         assert_eq!(
@@ -2586,31 +1605,15 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn once_a_volume_arrives_its_cuts_appear_around_where_the_playhead_landed() {
-        let mut cs = cuts_strip();
-        let before = StripUnits::from_containers(&cs);
-        let landed = snap_scrub(StripZoom::Cuts, 450.0, &before, 10_000.0);
-        assert_eq!(landed, 310.0);
-        // The volume downloads: its cuts are there now, and the first one
-        // holds the playhead where it already is.
-        cs[1] = container(
-            300.0,
-            600.0,
-            vec![
-                cell(300.0, 330.0, FrameCellState::Cached),
-                cell(450.0, 480.0, FrameCellState::Cached),
-            ],
-        );
-        let after = StripUnits::from_containers(&cs);
-        assert_eq!(
-            pending_mark(StripZoom::Cuts, landed, false, None, &after),
-            Some(315.0),
-            "the landing cut, until its frame is on screen"
-        );
-        assert_eq!(
-            pending_mark(StripZoom::Cuts, landed, false, Some(300.0), &after),
-            None
-        );
+    fn a_tap_lands_on_the_volumes_first_cut_at_every_stop() {
+        let u = StripUnits::from_containers(&cuts_strip());
+        // Anywhere over the held volume: its first cut, not the one under
+        // the finger.
+        for ts in [10.0, 160.0, 290.0] {
+            assert_eq!(tap_landing(ts, &u, 10_000.0), 30.0);
+        }
+        // The volume not on the device: just inside its start.
+        assert_eq!(tap_landing(450.0, &u, 10_000.0), 310.0);
     }
 
     #[wasm_bindgen_test]
@@ -2625,36 +1628,6 @@ mod tests {
         t.step(touch(false, 0.0, 0.5, None));
         t.step(touch(true, 104.0, 1.0, None));
         assert!(t.scrub_moved(104.0));
-    }
-
-    #[wasm_bindgen_test]
-    fn the_strip_marks_where_a_pending_frame_will_land() {
-        let u = StripUnits::from_containers(&cuts_strip());
-        // Scrubbed into the volume not on the device, the frame on screen
-        // still the held volume's: a mark at the playhead.
-        assert_eq!(
-            pending_mark(StripZoom::Cuts, 300.0, false, Some(0.0), &u),
-            Some(300.0)
-        );
-        assert_eq!(
-            pending_mark(StripZoom::Volumes, 300.0, false, Some(0.0), &u),
-            Some(450.0)
-        );
-        assert_eq!(
-            pending_mark(StripZoom::Day, 300.0, false, None, &u),
-            Some(900.0)
-        );
-        // Pinned, or the frame already there: no mark.
-        assert_eq!(pending_mark(StripZoom::Cuts, 300.0, true, None, &u), None);
-        assert_eq!(
-            pending_mark(StripZoom::Cuts, 180.0, false, Some(0.0), &u),
-            None
-        );
-        // Nothing holds the playhead: nothing to mark.
-        assert_eq!(
-            pending_mark(StripZoom::Cuts, 5_000.0, false, None, &u),
-            None
-        );
     }
 
     #[wasm_bindgen_test]
