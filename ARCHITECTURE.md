@@ -11,14 +11,9 @@ subsystem, follow the dedicated references: [RENDERING.md](docs/RENDERING.md)
 sequencing/timing), [TIMING.md](docs/TIMING.md) (the three time categories), and
 [INDEXEDDB.md](docs/INDEXEDDB.md) (cache layer + schema). Product/UX intent lives
 in [PRODUCT.md](docs/PRODUCT.md); the binding architecture standard + migration
-roadmap in [CORE_SHELL.md](docs/CORE_SHELL.md); the agent/build guide in
+status in [CORE_SHELL.md](docs/CORE_SHELL.md); building and running in
+[CONTRIBUTING.md](CONTRIBUTING.md); the agent/build guide in
 [CLAUDE.md](CLAUDE.md).
-
-How the current structure came to be: the 2026-07
-[architecture review](docs/arch-review-2026-07/README.md) diagnosed the accreted
-entropy, and the [architecture-health program](docs/arch-health-2026-07/README.md)
-records what was done about it — including the decisions taken *not* to migrate
-something, so they read as settled rather than unfinished.
 
 ## Module Structure
 

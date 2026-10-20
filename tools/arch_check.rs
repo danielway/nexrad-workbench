@@ -6,8 +6,8 @@
 //! fails when a GRANDFATHERED edge no longer exists, so the table can only
 //! shrink — the ratchet never loosens silently.
 //!
-//! Intended layering (an edge means "may import"; see
-//! docs/arch-review-2026-07/README.md, finding F1):
+//! Intended layering (an edge means "may import"; see ARCHITECTURE.md,
+//! "Architecture Enforcement"):
 //!
 //! ```text
 //!   net, data, geo            leaves — import nothing

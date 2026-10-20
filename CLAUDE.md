@@ -93,8 +93,8 @@ Always commit at natural milestones — a self-contained fix, a completed featur
 ## Architecture Standard — Functional Core, Thin Shell (MANDATORY)
 
 All code follows a strict **functional core / imperative shell** split. This is the
-binding rule for new and changed code, and the target of an in-progress migration
-of existing code. Full pattern, seams, test recipe, and migration roadmap:
+binding rule for new and changed code; existing code has been migrated to it apart
+from one deferred UI batch. Full pattern, seams, test recipe, and migration status:
 [CORE_SHELL.md](docs/CORE_SHELL.md).
 
 - **The headless core owns all state and business logic.** Decision logic is pure
@@ -124,7 +124,7 @@ async architecture, caching, and UI layout — lives in
 [TIMING.md](docs/TIMING.md) (the three time categories),
 [INDEXEDDB.md](docs/INDEXEDDB.md) (cache layer + schema). Product/UX intent is in
 [PRODUCT.md](docs/PRODUCT.md). The binding architecture standard (functional
-core / thin shell) and its migration roadmap are in
+core / thin shell) and its migration status are in
 [CORE_SHELL.md](docs/CORE_SHELL.md).
 
 The essentials to hold in mind:
