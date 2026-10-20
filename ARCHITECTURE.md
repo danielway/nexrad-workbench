@@ -124,6 +124,9 @@ Start live mode
   → Each chunk → worker.ingest_chunk → decode + accumulate radials
   → Completed elevations → sweep blobs stored to IDB (upsert_scan)
   → Partial elevations → worker.render_live (reads in-memory accumulator)
+  → The chunk that completes the cut being collected → normal `render` of the
+    stored sweep blob (the accumulator no longer holds its radials, so the
+    live partial lets go of that cut: `core::worker_ingest::live_cut`)
   → Main thread: core::worker_ingest reducer applies the outcome, describes
     GPU/render/status actions the shell executes
   → GPU texture updated per chunk → sweep line extrapolated between chunks
