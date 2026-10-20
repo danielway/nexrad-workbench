@@ -619,6 +619,25 @@ Independent rendering layers that can be toggled on/off:
 - **mPING storm reports** — crowdsourced surface observation markers.
 - **My Location** — a one-shot GPS dot for the user's current position.
 
+**Where the chrome sits.** Everything over the map that is not data has one
+place, decided by one layout rule (`core::map_chrome`) on every canvas from a
+390 px phone to a desktop: the map toolbar top left, the colour scale top
+right, and a **bottom tray** along the map's bottom edge for the scale bar (the
+compass in 3D) and the layer legends. The scale bar sits at the tray's left
+end; the legends pack in from its right end, the mosaic legend in the corner
+and the mPING legend next in. A legend that does not fit beside the others
+wraps to a row above, again from the right, and a row that reaches up beside
+the colour scale stops short of it. Nothing overlaps and nothing leaves the
+canvas; an item with no room at all is left out. The canvas caption rises over
+the tray where it would cover it.
+
+**Labels give way to chrome and to each other.** A map label (city, state,
+site) never prints under the toolbar, the colour scale or the tray, or half off
+the canvas: it is hidden, not nudged, so a label always marks its place. A
+radar site's ID label is hidden when a city label or another site's label sits
+within 12 px of it (KFSD beside Sioux Falls, KOAX beside Omaha); the site's
+dot stays, and the current site's label always prints.
+
 ### 13.2 Tools
 
 Interactive measurement and analysis affordances on the 2D canvas:

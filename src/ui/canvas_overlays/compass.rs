@@ -1,12 +1,13 @@
 //! Compass rose overlay for the 3D globe view.
 //!
-//! Draws a small compass in the bottom-left corner that rotates to match
+//! Draws a small compass at the left end of the bottom tray that rotates to match
 //! the globe camera's heading, so cardinal directions stay accurate as
 //! the user orbits.
 
+use crate::core::map_chrome::{ChromeSize, TrayItem};
 use crate::geo::Camera;
 use crate::ui::theme;
-use eframe::egui::{self, Pos2, Rect, Stroke, Vec2};
+use eframe::egui::{self, Rect, Stroke, Vec2};
 
 /// Trait wrapper for the registry. Compass is 3D-only — `visible`
 /// gates on view mode.
@@ -21,20 +22,30 @@ impl super::Overlay for CompassOverlay {
         ctx.state.viz_state.view_mode() == crate::geo::ViewMode::Globe3D
     }
 
-    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) -> Option<egui::Rect> {
-        Some(draw_compass(ui, &ctx.rect, &ctx.state.viz_state.camera))
+    fn measure(
+        &self,
+        _ui: &egui::Ui,
+        _ctx: &super::OverlayContext,
+    ) -> Option<(super::Slot, ChromeSize)> {
+        let d = (RADIUS + 4.0) * 2.0;
+        Some((
+            super::Slot::Tray(TrayItem::Compass),
+            ChromeSize { w: d, h: d },
+        ))
+    }
+
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext, rect: Rect) {
+        draw_compass(ui, rect, &ctx.state.viz_state.camera);
     }
 }
 
-/// Returns the dial's bounds.
-fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &Camera) -> Rect {
+const RADIUS: f32 = 28.0;
+
+/// Paint the dial centred in `rect`, its slot in the tray.
+fn draw_compass(ui: &mut egui::Ui, rect: Rect, camera: &Camera) {
     let painter = ui.painter();
-    let radius = 28.0f32;
-    let margin = 16.0f32;
-    let center = Pos2::new(
-        rect.left() + margin + radius,
-        rect.bottom() - margin - radius,
-    );
+    let radius = RADIUS;
+    let center = rect.center();
 
     // Background circle
     painter.circle_filled(center, radius + 4.0, theme::alpha(theme::RAISED, 180));
@@ -94,5 +105,4 @@ fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &Camera) -> Rect {
 
     // Center dot
     painter.circle_filled(center, 2.0, theme::alpha(theme::TEXT_DIM, 160));
-    Rect::from_center_size(center, Vec2::splat((radius + 4.0) * 2.0))
 }
