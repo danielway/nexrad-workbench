@@ -635,8 +635,8 @@ Interactive measurement and analysis affordances on the 2D canvas:
 | Breakpoint | Timeline | Notes |
 |---|---|---|
 | Desktop ≥1200px | Overview + full strip (~56px) + transport row + readouts | Inspector as popover or side panel; hover tooltips |
-| Touch ≥600px | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
-| Phone | A 120 px dock: a 66 px row of volumes at three zoom stops over a transport row (play · selection chip · NOW / 3 H / 24 H · LIVE when not live); the calendar sheet stands in for the overview | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; ranges are never drawn (presets and the long-press sheet; a range shows as one amber bracket); 3D view is desktop-only |
+| Touch, short side ≥500 pt | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
+| Phone (a touch screen whose short side is under 500 pt, in either orientation; or any window under 500 px wide) | A 120 px dock: a 66 px row of volumes at three zoom stops over a transport row (play · selection chip · NOW / 3 H / 24 H · LIVE when not live); the calendar sheet stands in for the overview | Canvas full-bleed; turned on its side the phone keeps this layout (map full width, the top bar above, the dock along the bottom, its row's blocks spread across the width) and its sheets move to a full-height side sheet on the right that scrolls; a mouse on a short wide window stays desktop; chrome auto-hides during playback, tap to reveal; ranges are never drawn (presets and the long-press sheet; a range shows as one amber bracket); 3D view is desktop-only |
 
 **The phone timeline is a row of volumes you can touch.** Not a ruler with
 marks on it: each volume is one mark, and everything the row says is in how
@@ -847,7 +847,7 @@ not unfinished work:
   beneath it on phones — more thumb-accurate, but inverts the shared mental model.
   Ship drag-anywhere-scrubs first; A/B the tape later.
 - **Tablet tier:** a layout distinct from desktop/phone. For now touch devices
-  ≥600px get the desktop layout.
+  whose short side is 500 pt or more get the desktop layout.
 - **Offline / stale ghosts:** today ghosts vanish when the stream dies; richer
   handling of stale projections is a post-v1 revisit.
 - **Wi-Fi-only acquisition toggle:** not implementable in a browser today; revisit
@@ -911,8 +911,8 @@ deleted in the June 2026 docs cleanup.)
   file sizes as the activity signal (no backend, no downloads).
 - **Manual download management:** stays demoted; the activity sheet shows what the
   system did, plus cancel/retry and policy toggles.
-- **Tablet tier:** out of scope this pass; touch devices ≥600px get the desktop
-  layout.
+- **Tablet tier:** out of scope this pass; touch devices whose short side is
+  500 pt or more get the desktop layout.
 - **Wi-Fi-only toggle:** not implementable in a browser (no reliable
   network-type API); the activity sheet ships "auto-fetch while scrubbing" and
   "pause live stream while reviewing".
