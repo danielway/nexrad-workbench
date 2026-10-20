@@ -1,14 +1,17 @@
 # NEXRAD Workbench — Product Specification
 
-**Consolidated as-built spec · June 2026**
-**Status:** Describes the shipped product on `simplify-user-interface`. This
-document supersedes and merges the earlier `PRODUCT.md` requirements draft and
-the `product_north_star.md` timeline/playback UX brief into one authoritative
-spec. The open decisions both predecessors carried are resolved here against the
-implementation; forward-looking experiments are collected in
+**Product spec and decision record · June 2026, revised through October 2026**
+
+**Status:** This is the reference for the product's model: the timeline,
+selection and playback, live tethering, acquisition and caching, and the
+honesty rules for what the canvas shows. It was written against the June 2026
+build and revised as later work changed it, including the October 2026
+"One Instrument" redesign. Where it describes how a surface *looks* and the
+running app differs, the app is right. Forward-looking ideas are in
 **§16 Deferred / future work**. The numbered **Alignment decisions** at the end
-are the decision record (rationale) for the timeline/playback/acquisition UX;
-code cites them as "alignment §N" / "#N".
+are the rationale for the timeline/playback/acquisition UX. Code comments cite
+this document by section ("PRODUCT.md §5.1", "alignment §N"), so keep section
+numbers stable when editing.
 
 ---
 
