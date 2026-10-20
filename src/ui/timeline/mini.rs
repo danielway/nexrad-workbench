@@ -261,6 +261,7 @@ fn draw_strip(
         state.push_command(Intent::OpenPressSheet(PressSheet {
             ts: snap_scrub(stop, x_to_ts(x), &units, now),
             scan_start: view.scan_start_at(x_to_ts(x)),
+            volume: units.volume_at(x_to_ts(x)).map(|v| (v.start, v.end)),
         }));
         return;
     }

@@ -48,7 +48,8 @@ use super::alerts_modal::AlertsModalsLayer;
 use super::bottom_panel::BottomPanelLayer;
 use super::event_modal::EventModalLayer;
 use super::mobile::{
-    GoToDayLayer, MobileChromeLayer, MobileSettingsModalLayer, MobileTopBarLayer, PressSheetLayer,
+    ChipSheetLayer, GoToDayLayer, MobileChromeLayer, MobileSettingsModalLayer, MobileTopBarLayer,
+    PressSheetLayer,
 };
 use super::mping_modal::MpingModalLayer;
 use super::range_download_modal::RangeDownloadModalLayer;
@@ -187,6 +188,7 @@ pub(crate) fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
             &MpingModalLayer,          // z=90
             &GoToDayLayer,             // z=95
             &PressSheetLayer,          // z=96
+            &ChipSheetLayer,           // z=96
             &MobileSettingsModalLayer, // z=100
             &ToastLayer,               // z=200
         ]
@@ -209,6 +211,7 @@ pub(crate) fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
             &MpingModalLayer,          // z=90
             &GoToDayLayer,             // z=95
             &PressSheetLayer,          // z=96
+            &ChipSheetLayer,           // z=96
             &MobileSettingsModalLayer, // z=100
             &ToastLayer,               // z=200
         ]

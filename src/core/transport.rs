@@ -409,21 +409,6 @@ pub(crate) fn reduce_loop_point(
     select_range(env, slices, a, b, false)
 }
 
-/// Park a range's start at `ts` with no end yet (the phone's Start range
-/// here with no range selected), as [`reduce_loop_point`] parks one at the
-/// playhead: the strips draw it as a half range and the next end pairs with
-/// it. A no-op while a range is selected or for a time that isn't one.
-pub(crate) fn park_range_start(playback: &mut PlaybackState, ts: f64) {
-    if playback.playback_bounds().is_some() || !ts.is_finite() {
-        return;
-    }
-    playback.drag = Some(crate::core::TimeSelection {
-        a: ts,
-        b: ts,
-        in_progress: false,
-    });
-}
-
 /// Choose how a range loops (Loop, Ping-pong, Once). It is a standing
 /// preference, so it applies to the next range too.
 pub(crate) fn set_loop_style(playback: &mut PlaybackState, style: LoopMode) {
@@ -688,28 +673,6 @@ mod coverage_tests {
                 playback: &mut self.playback,
             }
         }
-    }
-
-    // ---- park_range_start ---------------------------------------------
-
-    #[wasm_bindgen_test]
-    fn a_parked_start_pairs_with_the_o_key_and_never_replaces_a_range() {
-        let mut f = Fixture::new();
-        f.playback.set_playback_position(5_000.0);
-        park_range_start(&mut f.playback, 2_000.0);
-        assert_eq!(
-            f.playback.drag.map(|d| (d.a, d.in_progress)),
-            Some((2_000.0, false))
-        );
-        assert_eq!(f.playback.selection_range(), None, "half placed, no range");
-        // The desktop's O at the playhead closes it.
-        let (_, selected) = reduce_loop_point(&env_at(9_000.0), f.slices(), LoopEdge::Out);
-        assert!(selected);
-        assert_eq!(f.playback.playback_bounds(), Some((2_000.0, 5_000.0)));
-        // With a range selected it does nothing.
-        park_range_start(&mut f.playback, 1_000.0);
-        assert_eq!(f.playback.drag, None);
-        assert_eq!(f.playback.playback_bounds(), Some((2_000.0, 5_000.0)));
     }
 
     // ---- select_range -------------------------------------------------

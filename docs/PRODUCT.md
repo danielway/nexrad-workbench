@@ -313,7 +313,7 @@ mode — it is a tether state.
 - **Stopping:** stop is explicit and symmetric with go-live. While tethered,
   the timeline now-cap ("◉ LIVE"), the selection chip's "Stop the stream", and
   **Shift+L** all stop the stream at the live edge; on mobile (which has no
-  now-cap) the chip's menu owns stop and leaves the playhead in place. Stop ≠ freeze: pause-while-tethered keeps
+  now-cap) the chip's sheet owns stop and leaves the playhead in place. Stop ≠ freeze: pause-while-tethered keeps
   the stream filling the cache, stop tears the channel down. A status line
   confirms the stop.
 - **Streaming visibility:** every status surface (selection chip, now cap,
@@ -689,7 +689,7 @@ for. When the frame lands the dim lifts and the block fills.
 **The transport row** is four things: a 42 px round play/pause; the
 **selection chip**, a 38 px pill with one short form per state that never
 truncates — red filled `● Live`, amber `Last 4 frames` or `11:28 → 11:34`
-for a loop, grey `23:49` for a point — which opens the chip menu; the
+for a loop, grey `23:49` for a point — which opens the chip sheet (below); the
 NOW · 3 H · 24 H control; and a red outlined **LIVE** only while the
 selection is not pinned to now (it rejoins a running stream or starts one,
 bringing now into view first). Stepping is a tap on the next block, the
@@ -707,8 +707,8 @@ not the chip.
 **The calendar sheet is the phone's overview ("Go to a day").** There is no
 room for an overview lane on a phone, so the way to any day since 1991 is a
 calendar: a bottom sheet in portrait, a right sheet in landscape, titled "Go
-to a day" with the site at the right. It opens from the chip menu's "Go to a
-day…" (phone only, under the Go live group). A
+to a day" with the site at the right. It opens from the chip sheet's "Go to
+a day…". A
 month at a time, Monday first, every day is a 44×32 cell shaded in storm blue
 by its activity from the nightly index, on the month's own scale so one storm
 day reads strong; a 2 px slate underline marks the days held on device; today
@@ -732,24 +732,34 @@ the playhead steps onto its first frame so the map shows it and its
 column fills.
 The sheet's month is not persisted or in the link.
 
+**The chip sheet.** On the phone a tap on the selection chip opens a bottom
+sheet (the calendar's component, on the Esc stack) titled "Playing" in place
+of the desktop's chip menu, with the verbs first: **Live** · the newest frame
+(red glyph); **Loop the last** · 4 · 6 · 10 frames, the numbers inline and
+the one in use bright (amber glyph; a tap off the numbers loops the length in
+use, or 4); **Loop what I see** · the span of the row's window (amber glyph;
+off when the window holds nothing yet); **Go to a day…**; and **Stop the
+stream**, only while a stream runs. The row that names what plays now is
+highlighted (Live, Loop the last, or Loop what I see for a fixed range).
+Every row is built from the same menu model as the desktop's menu and does
+what its entry does; the desktop keeps its menu.
+
 **Ranges without drawing.** On the phone a horizontal drag on the strip is a
-scrub, so a range is never drawn. It is made from the chip's presets, from
-the **long-press sheet**, or by saving one as an event. A long-press on the
-strip opens a small sheet headed by the time under the finger, the tilt and
-the product (`16:42:17 · 0.5° · reflectivity`) with four rows: **Inspect this
-scan** (first, so the inspector the long-press used to open is one tap
-away), **Start range here**, **End range here** and **Save event here** (the
-event dialog around that time, or over the range when one exists). A row that
-makes no sense is disabled and says why beside it (no scan under the finger;
-an end before the start; no start yet; longer than 7 days). Start with no
-range parks a start for End to pair with. End within a frame of now pins the range (the one "ends at now"
-rule), and a new range starts paused, as on the desktop. Once a range exists
-the row shows it as one amber bracket at every stop; its ends are moved
-from the sheet, not dragged. A range over **2 hours** on the phone (6 hours on the desktop) asks before it
-downloads, and the confirmation says the real size from the listing. The
-chip menu on the phone keeps presets, the loop style, the range's times and
-Save as event; it drops the key and drag hints and points at the long-press
-sheet, and "Loop what's in view" loops the strip's window.
+scrub, so a range is never drawn. It is made from the chip sheet or from the
+**long-press sheet**. A long-press on the strip opens a small sheet about the
+volume under the finger, headed by the time, the tilt and the product
+(`16:42:17 · 0.5° · reflectivity`), with three rows: **Loop from here** · to
+now (amber glyph: a range pinned to now starting at that volume's start),
+**Loop to here** (only for a loop pinned to now or a start parked with the
+desktop's I key: it keeps the start and ends at that volume's end, a fixed
+range, unless that end is within a frame of now) and **Inspect this scan**.
+A row that makes no sense is disabled and says why at its right (this is
+now; start a loop first; before the loop's start; longer than 7 days; no
+scan here). A new range starts paused, as on the desktop. Once a range
+exists the row shows it as one amber bracket at every stop; its ends are
+moved from the sheet, not dragged. A range over **2 hours** on the phone (6
+hours on the desktop) asks before it downloads, and the confirmation says the
+real size from the listing. Saving a range as an event is a desktop action.
 
 ### 13.4 Links and preferences
 

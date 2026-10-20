@@ -26,6 +26,11 @@ use crate::core::session::{Clock, NowCap, Playhead, SelectionFact, SessionVm};
 use crate::core::top_bar::{AlertsChip, FrameReadout};
 use crate::core::Intent;
 
+/// Where the phone's Stop the stream leaves the playhead: where it is (LIVE
+/// is the way back to now).
+pub(crate) const PHONE_STOP_PLACEMENT: crate::core::transport::LiveStopPlacement =
+    crate::core::transport::LiveStopPlacement::InPlace;
+
 // ───────────────────────────────────────────────────────────────────────────
 // The chip
 // ───────────────────────────────────────────────────────────────────────────

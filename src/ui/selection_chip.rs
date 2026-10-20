@@ -150,6 +150,14 @@ pub(crate) fn render_selection_chip(
         response
     };
 
+    // The phone opens its chip sheet in place of the menu
+    // (`ui::mobile::chip_sheet`).
+    if style.phone.is_some() {
+        if response.clicked() {
+            state.push_command(crate::core::Intent::OpenChipSheet);
+        }
+        return;
+    }
     let now = state.frame_now.secs();
     let menu = chip_menu(&playback.state, env, view, now);
     let mut picked = None;

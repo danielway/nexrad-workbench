@@ -160,7 +160,7 @@ fn render_transport_row(
                         min_height: PILL_H,
                         // The phone's stop leaves the playhead where it is;
                         // LIVE is the way back to now.
-                        stop_placement: crate::core::transport::LiveStopPlacement::InPlace,
+                        stop_placement: crate::core::phone_dock::PHONE_STOP_PLACEMENT,
                         compact: true,
                         max_width: Some(room),
                         phone: Some(chip),

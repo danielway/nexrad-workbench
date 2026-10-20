@@ -87,7 +87,6 @@ fn draw_event_modal(
             Some(e) => form.init_from_event(&e.name, &e.site_id, e.start_time, e.end_time),
             None => {
                 let (start, end) = crate::core::dialogs::event_prefill(
-                    chrome.event_modal_seed,
                     playback.state.selection_range(),
                     playback.state.playback_position(),
                 );

@@ -195,17 +195,12 @@ pub(crate) enum Intent {
     /// ([`crate::core::phone_range::row_intent`]); a disabled row does
     /// nothing, any other closes the sheet.
     PressSheetRow(crate::core::phone_range::PressRow),
+    /// A tap on the phone's selection chip: open its sheet
+    /// ([`crate::core::selection_chip::chip_sheet_vm`]).
+    OpenChipSheet,
     /// Open the scan inspector on the scan starting at this time (Unix
     /// seconds): the long-press sheet's Inspect this scan.
     InspectScan(f64),
-    /// Park a range's start at this time, with no end yet (Start range here
-    /// with no range selected), as the I key parks one at the playhead. A
-    /// no-op while a range is selected. Decided by
-    /// [`crate::core::transport::park_range_start`].
-    ParkRangeStart(f64),
-    /// Open the event dialog for a new event around this time (Save event
-    /// here with no range selected).
-    SaveEventAt(f64),
     /// "Loop from here → now" on the scan inspector: a range from this scan
     /// start to now, the playhead at the scan. Closes the inspector only when
     /// the range was made.

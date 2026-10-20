@@ -1,18 +1,18 @@
 //! Ranges on touch (phone timeline §4): a range is never drawn on the phone,
 //! because a horizontal drag on the strip is a scrub. It is made from the
-//! chip's presets or from the long-press sheet, and the row shows it as one
+//! chip's sheet or from the long-press sheet, and the row shows it as one
 //! amber bracket ([`crate::core::phone_row::Bracket`]); its ends are not
 //! draggable.
 //!
 //! - **The long-press sheet** ([`press_sheet_vm`], [`row_intent`]): a
-//!   long-press on the strip opens a small sheet headed by the pressed time,
-//!   tilt and product, with Inspect this scan, Start range here, End range
-//!   here and Save event here. A row that makes no sense is disabled with
-//!   its reason. Start and End emit the selection intents every surface
-//!   uses ([`Intent::SelectRange`]), so the one "ends at now" rule pins an
-//!   end within a frame of now and a new range starts paused; a start with
-//!   no range yet is parked as the desktop's I key parks one
-//!   ([`Intent::ParkRangeStart`]).
+//!   long-press on the strip opens a small sheet about the volume under the
+//!   finger, headed by the pressed time, tilt and product, with three rows:
+//!   Loop from here (a range pinned to now, starting at that volume), Loop
+//!   to here (the end fixed at that volume, for a loop pinned to now or a
+//!   parked start) and Inspect this scan. A row that makes no sense is
+//!   disabled with its reason. Both loops emit the selection intent every
+//!   surface uses ([`Intent::SelectRange`]), so the one "ends at now" rule
+//!   still pins an end within a frame of now and a new range starts paused.
 //!
 //! All pure; `ui::mobile::press_sheet` draws what these return.
 
@@ -24,15 +24,15 @@ use crate::core::{ElevationSelection, Intent, PlaybackState, RadarProduct};
 // The selection, as these decisions read it
 // ───────────────────────────────────────────────────────────────────────────
 
-/// The selection and the clock, as the sheet and the handles read them.
+/// The selection and the clock, as the sheet reads them.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct RangeFacts {
     /// The range's bounds, when one is selected.
     pub range: Option<(f64, f64)>,
     /// The range is pinned to now: its end rides the now line.
     pub pinned: bool,
-    /// A start parked with no range yet (the desktop's I key, or Start range
-    /// here), waiting for its end.
+    /// A start parked with no range yet (the desktop's I key), waiting for
+    /// its end.
     pub parked: Option<f64>,
     pub now: f64,
     /// The frame spacing the "ends at now" rule reads.
@@ -56,17 +56,14 @@ impl RangeFacts {
         }
     }
 
-    /// The range as it reads now: a pinned range ends at now, whatever its
-    /// committed end (which trails now while the loop plays).
-    pub(crate) fn effective(&self) -> Option<(f64, f64)> {
-        self.range
-            .map(|(s, e)| (s, if self.pinned { self.now.max(s) } else { e }))
-    }
-
-    /// The end a new range's start would pair with: the range's start, or a
-    /// parked start.
+    /// The start Loop to here pairs its end with: a loop pinned to now's
+    /// start, or a parked start. A fixed range already has its end.
     fn anchor_for_end(&self) -> Option<f64> {
-        self.range.map(|(s, _)| s).or(self.parked)
+        match self.range {
+            Some((s, _)) if self.pinned => Some(s),
+            Some(_) => None,
+            None => self.parked,
+        }
     }
 }
 
@@ -81,96 +78,123 @@ pub(crate) struct PressSheet {
     pub ts: f64,
     /// The scan under the finger, if any.
     pub scan_start: Option<f64>,
+    /// The row's volume under the finger (start, end), if any: the block
+    /// the sheet's loops start or end at.
+    pub volume: Option<(f64, f64)>,
+}
+
+impl PressSheet {
+    /// Where a loop from here starts: the volume's start, else the time.
+    fn start_here(&self) -> f64 {
+        self.volume.map_or(self.ts, |(s, _)| s)
+    }
+
+    /// Where a loop to here ends: the volume's end, else the time.
+    fn end_here(&self) -> f64 {
+        self.volume.map_or(self.ts, |(_, e)| e)
+    }
 }
 
 /// One row of the sheet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PressRow {
+    /// Loop from this volume to now, pinned to now.
+    LoopFromHere,
+    /// End the loop at this volume, making a fixed range.
+    LoopToHere,
     /// Open the scan inspector for the scan under the finger.
     Inspect,
-    /// Put the range's start here.
-    StartRange,
-    /// Put the range's end here.
-    EndRange,
-    /// Open the event dialog here, or for the range if one exists.
-    SaveEvent,
 }
 
 impl PressRow {
-    /// The rows, top to bottom: Inspect first, as the long-press used to
-    /// open it directly.
-    pub(crate) const ALL: [PressRow; 4] = [
+    /// The rows, top to bottom.
+    pub(crate) const ALL: [PressRow; 3] = [
+        PressRow::LoopFromHere,
+        PressRow::LoopToHere,
         PressRow::Inspect,
-        PressRow::StartRange,
-        PressRow::EndRange,
-        PressRow::SaveEvent,
     ];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
+            PressRow::LoopFromHere => "Loop from here",
+            PressRow::LoopToHere => "Loop to here",
             PressRow::Inspect => "Inspect this scan",
-            PressRow::StartRange => "Start range here",
-            PressRow::EndRange => "End range here",
-            PressRow::SaveEvent => "Save event here",
+        }
+    }
+
+    /// The quiet word at an enabled row's right.
+    pub(crate) fn sub(self) -> Option<&'static str> {
+        match self {
+            PressRow::LoopFromHere => Some("to now"),
+            _ => None,
+        }
+    }
+
+    /// The row's glyph tone: the loops are amber, Inspect plain.
+    pub(crate) fn tone(self) -> crate::core::phone_dock::ChipTone {
+        use crate::core::phone_dock::ChipTone;
+        match self {
+            PressRow::LoopFromHere => ChipTone::Loop,
+            PressRow::LoopToHere | PressRow::Inspect => ChipTone::Point,
         }
     }
 }
 
 /// Why Inspect is off: nothing is under the finger.
-pub(crate) const NO_SCAN_HERE: &str = "No scan here";
-/// Why Start is off: the range ends before this time.
-pub(crate) const AFTER_RANGE_END: &str = "After the range's end";
-/// Why End is off: nothing to end.
-pub(crate) const START_FIRST: &str = "Start a range first";
-/// Why End is off: the start is after this time.
-pub(crate) const BEFORE_RANGE_START: &str = "Before the range's start";
-/// Why Start or End is off: the range would span more than a selection may.
-pub(crate) const TOO_LONG: &str = "Longer than 7 days";
+pub(crate) const NO_SCAN_HERE: &str = "no scan here";
+/// Why Loop from here is off: this volume is now.
+pub(crate) const ALREADY_NOW: &str = "this is now";
+/// Why Loop to here is off: no loop pinned to now and no parked start.
+pub(crate) const START_FIRST: &str = "start a loop first";
+/// Why Loop to here is off: the loop starts after this volume.
+pub(crate) const BEFORE_RANGE_START: &str = "before the loop's start";
+/// Why a loop is off: it would span more than a selection may.
+pub(crate) const TOO_LONG: &str = "longer than 7 days";
 
-/// The intent a row emits, or why it is disabled. Start and End move one end
-/// of the range and keep the other; End within a frame of now pins the range
-/// ([`ends_at_now`]). Start with no range parks a start for End to pair with.
+/// The intent a row emits, or why it is disabled. Loop from here pins a
+/// range from the pressed volume's start to now; Loop to here keeps the
+/// loop's start (or a parked one) and ends at the pressed volume's end, a
+/// fixed range unless that end is within a frame of now ([`ends_at_now`]).
 pub(crate) fn row_intent(
     row: PressRow,
     press: &PressSheet,
     f: &RangeFacts,
 ) -> Result<Intent, &'static str> {
-    let ts = press.ts.min(f.now);
     match row {
         PressRow::Inspect => press
             .scan_start
             .map(Intent::InspectScan)
             .ok_or(NO_SCAN_HERE),
-        PressRow::StartRange => match f.effective() {
-            None => Ok(Intent::ParkRangeStart(ts)),
-            Some((_, end)) if ts >= end - 1.0 => Err(AFTER_RANGE_END),
-            Some((_, end)) if !crate::core::selection_span_allowed(ts, end) => Err(TOO_LONG),
-            Some((_, end)) => Ok(Intent::SelectRange {
-                start: ts,
-                end,
-                to_live: f.pinned,
-            }),
-        },
-        PressRow::EndRange => {
-            let start = f.anchor_for_end().ok_or(START_FIRST)?;
-            if ts <= start + 1.0 {
-                return Err(BEFORE_RANGE_START);
+        PressRow::LoopFromHere => {
+            let start = press.start_here().min(f.now);
+            if start >= f.now - 1.0 {
+                return Err(ALREADY_NOW);
             }
-            if !crate::core::selection_span_allowed(start, ts) {
+            if !crate::core::selection_span_allowed(start, f.now) {
                 return Err(TOO_LONG);
             }
-            let pins = ends_at_now(ts, f.now, f.frame_secs);
             Ok(Intent::SelectRange {
                 start,
-                end: if pins { f.now } else { ts },
+                end: f.now,
+                to_live: true,
+            })
+        }
+        PressRow::LoopToHere => {
+            let start = f.anchor_for_end().ok_or(START_FIRST)?;
+            let end = press.end_here().min(f.now);
+            if end <= start + 1.0 {
+                return Err(BEFORE_RANGE_START);
+            }
+            if !crate::core::selection_span_allowed(start, end) {
+                return Err(TOO_LONG);
+            }
+            let pins = ends_at_now(end, f.now, f.frame_secs);
+            Ok(Intent::SelectRange {
+                start,
+                end: if pins { f.now } else { end },
                 to_live: pins,
             })
         }
-        PressRow::SaveEvent => Ok(if f.range.is_some() {
-            Intent::SaveSelectionAsEvent
-        } else {
-            Intent::SaveEventAt(ts)
-        }),
     }
 }
 
@@ -179,8 +203,11 @@ pub(crate) fn row_intent(
 pub(crate) struct PressRowVm {
     pub row: PressRow,
     pub label: &'static str,
-    /// Why the row is disabled; `None` when it can be tapped.
-    pub disabled: Option<&'static str>,
+    /// The quiet word at the row's right: its reason when disabled.
+    pub sub: Option<&'static str>,
+    pub tone: crate::core::phone_dock::ChipTone,
+    /// Whether the row can be tapped.
+    pub enabled: bool,
 }
 
 /// The sheet: its heading and its rows.
@@ -222,31 +249,44 @@ pub(crate) fn press_sheet_vm(press: &PressSheet, f: &RangeFacts, heading: String
         heading,
         rows: PressRow::ALL
             .iter()
-            .map(|&row| PressRowVm {
-                row,
-                label: row.label(),
-                disabled: row_intent(row, press, f).err(),
+            .map(|&row| {
+                let why = row_intent(row, press, f).err();
+                PressRowVm {
+                    row,
+                    label: row.label(),
+                    sub: why.or(row.sub()),
+                    tone: row.tone(),
+                    enabled: why.is_none(),
+                }
             })
             .collect(),
     }
 }
 
-/// The sheet's portrait height: the header and four rows.
-pub(crate) const PRESS_SHEET_H: f32 = 268.0;
+/// A phone action sheet's portrait height for `rows` rows under its header.
+pub(crate) fn action_sheet_h(rows: usize) -> f32 {
+    SHEET_HEAD_H + SHEET_ROW_H * rows as f32
+}
 
-/// Where the sheet sits: the phone sheet's place, in portrait only as tall
-/// as its rows.
-pub(crate) fn press_sheet_rect(
+/// An action sheet row's height: a comfortable thumb target.
+pub(crate) const SHEET_ROW_H: f32 = 50.0;
+/// The header, the frame's margins and the bottom gap.
+const SHEET_HEAD_H: f32 = 76.0;
+
+/// Where an action sheet of `rows` rows sits: the phone sheet's place, in
+/// portrait only as tall as its rows.
+pub(crate) fn action_sheet_rect(
     width: f32,
     height: f32,
     landscape: bool,
     insets: Insets,
+    rows: usize,
 ) -> SheetRect {
     let r = sheet_rect(width, height, landscape, insets);
     if landscape {
         return r;
     }
-    let h = PRESS_SHEET_H.min(r.h);
+    let h = action_sheet_h(rows).min(r.h);
     SheetRect {
         y: r.y + r.h - h,
         h,
@@ -272,32 +312,35 @@ mod tests {
         }
     }
 
-    fn press(ts: f64) -> PressSheet {
+    /// A press 100 s into a 7-minute volume.
+    fn press(volume_start: f64) -> PressSheet {
         PressSheet {
-            ts,
-            scan_start: Some(ts - 30.0),
+            ts: volume_start + 100.0,
+            scan_start: Some(volume_start),
+            volume: Some((volume_start, volume_start + 420.0)),
         }
     }
 
-    fn disabled(vm: &PressSheetVm, row: PressRow) -> Option<&'static str> {
-        vm.rows.iter().find(|r| r.row == row).unwrap().disabled
+    fn row(vm: &PressSheetVm, row: PressRow) -> &PressRowVm {
+        vm.rows.iter().find(|r| r.row == row).unwrap()
     }
 
     // ── the sheet ─────────────────────────────────────────────────────
 
     #[wasm_bindgen_test]
-    fn the_sheet_lists_inspect_first_then_start_end_and_save() {
-        let vm = press_sheet_vm(&press(NOW - 600.0), &facts(None, false), String::new());
+    fn the_sheet_has_three_rows_about_the_volume() {
+        let vm = press_sheet_vm(&press(NOW - 1_800.0), &facts(None, false), String::new());
         let rows: Vec<_> = vm.rows.iter().map(|r| r.label).collect();
         assert_eq!(
             rows,
-            [
-                "Inspect this scan",
-                "Start range here",
-                "End range here",
-                "Save event here"
-            ]
+            ["Loop from here", "Loop to here", "Inspect this scan"]
         );
+        let from = row(&vm, PressRow::LoopFromHere);
+        assert_eq!((from.sub, from.enabled), (Some("to now"), true));
+        assert_eq!(from.tone, crate::core::phone_dock::ChipTone::Loop);
+        // No loop to end: Loop to here says so.
+        let to = row(&vm, PressRow::LoopToHere);
+        assert_eq!((to.sub, to.enabled), (Some(START_FIRST), false));
     }
 
     #[wasm_bindgen_test]
@@ -327,139 +370,128 @@ mod tests {
     #[wasm_bindgen_test]
     fn with_no_scan_under_the_finger_inspect_is_disabled() {
         let p = PressSheet {
-            ts: NOW - 600.0,
             scan_start: None,
+            ..press(NOW - 600.0)
         };
         let vm = press_sheet_vm(&p, &facts(None, false), String::new());
-        assert_eq!(disabled(&vm, PressRow::Inspect), Some(NO_SCAN_HERE));
-        let p = press(NOW - 600.0);
+        assert!(!row(&vm, PressRow::Inspect).enabled);
         assert_eq!(
-            row_intent(PressRow::Inspect, &p, &facts(None, false)),
-            Ok(Intent::InspectScan(NOW - 630.0))
+            row_intent(PressRow::Inspect, &press(NOW - 600.0), &facts(None, false)),
+            Ok(Intent::InspectScan(NOW - 600.0))
         );
     }
 
     #[wasm_bindgen_test]
-    fn with_no_range_start_parks_and_end_asks_for_a_start() {
+    fn loop_from_here_pins_a_range_from_the_volumes_start_to_now() {
+        // Whatever is selected, it starts at the block, not the finger.
+        for f in [
+            facts(None, false),
+            facts(Some((NOW - 3_000.0, NOW - 2_000.0)), false),
+            facts(Some((NOW - 600.0, NOW - 20.0)), true),
+        ] {
+            assert_eq!(
+                row_intent(PressRow::LoopFromHere, &press(NOW - 1_800.0), &f),
+                Ok(Intent::SelectRange {
+                    start: NOW - 1_800.0,
+                    end: NOW,
+                    to_live: true
+                })
+            );
+        }
+        // With no volume known, it starts at the time pressed.
+        let p = PressSheet {
+            volume: None,
+            ..press(NOW - 1_800.0)
+        };
+        assert_eq!(
+            row_intent(PressRow::LoopFromHere, &p, &facts(None, false)),
+            Ok(Intent::SelectRange {
+                start: NOW - 1_700.0,
+                end: NOW,
+                to_live: true
+            })
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn loop_from_here_is_off_on_a_volume_starting_now_or_too_far_back() {
         let f = facts(None, false);
-        let p = press(NOW - 600.0);
+        let p = PressSheet {
+            ts: NOW,
+            scan_start: None,
+            volume: Some((NOW + 10.0, NOW + 430.0)),
+        };
+        assert_eq!(row_intent(PressRow::LoopFromHere, &p, &f), Err(ALREADY_NOW));
+        let far = press(NOW - 9.0 * 86_400.0);
+        assert_eq!(row_intent(PressRow::LoopFromHere, &far, &f), Err(TOO_LONG));
+    }
+
+    #[wasm_bindgen_test]
+    fn loop_to_here_ends_a_pinned_loop_at_the_volumes_end() {
+        let pinned = facts(Some((NOW - 3_000.0, NOW - 20.0)), true);
         assert_eq!(
-            row_intent(PressRow::StartRange, &p, &f),
-            Ok(Intent::ParkRangeStart(NOW - 600.0))
+            row_intent(PressRow::LoopToHere, &press(NOW - 1_800.0), &pinned),
+            Ok(Intent::SelectRange {
+                start: NOW - 3_000.0,
+                end: NOW - 1_380.0,
+                to_live: false
+            })
         );
-        assert_eq!(row_intent(PressRow::EndRange, &p, &f), Err(START_FIRST));
-        // Save opens the event dialog at the pressed time.
+        // Before the loop's start: nothing to end.
         assert_eq!(
-            row_intent(PressRow::SaveEvent, &p, &f),
-            Ok(Intent::SaveEventAt(NOW - 600.0))
+            row_intent(PressRow::LoopToHere, &press(NOW - 4_000.0), &pinned),
+            Err(BEFORE_RANGE_START)
+        );
+        // On the live volume the end is now, and the loop stays pinned.
+        assert_eq!(
+            row_intent(PressRow::LoopToHere, &press(NOW - 100.0), &pinned),
+            Ok(Intent::SelectRange {
+                start: NOW - 3_000.0,
+                end: NOW,
+                to_live: true
+            })
         );
     }
 
     #[wasm_bindgen_test]
-    fn end_pairs_with_a_parked_start_and_refuses_one_before_it() {
-        let f = RangeFacts {
+    fn loop_to_here_pairs_with_a_parked_start_but_not_a_fixed_range() {
+        let parked = RangeFacts {
             parked: Some(NOW - 3_000.0),
             ..facts(None, false)
         };
         assert_eq!(
-            row_intent(PressRow::EndRange, &press(NOW - 1_200.0), &f),
+            row_intent(PressRow::LoopToHere, &press(NOW - 1_800.0), &parked),
             Ok(Intent::SelectRange {
                 start: NOW - 3_000.0,
-                end: NOW - 1_200.0,
+                end: NOW - 1_380.0,
                 to_live: false
             })
         );
-        assert_eq!(
-            row_intent(PressRow::EndRange, &press(NOW - 3_600.0), &f),
-            Err(BEFORE_RANGE_START)
-        );
-        // Starting again moves the parked start.
-        assert_eq!(
-            row_intent(PressRow::StartRange, &press(NOW - 3_600.0), &f),
-            Ok(Intent::ParkRangeStart(NOW - 3_600.0))
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn end_within_a_frame_of_now_pins_the_range() {
-        let f = facts(Some((NOW - 3_000.0, NOW - 2_000.0)), false);
-        assert_eq!(
-            row_intent(PressRow::EndRange, &press(NOW - FRAME / 2.0), &f),
-            Ok(Intent::SelectRange {
-                start: NOW - 3_000.0,
-                end: NOW,
-                to_live: true
-            })
-        );
-        // Two frames back is a fixed end.
-        assert_eq!(
-            row_intent(PressRow::EndRange, &press(NOW - 2.0 * FRAME), &f),
-            Ok(Intent::SelectRange {
-                start: NOW - 3_000.0,
-                end: NOW - 2.0 * FRAME,
-                to_live: false
-            })
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn start_moves_a_ranges_start_and_keeps_its_end_or_its_pin() {
         let fixed = facts(Some((NOW - 3_000.0, NOW - 2_000.0)), false);
         assert_eq!(
-            row_intent(PressRow::StartRange, &press(NOW - 4_000.0), &fixed),
-            Ok(Intent::SelectRange {
-                start: NOW - 4_000.0,
-                end: NOW - 2_000.0,
-                to_live: false
-            })
-        );
-        let vm = press_sheet_vm(&press(NOW - 1_000.0), &fixed, String::new());
-        assert_eq!(disabled(&vm, PressRow::StartRange), Some(AFTER_RANGE_END));
-        // A pinned range's end is now, and stays pinned.
-        let pinned = facts(Some((NOW - 600.0, NOW - 20.0)), true);
-        assert_eq!(
-            row_intent(PressRow::StartRange, &press(NOW - 1_000.0), &pinned),
-            Ok(Intent::SelectRange {
-                start: NOW - 1_000.0,
-                end: NOW,
-                to_live: true
-            })
+            row_intent(PressRow::LoopToHere, &press(NOW - 1_800.0), &fixed),
+            Err(START_FIRST)
         );
     }
 
     #[wasm_bindgen_test]
-    fn a_range_longer_than_a_selection_may_is_refused_with_its_reason() {
-        let f = facts(Some((NOW - 3_000.0, NOW - 2_000.0)), false);
-        let far = press(NOW - 9.0 * 86_400.0);
-        assert_eq!(row_intent(PressRow::StartRange, &far, &f), Err(TOO_LONG));
-        let f = facts(Some((NOW - 9.0 * 86_400.0, NOW - 8.9 * 86_400.0)), false);
+    fn loop_to_here_refuses_a_loop_longer_than_a_selection_may() {
+        let f = facts(Some((NOW - 9.0 * 86_400.0, NOW - 20.0)), true);
         assert_eq!(
-            row_intent(PressRow::EndRange, &press(NOW - 600.0), &f),
+            row_intent(PressRow::LoopToHere, &press(NOW - 1_800.0), &f),
             Err(TOO_LONG)
         );
     }
 
     #[wasm_bindgen_test]
-    fn save_uses_the_range_when_one_exists() {
-        let f = facts(Some((NOW - 3_000.0, NOW - 2_000.0)), false);
-        assert_eq!(
-            row_intent(PressRow::SaveEvent, &press(NOW - 600.0), &f),
-            Ok(Intent::SaveSelectionAsEvent)
-        );
-        let vm = press_sheet_vm(&press(NOW - 600.0), &f, String::new());
-        assert_eq!(disabled(&vm, PressRow::SaveEvent), None);
-    }
-
-    #[wasm_bindgen_test]
-    fn the_sheet_sits_at_the_bottom_as_tall_as_its_rows() {
-        let r = press_sheet_rect(390.0, 844.0, false, (47.0, 0.0, 34.0, 0.0));
-        assert_eq!(r.h, PRESS_SHEET_H);
+    fn an_action_sheet_sits_at_the_bottom_as_tall_as_its_rows() {
+        let r = action_sheet_rect(390.0, 844.0, false, (47.0, 0.0, 34.0, 0.0), 3);
+        assert_eq!(r.h, action_sheet_h(3));
         assert!((r.y + r.h - (844.0 - 34.0)).abs() < 0.01);
-        let l = press_sheet_rect(844.0, 390.0, true, (0.0, 0.0, 0.0, 0.0));
+        assert!(action_sheet_h(5) > action_sheet_h(3));
+        let l = action_sheet_rect(844.0, 390.0, true, (0.0, 0.0, 0.0, 0.0), 3);
         assert_eq!(l, sheet_rect(844.0, 390.0, true, (0.0, 0.0, 0.0, 0.0)));
     }
-
-    // ── handles ───────────────────────────────────────────────────────
 
     #[wasm_bindgen_test]
     fn facts_read_a_parked_start_only_without_a_range() {

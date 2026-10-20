@@ -146,18 +146,7 @@ pub(crate) fn dispatch_state_only(
             if s.playback.state.selection_range().is_some() {
                 s.chrome.event_modal_open = true;
                 s.chrome.event_modal_editing_id = None;
-                s.chrome.event_modal_seed = None;
             }
-        }
-        Intent::SaveEventAt(ts) => {
-            if ts.is_finite() {
-                s.chrome.event_modal_open = true;
-                s.chrome.event_modal_editing_id = None;
-                s.chrome.event_modal_seed = Some(ts);
-            }
-        }
-        Intent::ParkRangeStart(ts) => {
-            crate::core::transport::park_range_start(&mut s.playback.state, ts)
         }
 
         // ---- Loop presets -----------------------------------------
@@ -269,6 +258,10 @@ pub(crate) fn dispatch_state_only(
         // ---- The phone strip's long-press sheet -------------------
         Intent::OpenPressSheet(press) => {
             s.chrome.press_sheet = Some(press);
+            super::dialogs::sync_dialogs(s.chrome, s.diagnostics);
+        }
+        Intent::OpenChipSheet => {
+            s.chrome.chip_sheet_open = true;
             super::dialogs::sync_dialogs(s.chrome, s.diagnostics);
         }
         Intent::PressSheetRow(row) => {
@@ -759,9 +752,8 @@ impl WorkbenchApp {
             | Intent::GoToDay(_)
             | Intent::OpenPressSheet(_)
             | Intent::PressSheetRow(_)
-            | Intent::InspectScan(_)
-            | Intent::ParkRangeStart(_)
-            | Intent::SaveEventAt(_) => {
+            | Intent::OpenChipSheet
+            | Intent::InspectScan(_) => {
                 unreachable!("state-only intent was not consumed by dispatch_state_only")
             }
         }
@@ -1182,13 +1174,13 @@ mod dispatch_tests {
             Intent::OpenPressSheet(crate::core::phone_range::PressSheet {
                 ts: 1_000.0,
                 scan_start: None,
+                volume: None,
             }),
             Intent::PressSheetRow(crate::core::phone_range::PressRow::Inspect),
+            Intent::OpenChipSheet,
             Intent::InspectScan(1_000.0),
-            Intent::ParkRangeStart(1_000.0),
-            Intent::SaveEventAt(1_000.0),
         ];
-        assert_eq!(state_only.len(), 41);
+        assert_eq!(state_only.len(), 40);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -2204,16 +2196,20 @@ mod dispatch_tests {
     }
     // ---- the long-press sheet -----------------------------------------
 
+    fn press_at(volume_start: f64, scan: Option<f64>) -> crate::core::phone_range::PressSheet {
+        crate::core::phone_range::PressSheet {
+            ts: volume_start + 100.0,
+            scan_start: scan,
+            volume: Some((volume_start, volume_start + 420.0)),
+        }
+    }
+
     /// The long-press sheet opens on the Esc stack and closes on Escape.
     #[wasm_bindgen_test]
     fn the_press_sheet_opens_on_the_stack_and_closes_on_escape() {
         use crate::core::dialogs::{DialogId, DialogIntent};
-        use crate::core::phone_range::PressSheet;
         let mut f = Fixture::new();
-        f.apply(Intent::OpenPressSheet(PressSheet {
-            ts: 5_000.0,
-            scan_start: Some(4_980.0),
-        }));
+        f.apply(Intent::OpenPressSheet(press_at(5_000.0, Some(5_000.0))));
         assert!(f.chrome.dialogs.contains(DialogId::PressSheet));
         f.apply(Intent::Dialog(DialogIntent::Escape));
         assert_eq!(f.chrome.press_sheet, None);
@@ -2224,85 +2220,80 @@ mod dispatch_tests {
     /// the sheet; a disabled row leaves the sheet open and changes nothing.
     #[wasm_bindgen_test]
     fn inspect_opens_the_inspector_and_a_disabled_row_does_nothing() {
-        use crate::core::phone_range::{PressRow, PressSheet};
+        use crate::core::phone_range::PressRow;
         let mut f = Fixture::new();
         f.state.frame_now = FrameNow(10_000.0);
-        f.apply(Intent::OpenPressSheet(PressSheet {
-            ts: 5_000.0,
-            scan_start: None,
-        }));
+        f.apply(Intent::OpenPressSheet(press_at(5_000.0, None)));
         f.apply(Intent::PressSheetRow(PressRow::Inspect));
         assert!(f.chrome.press_sheet.is_some(), "no scan: disabled");
         assert_eq!(f.chrome.scan_inspector, None);
-        f.apply(Intent::PressSheetRow(PressRow::EndRange));
-        assert!(f.chrome.press_sheet.is_some(), "no start: disabled");
+        f.apply(Intent::PressSheetRow(PressRow::LoopToHere));
+        assert!(f.chrome.press_sheet.is_some(), "no loop: disabled");
 
-        f.apply(Intent::OpenPressSheet(PressSheet {
-            ts: 5_000.0,
-            scan_start: Some(4_980.0),
-        }));
+        f.apply(Intent::OpenPressSheet(press_at(5_000.0, Some(4_980.0))));
         f.apply(Intent::PressSheetRow(PressRow::Inspect));
         assert_eq!(f.chrome.press_sheet, None);
         assert_eq!(f.chrome.scan_inspector, Some(4_980.0));
     }
 
-    /// Start range here parks a start; End range here later makes the
-    /// range, paused, and arms its fetch.
+    /// Loop from here makes a range from the pressed volume to now; Loop to
+    /// here then fixes its end at another volume's end, paused.
     #[wasm_bindgen_test]
-    fn start_then_end_from_the_sheet_makes_a_paused_range() {
-        use crate::core::phone_range::{PressRow, PressSheet};
+    fn loop_from_here_then_to_here_makes_a_fixed_range() {
+        use crate::core::phone_range::PressRow;
         let mut f = Fixture::new();
         f.state.frame_now = FrameNow(100_000.0);
-        f.playback.state.playing = true;
-        f.apply(Intent::OpenPressSheet(PressSheet {
-            ts: 90_000.0,
-            scan_start: None,
-        }));
-        f.apply(Intent::PressSheetRow(PressRow::StartRange));
-        assert_eq!(f.playback.state.playback_bounds(), None);
-        assert_eq!(f.playback.state.drag.map(|d| d.a), Some(90_000.0));
-        f.apply(Intent::OpenPressSheet(PressSheet {
-            ts: 95_000.0,
-            scan_start: None,
-        }));
-        f.apply(Intent::PressSheetRow(PressRow::EndRange));
+        f.apply(Intent::OpenPressSheet(press_at(90_000.0, None)));
+        f.apply(Intent::PressSheetRow(PressRow::LoopFromHere));
+        assert_eq!(f.chrome.press_sheet, None);
+        assert_eq!(
+            f.playback.state.playback_bounds().map(|(s, _)| s),
+            Some(90_000.0)
+        );
+        // A loop pinned to now: Loop to here fixes its end.
+        f.playback.state.enter_pinned_live(100_000.0);
+        f.playback
+            .state
+            .enter_live_range(Some(90_000.0), crate::core::LoopBasis::FrameCount(6));
+        // The live tick slides its window over the frames.
+        f.playback.state.slide_live_range(90_000.0, 100_000.0);
+        assert!(f.playback.state.is_live_range());
+        f.apply(Intent::OpenPressSheet(press_at(95_000.0, None)));
+        f.apply(Intent::PressSheetRow(PressRow::LoopToHere));
+        assert_eq!(
+            f.playback.state.playback_bounds(),
+            Some((90_000.0, 95_420.0))
+        );
+        assert!(!f.playback.state.is_live_range());
+        // A parked start (the desktop's I key) pairs too.
+        f.apply(Intent::ClearLoop);
+        f.playback.state.drag = Some(crate::core::TimeSelection {
+            a: 90_000.0,
+            b: 90_000.0,
+            in_progress: false,
+        });
+        f.apply(Intent::OpenPressSheet(press_at(95_000.0, None)));
+        f.apply(Intent::PressSheetRow(PressRow::LoopToHere));
         assert_eq!(f.chrome.press_sheet, None);
         assert_eq!(
             f.playback.state.playback_bounds(),
-            Some((90_000.0, 95_000.0))
+            Some((90_000.0, 95_420.0))
         );
         assert!(!f.playback.state.playing, "a new range starts paused");
-        assert_eq!(f.state.selection_just_finalized, Some((90_000.0, 95_000.0)));
     }
 
-    /// Save event here opens the event dialog at that time with no range,
-    /// and over the range when there is one.
-    #[wasm_bindgen_test]
-    fn save_event_here_opens_the_dialog_at_the_time_or_over_the_range() {
-        use crate::core::phone_range::{PressRow, PressSheet};
-        let mut f = Fixture::new();
-        f.state.frame_now = FrameNow(100_000.0);
-        let sheet = PressSheet {
-            ts: 90_000.0,
-            scan_start: None,
-        };
-        f.apply(Intent::OpenPressSheet(sheet));
-        f.apply(Intent::PressSheetRow(PressRow::SaveEvent));
-        assert!(f.chrome.event_modal_open);
-        assert_eq!(f.chrome.event_modal_seed, Some(90_000.0));
-        f.apply(Intent::Dialog(crate::core::dialogs::DialogIntent::Close(
-            crate::core::dialogs::DialogId::Event,
-        )));
-        assert_eq!(f.chrome.event_modal_seed, None);
+    // ---- the chip sheet ------------------------------------------------
 
-        f.apply(Intent::SelectRange {
-            start: 80_000.0,
-            end: 85_000.0,
-            to_live: false,
-        });
-        f.apply(Intent::OpenPressSheet(sheet));
-        f.apply(Intent::PressSheetRow(PressRow::SaveEvent));
-        assert!(f.chrome.event_modal_open);
-        assert_eq!(f.chrome.event_modal_seed, None, "the range fills it");
+    /// A tap on the phone's chip opens its sheet on the Esc stack.
+    #[wasm_bindgen_test]
+    fn the_chip_sheet_opens_on_the_stack_and_closes_on_escape() {
+        use crate::core::dialogs::{DialogId, DialogIntent};
+        let mut f = Fixture::new();
+        f.apply(Intent::OpenChipSheet);
+        assert!(f.chrome.chip_sheet_open);
+        assert!(f.chrome.dialogs.contains(DialogId::ChipSheet));
+        f.apply(Intent::Dialog(DialogIntent::Escape));
+        assert!(!f.chrome.chip_sheet_open);
+        assert!(f.chrome.dialogs.is_empty());
     }
 }

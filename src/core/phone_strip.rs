@@ -333,6 +333,15 @@ pub(crate) fn volume_landing(start: f64, end: f64) -> f64 {
 }
 
 impl StripUnits {
+    /// The volume holding `ts`, if any (the later one where two touch).
+    pub(crate) fn volume_at(&self, ts: f64) -> Option<SnapUnit> {
+        self.volumes
+            .iter()
+            .rev()
+            .find(|v| v.start <= ts && ts <= v.end)
+            .copied()
+    }
+
     /// The units of the strip's containers. Projected cells and ghost
     /// volumes are not landing places: nothing is there yet. A volume not on
     /// the device has no cuts here (its one cell is a placeholder for the
