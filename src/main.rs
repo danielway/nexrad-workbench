@@ -462,7 +462,7 @@ impl WorkbenchApp {
             state: bootstrapped_playback,
         };
         let mut chrome = subsystem::Chrome::new();
-        chrome.coarse_pointer = ui::coarse_pointer();
+        chrome.touch_screen = ui::touch_screen();
         chrome.rail_tab = loaded_prefs.panel_tab;
         chrome.right_sidebar_visible = loaded_prefs.panel_open;
 
@@ -1030,9 +1030,18 @@ impl eframe::App for WorkbenchApp {
             displayed: self.state.viz_state.displayed.as_ref(),
             caption_context: self.state.viz_state.caption_context,
         });
+        // The touch-screen fact is re-read when the viewport changes size, so
+        // an emulator's device toggle (or a rotation) sees the current one.
+        let size = ctx.content_rect().size();
+        if self.chrome.touch_screen_read_at != Some((size.x, size.y)) {
+            if self.chrome.touch_screen_read_at.is_some() {
+                self.chrome.touch_screen = ui::touch_screen();
+            }
+            self.chrome.touch_screen_read_at = Some((size.x, size.y));
+        }
         self.chrome.device_layout = self
             .state
-            .refresh_mobile_mode(ctx, self.chrome.coarse_pointer);
+            .refresh_mobile_mode(ctx, self.chrome.touch_screen);
 
         // Drain GPS-overlay async results before panels render so the
         // "My Location" checkbox sees coords/error on the same frame the
