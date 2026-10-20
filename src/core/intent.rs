@@ -60,6 +60,10 @@ pub(crate) enum Intent {
     /// Select a range: attached to the live edge when `to_live` and a stream
     /// runs, otherwise fixed (see [`crate::core::transport::select_range`]).
     SelectRange { start: f64, end: f64, to_live: bool },
+    /// Select a fixed range, its end where it was put however near now (the
+    /// phone's Loop to here). Decided by
+    /// [`crate::core::transport::select_fixed_range`].
+    SelectFixedRange { start: f64, end: f64 },
     /// Move the playhead to `ts` (the timeline, the playhead clock). Keeps a
     /// range it lands inside; a scrub pauses. Decided by
     /// [`crate::core::transport::reduce_seek`].

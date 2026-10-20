@@ -23,7 +23,7 @@
 //! pans on that press nor zooms on the strip's pinch.
 
 use super::reduced_motion;
-use crate::core::phone_range::PressSheet;
+use crate::core::phone_range::{press_at, RangeFacts};
 use crate::core::phone_row::{
     row_vm, Arc, Downloads, RowInputs, RowVm, BLOCK_H, BLOCK_TOP, BRACKET_H, BRACKET_TICK_H,
     BRACKET_TOP, COLUMN_BOTTOM, HILL_BOTTOM, HILL_H, NOW_BOTTOM, NOW_CAP_TOP, NOW_TOP, ROW_H,
@@ -258,11 +258,14 @@ fn draw_strip(
         ui.ctx().request_repaint();
     }
     if let Some((x, _)) = out.press.long_press {
-        state.push_command(Intent::OpenPressSheet(PressSheet {
-            ts: snap_scrub(stop, x_to_ts(x), &units, now),
-            scan_start: view.scan_start_at(x_to_ts(x)),
-            volume: units.volume_at(x_to_ts(x)).map(|v| (v.start, v.end)),
-        }));
+        let ts = x_to_ts(x);
+        state.push_command(Intent::OpenPressSheet(press_at(
+            stop,
+            ts,
+            &units,
+            view.scan_start_at(ts),
+            &RangeFacts::of(&playback.state, now),
+        )));
         return;
     }
     state.pointer_scrub_active = response.dragged() && out.may_seek;

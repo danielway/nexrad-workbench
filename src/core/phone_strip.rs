@@ -342,6 +342,16 @@ impl StripUnits {
             .copied()
     }
 
+    /// Whether the volume holding `ts` is the strip's newest (the one now is
+    /// in, while a stream runs).
+    pub(crate) fn newest_holds(&self, ts: f64) -> bool {
+        self.volume_at(ts).is_some_and(|v| {
+            self.volumes
+                .last()
+                .is_some_and(|last| last.start == v.start)
+        })
+    }
+
     /// The units of the strip's containers. Projected cells and ghost
     /// volumes are not landing places: nothing is there yet. A volume not on
     /// the device has no cuts here (its one cell is a placeholder for the
@@ -714,6 +724,26 @@ mod tests {
     }
 
     const NOW: f64 = 1_000_000.0;
+
+    #[wasm_bindgen_test]
+    fn a_press_finds_its_volume_and_whether_it_is_the_newest() {
+        let unit = |start: f64, end: f64| SnapUnit {
+            start,
+            end,
+            land: start + 10.0,
+        };
+        let units = StripUnits {
+            volumes: vec![unit(0.0, 300.0), unit(300.0, 600.0), unit(600.0, 750.0)],
+            ..StripUnits::default()
+        };
+        // Where two touch, the later one.
+        assert_eq!(units.volume_at(300.0).map(|v| v.start), Some(300.0));
+        assert_eq!(units.volume_at(100.0).map(|v| v.start), Some(0.0));
+        assert_eq!(units.volume_at(900.0), None);
+        assert!(!units.newest_holds(450.0));
+        assert!(units.newest_holds(700.0));
+        assert!(!units.newest_holds(900.0), "no volume there");
+    }
 
     fn lead() -> f64 {
         MINI_VOLUMES * DEFAULT_VOLUME_SECS * MINI_LEAD_SHARE

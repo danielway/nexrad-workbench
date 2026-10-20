@@ -119,6 +119,15 @@ pub(crate) fn dispatch_state_only(
                 s.state.selection_just_finalized = s.playback.state.selection_range();
             }
         }
+        Intent::SelectFixedRange { start, end } => {
+            let now = s.state.frame_now.secs();
+            let pause = s.state.pause_stream_while_reviewing;
+            if s.live
+                .select_fixed_range(&mut s.playback.state, start, end, now, pause)
+            {
+                s.state.selection_just_finalized = s.playback.state.selection_range();
+            }
+        }
 
         Intent::Seek { ts, gesture } => {
             s.transport(|env, slices| crate::core::transport::reduce_seek(env, slices, ts, gesture))
@@ -715,6 +724,7 @@ impl WorkbenchApp {
             | Intent::ClearLoop
             | Intent::StopLooping
             | Intent::SelectRange { .. }
+            | Intent::SelectFixedRange { .. }
             | Intent::Seek { .. }
             | Intent::Step { .. }
             | Intent::SetLoopPoint(_)
@@ -1175,12 +1185,18 @@ mod dispatch_tests {
                 ts: 1_000.0,
                 scan_start: None,
                 volume: None,
+                newest: false,
+                anchor_volume: None,
             }),
             Intent::PressSheetRow(crate::core::phone_range::PressRow::Inspect),
             Intent::OpenChipSheet,
+            Intent::SelectFixedRange {
+                start: 100.0,
+                end: 400.0,
+            },
             Intent::InspectScan(1_000.0),
         ];
-        assert_eq!(state_only.len(), 40);
+        assert_eq!(state_only.len(), 41);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -2201,6 +2217,8 @@ mod dispatch_tests {
             ts: volume_start + 100.0,
             scan_start: scan,
             volume: Some((volume_start, volume_start + 420.0)),
+            newest: false,
+            anchor_volume: None,
         }
     }
 

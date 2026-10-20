@@ -752,7 +752,8 @@ volume under the finger, headed by the time, the tilt and the product
 now (amber glyph: a range pinned to now starting at that volume's start),
 **Loop to here** (only for a loop pinned to now or a start parked with the
 desktop's I key: it keeps the start and ends at that volume's end, a fixed
-range, unless that end is within a frame of now) and **Inspect this scan**.
+range however near now, unless it is the newest volume, which ends at now)
+and **Inspect this scan**.
 A row that makes no sense is disabled and says why at its right (this is
 now; start a loop first; before the loop's start; longer than 7 days; no
 scan here). A new range starts paused, as on the desktop. Once a range

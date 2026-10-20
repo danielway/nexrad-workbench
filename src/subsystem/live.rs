@@ -169,7 +169,44 @@ impl Live {
         now: f64,
         pause_stream_while_reviewing: bool,
     ) -> bool {
-        let (actions, selected) = crate::core::transport::select_range(
+        self.run_select(
+            playback,
+            now,
+            pause_stream_while_reviewing,
+            |env, slices| crate::core::transport::select_range(env, slices, a, b, to_live),
+        )
+    }
+
+    /// Select a range with its end fixed where it was put, however near now.
+    /// See [`crate::core::transport::select_fixed_range`].
+    pub(crate) fn select_fixed_range(
+        &mut self,
+        playback: &mut PlaybackState,
+        a: f64,
+        b: f64,
+        now: f64,
+        pause_stream_while_reviewing: bool,
+    ) -> bool {
+        self.run_select(
+            playback,
+            now,
+            pause_stream_while_reviewing,
+            |env, slices| crate::core::transport::select_fixed_range(env, slices, a, b),
+        )
+    }
+
+    /// Run a selection decision and stop the channel when it says to.
+    fn run_select(
+        &mut self,
+        playback: &mut PlaybackState,
+        now: f64,
+        pause_stream_while_reviewing: bool,
+        decide: impl FnOnce(
+            &crate::core::transport::TransportEnv,
+            crate::core::transport::TransportSlices<'_>,
+        ) -> (crate::core::transport::TransportActions, bool),
+    ) -> bool {
+        let (actions, selected) = decide(
             &crate::core::transport::TransportEnv {
                 now_secs: now,
                 pause_stream_while_reviewing,
@@ -180,9 +217,6 @@ impl Live {
                 engine: &mut self.engine.borrow_mut(),
                 playback,
             },
-            a,
-            b,
-            to_live,
         );
         if actions.stop_channel {
             self.channel.stop();

@@ -10,9 +10,11 @@
 //!   Loop from here (a range pinned to now, starting at that volume), Loop
 //!   to here (the end fixed at that volume, for a loop pinned to now or a
 //!   parked start) and Inspect this scan. A row that makes no sense is
-//!   disabled with its reason. Both loops emit the selection intent every
-//!   surface uses ([`Intent::SelectRange`]), so the one "ends at now" rule
-//!   still pins an end within a frame of now and a new range starts paused.
+//!   disabled with its reason. Loop from here, and Loop to here on the
+//!   newest volume, emit the selection intent every surface uses
+//!   ([`Intent::SelectRange`]) pinned to now; Loop to here on any other
+//!   volume is a fixed end however near now ([`Intent::SelectFixedRange`]).
+//!   A new range starts paused.
 //!
 //! All pure; `ui::mobile::press_sheet` draws what these return.
 
@@ -58,7 +60,7 @@ impl RangeFacts {
 
     /// The start Loop to here pairs its end with: a loop pinned to now's
     /// start, or a parked start. A fixed range already has its end.
-    fn anchor_for_end(&self) -> Option<f64> {
+    pub(crate) fn anchor_for_end(&self) -> Option<f64> {
         match self.range {
             Some((s, _)) if self.pinned => Some(s),
             Some(_) => None,
@@ -81,6 +83,33 @@ pub(crate) struct PressSheet {
     /// The row's volume under the finger (start, end), if any: the block
     /// the sheet's loops start or end at.
     pub volume: Option<(f64, f64)>,
+    /// That volume is the strip's newest: a loop to it ends at now.
+    pub newest: bool,
+    /// The start of the volume holding the start Loop to here pairs with
+    /// (a loop pinned to now slides its start into its first block), so the
+    /// loop it makes starts on a block.
+    pub anchor_volume: Option<f64>,
+}
+
+/// What a long-press at `ts` (the time under the finger) catches, from the
+/// strip's units at `stop`, the scan there and the selection.
+pub(crate) fn press_at(
+    stop: crate::core::phone_strip::StripZoom,
+    ts: f64,
+    units: &crate::core::phone_strip::StripUnits,
+    scan_start: Option<f64>,
+    facts: &RangeFacts,
+) -> PressSheet {
+    PressSheet {
+        ts: crate::core::phone_strip::snap_scrub(stop, ts, units, facts.now),
+        scan_start,
+        volume: units.volume_at(ts).map(|v| (v.start, v.end)),
+        newest: units.newest_holds(ts),
+        anchor_volume: facts
+            .anchor_for_end()
+            .and_then(|a| units.volume_at(a))
+            .map(|v| v.start),
+    }
 }
 
 impl PressSheet {
@@ -154,7 +183,8 @@ pub(crate) const TOO_LONG: &str = "longer than 7 days";
 /// The intent a row emits, or why it is disabled. Loop from here pins a
 /// range from the pressed volume's start to now; Loop to here keeps the
 /// loop's start (or a parked one) and ends at the pressed volume's end, a
-/// fixed range unless that end is within a frame of now ([`ends_at_now`]).
+/// fixed range unless that volume is the newest (then it ends at now). With
+/// no volume under the finger the "ends at now" rule decides ([`ends_at_now`]).
 pub(crate) fn row_intent(
     row: PressRow,
     press: &PressSheet,
@@ -180,19 +210,30 @@ pub(crate) fn row_intent(
             })
         }
         PressRow::LoopToHere => {
-            let start = f.anchor_for_end().ok_or(START_FIRST)?;
+            let anchor = f.anchor_for_end().ok_or(START_FIRST)?;
+            let start = press.anchor_volume.map_or(anchor, |v| v.min(anchor));
             let end = press.end_here().min(f.now);
+            // To the newest volume is to now; to any other is a fixed end,
+            // however near now. With no volume known, the one rule decides.
+            let pins = match press.volume {
+                Some(_) => press.newest,
+                None => ends_at_now(end, f.now, f.frame_secs),
+            };
+            let end = if pins { f.now } else { end };
             if end <= start + 1.0 {
                 return Err(BEFORE_RANGE_START);
             }
             if !crate::core::selection_span_allowed(start, end) {
                 return Err(TOO_LONG);
             }
-            let pins = ends_at_now(end, f.now, f.frame_secs);
-            Ok(Intent::SelectRange {
-                start,
-                end: if pins { f.now } else { end },
-                to_live: pins,
+            Ok(if pins {
+                Intent::SelectRange {
+                    start,
+                    end,
+                    to_live: true,
+                }
+            } else {
+                Intent::SelectFixedRange { start, end }
             })
         }
     }
@@ -318,6 +359,16 @@ mod tests {
             ts: volume_start + 100.0,
             scan_start: Some(volume_start),
             volume: Some((volume_start, volume_start + 420.0)),
+            newest: false,
+            anchor_volume: None,
+        }
+    }
+
+    /// A press on the newest volume, the one now is in.
+    fn press_newest(volume_start: f64) -> PressSheet {
+        PressSheet {
+            newest: true,
+            ..press(volume_start)
         }
     }
 
@@ -420,6 +471,8 @@ mod tests {
             ts: NOW,
             scan_start: None,
             volume: Some((NOW + 10.0, NOW + 430.0)),
+            newest: true,
+            anchor_volume: None,
         };
         assert_eq!(row_intent(PressRow::LoopFromHere, &p, &f), Err(ALREADY_NOW));
         let far = press(NOW - 9.0 * 86_400.0);
@@ -431,10 +484,18 @@ mod tests {
         let pinned = facts(Some((NOW - 3_000.0, NOW - 20.0)), true);
         assert_eq!(
             row_intent(PressRow::LoopToHere, &press(NOW - 1_800.0), &pinned),
-            Ok(Intent::SelectRange {
+            Ok(Intent::SelectFixedRange {
                 start: NOW - 3_000.0,
                 end: NOW - 1_380.0,
-                to_live: false
+            })
+        );
+        // The volume before the newest ends within a frame of now, and is
+        // still a fixed end.
+        assert_eq!(
+            row_intent(PressRow::LoopToHere, &press(NOW - 520.0), &pinned),
+            Ok(Intent::SelectFixedRange {
+                start: NOW - 3_000.0,
+                end: NOW - 100.0,
             })
         );
         // Before the loop's start: nothing to end.
@@ -442,9 +503,9 @@ mod tests {
             row_intent(PressRow::LoopToHere, &press(NOW - 4_000.0), &pinned),
             Err(BEFORE_RANGE_START)
         );
-        // On the live volume the end is now, and the loop stays pinned.
+        // On the newest volume the end is now, and the loop stays pinned.
         assert_eq!(
-            row_intent(PressRow::LoopToHere, &press(NOW - 100.0), &pinned),
+            row_intent(PressRow::LoopToHere, &press_newest(NOW - 100.0), &pinned),
             Ok(Intent::SelectRange {
                 start: NOW - 3_000.0,
                 end: NOW,
@@ -461,16 +522,66 @@ mod tests {
         };
         assert_eq!(
             row_intent(PressRow::LoopToHere, &press(NOW - 1_800.0), &parked),
-            Ok(Intent::SelectRange {
+            Ok(Intent::SelectFixedRange {
                 start: NOW - 3_000.0,
                 end: NOW - 1_380.0,
-                to_live: false
+            })
+        );
+        // With no volume known, the "ends at now" rule decides.
+        let near = PressSheet {
+            volume: None,
+            ..press(NOW - FRAME / 2.0 - 100.0)
+        };
+        assert_eq!(
+            row_intent(PressRow::LoopToHere, &near, &parked),
+            Ok(Intent::SelectRange {
+                start: NOW - 3_000.0,
+                end: NOW,
+                to_live: true
             })
         );
         let fixed = facts(Some((NOW - 3_000.0, NOW - 2_000.0)), false);
         assert_eq!(
             row_intent(PressRow::LoopToHere, &press(NOW - 1_800.0), &fixed),
             Err(START_FIRST)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn loop_to_here_starts_on_the_block_a_sliding_loop_starts_in() {
+        use crate::core::phone_strip::{SnapUnit, StripUnits, StripZoom};
+        let unit = |start: f64| SnapUnit {
+            start,
+            end: start + 420.0,
+            land: start + 10.0,
+        };
+        let units = StripUnits {
+            volumes: vec![unit(NOW - 2_100.0), unit(NOW - 1_680.0), unit(NOW - 260.0)],
+            ..StripUnits::default()
+        };
+        // A loop pinned to now whose start has slid 40 s into its block.
+        let pinned = facts(Some((NOW - 2_060.0, NOW - 20.0)), true);
+        let p = press_at(StripZoom::Volumes, NOW - 1_500.0, &units, None, &pinned);
+        assert_eq!(p.volume, Some((NOW - 1_680.0, NOW - 1_260.0)));
+        assert!(!p.newest);
+        assert_eq!(p.anchor_volume, Some(NOW - 2_100.0));
+        assert_eq!(
+            row_intent(PressRow::LoopToHere, &p, &pinned),
+            Ok(Intent::SelectFixedRange {
+                start: NOW - 2_100.0,
+                end: NOW - 1_260.0,
+            })
+        );
+        // The newest block is a loop to now.
+        let p = press_at(StripZoom::Volumes, NOW - 100.0, &units, None, &pinned);
+        assert!(p.newest);
+        assert_eq!(
+            row_intent(PressRow::LoopToHere, &p, &pinned),
+            Ok(Intent::SelectRange {
+                start: NOW - 2_100.0,
+                end: NOW,
+                to_live: true
+            })
         );
     }
 

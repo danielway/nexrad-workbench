@@ -788,6 +788,7 @@ pub(crate) fn landing_after(landing: Option<Landing>, intent: &Intent) -> Option
         | Intent::StopLooping
         | Intent::ClearLoop
         | Intent::SelectRange { .. }
+        | Intent::SelectFixedRange { .. }
         | Intent::ApplyLoopPreset(_)
         | Intent::SetLoopPoint(_)
         | Intent::LoopFromScan(_)
