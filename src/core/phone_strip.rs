@@ -223,11 +223,11 @@ pub(crate) const RANGE_EDGE_SHARE: f64 = 0.05;
 /// The Cuts window while a range is selected: never narrower than the
 /// stop's three volumes, and as wide as it takes to show the whole range.
 ///
-/// Near now (the range ends within two volumes of now, as a range pinned to
-/// now always does) it is [`mini_window`] anchored to now, ending at now
-/// plus the ghost room; when the range starts before that window's left
-/// edge (four frames at a tilt are four volumes), the left edge moves out
-/// to [`RANGE_EDGE_SHARE`] of the new span before the range's start.
+/// Near now (the range ends within three volumes of now, as a range pinned
+/// to now always does) it is [`mini_window`] anchored to now, ending at now
+/// plus the ghost room; the left edge moves out as far as it takes to keep
+/// [`RANGE_EDGE_SHARE`] of the span before the block the range starts in
+/// (four frames at a tilt are four volumes), so that block shows whole.
 /// Further back it centres on the range, spanning the three volumes or the
 /// range plus that room either side, whichever is wider, and never reaches
 /// past now plus the ghost room. Either way the window follows only the
@@ -235,14 +235,20 @@ pub(crate) const RANGE_EDGE_SHARE: f64 = 0.05;
 /// so it holds still while the loop plays and slides only with now.
 fn cuts_range_window(now: f64, (start, end): (f64, f64), volume_starts: &[f64]) -> MiniWindow {
     let m = RANGE_EDGE_SHARE;
+    // The room is kept before the block the range starts in, so that block
+    // shows whole: the volume holding the range's first frame.
+    let start = volume_starts
+        .iter()
+        .copied()
+        .filter(|&s| s <= start + 1.0 && start - s < MAX_FIRST_FRAME_LAG_SECS)
+        .max_by(f64::total_cmp)
+        .map_or(start, |s| s.min(start));
     if mini_near_now(now, end, false, volume_starts) {
         let base = mini_window(now, end, true, volume_starts);
-        if start >= base.start {
-            return base;
-        }
-        // start = range start − m · (end − start), solved for start.
+        // start = first block − m · (end − start), solved for start.
+        let room = (start - m * base.end) / (1.0 - m);
         return MiniWindow {
-            start: (start - m * base.end) / (1.0 - m),
+            start: base.start.min(room),
             end: base.end,
         };
     }
@@ -255,6 +261,10 @@ fn cuts_range_window(now: f64, (start, end): (f64, f64), volume_starts: &[f64]) 
         end: w_end,
     }
 }
+
+/// How far after its volume's start a range's first frame may fall and
+/// still be that volume's.
+const MAX_FIRST_FRAME_LAG_SECS: f64 = 900.0;
 
 /// The span whose volume sizes a stop reads: the window at Volumes and
 /// Day; at Cuts the three hours around the window's middle, so a volume's
@@ -828,9 +838,10 @@ mod tests {
             Some(range),
         );
         assert_range_inside(w, range);
-        // About 5 % of the span before the range's start, and still ending
-        // at now plus the ghost room.
-        assert!((range.0 - w.start - RANGE_EDGE_SHARE * w.span()).abs() < 1e-6);
+        // About 5 % of the span before the block it starts in, and still
+        // ending at now plus the ghost room. The margin is kept before the block the range starts in (its
+        // first frame is 20 s into it).
+        assert!(((range.0 - 20.0) - w.start - RANGE_EDGE_SHARE * w.span()).abs() < 1e-6);
         assert_eq!(w.end, NOW + lead());
         assert!(w.span() > base.span());
     }
@@ -839,11 +850,16 @@ mod tests {
     fn cuts_keeps_its_window_for_a_range_that_already_fits() {
         let s = live_volumes();
         let base = mini_window(NOW, NOW, true, &s);
-        for range in [last_frames(3.0), last_frames(2.0)] {
-            let w = strip_window(StripZoom::Cuts, NOW, range.0, true, &s, None, Some(range));
-            assert_eq!(w, base);
-            assert_range_inside(w, range);
-        }
+        let range = last_frames(2.0);
+        let w = strip_window(StripZoom::Cuts, NOW, range.0, true, &s, None, Some(range));
+        assert_eq!(w, base);
+        assert_range_inside(w, range);
+        // Three frames start in the window's first block: it moves out just
+        // enough to keep the margin before that block.
+        let range = last_frames(3.0);
+        let w = strip_window(StripZoom::Cuts, NOW, range.0, true, &s, None, Some(range));
+        assert_eq!(w.end, base.end);
+        assert!(((range.0 - 20.0) - w.start - RANGE_EDGE_SHARE * w.span()).abs() < 1e-6);
     }
 
     #[wasm_bindgen_test]
@@ -1643,6 +1659,28 @@ mod tests {
         let w2 = strip_window(StripZoom::Cuts, later, tapped, false, &s, Some(w), None);
         assert!(w2.end >= later, "{w2:?} lost now");
         assert!(w2.start < tapped, "{w2:?} lost the tapped block");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_four_volume_loop_to_now_shows_its_first_block_whole_with_room() {
+        // Volumes every 7 minutes, the live one 5 minutes in; four frames
+        // pinned to now start 20 s into the fourth volume back.
+        let s: Vec<f64> = (0..20)
+            .map(|k| NOW - 300.0 - 420.0 * k as f64)
+            .rev()
+            .collect();
+        let first = NOW - 300.0 - 3.0 * 420.0;
+        let range = (first + 20.0, NOW);
+        // The playhead looping anywhere in it, and any of the near-now
+        // blocks, change nothing.
+        for playhead in [range.0, first + 500.0, NOW - 100.0] {
+            let w = strip_window(StripZoom::Cuts, NOW, playhead, true, &s, None, Some(range));
+            assert!(
+                first - w.start >= RANGE_EDGE_SHARE * w.span() - 1e-6,
+                "{w:?} clips the block at {first}"
+            );
+            assert!(w.end > NOW);
+        }
     }
 
     #[wasm_bindgen_test]

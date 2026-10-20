@@ -506,6 +506,13 @@ pub(crate) fn row_vm(i: &RowInputs<'_>) -> RowVm {
     }
 
     out.bracket = i.range.and_then(|(s, e)| {
+        // From the start of the block the range's first frame is in, so the
+        // bracket covers the blocks it plays.
+        let s = vols
+            .iter()
+            .filter(|v| v.holds(s))
+            .map(|v| v.start)
+            .fold(s, f64::min);
         let (xs, xe) = (to_x(s), to_x(e.max(s)));
         let (x0, x1) = (xs.max(left), xe.min(right));
         (x1 - x0 >= 1.0).then_some(Bracket {
@@ -1081,6 +1088,10 @@ mod tests {
             assert_eq!((b.x0, b.x1), (x(420.0), x(NOW)));
             assert!(b.start_tick && b.end_tick);
         }
+        // A range whose first frame is into a volume starts at its block.
+        let mut i = inputs(StripZoom::Cuts, &cs, &sz, 500.0, true);
+        i.range = Some((440.0, NOW));
+        assert_eq!(row_vm(&i).bracket.unwrap().x0, x(420.0));
         // A range starting off the lane: no tick at its cut end.
         let mut i = inputs(StripZoom::Cuts, &cs, &sz, 500.0, false);
         i.range = Some((-2_000.0, 600.0));
