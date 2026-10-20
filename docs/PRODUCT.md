@@ -651,8 +651,9 @@ way to each other rather than overlap). At **3 H** each volume is an 11 px
 column as tall as the weather it held (its file size in the day's listing,
 on the view's scale) over a 6 px floor, so a quiet day is a row of short
 even columns; filled on the device, white under the playhead, with hour
-labels. At **24 H** the storm hill keeps its half-hour steps in the storm
-blue, the stretch on the device drawn in slate over it and a 2 px white line
+labels. At **24 H** the storm hill is a smooth area through its half-hour
+samples in the storm blue (it never overshoots a sample or dips below the
+floor), the stretch on the device drawn in slate and a 2 px white line
 at the playhead, labelled 06 · 12 · 18 · 00. At every stop a red 2 px now
 line with a small `NOW` cap marks now when it is in the window, and a
 selected range is **one amber bracket** above the marks (its end on the now

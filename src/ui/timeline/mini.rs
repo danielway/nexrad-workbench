@@ -374,19 +374,26 @@ fn paint_row(p: &egui::Painter, top: f32, row: &RowVm, font: &FontId, time: f64,
             );
         }
     }
-    for h in &row.hill {
-        p.rect_filled(
-            Rect::from_min_max(
-                Pos2::new(h.x0, top + HILL_BOTTOM - h.height),
-                Pos2::new(h.x1, top + HILL_BOTTOM),
-            ),
-            0.0,
-            if h.on_device {
+    if !row.hill.is_empty() {
+        // One quad per sliver, all in one mesh: the area is not convex, so
+        // it is never one polygon.
+        let base = top + HILL_BOTTOM;
+        let mut mesh = egui::Mesh::default();
+        for h in &row.hill {
+            let color = if h.on_device {
                 colors::SLATE_HI
             } else {
                 colors::HILL
-            },
-        );
+            };
+            let i = mesh.vertices.len() as u32;
+            mesh.colored_vertex(Pos2::new(h.x0, base), color);
+            mesh.colored_vertex(Pos2::new(h.x0, base - h.h0), color);
+            mesh.colored_vertex(Pos2::new(h.x1, base - h.h1), color);
+            mesh.colored_vertex(Pos2::new(h.x1, base), color);
+            mesh.add_triangle(i, i + 1, i + 2);
+            mesh.add_triangle(i, i + 2, i + 3);
+        }
+        p.add(egui::Shape::mesh(mesh));
     }
     if let Some(x) = row.playhead_x {
         p.rect_filled(
