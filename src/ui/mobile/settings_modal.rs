@@ -206,13 +206,10 @@ fn about_section(ui: &mut egui::Ui, state: &mut AppState, version: &str) {
             .color(theme::TEXT_DIM),
     );
     if ui
-        .add(
-            egui::Button::new(format!(
-                "{}  Changelog",
-                egui_phosphor::regular::ARROW_SQUARE_OUT
-            ))
-            .min_size(Vec2::new(0.0, TOUCH_ROW_H)),
-        )
+        .button(format!(
+            "{}  Changelog",
+            egui_phosphor::regular::ARROW_SQUARE_OUT
+        ))
         .clicked()
     {
         state.push_command(Intent::OpenExternalUrl(
