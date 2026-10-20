@@ -33,33 +33,11 @@ const HALO_OFFSETS: [Vec2; 8] = [
     Vec2::new(1.0, 1.0),
 ];
 
-/// Draws `text` with a 1px black outline by repeating the draw call at eight
-/// surrounding offsets before drawing the colored text on top. Cheap enough
-/// for the label counts we render and keeps labels legible against any
-/// underlying radar color.
-///
-/// This is the immediate-mode entry point used outside the geo layer cache
-/// (sweep overlay, alerts, etc.). Cached label rendering uses the lower-
-/// level [`paint_galley_with_halo`] which avoids re-laying-out text every
-/// frame.
-pub(crate) fn text_with_halo(
-    painter: &Painter,
-    pos: Pos2,
-    align: Align2,
-    text: &str,
-    font: FontId,
-    color: Color32,
-) {
-    for offset in HALO_OFFSETS {
-        painter.text(pos + offset, align, text, font.clone(), Color32::BLACK);
-    }
-    painter.text(pos, align, text, font, color);
-}
-
-/// Paint a pre-laid-out galley at `pos` (pre-aligned), with the same 8-way
-/// halo as [`text_with_halo`]. Reuses the same `Arc<Galley>` for both the
+/// Paint a pre-laid-out galley at `pos` (pre-aligned) with a 1px outline:
+/// the halo colour drawn at eight surrounding offsets, then the text on top,
+/// so labels stay legible against any radar colour. Reuses the same `Arc<Galley>` for both the
 /// halo passes and the foreground pass so text layout never repeats.
-fn paint_galley_with_halo(
+pub(crate) fn paint_galley_with_halo(
     painter: &Painter,
     pos: Pos2,
     galley: &Arc<Galley>,
@@ -311,15 +289,19 @@ fn polygon_label_style(layer_type: GeoLayerType) -> (f32, Color32) {
 /// Per-frame label paint: lay out each cached entry's text (memoized by
 /// egui's internal galley cache, which self-invalidates on font-atlas
 /// recreate) and project its anchor through the current projection before
-/// emitting one halo'd galley.
+/// emitting one halo'd galley. A label for which `keep` says no (it would
+/// print under the map's chrome) is skipped. Returns the labels painted, for
+/// the site labels to give way to.
 pub(crate) fn paint_geo_labels(
     painter: &Painter,
     projection: &MapProjection,
     visibility: &GeoLayerVisibility,
     entries: &[LabelEntry],
-) {
+    keep: &dyn Fn(ScreenBounds) -> bool,
+) -> Vec<(GeoLabelClass, ScreenBounds)> {
+    let mut painted = Vec::new();
     if !visibility.labels {
-        return;
+        return painted;
     }
 
     for entry in entries {
@@ -334,8 +316,19 @@ pub(crate) fn paint_geo_labels(
         let anchor_screen = projection.geo_to_screen(entry.anchor);
         let anchor_with_offset = anchor_screen + entry.pixel_offset;
         let pos = aligned_galley_pos(anchor_with_offset, galley.size(), entry.align);
+        let bounds = ScreenBounds {
+            min_x: pos.x,
+            min_y: pos.y,
+            max_x: pos.x + galley.size().x,
+            max_y: pos.y + galley.size().y,
+        };
+        if !keep(bounds) {
+            continue;
+        }
         paint_galley_with_halo(painter, pos, &galley, entry.color, Color32::BLACK);
+        painted.push((entry.class, bounds));
     }
+    painted
 }
 
 fn label_class_enabled(class: GeoLabelClass, visibility: &GeoLayerVisibility) -> bool {

@@ -1,14 +1,17 @@
 # NEXRAD Workbench — Product Specification
 
-**Consolidated as-built spec · June 2026**
-**Status:** Describes the shipped product on `simplify-user-interface`. This
-document supersedes and merges the earlier `PRODUCT.md` requirements draft and
-the `product_north_star.md` timeline/playback UX brief into one authoritative
-spec. The open decisions both predecessors carried are resolved here against the
-implementation; forward-looking experiments are collected in
+**Product spec and decision record · June 2026, revised through October 2026**
+
+**Status:** This is the reference for the product's model: the timeline,
+selection and playback, live tethering, acquisition and caching, and the
+honesty rules for what the canvas shows. It was written against the June 2026
+build and revised as later work changed it, including the October 2026
+"One Instrument" redesign. Where it describes how a surface *looks* and the
+running app differs, the app is right. Forward-looking ideas are in
 **§16 Deferred / future work**. The numbered **Alignment decisions** at the end
-are the decision record (rationale) for the timeline/playback/acquisition UX;
-code cites them as "alignment §N" / "#N".
+are the rationale for the timeline/playback/acquisition UX. Code comments cite
+this document by section ("PRODUCT.md §5.1", "alignment §N"), so keep section
+numbers stable when editing.
 
 ---
 
@@ -619,6 +622,25 @@ Independent rendering layers that can be toggled on/off:
 - **mPING storm reports** — crowdsourced surface observation markers.
 - **My Location** — a one-shot GPS dot for the user's current position.
 
+**Where the chrome sits.** Everything over the map that is not data has one
+place, decided by one layout rule (`core::map_chrome`) on every canvas from a
+390 px phone to a desktop: the map toolbar top left, the colour scale top
+right, and a **bottom tray** along the map's bottom edge for the scale bar (the
+compass in 3D) and the layer legends. The scale bar sits at the tray's left
+end; the legends pack in from its right end, the mosaic legend in the corner
+and the mPING legend next in. A legend that does not fit beside the others
+wraps to a row above, again from the right, and a row that reaches up beside
+the colour scale stops short of it. Nothing overlaps and nothing leaves the
+canvas; an item with no room at all is left out. The canvas caption rises over
+the tray where it would cover it.
+
+**Labels give way to chrome and to each other.** A map label (city, state,
+site) never prints under the toolbar, the colour scale or the tray, or half off
+the canvas: it is hidden, not nudged, so a label always marks its place. A
+radar site's ID label is hidden when a city label or another site's label sits
+within 12 px of it (KFSD beside Sioux Falls, KOAX beside Omaha); the site's
+dot stays, and the current site's label always prints.
+
 ### 13.2 Tools
 
 Interactive measurement and analysis affordances on the 2D canvas:
@@ -635,8 +657,8 @@ Interactive measurement and analysis affordances on the 2D canvas:
 | Breakpoint | Timeline | Notes |
 |---|---|---|
 | Desktop ≥1200px | Overview + full strip (~56px) + transport row + readouts | Inspector as popover or side panel; hover tooltips |
-| Touch ≥600px | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
-| Phone | A 120 px dock: a 66 px row of volumes at three zoom stops over a transport row (play · selection chip · NOW / 3 H / 24 H · LIVE when not live); the calendar sheet stands in for the overview | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; ranges are never drawn (presets and the long-press sheet; a range shows as one amber bracket); 3D view is desktop-only |
+| Touch, short side ≥500 pt | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
+| Phone (a touch screen whose short side is under 500 pt, in either orientation; or any window under 500 px wide) | A 120 px dock: a 66 px row of volumes at three zoom stops over a transport row (play · selection chip · NOW / 3 H / 24 H · LIVE when not live); the calendar sheet stands in for the overview | Canvas full-bleed; turned on its side the phone keeps this layout (map full width, the top bar above, the dock along the bottom, its row's blocks spread across the width) and its sheets move to a full-height side sheet on the right that scrolls; a mouse on a short wide window stays desktop; chrome auto-hides during playback, tap to reveal; ranges are never drawn (presets and the long-press sheet; a range shows as one amber bracket); 3D view is desktop-only |
 
 **The phone timeline is a row of volumes you can touch.** Not a ruler with
 marks on it: each volume is one mark, and everything the row says is in how
@@ -847,7 +869,7 @@ not unfinished work:
   beneath it on phones — more thumb-accurate, but inverts the shared mental model.
   Ship drag-anywhere-scrubs first; A/B the tape later.
 - **Tablet tier:** a layout distinct from desktop/phone. For now touch devices
-  ≥600px get the desktop layout.
+  whose short side is 500 pt or more get the desktop layout.
 - **Offline / stale ghosts:** today ghosts vanish when the stream dies; richer
   handling of stale projections is a post-v1 revisit.
 - **Wi-Fi-only acquisition toggle:** not implementable in a browser today; revisit
@@ -911,8 +933,8 @@ deleted in the June 2026 docs cleanup.)
   file sizes as the activity signal (no backend, no downloads).
 - **Manual download management:** stays demoted; the activity sheet shows what the
   system did, plus cancel/retry and policy toggles.
-- **Tablet tier:** out of scope this pass; touch devices ≥600px get the desktop
-  layout.
+- **Tablet tier:** out of scope this pass; touch devices whose short side is
+  500 pt or more get the desktop layout.
 - **Wi-Fi-only toggle:** not implementable in a browser (no reliable
   network-type API); the activity sheet ships "auto-fetch while scrubbing" and
   "pause live stream while reviewing".

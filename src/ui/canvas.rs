@@ -5,9 +5,10 @@ use super::canvas_data_probe::{
 };
 use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interaction};
 use super::canvas_overlays::{
-    draw_globe, draw_national_mosaic, render_alerts, render_chrome_overlays, render_gps_location,
-    render_mping_detail, render_mping_reports, render_nexrad_sites, render_radar_sweep,
-    AlertRenderPhase, OverlayContext, RadarCutout,
+    draw_globe, draw_national_mosaic, layout_chrome, render_alerts, render_chrome_overlays,
+    render_gps_location, render_mping_detail, render_mping_reports, render_nexrad_sites,
+    render_radar_sweep, viewport_bounds, AlertRenderPhase, OverlayContext, RadarCutout,
+    SiteLabelRoom,
 };
 use crate::core::geo_labels::{GeoLabelPlacementKey, GeoLabelVisibilityKey};
 use crate::core::RenderProcessing;
@@ -82,17 +83,18 @@ pub(crate) fn render_canvas_with_geo(
                 // Corner-chrome overlays (color scale + info + compass)
                 // dispatched through the typed registry. The trait's
                 // `visible` predicate keeps the scale bar (2D-only) out.
-                let bottom_scrims = render_chrome_overlays(
-                    ui,
-                    &OverlayContext {
+                let bottom_scrims = {
+                    let overlay_ctx = OverlayContext {
                         rect,
                         state,
                         live,
                         derived,
                         mping_reports: &diagnostics.mping.reports,
                         playback_secs: playback.state.playback_position(),
-                    },
-                );
+                    };
+                    let chrome_frame = layout_chrome(ui, &overlay_ctx, None);
+                    render_chrome_overlays(ui, &overlay_ctx, &chrome_frame)
+                };
 
                 // The caption is the same chrome in 3D (§7).
                 if state.is_mobile {
@@ -201,6 +203,7 @@ pub(crate) fn render_canvas_with_geo(
                     &state.viz_state.site_id,
                     &state.layer_state.geo,
                     crate::geo::GeoPass::Lines,
+                    None,
                 );
 
                 // Warning fills paint *under* the radar so storm data stays
@@ -316,6 +319,27 @@ pub(crate) fn render_canvas_with_geo(
                     );
                 }
 
+                // The map's chrome is laid out before the labels paint, so
+                // the labels can keep clear of it (core::map_chrome); it
+                // paints over everything further down.
+                let chrome_frame = layout_chrome(
+                    ui,
+                    &OverlayContext {
+                        rect,
+                        state,
+                        live,
+                        derived,
+                        mping_reports: &diagnostics.mping.reports,
+                        playback_secs: playback.state.playback_position(),
+                    },
+                    ui.ctx()
+                        .memory(|m| m.area_rect(egui::Id::new(MAP_TOOLBAR_ID)))
+                        .map(|r| r.size()),
+                );
+                let keep_out = chrome_frame.keep_out();
+                let viewport = viewport_bounds(rect);
+                let mut map_labels = Vec::new();
+
                 // Labels pass: draw on top of radar + alerts so text stays
                 // legible over bright reflectivity fills. Halo-stroked inside
                 // the renderer for contrast.
@@ -352,11 +376,12 @@ pub(crate) fn render_canvas_with_geo(
                         );
                     }
 
-                    crate::geo::paint_geo_labels(
+                    map_labels = crate::geo::paint_geo_labels(
                         &painter,
                         &projection,
                         visibility,
                         &state.render_cache.geo_labels.entries,
+                        &|b| crate::core::map_chrome::label_clear_of_chrome(b, &keep_out, viewport),
                     );
                 }
 
@@ -366,6 +391,11 @@ pub(crate) fn render_canvas_with_geo(
                     &state.viz_state.site_id,
                     &state.layer_state.geo,
                     crate::geo::GeoPass::Labels,
+                    Some(&SiteLabelRoom {
+                        map_labels: &map_labels,
+                        keep_out: &keep_out,
+                        viewport,
+                    }),
                 );
 
                 if state.viz_state.storm_cells_visible
@@ -519,6 +549,7 @@ pub(crate) fn render_canvas_with_geo(
                         mping_reports: &diagnostics.mping.reports,
                         playback_secs: playback.state.playback_position(),
                     },
+                    &chrome_frame,
                 );
 
                 if state.is_mobile {
@@ -551,6 +582,9 @@ pub(crate) fn render_canvas_with_geo(
     });
 }
 
+/// The map toolbar's area id; its last-frame size feeds the chrome layout.
+const MAP_TOOLBAR_ID: &str = "map_toolbar";
+
 /// The map toolbar (one-instrument §8): the data probe and the distance
 /// tool as two buttons in the map's corner, where the cursor is. A click is
 /// [`crate::core::Intent::ToggleMapTool`]; the active tool is the selected
@@ -572,8 +606,9 @@ fn render_map_toolbar(ui: &egui::Ui, rect: &egui::Rect, state: &mut AppState) {
             "Measure: click two points for the distance between them",
         ),
     ];
-    egui::Area::new(egui::Id::new("map_toolbar"))
-        .fixed_pos(rect.left_top() + egui::vec2(10.0, 10.0))
+    let inset = crate::core::map_chrome::TOOLBAR_INSET;
+    egui::Area::new(egui::Id::new(MAP_TOOLBAR_ID))
+        .fixed_pos(rect.left_top() + egui::vec2(inset, inset))
         .order(egui::Order::Foreground)
         .show(ui.ctx(), |ui| {
             egui::Frame::new()

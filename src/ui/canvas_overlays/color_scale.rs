@@ -6,6 +6,7 @@
 //! scrim's width, never the caption. Caption, hover and ticks are the core's
 //! [`crate::core::canvas::legend_vm`].
 
+use crate::core::map_chrome;
 use crate::ui::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
@@ -18,13 +19,24 @@ impl super::Overlay for ColorScaleOverlay {
         20
     }
 
-    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) -> Option<egui::Rect> {
-        draw_color_scale(ui, &ctx.rect, &ctx.state.viz_state.product);
-        None
+    fn measure(
+        &self,
+        _ui: &egui::Ui,
+        ctx: &super::OverlayContext,
+    ) -> Option<(super::Slot, map_chrome::ChromeSize)> {
+        Some((
+            super::Slot::ColorScale,
+            map_chrome::color_scale_size(ctx.rect.height()),
+        ))
+    }
+
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext, rect: Rect) {
+        draw_color_scale(ui, rect, &ctx.state.viz_state.product);
     }
 }
 
-fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::core::RadarProduct) {
+/// Paint the scale in `scrim`, its corner from the layout.
+fn draw_color_scale(ui: &mut egui::Ui, scrim: Rect, product: &crate::core::RadarProduct) {
     use crate::nexrad::color_table::{build_reflectivity_lut, product_value_range};
     use nexrad_render::Product;
 
@@ -59,25 +71,18 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::core::Radar
 
     let vm = crate::core::canvas::legend_vm(*product, (min_val, max_val));
 
-    let bar_width = 14.0f32;
-    let margin = 12.0f32;
-    let pad = 6.0f32;
-    let title_h = 16.0f32;
-    let tick_w = 30.0f32;
-    let bar_height =
-        (rect.height() - 2.0 * margin - title_h - 2.0 * pad - 20.0).clamp(100.0, 300.0);
+    let bar_width = map_chrome::COLOR_SCALE_BAR_W;
+    let pad = map_chrome::COLOR_SCALE_PAD;
+    let title_h = map_chrome::COLOR_SCALE_TITLE_H;
+    let bar_height = map_chrome::color_scale_bar_height(scrim.height());
 
     let painter = ui.painter();
     let title_font = egui::FontId::proportional(theme::CAPTION);
     let title = painter.layout_no_wrap(vm.caption.to_string(), title_font, theme::TEXT_DIM);
 
     // The scrim: the caption over a bar with its ticks to the left. The bar
-    // sets the width; the caption is a unit, short enough to fit over it.
-    let width = tick_w + 4.0 + bar_width + pad * 2.0;
-    let scrim = Rect::from_min_size(
-        Pos2::new(rect.right() - margin - width, rect.top() + margin),
-        Vec2::new(width, pad + title_h + bar_height + pad + 4.0),
-    );
+    // sets the width (core::map_chrome::color_scale_size); the caption is a
+    // unit, short enough to fit over it.
     painter.rect(
         scrim,
         4.0,
@@ -98,7 +103,7 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::core::Radar
     let lut_size = 1024usize;
 
     // Draw the color bar as horizontal slices (bottom = low, top = high)
-    let num_slices = bar_height as usize;
+    let num_slices = (bar_height as usize).max(2);
     for s in 0..num_slices {
         let frac = s as f32 / (num_slices - 1) as f32;
         let lut_idx = ((1.0 - frac) * (lut_size - 1) as f32) as usize; // flip: top=high

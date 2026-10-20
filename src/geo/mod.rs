@@ -22,5 +22,6 @@ pub(crate) use layer::{
 };
 pub(crate) use projection::{MapProjection, Projection, ProjectionFingerprint};
 pub(crate) use renderer::{
-    build_geo_label_candidates, paint_geo_labels, render_geo_layers, text_with_halo, GeoPass,
+    build_geo_label_candidates, paint_galley_with_halo, paint_geo_labels, render_geo_layers,
+    GeoPass,
 };

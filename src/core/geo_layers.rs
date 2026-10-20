@@ -137,8 +137,8 @@ mod coverage_tests {
         assert!(GeoLayer::Cities.get(&v));
         assert!(GeoLayer::Labels.get(&v));
         assert!(GeoLayer::AlertsWarnings.get(&v));
+        assert!(GeoLayer::NationalMosaic.get(&v));
         assert!(!GeoLayer::NexradSites.get(&v));
-        assert!(!GeoLayer::NationalMosaic.get(&v));
         assert!(!GeoLayer::AlertsOther.get(&v));
         assert!(!GeoLayer::Mping.get(&v));
         assert!(!GeoLayer::GpsLocation.get(&v));

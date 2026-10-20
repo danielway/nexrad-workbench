@@ -20,7 +20,24 @@ impl super::Overlay for FrameStampOverlay {
         crate::core::canvas::CANVAS_FALLBACKS.frame_stamp
     }
 
-    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) -> Option<egui::Rect> {
+    fn measure(
+        &self,
+        _ui: &egui::Ui,
+        _ctx: &super::OverlayContext,
+    ) -> Option<(super::Slot, crate::core::map_chrome::ChromeSize)> {
+        Some((
+            super::Slot::Free,
+            crate::core::map_chrome::ChromeSize { w: 0.0, h: 0.0 },
+        ))
+    }
+
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext, _rect: egui::Rect) {
+        draw_frame_stamp(ui, ctx);
+    }
+}
+
+fn draw_frame_stamp(ui: &mut egui::Ui, ctx: &super::OverlayContext) -> Option<()> {
+    {
         let state = ctx.state;
         let stamp = crate::core::canvas::frame_stamp(
             crate::core::canvas::CANVAS_FALLBACKS,
@@ -65,6 +82,6 @@ impl super::Overlay for FrameStampOverlay {
             at.y += line_h + 2.0;
             painter.galley(at, p, theme::TEXT_DIM);
         }
-        None
+        Some(())
     }
 }

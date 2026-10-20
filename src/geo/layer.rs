@@ -47,7 +47,7 @@ impl Default for GeoLayerVisibility {
             cities: true,
             highways: false,
             lakes: false,
-            national_mosaic: false,
+            national_mosaic: true,
             alerts_warnings: true,
             alerts_other: false,
             mping: false,
@@ -748,18 +748,18 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn default_geo_visibility_matches_product_defaults() {
         // Pins the out-of-the-box overlay set: base geography + warnings on,
-        // opt-in/heavier overlays off.
+        // the national mosaic on; opt-in/heavier overlays off.
         let v = GeoLayerVisibility::default();
         assert!(v.states);
         assert!(v.counties);
         assert!(v.labels);
         assert!(v.cities);
         assert!(v.alerts_warnings);
+        assert!(v.national_mosaic);
 
         assert!(!v.nexrad_sites);
         assert!(!v.highways);
         assert!(!v.lakes);
-        assert!(!v.national_mosaic);
         assert!(!v.alerts_other);
         assert!(!v.mping);
         assert!(!v.gps_location);
