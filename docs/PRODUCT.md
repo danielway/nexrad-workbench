@@ -661,8 +661,10 @@ ring, no playhead line at NOW or 3 H, no on-device underline, no ruler, no
 dashed pending ring, no now tab and no range handles, and the phone draws no
 canvas caption.
 
-A thumb gets three stops rather than a continuous zoom: **NOW** (the last
-three volumes, widened to show a whole selected range), **3 H** and
+A thumb gets three stops rather than a continuous zoom: **NOW** (four
+blocks: three complete volumes and the live one, with the live volume's
+whole expected span kept so now sits about 80 % across and the row holds
+still while it grows, widened to show a whole selected range), **3 H** and
 **24 H**. A pinch moves one stop and settles on release; the small
 NOW · 3 H · 24 H control in the transport row shows the stop and taps to
 another. A **drag** scrubs cut by cut inside a block on the device and volume
@@ -670,7 +672,8 @@ by volume elsewhere (just inside a volume's start, its first cut), with a
 still finger holding the playhead, so when a volume arrives its cuts appear
 in place and nothing jumps; a **tap** goes to the tapped volume's first cut
 and drops the pin; a **long-press** opens the sheet below. Pinned, now sits
-near the right edge and the window slides with now; detached, the window
+near the right edge; at NOW the row steps one volume when the next begins,
+and at 3 H and 24 H it slides with now; detached, the window
 centres on the playhead when it lands somewhere new, holds still while you
 scrub inside it and slides near the edges. Zoom is independent of the
 selection, and landscape keeps the same spans with more pixels per unit. The
