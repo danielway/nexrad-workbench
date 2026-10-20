@@ -60,10 +60,10 @@ pub(crate) struct Chrome {
     /// Holds whether the layer was on before, to restore it.
     pub site_map_pick: Option<bool>,
     /// When set, the range-download confirm modal is open and carries the
-    /// pending `(start, end)` selection range to bulk-download on confirm.
-    /// `Some` doubles as the open flag; the range is the modal's own snapshot,
-    /// independent of the live selection.
-    pub range_download_modal: Option<(f64, f64)>,
+    /// pending `(start, end)` selection range to bulk-download on confirm,
+    /// with its cost priced at release. `Some` doubles as the open flag; the
+    /// range is the modal's own snapshot, independent of the live selection.
+    pub range_download_modal: Option<crate::core::acquisition::RangeDownloadPrompt>,
     /// Whether the VCP forecast diagnostics modal is open.
     pub vcp_forecast_open: bool,
     /// Whether the activity sheet (spec §5/§10: pipeline stages, active /
@@ -94,6 +94,40 @@ pub(crate) struct Chrome {
     /// [`crate::core::phone::ChromeAutoHide::step`] once a frame before the
     /// layout, and read by the phone bars and the canvas. Inert on desktop.
     pub mobile_auto_hide: crate::core::phone::ChromeAutoHide,
+    /// The phone strip's zoom stop (phone timeline §1). Cuts by default;
+    /// not persisted and not in the link. Changed only through
+    /// [`crate::core::phone_strip::strip_zoom_after`].
+    pub phone_strip_zoom: crate::core::phone_strip::StripZoom,
+    /// The phone's calendar sheet, "Go to a day" (phone timeline §2): the
+    /// month or year on screen. `Some` doubles as the open flag. Changed
+    /// only by [`crate::core::Intent::OpenGoToDay`],
+    /// [`crate::core::Intent::Calendar`] and closing it.
+    pub go_to_day: Option<crate::core::calendar::CalendarSheet>,
+    /// The phone strip's long-press sheet, with the time and scan it caught
+    /// (phone timeline §4). `Some` doubles as the open flag.
+    pub press_sheet: Option<crate::core::phone_range::PressSheet>,
+    /// The phone's chip sheet is open.
+    pub chip_sheet_open: bool,
+    /// A day landed on from the calendar sheet that may still move to its
+    /// stormiest volume once its listing arrives
+    /// ([`crate::core::calendar::settle_landing`]).
+    pub go_to_day_landing: Option<crate::core::calendar::Landing>,
+    /// The phone strip's window and lane width this frame, written by the
+    /// strip, read back by it as the last window (so a detached window holds
+    /// still) and by the storm-activity pump at the zoomed-out stops.
+    pub phone_strip_view: Option<(crate::core::phone::MiniWindow, f32)>,
+    /// The phone strip owns a two-finger gesture this frame: the map must
+    /// not zoom or pan on it. Reset before the strip draws each frame.
+    pub phone_strip_claims_touch: bool,
+    /// The frame under the playhead is on its way (the row decided it,
+    /// [`crate::core::phone_row::LoadingVm`]): written by the strip each
+    /// frame, read by the map's dim and pill, the chip and the top bar's
+    /// clock.
+    pub phone_loading: Option<crate::core::phone_row::LoadingVm>,
+    /// The row shows now this frame (the LIVE button then needs no jump).
+    pub phone_now_in_view: bool,
+    /// The start of the volume under the playhead, for the chip's point.
+    pub phone_selected_start: Option<f64>,
     /// The canvas's frame on the last phone frame, so the map can hold still
     /// while the chrome slides ([`crate::core::phone::hold_map_still`]).
     pub last_canvas: Option<crate::core::phone::CanvasFrame>,

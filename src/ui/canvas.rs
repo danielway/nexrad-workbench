@@ -95,7 +95,11 @@ pub(crate) fn render_canvas_with_geo(
                 );
 
                 // The caption is the same chrome in 3D (§7).
-                render_canvas_caption(ui, &rect, state, live, &bottom_scrims);
+                if state.is_mobile {
+                    render_phone_loading(ui, &rect, chrome.phone_loading.as_ref());
+                } else {
+                    render_canvas_caption(ui, &rect, state, live, &bottom_scrims);
+                }
 
                 // Handle orbit/zoom interactions
                 handle_globe_interaction(&response, &rect, state);
@@ -517,14 +521,21 @@ pub(crate) fn render_canvas_with_geo(
                     },
                 );
 
-                render_canvas_caption(ui, &rect, state, live, &bottom_scrims);
+                if state.is_mobile {
+                    render_phone_loading(ui, &rect, chrome.phone_loading.as_ref());
+                } else {
+                    render_canvas_caption(ui, &rect, state, live, &bottom_scrims);
+                }
                 render_map_toolbar(ui, &rect, state);
 
                 // Mobile chrome reveal tap (spec §13): when the chrome was
                 // hidden, the resolver latched this frame's press as a reveal.
                 // Swallow it here so the same tap doesn't also pan/zoom the
                 // map — the chrome is already coming back this frame.
-                if !chrome.mobile_auto_hide.revealed_this_frame {
+                // Likewise a pinch the phone strip owns zooms the strip,
+                // not the map.
+                if !chrome.mobile_auto_hide.revealed_this_frame && !chrome.phone_strip_claims_touch
+                {
                     handle_canvas_interaction(
                         &response,
                         &rect,
@@ -769,6 +780,54 @@ pub(super) fn format_unix_timestamp(ts: f64, use_local: bool) -> String {
         "{:02}:{:02}:{:02}.{:03} {zone}",
         p.hour, p.minute, p.second, p.millis
     )
+}
+
+/// The phone's loading state on the map (phone timeline v2): while the
+/// frame under the playhead downloads, the frame on screen stays visible
+/// under a 40 % dim, with a small pill in the middle naming what is coming
+/// (`Loading 23:49`) beside the row's arc. The phone draws no caption: the
+/// row and this say it.
+fn render_phone_loading(
+    ui: &egui::Ui,
+    rect: &Rect,
+    loading: Option<&crate::core::phone_row::LoadingVm>,
+) {
+    let Some(l) = loading else {
+        return;
+    };
+    let painter = ui
+        .ctx()
+        .layer_painter(egui::LayerId::new(
+            egui::Order::Middle,
+            egui::Id::new("phone_loading"),
+        ))
+        .with_clip_rect(*rect);
+    painter.rect_filled(*rect, 0.0, theme::phone::loading_scrim());
+    let galley = painter.layout_no_wrap(
+        l.label.clone(),
+        egui::FontId::proportional(13.0),
+        theme::TEXT,
+    );
+    let size = egui::vec2(10.0 + 18.0 + 10.0 + galley.size().x + 14.0, 36.0);
+    let pill = Rect::from_center_size(rect.center(), size);
+    painter.rect(
+        pill,
+        size.y / 2.0,
+        theme::alpha(theme::PANEL, 218),
+        Stroke::new(1.0, theme::LINE),
+        egui::StrokeKind::Inside,
+    );
+    let reduced = super::timeline::reduced_motion(ui.ctx());
+    super::timeline::mini::paint_arc(
+        &painter,
+        egui::pos2(pill.left() + 10.0 + 9.0, pill.center().y),
+        7.0,
+        l.arc,
+        ui.ctx().input(|i| i.time),
+        reduced,
+    );
+    let text_at = egui::pos2(pill.left() + 38.0, pill.center().y - galley.size().y / 2.0);
+    painter.galley(text_at, galley, theme::TEXT);
 }
 
 /// Paint the canvas caption (§7) on a scrim at the bottom center of the map,

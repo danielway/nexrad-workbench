@@ -136,7 +136,14 @@ pub(super) fn render_overview(
     let (bars, activity) = match detail {
         OverviewDetail::Scans => {
             sizes = timeline.activity.scans(&site, ov.start, ov.end());
-            paint_scans(&lane_painter, timeline, &sizes, bars_rect, &ts_to_x);
+            paint_scans(
+                &lane_painter,
+                timeline,
+                &sizes,
+                bars_rect,
+                &ts_to_x,
+                &x_to_ts,
+            );
             (Vec::new(), Vec::new())
         }
         OverviewDetail::Bars(granularity) => {
@@ -603,6 +610,7 @@ fn paint_scans(
     sizes: &ScanSizes,
     lane: Rect,
     ts_to_x: &dyn Fn(f64) -> f32,
+    x_to_ts: &dyn Fn(f32) -> f64,
 ) {
     let column = |start: f64, end: f64, height: f32, color: Color32| {
         let x0 = ts_to_x(start);
@@ -620,47 +628,30 @@ fn paint_scans(
         );
     };
     // Full-height coverage, only across days whose sizes aren't known.
-    let segment = |start: f64, end: f64, color: Color32| {
-        let mut t = start;
-        while t < end {
-            let piece_end = end.min((crate::core::storm_activity::day_start_of(t) + 86_400) as f64);
-            if !sizes.knows(t) {
-                column(t, piece_end, lane.height(), color);
-            }
-            t = piece_end;
-        }
-    };
     let view = crate::core::TimelineView::build(
         &timeline.scans,
         &timeline.shadow_scan_boundaries,
         None,
         None,
     );
-    for b in view.shadow_boundaries() {
-        if !view.is_covered_by_cached(b.start) {
-            segment(b.start as f64, b.end as f64, tl_colors::available_fill());
-        }
-    }
+    let listed = view
+        .shadow_boundaries()
+        .iter()
+        .filter(|b| !view.is_covered_by_cached(b.start))
+        .map(|b| (b.start as f64, b.end as f64));
     // Held time is the underline, so cached coverage draws like any other.
-    for r in timeline.scans.time_ranges() {
-        segment(r.start, r.end, tl_colors::available_fill());
+    let held = timeline.scans.time_ranges();
+    let held = held.iter().map(|r| (r.start, r.end));
+    for (start, end) in sizes.unknown_pieces(listed.chain(held)) {
+        column(start, end, lane.height(), tl_colors::available_fill());
     }
 
-    let (lo, hi) = (
-        sizes
-            .scans
-            .partition_point(|s| ts_to_x(s.end) < lane.left()),
-        sizes
-            .scans
-            .partition_point(|s| ts_to_x(s.start) <= lane.right()),
-    );
-    let visible = &sizes.scans[lo..hi.max(lo)];
-    let scale = ViewScale::from_levels(visible.iter().map(|s| s.level));
-    for scan in visible {
+    let (start, end) = (x_to_ts(lane.left()), x_to_ts(lane.right()));
+    for (scan, frac) in sizes.bars(start, end) {
         column(
             scan.start,
             scan.end,
-            lane.height() * scale.height_frac(scan.level),
+            lane.height() * frac,
             tl_colors::activity_fill(),
         );
     }

@@ -2,9 +2,12 @@
 //!
 //! Selecting a range arms a bulk fetch of every scan in it ("selection = the
 //! fetch"). Short spans download silently; a span longer than
-//! [`crate::SELECTION_BULK_CONFIRM_SECS`] routes here first so the user can
-//! confirm a potentially large download. Not now keeps the selection as loop
-//! bounds but downloads nothing; Download arms the fetch pump.
+//! [`crate::core::acquisition::bulk_confirm_secs`] (six hours on the desktop,
+//! two on the phone) routes here first so the user can confirm a potentially
+//! large download, with its real size when the listing knows it
+//! ([`crate::core::acquisition::range_download_text`]). Not now keeps the
+//! selection as loop bounds but downloads nothing; Download arms the fetch
+//! pump.
 
 use super::dialog::{self, Dialog, Width};
 use super::layout::{Layer, LayerKind, LayoutCtx};
@@ -37,32 +40,21 @@ fn draw_range_download_modal(
     acquisition: &mut Acquisition,
     chrome: &mut Chrome,
 ) {
-    let Some((start, end)) = chrome.range_download_modal else {
+    let Some(prompt) = chrome.range_download_modal else {
         return;
     };
-    let dur = (end - start).abs();
-    // Rough estimate: scans ≈ span / typical volume cadence; bytes ≈ scans ×
-    // an approximate per-scan size (real sizes aren't in the listing).
-    let count = (dur / crate::FALLBACK_SCAN_DURATION_SECS as f64)
-        .ceil()
-        .max(1.0) as u64;
-    let est_bytes = count.saturating_mul(crate::AVG_SCAN_BYTES);
-    let hours = dur / 3600.0;
+    let text = crate::core::acquisition::range_download_text(
+        &prompt,
+        crate::FALLBACK_SCAN_DURATION_SECS as f64,
+    );
 
     let mut download = false;
     let mut cancel = false;
     let out = Dialog::new(DialogId::RangeDownload, "Download this range?")
-        .subtitle(format!("{hours:.1} hours selected"))
+        .subtitle(text.subtitle)
         .width(Width::Narrow)
         .show(ctx, |ui| {
-            dialog::bullet(
-                ui,
-                &format!(
-                    "About {count} scans, roughly {}",
-                    crate::state::format_bytes(est_bytes)
-                ),
-                theme::TEXT,
-            );
+            dialog::bullet(ui, &text.size, theme::TEXT);
             ui.add_space(8.0);
             ui.label(
                 RichText::new("Not now keeps the range as a loop without downloading.")
@@ -76,9 +68,9 @@ fn draw_range_download_modal(
         });
 
     if download {
-        if let Some(range) = chrome.range_download_modal.take() {
+        if let Some(prompt) = chrome.range_download_modal.take() {
             acquisition.selection_fetch_target = Some(SelectionFetchTarget {
-                range,
+                range: prompt.range,
                 armed_at_secs: crate::core::TimeModel::wall_clock_time(),
             });
         }

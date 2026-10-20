@@ -164,7 +164,7 @@ const TICK_CONFIGS: &[TickConfig] = &[
 
 /// The chosen zone's offset east of UTC at `ts` (seconds; 0 in UTC). A
 /// browser fact, so it is read here and handed to the core as a number.
-pub(super) fn tz_offset_secs(ts: f64, use_local: bool) -> i64 {
+pub(in crate::ui) fn tz_offset_secs(ts: f64, use_local: bool) -> i64 {
     if !use_local {
         return 0;
     }
@@ -533,12 +533,7 @@ pub(super) fn render_timeline(
     let range_marks = playback.state.selection_range().and_then(|(s, e)| {
         let site = crate::data::SiteId::new(state.viz_state.site_id.clone());
         let sizes = timeline.activity.scans(&site, s.min(e), s.max(e));
-        let cost = frame.view.range_cost(s, e, |t| {
-            sizes
-                .at(t)
-                .filter(|v| (v.start - t).abs() < 60.0)
-                .map(|v| v.bytes)
-        });
+        let cost = frame.view.range_cost_sized(s, e, &sizes);
         crate::core::timeline_view::range_marks(
             Some((s, e)),
             playback.state.is_live_range(),

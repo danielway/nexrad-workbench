@@ -86,10 +86,10 @@ fn draw_event_modal(
         match existing {
             Some(e) => form.init_from_event(&e.name, &e.site_id, e.start_time, e.end_time),
             None => {
-                let (start, end) = playback.state.selection_range().unwrap_or_else(|| {
-                    let pos = playback.state.playback_position();
-                    (pos - 1800.0, pos + 1800.0)
-                });
+                let (start, end) = crate::core::dialogs::event_prefill(
+                    playback.state.selection_range(),
+                    playback.state.playback_position(),
+                );
                 form.init_from_selection(&state.viz_state.site_id, start, end);
             }
         }

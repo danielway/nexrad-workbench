@@ -78,6 +78,8 @@ pub(crate) enum ChipAction {
     EditRange { start: f64, end: f64 },
     /// Open the event dialog for the range.
     SaveAsEvent,
+    /// Open the calendar sheet (phone only).
+    GoToDay,
 }
 
 impl ChipAction {
@@ -114,6 +116,50 @@ pub(crate) struct ChipMenu {
     pub can_save_event: bool,
     /// Show the drag and key hints (not on a touch device).
     pub pointer_hints: bool,
+    /// Offer "Go to a day…", the phone's calendar sheet, under the Go live
+    /// group (a touch device only: the desktop has its overview lane).
+    pub go_to_day: bool,
+}
+
+impl ChipMenu {
+    /// The quiet lines under "A range ending now": how else such a range
+    /// is made on this device. None on the phone, whose range ends are set
+    /// from the strip's long-press sheet (see [`Self::fixed_range_hints`]).
+    pub(crate) fn ending_now_hints(&self) -> &'static [&'static str] {
+        if self.pointer_hints {
+            &["Or drop a range's right handle on the live edge."]
+        } else {
+            &[]
+        }
+    }
+
+    /// The quiet lines under "A fixed range". The desktop draws a range on
+    /// the strip or with I and O; the phone never draws one (a drag there
+    /// is a scrub), so it points at the long-press sheet instead.
+    pub(crate) fn fixed_range_hints(&self) -> &'static [&'static str] {
+        if self.pointer_hints {
+            &[
+                "Or drag along the strip above the frames.",
+                "I and O set the start and end at the playhead.",
+            ]
+        } else {
+            &["Or long-press the strip to start or end a range there."]
+        }
+    }
+}
+
+/// The span "Loop what's in view" offers: the desktop timeline's view, or on
+/// the phone the strip's window (the desktop timeline is not on screen
+/// there), once the strip has drawn.
+pub(crate) fn menu_view(
+    touch: bool,
+    timeline_view: (f64, f64),
+    strip_window: Option<(f64, f64)>,
+) -> (f64, f64) {
+    match strip_window {
+        Some(w) if touch => w,
+        _ => timeline_view,
+    }
 }
 
 /// Build the menu from the selection, the stream, and the visible span.
@@ -152,6 +198,7 @@ pub(crate) fn chip_menu(
             .and_then(|r| r.bounds),
         can_save_event: playback.playback_bounds().is_some(),
         pointer_hints: !env.touch,
+        go_to_day: env.touch,
     }
 }
 
@@ -177,6 +224,131 @@ pub(crate) fn intent_for(
         }
         ChipAction::LoopStyle(style) => Intent::SetLoopStyle(style),
         ChipAction::SaveAsEvent => Intent::SaveSelectionAsEvent,
+        ChipAction::GoToDay => Intent::OpenGoToDay,
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// The phone's chip sheet
+// ───────────────────────────────────────────────────────────────────────────
+
+/// One row of the phone's chip sheet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SheetRow {
+    Live,
+    LoopLast,
+    LoopView,
+    GoToDay,
+    StopStream,
+}
+
+/// One inline choice on a row ("4 · 6 · 10").
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SheetChoice {
+    pub label: String,
+    /// The one in use: drawn bright.
+    pub on: bool,
+    pub action: ChipAction,
+}
+
+/// A row as the sheet draws it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SheetRowVm {
+    pub row: SheetRow,
+    pub label: &'static str,
+    /// The glyph's tone: red for live, amber for the loops, plain otherwise.
+    pub tone: crate::core::phone_dock::ChipTone,
+    /// The quiet words at the right ("the newest frame", "30 min").
+    pub sub: Option<String>,
+    /// Inline choices at the right, with `choice_unit` after them.
+    pub choices: Vec<SheetChoice>,
+    pub choice_unit: Option<&'static str>,
+    /// What a tap on the row (off its choices) does; `None` is disabled.
+    pub action: Option<ChipAction>,
+    /// The row names what plays now: highlighted.
+    pub current: bool,
+}
+
+/// The phone's chip sheet: five rows, verbs first, in place of the menu.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ChipSheetVm {
+    pub title: &'static str,
+    pub rows: Vec<SheetRowVm>,
+}
+
+/// The sheet's rows, from the same [`ChipMenu`] the desktop menu draws, so
+/// every row emits what its menu entry does ([`intent_for`]). The frame
+/// presets ride on one row as inline choices; Stop the stream is there only
+/// while a stream runs. A tap on Loop the last (off its numbers) loops the
+/// length in use, or the shortest.
+pub(crate) fn chip_sheet_vm(menu: &ChipMenu) -> ChipSheetVm {
+    use crate::core::phone_dock::ChipTone;
+    let frames: Vec<SheetChoice> = menu
+        .presets
+        .iter()
+        .filter_map(|(p, on)| match p {
+            LoopPreset::LastFrames(n) => Some(SheetChoice {
+                label: n.to_string(),
+                on: *on,
+                action: ChipAction::Preset(*p),
+            }),
+            LoopPreset::LastDuration(_) => None,
+        })
+        .collect();
+    let looping_last = menu.presets.iter().any(|(_, on)| *on);
+    let row_tap = frames
+        .iter()
+        .find(|c| c.on)
+        .or(frames.first())
+        .map(|c| c.action);
+    let row = |row, label, tone| SheetRowVm {
+        row,
+        label,
+        tone,
+        sub: None,
+        choices: Vec::new(),
+        choice_unit: None,
+        action: None,
+        current: false,
+    };
+    let mut rows = vec![
+        SheetRowVm {
+            sub: Some("the newest frame".to_string()),
+            action: Some(ChipAction::Live),
+            current: menu.at_live,
+            ..row(SheetRow::Live, "Live", ChipTone::Live)
+        },
+        SheetRowVm {
+            choices: frames,
+            choice_unit: Some("frames"),
+            action: row_tap,
+            current: looping_last,
+            ..row(SheetRow::LoopLast, "Loop the last", ChipTone::Loop)
+        },
+        SheetRowVm {
+            sub: menu
+                .view_span
+                .map(|(s, e)| LoopBasis::Duration(e - s).label()),
+            action: menu
+                .view_span
+                .map(|(start, end)| ChipAction::LoopView { start, end }),
+            current: menu.fixed_range.is_some(),
+            ..row(SheetRow::LoopView, "Loop what I see", ChipTone::Loop)
+        },
+        SheetRowVm {
+            action: Some(ChipAction::GoToDay),
+            ..row(SheetRow::GoToDay, "Go to a day\u{2026}", ChipTone::Point)
+        },
+    ];
+    if menu.can_stop_stream {
+        rows.push(SheetRowVm {
+            action: Some(ChipAction::StopStream),
+            ..row(SheetRow::StopStream, "Stop the stream", ChipTone::Point)
+        });
+    }
+    ChipSheetVm {
+        title: "Playing",
+        rows,
     }
 }
 
@@ -312,7 +484,78 @@ mod tests {
             stream_active: false,
             touch: true,
         };
-        assert!(!chip_menu(&ps, touch, (0.0, 2000.0), 1000.0).pointer_hints);
+        let menu = chip_menu(&ps, touch, (0.0, 2000.0), 1000.0);
+        assert!(!menu.pointer_hints);
+        for hint in menu
+            .ending_now_hints()
+            .iter()
+            .chain(menu.fixed_range_hints())
+        {
+            let h = hint.to_lowercase();
+            assert!(!h.contains("drag") && !h.contains("drop"), "{hint}");
+            assert!(!h.contains("i and o"), "{hint}: no keys on the phone");
+        }
+        assert!(menu.fixed_range_hints()[0].contains("long-press"));
+        // The desktop keeps its pointer and key hints.
+        let desktop = chip_menu(&ps, NO_STREAM, (0.0, 2000.0), 1000.0);
+        assert_eq!(desktop.fixed_range_hints().len(), 2);
+        assert_eq!(desktop.ending_now_hints().len(), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_phone_loops_the_strips_window_not_the_hidden_timelines() {
+        let timeline = (0.0, 10_000.0);
+        let strip = Some((7_000.0, 8_000.0));
+        assert_eq!(menu_view(true, timeline, strip), (7_000.0, 8_000.0));
+        assert_eq!(menu_view(false, timeline, strip), timeline);
+        assert_eq!(menu_view(true, timeline, None), timeline);
+    }
+
+    #[wasm_bindgen_test]
+    fn presets_loop_style_and_save_work_the_same_on_the_phone() {
+        let touch = ChipEnv {
+            stream_active: true,
+            touch: true,
+        };
+        let mut ps = PlaybackState::default();
+        assert!(ps.select_range(100.0, 400.0, false));
+        let menu = chip_menu(&ps, touch, (0.0, 2000.0), 1000.0);
+        assert_eq!(menu.presets.len(), LoopPreset::menu().len());
+        assert!(menu.loop_style.is_some());
+        assert!(menu.can_save_event);
+        let placement = LiveStopPlacement::InPlace;
+        assert_eq!(
+            intent_for(
+                ChipAction::Preset(LoopPreset::LastFrames(6)),
+                touch,
+                placement
+            ),
+            Intent::ApplyLoopPreset(LoopPreset::LastFrames(6))
+        );
+        assert_eq!(
+            intent_for(ChipAction::LoopStyle(LoopMode::PingPong), touch, placement),
+            Intent::SetLoopStyle(LoopMode::PingPong)
+        );
+        assert_eq!(
+            intent_for(ChipAction::SaveAsEvent, touch, placement),
+            Intent::SaveSelectionAsEvent
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn only_the_phone_menu_offers_go_to_a_day() {
+        let ps = PlaybackState::default();
+        let touch = ChipEnv {
+            stream_active: false,
+            touch: true,
+        };
+        assert!(chip_menu(&ps, touch, (0.0, 2000.0), 1000.0).go_to_day);
+        assert!(!chip_menu(&ps, NO_STREAM, (0.0, 2000.0), 1000.0).go_to_day);
+        assert_eq!(
+            intent_for(ChipAction::GoToDay, touch, LiveStopPlacement::LiveEdge),
+            Intent::OpenGoToDay
+        );
+        assert_eq!(ChipAction::GoToDay.key_hint(), None);
     }
 
     #[wasm_bindgen_test]
@@ -344,5 +587,134 @@ mod tests {
         assert_eq!(ChipAction::Live.key_hint(), Some("L"));
         assert_eq!(ChipAction::StopStream.key_hint(), Some("Shift+L"));
         assert_eq!(ChipAction::SaveAsEvent.key_hint(), None);
+    }
+
+    // ── the phone's chip sheet ──────────────────────────────────────
+
+    const PHONE: ChipEnv = ChipEnv {
+        stream_active: true,
+        touch: true,
+    };
+
+    fn sheet_row(vm: &ChipSheetVm, row: SheetRow) -> &SheetRowVm {
+        vm.rows.iter().find(|r| r.row == row).unwrap()
+    }
+
+    #[wasm_bindgen_test]
+    fn the_chip_sheet_has_five_rows_verbs_first_while_streaming() {
+        let mut ps = PlaybackState::default();
+        ps.enter_pinned_live(10_000.0);
+        let vm = chip_sheet_vm(&chip_menu(&ps, PHONE, (8_200.0, 10_000.0), 10_000.0));
+        assert_eq!(vm.title, "Playing");
+        let labels: Vec<_> = vm.rows.iter().map(|r| r.label).collect();
+        assert_eq!(
+            labels,
+            [
+                "Live",
+                "Loop the last",
+                "Loop what I see",
+                "Go to a day\u{2026}",
+                "Stop the stream"
+            ]
+        );
+        let live = sheet_row(&vm, SheetRow::Live);
+        assert!(live.current);
+        assert_eq!(live.sub.as_deref(), Some("the newest frame"));
+        assert_eq!(live.tone, crate::core::phone_dock::ChipTone::Live);
+        // The frame presets are inline choices; none is in use yet, and the
+        // row itself loops the shortest.
+        let last = sheet_row(&vm, SheetRow::LoopLast);
+        let choices: Vec<_> = last.choices.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(choices, ["4", "6", "10"]);
+        assert!(last.choices.iter().all(|c| !c.on));
+        assert_eq!(last.choice_unit, Some("frames"));
+        assert_eq!(
+            last.action,
+            Some(ChipAction::Preset(LoopPreset::LastFrames(4)))
+        );
+        // Loop what I see names the window's span.
+        let view = sheet_row(&vm, SheetRow::LoopView);
+        assert_eq!(view.sub.as_deref(), Some("30 min"));
+        assert_eq!(
+            view.action,
+            Some(ChipAction::LoopView {
+                start: 8_200.0,
+                end: 10_000.0
+            })
+        );
+        assert_eq!(
+            sheet_row(&vm, SheetRow::StopStream).action,
+            Some(ChipAction::StopStream)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn the_chip_sheet_marks_the_frames_in_use_and_drops_stop_without_a_stream() {
+        let mut ps = PlaybackState::default();
+        ps.enter_pinned_live(10_000.0);
+        ps.enter_live_range(Some(9_000.0), LoopBasis::FrameCount(6));
+        let vm = chip_sheet_vm(&chip_menu(&ps, PHONE, (8_200.0, 10_000.0), 10_000.0));
+        let last = sheet_row(&vm, SheetRow::LoopLast);
+        assert!(last.current);
+        assert!(!sheet_row(&vm, SheetRow::Live).current);
+        let on: Vec<_> = last.choices.iter().filter(|c| c.on).collect();
+        assert_eq!(on.len(), 1);
+        assert_eq!(on[0].label, "6");
+        assert_eq!(
+            last.action,
+            Some(ChipAction::Preset(LoopPreset::LastFrames(6)))
+        );
+
+        let env = ChipEnv {
+            stream_active: false,
+            ..PHONE
+        };
+        let ps = PlaybackState::default();
+        let vm = chip_sheet_vm(&chip_menu(&ps, env, (8_200.0, 10_000.0), 10_000.0));
+        assert_eq!(vm.rows.len(), 4);
+        assert!(vm.rows.iter().all(|r| r.row != SheetRow::StopStream));
+        assert!(
+            vm.rows.iter().all(|r| !r.current),
+            "a point: nothing current"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn the_chip_sheet_highlights_loop_what_i_see_for_a_fixed_range() {
+        let mut ps = PlaybackState::default();
+        assert!(ps.select_range(8_000.0, 9_000.0, false));
+        let vm = chip_sheet_vm(&chip_menu(&ps, PHONE, (8_200.0, 10_000.0), 10_000.0));
+        let current: Vec<_> = vm
+            .rows
+            .iter()
+            .filter(|r| r.current)
+            .map(|r| r.row)
+            .collect();
+        assert_eq!(current, [SheetRow::LoopView]);
+        // A window in the future has nothing to loop: the row is off.
+        let vm = chip_sheet_vm(&chip_menu(&ps, PHONE, (20_000.0, 21_000.0), 10_000.0));
+        let view = sheet_row(&vm, SheetRow::LoopView);
+        assert_eq!((view.action, view.sub.as_deref()), (None, None));
+    }
+
+    #[wasm_bindgen_test]
+    fn the_chip_sheets_rows_emit_what_the_menu_entries_do() {
+        let p = LiveStopPlacement::InPlace;
+        let mut ps = PlaybackState::default();
+        ps.enter_pinned_live(10_000.0);
+        let vm = chip_sheet_vm(&chip_menu(&ps, PHONE, (8_200.0, 10_000.0), 10_000.0));
+        let intent = |row| intent_for(sheet_row(&vm, row).action.unwrap(), PHONE, p);
+        assert_eq!(intent(SheetRow::Live), Intent::ReturnToLive);
+        assert_eq!(
+            intent(SheetRow::LoopLast),
+            Intent::ApplyLoopPreset(LoopPreset::LastFrames(4))
+        );
+        assert_eq!(intent(SheetRow::GoToDay), Intent::OpenGoToDay);
+        assert_eq!(intent(SheetRow::StopStream), Intent::StopLive(p));
+        let six = &sheet_row(&vm, SheetRow::LoopLast).choices[1];
+        assert_eq!(
+            intent_for(six.action, PHONE, p),
+            Intent::ApplyLoopPreset(LoopPreset::LastFrames(6))
+        );
     }
 }

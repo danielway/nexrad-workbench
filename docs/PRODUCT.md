@@ -313,7 +313,7 @@ mode — it is a tether state.
 - **Stopping:** stop is explicit and symmetric with go-live. While tethered,
   the timeline now-cap ("◉ LIVE"), the selection chip's "Stop the stream", and
   **Shift+L** all stop the stream at the live edge; on mobile (which has no
-  now-cap) the chip's menu owns stop and leaves the playhead in place. Stop ≠ freeze: pause-while-tethered keeps
+  now-cap) the chip's sheet owns stop and leaves the playhead in place. Stop ≠ freeze: pause-while-tethered keeps
   the stream filling the cache, stop tears the channel down. A status line
   confirms the stop.
 - **Streaming visibility:** every status surface (selection chip, now cap,
@@ -562,6 +562,8 @@ Failures are **per-cell**, not global: a failed download shows an alert tick on
 the affected cell and does not error-pause the whole queue; tapping it
 re-enqueues the download. Transient problems retry automatically with
 **backoff**; persistent ones surface manual retry rather than retrying forever.
+A volume that arrives cut short is downloaded once more without a word, while
+the playhead still wants it; only a second failure is reported.
 Every failure is visible both on the timeline (at the affected position) and in
 the canvas/metadata area, so a user never mistakes "no data available" for "app
 is broken" or vice versa. Red styling is reserved for failures and the live dot
@@ -634,7 +636,131 @@ Interactive measurement and analysis affordances on the 2D canvas:
 |---|---|---|
 | Desktop ≥1200px | Overview + full strip (~56px) + transport row + readouts | Inspector as popover or side panel; hover tooltips |
 | Touch ≥600px | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
-| Phone | Condensed transport (play · selection chip · speed) over ~44px strip; no overview (the scrubber plays its role) | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; custom loop dragging replaced by presets; 3D view is desktop-only |
+| Phone | A 120 px dock: a 66 px row of volumes at three zoom stops over a transport row (play · selection chip · NOW / 3 H / 24 H · LIVE when not live); the calendar sheet stands in for the overview | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; ranges are never drawn (presets and the long-press sheet; a range shows as one amber bracket); 3D view is desktop-only |
+
+**The phone timeline is a row of volumes you can touch.** Not a ruler with
+marks on it: each volume is one mark, and everything the row says is in how
+the marks look. At **NOW** each volume is a rounded block as wide as its span
+(less a 3 px gap): **filled** slate when it is on the device, with faint
+separators between its cuts, **hollow** when it is not; the one under the
+playhead has a **white outline** (a filled one turns lighter); the **live**
+volume grows from its start to the red now line, filled by the share of its
+cuts received. Its start time sits under each block (`23:49`, `live` under
+the live one; the selected block's label reads brighter, and labels give
+way to each other rather than overlap). At **3 H** each volume is an 11 px
+column as tall as the weather it held (its file size in the day's listing,
+on the view's scale) over a 6 px floor, so a quiet day is a row of short
+even columns; filled on the device, white under the playhead, with hour
+labels. At **24 H** the storm hill keeps its half-hour steps in the storm
+blue, the stretch on the device drawn in slate over it and a 2 px white line
+at the playhead, labelled 06 · 12 · 18 · 00. At every stop a red 2 px now
+line with a small `NOW` cap marks now when it is in the window, and a
+selected range is **one amber bracket** above the marks (its end on the now
+line when it is pinned to now); its ends are not draggable. There is no
+ring, no playhead line at NOW or 3 H, no on-device underline, no ruler, no
+dashed pending ring, no now tab and no range handles, and the phone draws no
+canvas caption.
+
+A thumb gets three stops rather than a continuous zoom: **NOW** (the last
+three volumes, widened to show a whole selected range), **3 H** and
+**24 H**. A pinch moves one stop and settles on release; the small
+NOW · 3 H · 24 H control in the transport row shows the stop and taps to
+another. A **drag** scrubs cut by cut inside a block on the device and volume
+by volume elsewhere (just inside a volume's start, its first cut), with a
+still finger holding the playhead, so when a volume arrives its cuts appear
+in place and nothing jumps; a **tap** goes to the tapped volume's first cut
+and drops the pin; a **long-press** opens the sheet below. Pinned, now sits
+near the right edge and the window slides with now; detached, the window
+centres on the playhead when it lands somewhere new, holds still while you
+scrub inside it and slides near the edges. Zoom is independent of the
+selection, and landscape keeps the same spans with more pixels per unit. The
+row takes presses up to 12 px above it, and the map neither pans on those
+nor zooms on the row's pinch.
+
+**Loading is shown, not announced.** While the frame under the playhead is
+not on the device (a tapped or scrubbed hollow volume, a day from the
+calendar), its block turns white at once and carries a progress arc (its
+share is the download's stage: queued, downloading, decoding; with nothing
+known it spins), the map dims 40 % with the old frame still visible under
+it, and a small pill in the middle says `Loading 23:49`. The chip's outline
+is dashed meanwhile and the top bar's clock already reads the time asked
+for. When the frame lands the dim lifts and the block fills.
+
+**The transport row** is four things: a 42 px round play/pause; the
+**selection chip**, a 38 px pill with one short form per state that never
+truncates — red filled `● Live`, amber `Last 4 frames` or `11:28 → 11:34`
+for a loop, grey `23:49` for a point — which opens the chip sheet (below); the
+NOW · 3 H · 24 H control; and a red outlined **LIVE** only while the
+selection is not pinned to now (it rejoins a running stream or starts one,
+bringing now into view first). Stepping is a tap on the next block, the
+speed is in the sheet's View tab, and failures are a dot on the bell.
+
+**The top bar** says what you see, once: the site chip, one clock (the frame
+on screen, `23:49:40`, the zone a small suffix; dated `Oct 19 · 23:49:40`
+only when the frame is not from today; a tap toggles local / UTC), one age
+pill (red `● LIVE` when live, grey `20 min ago` at a point, amber
+`⟲ 13 min ago` during a loop), the bell (the alerts in view, with an amber
+dot when a download failed or an error is unseen; while the dot shows a tap
+opens the activity sheet) and ≡, the sheet. The lag lives in the age pill,
+not the chip.
+
+**The calendar sheet is the phone's overview ("Go to a day").** There is no
+room for an overview lane on a phone, so the way to any day since 1991 is a
+calendar: a bottom sheet in portrait, a right sheet in landscape, titled "Go
+to a day" with the site at the right. It opens from the chip sheet's "Go to
+a day…". A
+month at a time, Monday first, every day is a 44×32 cell shaded in storm blue
+by its activity from the nightly index, on the month's own scale so one storm
+day reads strong; a 2 px slate underline marks the days held on device; today
+is outlined in red (red is now); days after today are dimmed and inert, and a
+day the index does not know yet (newer than it, or a gap) is drawn as a
+hairline, never as a quiet day. ‹ › and a horizontal swipe move a month
+(June 1991 to this month); the month name opens the years the site's index
+reaches, a year opens its twelve months, a month its grid. Days are the
+chosen zone's (local or UTC). The grid makes no S3 request: it reads the
+index already on device (fetched once per site, as the desktop does). A
+tapped day stops a running stream (an archive day is not live, so nothing
+downloads behind it) and puts the row at **3 H**, centred on the landing volume with its
+columns around it and LIVE in the transport row, and pauses on that
+day's stormiest volume (its largest file) from the one listing the strip
+makes for that day; until that
+listing arrives the playhead waits at the day's local midday, then moves to
+the stormiest volume once, unless the user has touched the playhead since.
+While that volume downloads the playhead waits just inside its start (10 s
+in, as a scrub lands there, never on the listed time); when it is in,
+the playhead steps onto its first frame so the map shows it and its
+column fills.
+The sheet's month is not persisted or in the link.
+
+**The chip sheet.** On the phone a tap on the selection chip opens a bottom
+sheet (the calendar's component, on the Esc stack) titled "Playing" in place
+of the desktop's chip menu, with the verbs first: **Live** · the newest frame
+(red glyph); **Loop the last** · 4 · 6 · 10 frames, the numbers inline and
+the one in use bright (amber glyph; a tap off the numbers loops the length in
+use, or 4); **Loop what I see** · the span of the row's window (amber glyph;
+off when the window holds nothing yet); **Go to a day…**; and **Stop the
+stream**, only while a stream runs. The row that names what plays now is
+highlighted (Live, Loop the last, or Loop what I see for a fixed range).
+Every row is built from the same menu model as the desktop's menu and does
+what its entry does; the desktop keeps its menu.
+
+**Ranges without drawing.** On the phone a horizontal drag on the strip is a
+scrub, so a range is never drawn. It is made from the chip sheet or from the
+**long-press sheet**. A long-press on the strip opens a small sheet about the
+volume under the finger, headed by the time, the tilt and the product
+(`16:42:17 · 0.5° · reflectivity`), with three rows: **Loop from here** · to
+now (amber glyph: a range pinned to now starting at that volume's start),
+**Loop to here** (only for a loop pinned to now or a start parked with the
+desktop's I key: it keeps the start and ends at that volume's end, a fixed
+range however near now, unless it is the newest volume, which ends at now)
+and **Inspect this scan**.
+A row that makes no sense is disabled and says why at its right (this is
+now; start a loop first; before the loop's start; longer than 7 days; no
+scan here). A new range starts paused, as on the desktop. Once a range
+exists the row shows it as one amber bracket at every stop; its ends are
+moved from the sheet, not dragged. A range over **2 hours** on the phone (6
+hours on the desktop) asks before it downloads, and the confirmation says the
+real size from the listing. Saving a range as an event is a desktop action.
 
 ### 13.4 Links and preferences
 
