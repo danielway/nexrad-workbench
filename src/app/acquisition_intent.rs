@@ -357,11 +357,9 @@ impl WorkbenchApp {
             return;
         };
         let now_secs = self.state.frame_now.secs();
-        match acquisition_core::decide_selection_gate(
-            start,
-            end,
-            crate::SELECTION_BULK_CONFIRM_SECS,
-        ) {
+        // Six hours on the desktop, two on the phone.
+        let threshold = acquisition_core::bulk_confirm_secs(self.chrome.device_layout);
+        match acquisition_core::decide_selection_gate(start, end, threshold) {
             acquisition_core::SelectionGate::Arm => {
                 self.acquisition.selection_fetch_target =
                     Some(crate::subsystem::acquisition::SelectionFetchTarget {
@@ -370,7 +368,21 @@ impl WorkbenchApp {
                     });
             }
             acquisition_core::SelectionGate::Confirm => {
-                self.chrome.range_download_modal = Some((start, end));
+                // Priced now, from the listing, so the confirmation says the
+                // real size rather than an estimate.
+                let view = crate::core::TimelineView::build(
+                    &self.timeline.scans,
+                    &self.timeline.shadow_scan_boundaries,
+                    Some(&self.live.mode_state),
+                    self.live.radar_model.position.as_ref(),
+                );
+                let site = crate::data::SiteId::new(self.state.viz_state.site_id.clone());
+                let (lo, hi) = (start.min(end), start.max(end));
+                let sizes = self.timeline.activity.scans(&site, lo, hi);
+                self.chrome.range_download_modal = Some(acquisition_core::RangeDownloadPrompt {
+                    range: (start, end),
+                    cost: view.range_cost_sized(lo, hi, &sizes),
+                });
             }
         }
     }

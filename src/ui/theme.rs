@@ -75,6 +75,12 @@ pub(crate) const NOW: Color32 = Color32::from_rgb(255, 95, 95);
 /// Red — *now*, low strength: not streaming (the idle now line, "GO LIVE").
 pub(crate) const NOW_IDLE: Color32 = Color32::from_rgb(200, 95, 95);
 
+/// Blue — *weather*: the phone strip's storm-activity bars and the calendar
+/// sheet's day shade (how much echo a day held, from the nightly
+/// storm-activity index). Its strength is the level; the hue is not a status
+/// color, so it never competes with now or a loop.
+pub(crate) const STORM: Color32 = Color32::from_rgb(79, 127, 217);
+
 // ── Selected control and on-device ─────────────────────────────────────────
 
 /// Periwinkle — the one *selected control* color (pressed product, chosen
@@ -254,6 +260,45 @@ pub(crate) mod acquisition {
 }
 
 /// Timeline roles, derived from the base tokens.
+/// The phone's dock and row (phone timeline v2): the One Instrument
+/// grammar at phone weight. White is what you see, amber the loop, red now,
+/// slate on the device.
+pub(crate) mod phone {
+    use eframe::egui::Color32;
+
+    /// The dock behind the row and the transport.
+    pub(crate) const DOCK: Color32 = Color32::from_rgb(17, 20, 25);
+    /// On the device: a block's or column's fill.
+    pub(crate) const SLATE: Color32 = Color32::from_rgb(61, 75, 97);
+    /// A hollow block's outline, and a selected block's fill on the device.
+    pub(crate) const SLATE_HI: Color32 = Color32::from_rgb(85, 102, 127);
+    /// The storm hill at 24 H.
+    pub(crate) const HILL: Color32 = Color32::from_rgb(45, 79, 138);
+    /// The now line, the live chip and pill, the LIVE button.
+    pub(crate) const NOW: Color32 = Color32::from_rgb(224, 65, 60);
+    /// A point chip's outline.
+    pub(crate) const POINT: Color32 = Color32::from_rgb(138, 147, 165);
+    /// The segmented control's and the site chip's ground.
+    pub(crate) const CONTROL: Color32 = Color32::from_rgb(23, 27, 35);
+    /// The segmented control's on segment.
+    pub(crate) const CONTROL_ON: Color32 = Color32::from_rgb(42, 49, 61);
+
+    /// A cut separator inside a block: white at 18 %.
+    pub(crate) fn cut() -> Color32 {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 46)
+    }
+
+    /// The map's dim while a frame loads: 40 %.
+    pub(crate) fn loading_scrim() -> Color32 {
+        Color32::from_rgba_unmultiplied(5, 7, 12, 102)
+    }
+
+    /// The arc's unfilled track.
+    pub(crate) fn arc_track() -> Color32 {
+        Color32::from_rgba_unmultiplied(255, 255, 255, 64)
+    }
+}
+
 pub(crate) mod timeline {
     use super::{
         alpha, Color32, LINE, LOOP, NOW, ON_DEVICE, PANEL, RAISED, SEEN, TEXT, TEXT_DIM, TEXT_FAINT,

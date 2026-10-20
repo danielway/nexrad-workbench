@@ -100,9 +100,13 @@ occurs, forcing its row to be deleted — the table only shrinks.
 ```
 User selects site/date
   → AcquisitionCoordinator fetches AWS S3 listing
-  → ArchiveIndex caches listing
+  → ArchiveIndex caches listing (radar volumes only: the hourly `_MDM`
+    model-data file listed under a volume's own time is dropped, so it can
+    never stand in for that volume as the scan under the playhead)
   → User selects scan (or range queued in the download queue)
   → Worker ingest: split records → decompress → decode → extract sweep blobs
+    (an archive that splits as truncated is downloaded once more, quietly —
+    core::acquisition::IngestRetries — and reported only if it fails again)
   → upsert_scan: pre-computed sweep blobs + scan-index entry into IndexedDB
   → Return sweep metadata to main thread
   → RenderCoordinator sends worker.render(scan_key, elevation, product)
@@ -355,12 +359,89 @@ confirmations and failures with no other home go to the **toast** under the bar
 
 When the layout is the phone's (`core::phone::device_layout`, in portrait and
 landscape), `ui/mobile/` replaces this desktop layout with the same instrument
-at phone width: the top bar, a transport row on the desktop transport's
-view-models, the mini timeline (`ui/timeline/mini.rs`), and a sheet with the
-rail's four tabs (bottom in portrait, right in landscape). The phone's
-decisions — layout, sheet rect, chrome auto-hide, press tracking, the mini
-timeline's window, pick radii and the site-switch confirmation — are pure and
-tested in `core::phone`, `core::canvas` and `core::dialogs`.
+at phone width: the top bar, a 120 px dock (the row, `ui/timeline/mini.rs`, over
+the transport row, `ui/mobile/tabs.rs`), and a sheet with the rail's four tabs
+(bottom in portrait, right in landscape). The phone's decisions — layout, sheet
+rect, chrome auto-hide, press tracking, the row's window, pick radii and the
+site-switch confirmation — are pure and tested in `core::phone`,
+`core::canvas` and `core::dialogs`.
+
+The row is a row of volumes you can touch. `core::phone_strip` owns its three
+zoom stops (NOW, 3 H, 24 H; `Intent::SetPhoneStripZoom`, from a pinch on
+release or the transport row's segmented control; the stop lives on `Chrome`,
+not in preferences or the link), their windows (`strip_window`: pinned, the
+window ends just past now; detached, it centres on a playhead that lands off
+it, holds still while the finger works inside it and slides near the edges;
+at NOW with a range selected it follows the range, `cuts_range_window`), the
+scrub and tap landings (`snap_scrub` per cut where cuts are known and just
+inside a volume's start elsewhere, `StripUnits::landing_units`; `tap_landing`
+a volume's first cut) and the touch (`StripTouch`: press, long-press, pinch;
+a still finger never seeks again). `core::phone_row::row_vm` decides
+everything drawn, in the row's own points: at NOW one block per volume
+(containers and listed volumes no container covers; x from the start, width
+the span less a 3 px gap; filled on the device with cut separators, hollow
+not, white-outlined under the playhead, the live one growing to now and
+filled by its cuts received over expected), with start-time labels that give
+way to each other; at 3 H 11 px columns, 6 px plus the volume's storm share
+(over the view's `ViewScale`) times 26 px, with hour labels; at 24 H the
+half-hour storm hill (`activity_bars`) split so the held stretch draws in
+slate over it, with a white line at the playhead and labels at 06/12/18/00;
+at every stop the red now line with its `NOW` cap and one amber bracket over
+a selected range. It also decides the loading state (`LoadingVm`): while the
+selection is not pinned, the volume under the playhead is not on the device
+and the frame on screen is another volume's, the selected block carries an
+`Arc` (the download's stage from the acquisition's queued / active /
+in-flight spans, or spinning when none is known). The strip writes that to
+`Chrome::phone_loading` each frame; the canvas reads it for a 40 % dim and a
+`Loading 23:49` pill (the phone draws no canvas caption), the chip for its
+dashed outline and the top bar for its clock. `core::phone_dock` holds the
+rest of the phone chrome's words: the chip's one form per state
+(`phone_chip`: `Live`, `23:49`, `Last 4 frames`, `11:28 → 11:34`), the LIVE
+button's intents (`live_button`, only while not pinned; it brings now into
+view first when the row does not show it), the top bar's one clock
+(`phone_clock`, dated only when not today), the age pill (`phone_age`) and
+the bell (`phone_bell`, the alerts with a dot when something failed; the dot
+takes the tap to the activity sheet). The row's press area reaches 12 px up
+into the map, which neither pans on that press nor zooms on the row's pinch.
+
+The phone's overview is the calendar sheet, "Go to a day"
+(`ui/mobile/go_to_day.rs` on the dialog component's `Sheet` and the Esc
+stack; its state, `Chrome::go_to_day`, changes only through
+`Intent::OpenGoToDay` / `Intent::Calendar`). Everything it shows is
+`core::calendar::calendar_vm`: the Monday-first month grid with each day's
+storm level from the `ActivityBook` (index days, scaled over the month by
+`ViewScale`; unknown is not quiet), the on-device flag from the scan index's
+held spans, today and future flags in the chosen zone (handed in as a
+`calendar::Zone`), the year and years views clamped to the archive and the
+site's index range, and the swipe rule. It makes no S3 request. A tapped day
+(`Intent::GoToDay`) stops a running stream in place
+(`calendar::landing_stops_stream`, so the transport row offers LIVE), sets the
+row to its 3 H stop (`strip_zoom_after`), seeks as a typed seek does and pauses, so the row centres on the landing
+volume with its columns; `calendar::land_on_day` picks the day's stormiest
+volume from `ActivityBook::listing` (the per-day listing the strip asks for
+at 3 H and DAY), or local
+midday plus a pending `Landing` that `app::calendar::settle_go_to_day`
+finishes once per frame with one re-seek; a landing volume not yet held
+waits just inside its listed start, as the strip lands a volume with no
+known cuts (`phone_strip::volume_landing`, `Landing::volume`), and moves onto its first frame's end
+once ingested, so a frame shows. The shell applies those re-seeks directly
+(a queued `Seek` would read as a touch); the landing is dropped by
+`landing_after` on any playhead intent or by a moved or playing playhead.
+
+Ranges on the phone are never drawn (`core::phone_range`). A long-press on
+the strip emits `Intent::OpenPressSheet` with the snapped time and the scan
+under the finger; the sheet (`ui/mobile/press_sheet.rs`, a `Sheet` on the Esc
+stack as `DialogId::PressSheet`) draws `press_sheet_vm` — the heading and
+four rows, each disabled with its reason — and a tapped row emits
+`Intent::PressSheetRow`, which the dispatcher turns into `row_intent`'s
+intent: `InspectScan`, `SelectRange` (so `transport::select_range` applies
+the "ends at now" pin and the paused start), `ParkRangeStart` (a half range,
+as the I key parks one) or `SaveEventAt` / `SaveSelectionAsEvent` (the event
+dialog's prefill is `dialogs::event_prefill`). On the row a range is one
+amber bracket (`phone_row::Bracket`); its ends are not draggable.
+The selection-fetch gate asks over `acquisition::bulk_confirm_secs` — 6 h on
+the desktop, 2 h on the phone — and the confirmation shows
+`range_download_text` from a `RangeDownloadPrompt` priced at release.
 
 Canvas overlays live in `ui/canvas_overlays/` — one module per overlay
 (national mosaic, alerts, mPING reports, GPS location, sweep line/donut, site

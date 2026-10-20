@@ -427,6 +427,24 @@ pub(crate) fn format_lag(secs: f64) -> String {
     }
 }
 
+/// How far behind now a point is, in the phone chip's short words:
+/// `5:33` under ten minutes, then whole minutes (`25 min`), whole hours
+/// from an hour (`20 h`) and whole days from two days (`3 d`). Rounded
+/// down, so it never claims more lag than there is. The caller adds
+/// "behind".
+pub(crate) fn format_behind_short(secs: f64) -> String {
+    let total = secs.max(0.0) as u64;
+    if total < 600 {
+        format_lag(total as f64)
+    } else if total < 3600 {
+        format!("{} min", total / 60)
+    } else if total < 48 * 3600 {
+        format!("{} h", total / 3600)
+    } else {
+        format!("{} d", total / 86_400)
+    }
+}
+
 /// Default loop-window size when a pinned/preset loop is created without an
 /// explicit choice (alignment §7: "last 6 frames"). Replaces the old
 /// compile-time `LOOKBACK_FRAMES = 5` so the window size is user-driven state.
@@ -1524,6 +1542,24 @@ mod tests {
         assert_eq!(format_lag(3600.0), "1:00:00");
         assert_eq!(format_lag(3600.0 + 2.0 * 60.0 + 5.0), "1:02:05");
         assert_eq!(format_lag(11.0 * 3600.0 + 9.0 * 60.0 + 3.0), "11:09:03");
+    }
+
+    #[wasm_bindgen_test]
+    fn behind_short_words_step_from_seconds_to_days() {
+        assert_eq!(format_behind_short(-3.0), "0:00");
+        assert_eq!(format_behind_short(333.0), "5:33");
+        assert_eq!(format_behind_short(599.0), "9:59");
+        assert_eq!(format_behind_short(600.0), "10 min");
+        assert_eq!(format_behind_short(25.0 * 60.0 + 59.0), "25 min");
+        assert_eq!(format_behind_short(3599.0), "59 min");
+        assert_eq!(format_behind_short(3600.0), "1 h");
+        assert_eq!(
+            format_behind_short(20.0 * 3600.0 + 9.0 * 60.0 + 55.0),
+            "20 h"
+        );
+        assert_eq!(format_behind_short(47.9 * 3600.0), "47 h");
+        assert_eq!(format_behind_short(48.0 * 3600.0), "2 d");
+        assert_eq!(format_behind_short(9.5 * 86_400.0), "9 d");
     }
 
     #[wasm_bindgen_test]

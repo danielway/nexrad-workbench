@@ -53,6 +53,12 @@ pub(crate) enum DialogId {
     Mping,
     /// The phone's settings sheet.
     MobileSettings,
+    /// The phone's calendar sheet, "Go to a day".
+    GoToDay,
+    /// The phone strip's long-press action sheet.
+    PressSheet,
+    /// The phone's chip sheet (in place of the chip's menu).
+    ChipSheet,
     /// A destructive confirmation ([`Confirm`]).
     Confirm,
 }
@@ -60,7 +66,7 @@ pub(crate) enum DialogId {
 impl DialogId {
     /// Every id, in the order [`DialogFlags::open`] reports simultaneous
     /// opens (a stable tie-break for entries that open on the same frame).
-    pub(crate) const ALL: [DialogId; 13] = [
+    pub(crate) const ALL: [DialogId; 16] = [
         DialogId::SitePicker,
         DialogId::PickSiteOnMap,
         DialogId::ShortcutsHelp,
@@ -73,6 +79,9 @@ impl DialogId {
         DialogId::AlertDetail,
         DialogId::Mping,
         DialogId::MobileSettings,
+        DialogId::GoToDay,
+        DialogId::PressSheet,
+        DialogId::ChipSheet,
         DialogId::Confirm,
     ];
 
@@ -91,6 +100,9 @@ impl DialogId {
             DialogId::AlertDetail => "alert_detail",
             DialogId::Mping => "mping",
             DialogId::MobileSettings => "mobile_settings",
+            DialogId::GoToDay => "go_to_day",
+            DialogId::PressSheet => "press_sheet",
+            DialogId::ChipSheet => "chip_sheet",
             DialogId::Confirm => "confirm",
         }
     }
@@ -136,6 +148,9 @@ pub(crate) struct DialogFlags {
     pub alert_detail: bool,
     pub mping: bool,
     pub mobile_settings: bool,
+    pub go_to_day: bool,
+    pub press_sheet: bool,
+    pub chip_sheet: bool,
     pub confirm: bool,
 }
 
@@ -168,6 +183,9 @@ impl DialogFlags {
             DialogId::AlertDetail => self.alert_detail,
             DialogId::Mping => self.mping,
             DialogId::MobileSettings => self.mobile_settings,
+            DialogId::GoToDay => self.go_to_day,
+            DialogId::PressSheet => self.press_sheet,
+            DialogId::ChipSheet => self.chip_sheet,
             DialogId::Confirm => self.confirm,
         }
     }
@@ -492,6 +510,19 @@ pub(crate) enum DialogIntent {
     PickSiteOnMap,
 }
 
+/// How far either side of a time a new event's dialog reaches when it opens
+/// at a time rather than over a range.
+pub(crate) const EVENT_PREFILL_HALF_SECS: f64 = 1800.0;
+
+/// A new event's start and end when its dialog opens: the selected range,
+/// else half an hour either side of the playhead.
+pub(crate) fn event_prefill(selection: Option<(f64, f64)>, playhead: f64) -> (f64, f64) {
+    selection.unwrap_or((
+        playhead - EVENT_PREFILL_HALF_SECS,
+        playhead + EVENT_PREFILL_HALF_SECS,
+    ))
+}
+
 /// Whether the event dialog's fields describe a saveable event, and the
 /// message to show when they do not.
 pub(crate) fn validate_event(name: &str, start: f64, end: f64) -> Result<(), &'static str> {
@@ -501,6 +532,18 @@ pub(crate) fn validate_event(name: &str, start: f64, end: f64) -> Result<(), &'s
         Err("The start must be before the end")
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod prefill_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn a_new_event_opens_over_the_range_else_around_the_playhead() {
+        assert_eq!(event_prefill(Some((100.0, 400.0)), 5_000.0), (100.0, 400.0));
+        assert_eq!(event_prefill(None, 5_000.0), (3_200.0, 6_800.0));
     }
 }
 

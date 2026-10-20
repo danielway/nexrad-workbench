@@ -150,6 +150,29 @@ pub(crate) fn select_range(
     to_live: bool,
 ) -> (TransportActions, bool) {
     let pin = to_live || ends_at_now(a.max(b), env.now_secs, env.frame_secs);
+    select_range_pinned(env, slices, a, b, pin)
+}
+
+/// Select a range whose end is fixed where it was put, however near now
+/// (the phone's Loop to here on a volume before the newest): the playhead
+/// detaches as for any fixed range ([`select_range`]).
+pub(crate) fn select_fixed_range(
+    env: &TransportEnv,
+    slices: TransportSlices<'_>,
+    a: f64,
+    b: f64,
+) -> (TransportActions, bool) {
+    select_range_pinned(env, slices, a, b, false)
+}
+
+/// [`select_range`] once it is decided whether the range pins to now.
+fn select_range_pinned(
+    env: &TransportEnv,
+    slices: TransportSlices<'_>,
+    a: f64,
+    b: f64,
+    pin: bool,
+) -> (TransportActions, bool) {
     if pin && slices.live_mode.is_active() {
         slices.live_mode.detached_since = None;
         let selected = slices.playback.select_range(a, b, true);
@@ -725,6 +748,22 @@ mod coverage_tests {
         assert!(!f.playback.selection.is_live());
         assert_eq!(f.playback.playback_bounds(), Some((100.0, 400.0)));
         assert_eq!(f.live_mode.detached_since, Some(1000.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_fixed_range_keeps_an_end_near_now_where_it_was_put() {
+        let mut f = Fixture::new();
+        f.live_mode.phase = LivePhase::Streaming;
+        f.playback.enter_pinned_live(1000.0);
+        // 10 s before now is "up to now" for select_range ...
+        assert!(ends_at_now(990.0, 1000.0, 300.0));
+        let (_, selected) = select_fixed_range(&env_at(1000.0), f.slices(), 700.0, 990.0);
+        // ... but a fixed range ends there, detached.
+        assert!(selected);
+        assert!(!f.playback.selection.is_live());
+        assert_eq!(f.playback.playback_bounds(), Some((700.0, 990.0)));
+        assert_eq!(f.live_mode.detached_since, Some(1000.0));
+        assert!(!f.playback.playing);
     }
 
     // ---- reduce_stop_looping --------------------------------------------

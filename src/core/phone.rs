@@ -16,7 +16,8 @@
 //!   volumes up to now and the ghost of the next, or the playhead's own
 //!   three volumes when it is far from now.
 //! - **What a press on it is** ([`PressTrack`]): a tap, a scrub, or a
-//!   long-press that opens the inspector, never two of them.
+//!   long-press that opens the action sheet, never two of them. Its zoom stops,
+//!   pinch and snapping are [`crate::core::phone_strip`]'s.
 //! - **What the phone cannot show**: 3D ([`NO_3D_NOTICE`]).
 //!
 //! All pure; `ui::mobile` draws what these return.
@@ -289,10 +290,33 @@ fn volume_secs(starts: &[f64]) -> Option<f64> {
     Some(gaps[gaps.len() / 2])
 }
 
+/// A volume's typical length for the mini timeline: the median gap between
+/// `volume_starts`, else [`DEFAULT_VOLUME_SECS`], within 2–15 minutes.
+pub(crate) fn typical_volume_secs(volume_starts: &[f64]) -> f64 {
+    volume_secs(volume_starts)
+        .unwrap_or(DEFAULT_VOLUME_SECS)
+        .clamp(120.0, 900.0)
+}
+
+/// The room right of now where the next volume's ghost and the cap draw:
+/// the same seconds at every zoom stop.
+pub(crate) fn mini_lead_secs(volume_starts: &[f64]) -> f64 {
+    MINI_VOLUMES * typical_volume_secs(volume_starts) * MINI_LEAD_SHARE
+}
+
+/// Whether the mini timeline's window is anchored to now: pinned, or a
+/// playhead within three volumes of now (any of the blocks the window
+/// shows from now, and not past the ghost room).
+pub(crate) fn mini_near_now(now: f64, playhead: f64, pinned: bool, volume_starts: &[f64]) -> bool {
+    let vol = typical_volume_secs(volume_starts);
+    pinned
+        || (playhead <= now + mini_lead_secs(volume_starts) && now - playhead <= MINI_VOLUMES * vol)
+}
+
 /// The mini timeline's window. `volume_starts` are the containers' starts,
 /// oldest first (received, archived, live and the next volume's ghost).
 ///
-/// Near now (pinned, or a playhead within two volumes of now) it shows the
+/// Near now (pinned, or a playhead within three volumes of now) it shows the
 /// last three volumes that have begun, with room right of now for the next
 /// volume's ghost and the cap. A playhead further back gets its own three
 /// volumes centered on it, and the now cap moves to the edge.
@@ -302,13 +326,10 @@ pub(crate) fn mini_window(
     pinned: bool,
     volume_starts: &[f64],
 ) -> MiniWindow {
-    let vol = volume_secs(volume_starts)
-        .unwrap_or(DEFAULT_VOLUME_SECS)
-        .clamp(120.0, 900.0);
+    let vol = typical_volume_secs(volume_starts);
     let span = MINI_VOLUMES * vol;
-    let lead = span * MINI_LEAD_SHARE;
-    let near_now = pinned || (playhead <= now + lead && now - playhead <= 2.0 * vol);
-    if !near_now {
+    let lead = mini_lead_secs(volume_starts);
+    if !mini_near_now(now, playhead, pinned, volume_starts) {
         return MiniWindow {
             start: playhead - span / 2.0,
             end: playhead + span / 2.0,
@@ -344,7 +365,7 @@ pub(crate) const LONG_PRESS_SECS: f64 = 0.5;
 pub(crate) const PRESS_SLOP_PX: f32 = 6.0;
 
 /// One press on a surface that seeks on a tap, scrubs on a drag and opens
-/// the inspector on a long-press.
+/// the long-press sheet on a long-press.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PressTrack {
     start_secs: f64,
@@ -353,6 +374,9 @@ pub(crate) struct PressTrack {
     scrubbing: bool,
     /// The long-press fired.
     fired: bool,
+    /// A pinch took the press over: it neither seeks, scrubs nor
+    /// long-presses for the rest of its life.
+    cancelled: bool,
 }
 
 /// What a press did this frame.
@@ -376,7 +400,7 @@ impl PressTrack {
         now: f64,
     ) -> (Option<PressTrack>, PressOut) {
         let (true, Some(p)) = (down, pos) else {
-            let swallow = prev.is_some_and(|t| t.fired);
+            let swallow = prev.is_some_and(|t| t.fired || t.cancelled);
             return (
                 None,
                 PressOut {
@@ -390,13 +414,14 @@ impl PressTrack {
             start: p,
             scrubbing: false,
             fired: false,
+            cancelled: false,
         });
         let (dx, dy) = (p.0 - t.start.0, p.1 - t.start.1);
         if (dx * dx + dy * dy).sqrt() > PRESS_SLOP_PX {
             t.scrubbing = true;
         }
         let mut out = PressOut::default();
-        if !t.scrubbing && !t.fired {
+        if !t.scrubbing && !t.fired && !t.cancelled {
             if now - t.start_secs >= LONG_PRESS_SECS {
                 t.fired = true;
                 out.long_press = Some(t.start);
@@ -408,8 +433,25 @@ impl PressTrack {
     }
 
     /// The press fired its long-press: it neither seeks nor scrubs.
+    #[cfg(test)]
     pub(crate) fn fired(&self) -> bool {
         self.fired
+    }
+
+    /// A pinch took this press over ([`Self::cancel`]).
+    pub(crate) fn cancelled(&self) -> bool {
+        self.cancelled
+    }
+
+    /// Hand the press to a pinch: from now on it neither seeks, scrubs nor
+    /// long-presses, and its release is not a tap.
+    pub(crate) fn cancel(&mut self) {
+        self.cancelled = true;
+    }
+
+    /// The press may still seek: neither long-pressed nor taken by a pinch.
+    pub(crate) fn seeks(&self) -> bool {
+        !self.fired && !self.cancelled
     }
 }
 

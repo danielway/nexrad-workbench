@@ -124,7 +124,7 @@ pub(crate) fn volume_format(name: &str) -> &str {
 /// Whether a listed file is a radar volume (not an `_MDM` metadata file or
 /// an empty placeholder).
 fn is_volume(name: &str, size: u64) -> bool {
-    size > 0 && !name.contains("_MDM")
+    size > 0 && crate::core::acquisition::is_volume_file_name(name)
 }
 
 /// When a volume started, in seconds after its UTC midnight, from its file
@@ -403,6 +403,42 @@ impl ScanSizes {
         let i = self.scans.partition_point(|s| s.start <= ts);
         self.scans[..i].last().filter(|s| ts < s.end)
     }
+
+    /// The volumes overlapping `[start, end]`, each with its height as a
+    /// fraction of the lane on the scale of the volumes in view
+    /// ([`ViewScale`]): one bar per volume, as the zoomed-in overview and
+    /// the phone strip's Day stop draw them.
+    pub(crate) fn bars(&self, start: f64, end: f64) -> Vec<(ScanActivity, f32)> {
+        let lo = self.scans.partition_point(|s| s.end < start);
+        let hi = self.scans.partition_point(|s| s.start <= end);
+        let visible = &self.scans[lo..hi.max(lo)];
+        let scale = ViewScale::from_levels(visible.iter().map(|s| s.level));
+        visible
+            .iter()
+            .map(|s| (*s, scale.height_frac(s.level)))
+            .collect()
+    }
+
+    /// The parts of `spans` (Unix seconds) on days whose sizes aren't
+    /// known, split at UTC midnights: where a lane shows plain coverage
+    /// because there are no bars to show yet.
+    pub(crate) fn unknown_pieces(
+        &self,
+        spans: impl IntoIterator<Item = (f64, f64)>,
+    ) -> Vec<(f64, f64)> {
+        let mut out = Vec::new();
+        for (start, end) in spans {
+            let mut t = start;
+            while t < end {
+                let piece_end = end.min((day_start_of(t) + DAY_SECS) as f64);
+                if !self.knows(t) {
+                    out.push((t, piece_end));
+                }
+                t = piece_end;
+            }
+        }
+        out
+    }
 }
 
 /// The overview's time window, for deciding which days to list (Unix
@@ -438,6 +474,8 @@ impl ActivityWindow {
 pub(crate) struct ActivityBook {
     days: HashMap<SiteId, BTreeMap<i64, DayActivity>>,
     baselines: HashMap<(SiteId, String), f64>,
+    /// Each site's first and last day in its published index, as read.
+    index_range: HashMap<SiteId, (i64, i64)>,
 }
 
 impl ActivityBook {
@@ -466,6 +504,15 @@ impl ActivityBook {
     /// keeping any final live listing that has per-volume sizes
     /// ([`index_replaces`]). Returns how many were taken.
     pub(crate) fn insert_index(&mut self, days: impl IntoIterator<Item = DayActivity>) -> usize {
+        let days: Vec<DayActivity> = days.into_iter().collect();
+        for d in &days {
+            let range = self
+                .index_range
+                .entry(d.site.clone())
+                .or_insert((d.day_start, d.day_start));
+            range.0 = range.0.min(d.day_start);
+            range.1 = range.1.max(d.day_start);
+        }
         let fresh: Vec<DayActivity> = days
             .into_iter()
             .filter(|d| index_replaces(self.day(&d.site, d.day_start)))
@@ -473,6 +520,54 @@ impl ActivityBook {
         let taken = fresh.len();
         self.insert_many(fresh);
         taken
+    }
+
+    /// The first and last day (UTC midnights) of `site`'s published index,
+    /// once it has been read; `None` without one.
+    pub(crate) fn index_range(&self, site: &SiteId) -> Option<(i64, i64)> {
+        self.index_range.get(site).copied()
+    }
+
+    /// Every known day starting in `[first, last]` (UTC midnights) with its
+    /// level, `None` for an outage day, in time order.
+    pub(crate) fn levels(&self, site: &SiteId, first: i64, last: i64) -> Vec<(i64, Option<f32>)> {
+        let Some(days) = self.days.get(site) else {
+            return Vec::new();
+        };
+        if last < first {
+            return Vec::new();
+        }
+        days.range(first..=last)
+            .map(|(start, day)| (*start, self.level_of(day)))
+            .collect()
+    }
+
+    /// The volumes starting in `[start, end)` (Unix seconds), once every UTC
+    /// day the span touches has been listed with per-volume sizes (or is a
+    /// known outage); `None` while any of them is unknown or known only
+    /// from the index. This is the listing the phone strip's Day stop makes
+    /// for a day in view.
+    pub(crate) fn listing(&self, site: &SiteId, start: f64, end: f64) -> Option<Vec<ScanActivity>> {
+        if end <= start {
+            return Some(Vec::new());
+        }
+        let days = self.days.get(site)?;
+        let mut day = day_start_of(start);
+        let last = day_start_of(end - 0.001);
+        while day <= last {
+            let known = days.get(&day)?;
+            if !(known.has_scans || known.volumes == 0) {
+                return None;
+            }
+            day += DAY_SECS;
+        }
+        Some(
+            self.scans(site, start, end)
+                .scans
+                .into_iter()
+                .filter(|s| s.start >= start && s.start < end)
+                .collect(),
+        )
     }
 
     /// The summary for the day starting at `day_start`, if known.
@@ -1208,6 +1303,60 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    fn the_index_range_and_levels_read_back_per_site() {
+        let mut book = ActivityBook::default();
+        assert_eq!(book.index_range(&site()), None);
+        book.insert_index([
+            index_day(OCT_9_2024, 4_000_000),
+            index_day(OCT_9_2024 + 3 * DAY_SECS, 0),
+            index_day(OCT_9_2024 - 400 * DAY_SECS, 4_000_000),
+        ]);
+        assert_eq!(
+            book.index_range(&site()),
+            Some((OCT_9_2024 - 400 * DAY_SECS, OCT_9_2024 + 3 * DAY_SECS))
+        );
+        let levels = book.levels(&site(), OCT_9_2024, OCT_9_2024 + 3 * DAY_SECS);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[0].0, OCT_9_2024);
+        assert!(levels[0].1.is_some());
+        assert_eq!(levels[1], (OCT_9_2024 + 3 * DAY_SECS, None), "an outage");
+        assert!(book.levels(&SiteId::new("KFWS"), 0, i64::MAX).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn a_span_is_listed_once_every_day_it_touches_has_volume_sizes() {
+        let t0 = OCT_9_2024 as f64;
+        // A local day 05:00–05:00 UTC touches two UTC days.
+        let (start, end) = (t0 + 5.0 * 3600.0, t0 + 29.0 * 3600.0);
+        let mut book = ActivityBook::default();
+        assert_eq!(book.listing(&site(), start, end), None);
+        let mut first = day(OCT_9_2024, 4_000_000, "V06");
+        first.scan_secs = vec![3600, 6 * 3600, 20 * 3600];
+        first.scan_bytes = vec![3_000_000, 9_000_000, 4_000_000];
+        book.insert_many([first]);
+        // The second day is only in the index: no per-volume sizes yet.
+        book.insert_index([index_day(OCT_9_2024 + DAY_SECS, 4_000_000)]);
+        assert_eq!(book.listing(&site(), start, end), None);
+        let mut second = day(OCT_9_2024 + DAY_SECS, 4_000_000, "V06");
+        second.scan_secs = vec![3600, 10 * 3600];
+        second.scan_bytes = vec![5_000_000, 6_000_000];
+        book.insert_many([second]);
+        let listed = book.listing(&site(), start, end).expect("listed");
+        let starts: Vec<f64> = listed.iter().map(|s| s.start - t0).collect();
+        // 01:00 on the first day is before the span; 10:00 on the second
+        // is after it.
+        assert_eq!(starts, vec![6.0 * 3600.0, 20.0 * 3600.0, 25.0 * 3600.0]);
+        // An outage day counts as listed (nothing to wait for).
+        book.insert_many([day(OCT_9_2024 + 2 * DAY_SECS, 0, "V06")]);
+        let out = book.listing(
+            &site(),
+            t0 + 2.0 * DAY_SECS as f64,
+            t0 + 3.0 * DAY_SECS as f64,
+        );
+        assert_eq!(out, Some(Vec::new()));
+    }
+
+    #[wasm_bindgen_test]
     fn windows_past_the_auto_fetch_limit_list_a_sample() {
         assert_eq!(sample_stride_days(1), 1);
         assert_eq!(sample_stride_days(MAX_AUTO_FETCH_DAYS), 1);
@@ -1220,5 +1369,57 @@ mod tests {
         assert_eq!(day_start_of(OCT_9_2024 as f64 + 3600.5), OCT_9_2024);
         assert_eq!(day_start_of(OCT_9_2024 as f64), OCT_9_2024);
         assert_eq!(day_start_of(-1.0), -DAY_SECS);
+    }
+
+    fn scan(start: f64, level: f32) -> ScanActivity {
+        ScanActivity {
+            start,
+            end: start + 300.0,
+            bytes: 1,
+            level,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn bars_are_the_volumes_in_view_on_the_views_scale() {
+        let sizes = ScanSizes {
+            scans: vec![
+                scan(0.0, 0.9),
+                scan(300.0, 0.1),
+                scan(600.0, 0.2),
+                scan(900.0, 0.6),
+                scan(1_200.0, 0.1),
+            ],
+            known_days: vec![0],
+        };
+        let bars = sizes.bars(350.0, 1_000.0);
+        // The one ending before the window is out; the one starting after
+        // it is out; the ones touching it are in.
+        assert_eq!(
+            bars.iter().map(|(s, _)| s.start).collect::<Vec<_>>(),
+            vec![300.0, 600.0, 900.0]
+        );
+        // Stretched to what is in view: the median at the floor, the
+        // stormiest near the top.
+        let scale = ViewScale::from_levels([0.1, 0.2, 0.6]);
+        for (s, frac) in &bars {
+            assert_eq!(*frac, scale.height_frac(s.level));
+        }
+        assert_eq!(bars[1].1, MIN_BAR_FRAC);
+        assert!(bars[2].1 > 0.95);
+        assert!(sizes.bars(5_000.0, 6_000.0).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn unknown_pieces_split_at_midnight_and_drop_known_days() {
+        let d = DAY_SECS as f64;
+        let sizes = ScanSizes {
+            scans: Vec::new(),
+            known_days: vec![DAY_SECS],
+        };
+        // A span from the evening of day 0 into day 2: day 1 is known.
+        let pieces = sizes.unknown_pieces([(0.75 * d, 2.25 * d)]);
+        assert_eq!(pieces, vec![(0.75 * d, d), (2.0 * d, 2.25 * d)]);
+        assert!(sizes.unknown_pieces([(d + 10.0, d + 20.0)]).is_empty());
     }
 }

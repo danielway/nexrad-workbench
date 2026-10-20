@@ -60,6 +60,10 @@ pub(crate) enum Intent {
     /// Select a range: attached to the live edge when `to_live` and a stream
     /// runs, otherwise fixed (see [`crate::core::transport::select_range`]).
     SelectRange { start: f64, end: f64, to_live: bool },
+    /// Select a fixed range, its end where it was put however near now (the
+    /// phone's Loop to here). Decided by
+    /// [`crate::core::transport::select_fixed_range`].
+    SelectFixedRange { start: f64, end: f64 },
     /// Move the playhead to `ts` (the timeline, the playhead clock). Keeps a
     /// range it lands inside; a scrub pauses. Decided by
     /// [`crate::core::transport::reduce_seek`].
@@ -172,6 +176,35 @@ pub(crate) enum Intent {
     /// A dialog intent: Escape, close, confirm, the event dialog's writes
     /// (one-instrument §12, [`crate::core::dialogs`]).
     Dialog(crate::core::dialogs::DialogIntent),
+    /// Put the phone strip at a zoom stop (the zoom pill, a pinch). Lives on
+    /// the chrome, not in preferences or the link; decided by
+    /// [`crate::core::phone_strip::strip_zoom_after`].
+    SetPhoneStripZoom(crate::core::phone_strip::StripZoom),
+    /// Open the phone's calendar sheet, "Go to a day" (the chip menu's
+    /// entry, a tap on the date in the phone's top bar). It opens on the
+    /// playhead's month ([`crate::core::calendar::calendar_vm`]).
+    OpenGoToDay,
+    /// Move the calendar sheet to a month, a year's months or the years
+    /// ([`crate::core::calendar::reduce_nav`]).
+    Calendar(crate::core::calendar::CalendarNav),
+    /// A day tapped in the calendar sheet: the strip goes to Day zoom, the
+    /// playhead detaches and pauses on the day's stormiest volume (or its
+    /// local midday until the day's listing arrives), and the sheet closes.
+    /// Decided by [`crate::core::calendar::land_on_day`].
+    GoToDay(crate::core::calendar::CalendarDay),
+    /// A long-press on the phone strip: open the action sheet for the time
+    /// and scan under the finger ([`crate::core::phone_range::press_sheet_vm`]).
+    OpenPressSheet(crate::core::phone_range::PressSheet),
+    /// A row of the long-press sheet. The intent it stands for is the core's
+    /// ([`crate::core::phone_range::row_intent`]); a disabled row does
+    /// nothing, any other closes the sheet.
+    PressSheetRow(crate::core::phone_range::PressRow),
+    /// A tap on the phone's selection chip: open its sheet
+    /// ([`crate::core::selection_chip::chip_sheet_vm`]).
+    OpenChipSheet,
+    /// Open the scan inspector on the scan starting at this time (Unix
+    /// seconds): the long-press sheet's Inspect this scan.
+    InspectScan(f64),
     /// "Loop from here → now" on the scan inspector: a range from this scan
     /// start to now, the playhead at the scan. Closes the inspector only when
     /// the range was made.

@@ -88,6 +88,10 @@ pub(crate) fn dispatch_state_only(
     outcome: &mut CommandOutcome,
 ) -> Option<crate::core::Intent> {
     use crate::core::Intent;
+    // A playhead or selection intent takes over from a calendar landing
+    // still waiting for its day's listing.
+    s.chrome.go_to_day_landing =
+        crate::core::calendar::landing_after(s.chrome.go_to_day_landing.take(), &intent);
     match intent {
         // ---- Live mode / transport --------------------------------
         Intent::StopLive(placement) => {
@@ -112,6 +116,15 @@ pub(crate) fn dispatch_state_only(
                 .select_range(&mut s.playback.state, start, end, to_live, now, pause)
             {
                 // Arm the bulk fetch for the new range (selection = the fetch).
+                s.state.selection_just_finalized = s.playback.state.selection_range();
+            }
+        }
+        Intent::SelectFixedRange { start, end } => {
+            let now = s.state.frame_now.secs();
+            let pause = s.state.pause_stream_while_reviewing;
+            if s.live
+                .select_fixed_range(&mut s.playback.state, start, end, now, pause)
+            {
                 s.state.selection_just_finalized = s.playback.state.selection_range();
             }
         }
@@ -232,6 +245,56 @@ pub(crate) fn dispatch_state_only(
         Intent::Dialog(intent) => s.dialog(intent),
         Intent::LoopFromScan(scan_start) => s.loop_from_scan(scan_start),
 
+        // ---- Phone strip ------------------------------------------
+        intent @ Intent::SetPhoneStripZoom(_) => {
+            s.chrome.phone_strip_zoom =
+                crate::core::phone_strip::strip_zoom_after(s.chrome.phone_strip_zoom, &intent);
+        }
+
+        // ---- Calendar sheet ---------------------------------------
+        Intent::OpenGoToDay => {
+            s.chrome.go_to_day = Some(crate::core::calendar::CalendarSheet::default());
+            super::dialogs::sync_dialogs(s.chrome, s.diagnostics);
+        }
+        Intent::Calendar(nav) => {
+            let current = crate::core::calendar::latest_month(s.state.frame_now.secs());
+            if let Some(sheet) = s.chrome.go_to_day.as_mut() {
+                crate::core::calendar::reduce_nav(sheet, nav, current);
+            }
+        }
+        intent @ Intent::GoToDay(day) => s.go_to_day(day, &intent),
+
+        // ---- The phone strip's long-press sheet -------------------
+        Intent::OpenPressSheet(press) => {
+            s.chrome.press_sheet = Some(press);
+            super::dialogs::sync_dialogs(s.chrome, s.diagnostics);
+        }
+        Intent::OpenChipSheet => {
+            s.chrome.chip_sheet_open = true;
+            super::dialogs::sync_dialogs(s.chrome, s.diagnostics);
+        }
+        Intent::PressSheetRow(row) => {
+            let press = s.chrome.press_sheet?;
+            let facts = crate::core::phone_range::RangeFacts::of(
+                &s.playback.state,
+                s.state.frame_now.secs(),
+            );
+            // A disabled row does nothing and the sheet stays.
+            if let Ok(next) = crate::core::phone_range::row_intent(row, &press, &facts) {
+                s.chrome.press_sheet = None;
+                super::dialogs::sync_dialogs(s.chrome, s.diagnostics);
+                if let Some(shell) = dispatch_state_only(next, s, outcome) {
+                    s.state.push_command(shell);
+                }
+            }
+        }
+        Intent::InspectScan(scan_start) => {
+            if scan_start.is_finite() {
+                s.chrome.scan_inspector = Some(scan_start);
+                super::dialogs::sync_dialogs(s.chrome, s.diagnostics);
+            }
+        }
+
         // ---- Needs the shell --------------------------------------
         // Listed explicitly (not `_`) so a new intent forces a decision
         // about which half of the partition owns it. The reason each one
@@ -275,7 +338,7 @@ impl DispatchState<'_> {
     /// The reducers ([`crate::core::transport::reduce_toggle_play_pause`],
     /// [`crate::core::transport::reduce_stop_live`]) share an Env/Slices/Actions
     /// signature, so the shell side is this one adapter.
-    fn transport(
+    pub(super) fn transport(
         &mut self,
         reduce: impl FnOnce(
             &crate::core::transport::TransportEnv,
@@ -661,6 +724,7 @@ impl WorkbenchApp {
             | Intent::ClearLoop
             | Intent::StopLooping
             | Intent::SelectRange { .. }
+            | Intent::SelectFixedRange { .. }
             | Intent::Seek { .. }
             | Intent::Step { .. }
             | Intent::SetLoopPoint(_)
@@ -691,7 +755,15 @@ impl WorkbenchApp {
             | Intent::SetResetForgetsKeyAndSite(_)
             | Intent::SetDeveloperMode(_)
             | Intent::Dialog(_)
-            | Intent::LoopFromScan(_) => {
+            | Intent::LoopFromScan(_)
+            | Intent::SetPhoneStripZoom(_)
+            | Intent::OpenGoToDay
+            | Intent::Calendar(_)
+            | Intent::GoToDay(_)
+            | Intent::OpenPressSheet(_)
+            | Intent::PressSheetRow(_)
+            | Intent::OpenChipSheet
+            | Intent::InspectScan(_) => {
                 unreachable!("state-only intent was not consumed by dispatch_state_only")
             }
         }
@@ -1102,8 +1174,29 @@ mod dispatch_tests {
             Intent::SetDeveloperMode(true),
             Intent::Dialog(crate::core::dialogs::DialogIntent::Escape),
             Intent::LoopFromScan(1_000.0),
+            Intent::SetPhoneStripZoom(crate::core::phone_strip::StripZoom::Day),
+            Intent::OpenGoToDay,
+            Intent::Calendar(crate::core::calendar::CalendarNav::Years),
+            Intent::GoToDay(crate::core::calendar::CalendarDay::of(
+                chrono::NaiveDate::from_ymd_opt(2024, 5, 6).unwrap(),
+                &crate::core::calendar::FixedZone(0),
+            )),
+            Intent::OpenPressSheet(crate::core::phone_range::PressSheet {
+                ts: 1_000.0,
+                scan_start: None,
+                volume: None,
+                newest: false,
+                anchor_volume: None,
+            }),
+            Intent::PressSheetRow(crate::core::phone_range::PressRow::Inspect),
+            Intent::OpenChipSheet,
+            Intent::SelectFixedRange {
+                start: 100.0,
+                end: 400.0,
+            },
+            Intent::InspectScan(1_000.0),
         ];
-        assert_eq!(state_only.len(), 32);
+        assert_eq!(state_only.len(), 41);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -1976,5 +2069,249 @@ mod dispatch_tests {
             item.elevation_filter, None,
             "Latest fetches the whole volume"
         );
+    }
+
+    /// `SetPhoneStripZoom` moves the phone strip's stop and nothing else: the
+    /// selection and the playhead stay where they were.
+    #[wasm_bindgen_test]
+    fn phone_strip_zoom_changes_the_stop_not_the_selection() {
+        use crate::core::phone_strip::StripZoom;
+        let mut f = Fixture::new();
+        assert_eq!(f.chrome.phone_strip_zoom, StripZoom::Cuts);
+        f.apply(Intent::SelectRange {
+            start: 100.0,
+            end: 400.0,
+            to_live: false,
+        });
+        let range = f.playback.state.selection_range();
+        let pos = f.playback.state.playback_position();
+        assert!(range.is_some());
+
+        f.apply(Intent::SetPhoneStripZoom(StripZoom::Day));
+
+        assert_eq!(f.chrome.phone_strip_zoom, StripZoom::Day);
+        assert_eq!(f.playback.state.selection_range(), range);
+        assert_eq!(f.playback.state.playback_position(), pos);
+    }
+
+    // ---- calendar sheet -----------------------------------------------
+
+    /// The calendar sheet opens from its intent, is an entry on the dialog
+    /// stack (so Escape closes it), and moves between its views by intent.
+    #[wasm_bindgen_test]
+    fn the_calendar_sheet_opens_navigates_and_closes_on_escape() {
+        use crate::core::calendar::{CalendarMode, CalendarNav, YearMonth};
+        use crate::core::dialogs::{DialogId, DialogIntent};
+        let mut f = Fixture::new();
+        // 2026-10-17.
+        f.state.frame_now = FrameNow(1_792_238_400.0);
+        f.apply(Intent::OpenGoToDay);
+        assert_eq!(f.chrome.go_to_day.map(|s| s.month), Some(None));
+        assert!(f.chrome.dialogs.contains(DialogId::GoToDay));
+
+        f.apply(Intent::Calendar(CalendarNav::Year(2013)));
+        let sheet = f.chrome.go_to_day.unwrap();
+        assert_eq!(sheet.mode, CalendarMode::Year);
+        assert_eq!(sheet.month.map(|m| m.year), Some(2013));
+        f.apply(Intent::Calendar(CalendarNav::Month(YearMonth::new(
+            2013, 5,
+        ))));
+        assert_eq!(
+            f.chrome.go_to_day.unwrap().month,
+            Some(YearMonth::new(2013, 5))
+        );
+
+        f.apply(Intent::Dialog(DialogIntent::Escape));
+        assert_eq!(f.chrome.go_to_day, None);
+        // Navigation with the sheet closed does nothing.
+        f.apply(Intent::Calendar(CalendarNav::Years));
+        assert_eq!(f.chrome.go_to_day, None);
+    }
+
+    /// A tapped day: the 3 H stop, the playhead detached and paused at the
+    /// day's midday while its listing is out, the sheet closed, and a
+    /// landing left to settle. A later seek takes over from the landing.
+    #[wasm_bindgen_test]
+    fn go_to_day_lands_at_midday_pauses_and_zooms_to_volumes() {
+        use crate::core::calendar::{CalendarDay, FixedZone};
+        use crate::core::phone_strip::StripZoom;
+        let mut f = Fixture::new();
+        f.state.frame_now = FrameNow(1_792_238_400.0);
+        f.state.viz_state.site_id = "KTLX".to_string();
+        f.playback.state.playing = true;
+        f.apply(Intent::OpenGoToDay);
+        let day = CalendarDay::of(
+            chrono::NaiveDate::from_ymd_opt(2024, 5, 6).unwrap(),
+            &FixedZone(-5 * 3600),
+        );
+        f.apply(Intent::GoToDay(day));
+        assert_eq!(f.chrome.phone_strip_zoom, StripZoom::Volumes);
+        assert_eq!(f.chrome.go_to_day, None, "the sheet closes");
+        assert!(!f.playback.state.playing, "paused on the day");
+        assert_eq!(f.playback.state.playback_position(), day.midday());
+        let landing = f.chrome.go_to_day_landing.clone().expect("waits");
+        assert_eq!(landing.landed_at, day.midday());
+
+        f.apply(Intent::Seek {
+            ts: day.midday() + 600.0,
+            gesture: crate::core::transport::SeekGesture::Press,
+        });
+        assert_eq!(f.chrome.go_to_day_landing, None, "the user took over");
+    }
+
+    /// A day picked while streaming stops the stream: the archive day offers
+    /// GO LIVE, not REJOIN.
+    #[wasm_bindgen_test]
+    fn go_to_day_while_streaming_stops_the_stream() {
+        use crate::core::calendar::{CalendarDay, FixedZone};
+        let mut f = Fixture::new();
+        f.state.frame_now = FrameNow(1_792_238_400.0);
+        f.state.viz_state.site_id = "KTLX".to_string();
+        f.live.mode_state.phase = LivePhase::Streaming;
+        f.playback.state.enter_pinned_live(1_792_238_000.0);
+        let day = CalendarDay::of(
+            chrono::NaiveDate::from_ymd_opt(2024, 5, 6).unwrap(),
+            &FixedZone(0),
+        );
+        f.apply(Intent::GoToDay(day));
+        assert!(!f.live.mode_state.is_active(), "the stream stopped");
+        assert!(!f.playback.state.is_pinned());
+        assert!(!f.playback.state.playing);
+        assert_eq!(f.playback.state.playback_position(), day.midday());
+    }
+
+    /// A day already listed lands on its stormiest volume at once.
+    #[wasm_bindgen_test]
+    fn go_to_a_listed_day_lands_on_its_stormiest_volume() {
+        use crate::core::calendar::{CalendarDay, FixedZone};
+        let mut f = Fixture::new();
+        f.state.frame_now = FrameNow(1_792_238_400.0);
+        f.state.viz_state.site_id = "KTLX".to_string();
+        let date = chrono::NaiveDate::from_ymd_opt(2024, 5, 6).unwrap();
+        let day = CalendarDay::of(date, &FixedZone(0));
+        f.timeline.activity.insert_many([crate::data::DayActivity {
+            site: crate::data::SiteId::new("KTLX"),
+            day_start: day.start as i64,
+            volumes: 3,
+            mean_bytes: 6_000_000,
+            format: "V06".into(),
+            fetched_at_ms: (day.start as i64 + 2 * 86_400) * 1000,
+            has_scans: true,
+            scan_secs: vec![600, 7_200, 30_000],
+            scan_bytes: vec![3_000_000, 12_000_000, 3_000_000],
+        }]);
+        f.apply(Intent::GoToDay(day));
+        // Just inside the volume's listed start, as the strip lands it.
+        assert_eq!(f.playback.state.playback_position(), day.start + 7_210.0);
+        let landing = f.chrome.go_to_day_landing.clone().expect("waits");
+        assert_eq!(
+            landing.volume.map(|v| v.start),
+            Some(day.start + 7_200.0),
+            "for the volume"
+        );
+    }
+    // ---- the long-press sheet -----------------------------------------
+
+    fn press_at(volume_start: f64, scan: Option<f64>) -> crate::core::phone_range::PressSheet {
+        crate::core::phone_range::PressSheet {
+            ts: volume_start + 100.0,
+            scan_start: scan,
+            volume: Some((volume_start, volume_start + 420.0)),
+            newest: false,
+            anchor_volume: None,
+        }
+    }
+
+    /// The long-press sheet opens on the Esc stack and closes on Escape.
+    #[wasm_bindgen_test]
+    fn the_press_sheet_opens_on_the_stack_and_closes_on_escape() {
+        use crate::core::dialogs::{DialogId, DialogIntent};
+        let mut f = Fixture::new();
+        f.apply(Intent::OpenPressSheet(press_at(5_000.0, Some(5_000.0))));
+        assert!(f.chrome.dialogs.contains(DialogId::PressSheet));
+        f.apply(Intent::Dialog(DialogIntent::Escape));
+        assert_eq!(f.chrome.press_sheet, None);
+        assert!(f.chrome.dialogs.is_empty());
+    }
+
+    /// Inspect opens the inspector on the scan under the finger and closes
+    /// the sheet; a disabled row leaves the sheet open and changes nothing.
+    #[wasm_bindgen_test]
+    fn inspect_opens_the_inspector_and_a_disabled_row_does_nothing() {
+        use crate::core::phone_range::PressRow;
+        let mut f = Fixture::new();
+        f.state.frame_now = FrameNow(10_000.0);
+        f.apply(Intent::OpenPressSheet(press_at(5_000.0, None)));
+        f.apply(Intent::PressSheetRow(PressRow::Inspect));
+        assert!(f.chrome.press_sheet.is_some(), "no scan: disabled");
+        assert_eq!(f.chrome.scan_inspector, None);
+        f.apply(Intent::PressSheetRow(PressRow::LoopToHere));
+        assert!(f.chrome.press_sheet.is_some(), "no loop: disabled");
+
+        f.apply(Intent::OpenPressSheet(press_at(5_000.0, Some(4_980.0))));
+        f.apply(Intent::PressSheetRow(PressRow::Inspect));
+        assert_eq!(f.chrome.press_sheet, None);
+        assert_eq!(f.chrome.scan_inspector, Some(4_980.0));
+    }
+
+    /// Loop from here makes a range from the pressed volume to now; Loop to
+    /// here then fixes its end at another volume's end, paused.
+    #[wasm_bindgen_test]
+    fn loop_from_here_then_to_here_makes_a_fixed_range() {
+        use crate::core::phone_range::PressRow;
+        let mut f = Fixture::new();
+        f.state.frame_now = FrameNow(100_000.0);
+        f.apply(Intent::OpenPressSheet(press_at(90_000.0, None)));
+        f.apply(Intent::PressSheetRow(PressRow::LoopFromHere));
+        assert_eq!(f.chrome.press_sheet, None);
+        assert_eq!(
+            f.playback.state.playback_bounds().map(|(s, _)| s),
+            Some(90_000.0)
+        );
+        // A loop pinned to now: Loop to here fixes its end.
+        f.playback.state.enter_pinned_live(100_000.0);
+        f.playback
+            .state
+            .enter_live_range(Some(90_000.0), crate::core::LoopBasis::FrameCount(6));
+        // The live tick slides its window over the frames.
+        f.playback.state.slide_live_range(90_000.0, 100_000.0);
+        assert!(f.playback.state.is_live_range());
+        f.apply(Intent::OpenPressSheet(press_at(95_000.0, None)));
+        f.apply(Intent::PressSheetRow(PressRow::LoopToHere));
+        assert_eq!(
+            f.playback.state.playback_bounds(),
+            Some((90_000.0, 95_420.0))
+        );
+        assert!(!f.playback.state.is_live_range());
+        // A parked start (the desktop's I key) pairs too.
+        f.apply(Intent::ClearLoop);
+        f.playback.state.drag = Some(crate::core::TimeSelection {
+            a: 90_000.0,
+            b: 90_000.0,
+            in_progress: false,
+        });
+        f.apply(Intent::OpenPressSheet(press_at(95_000.0, None)));
+        f.apply(Intent::PressSheetRow(PressRow::LoopToHere));
+        assert_eq!(f.chrome.press_sheet, None);
+        assert_eq!(
+            f.playback.state.playback_bounds(),
+            Some((90_000.0, 95_420.0))
+        );
+        assert!(!f.playback.state.playing, "a new range starts paused");
+    }
+
+    // ---- the chip sheet ------------------------------------------------
+
+    /// A tap on the phone's chip opens its sheet on the Esc stack.
+    #[wasm_bindgen_test]
+    fn the_chip_sheet_opens_on_the_stack_and_closes_on_escape() {
+        use crate::core::dialogs::{DialogId, DialogIntent};
+        let mut f = Fixture::new();
+        f.apply(Intent::OpenChipSheet);
+        assert!(f.chrome.chip_sheet_open);
+        assert!(f.chrome.dialogs.contains(DialogId::ChipSheet));
+        f.apply(Intent::Dialog(DialogIntent::Escape));
+        assert!(!f.chrome.chip_sheet_open);
+        assert!(f.chrome.dialogs.is_empty());
     }
 }
