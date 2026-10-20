@@ -21,7 +21,7 @@ use egui_phosphor::regular as icons;
 
 const BAR_HEIGHT: f32 = 36.0;
 /// The releases page behind ⋯ › About.
-const CHANGELOG_URL: &str = "https://github.com/danielway/nexrad-workbench/releases";
+pub(super) const CHANGELOG_URL: &str = "https://github.com/danielway/nexrad-workbench/releases";
 
 pub(super) struct TopBarLayer;
 

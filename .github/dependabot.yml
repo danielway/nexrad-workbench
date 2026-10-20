@@ -7,6 +7,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    ignore:
+      # glow must match the version eframe/egui_glow re-export (we hand
+      # eframe's glow::Context to our renderers); bump it with egui.
+      - dependency-name: glow
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       cargo:
         patterns:
