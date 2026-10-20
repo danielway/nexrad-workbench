@@ -485,6 +485,11 @@ pub(crate) fn row_vm(i: &RowInputs<'_>) -> RowVm {
                     cuts,
                     arc: loading.as_ref().filter(|_| is_sel).map(|l| l.arc),
                 });
+                if x0 < left {
+                    // Cut by the lane's edge: its label would name a block
+                    // mostly out of view and crowd the next one's.
+                    continue;
+                }
                 let text = if v.live {
                     "live".to_string()
                 } else {
@@ -957,6 +962,13 @@ mod tests {
         assert_eq!(words, vec!["00:00", "00:07", "00:14", "live"]);
         assert!(row.labels[3].bright && !row.labels[0].bright);
         assert_eq!(row.labels[0].x, x(0.0) + 2.0);
+        // A block cut by the lane's left edge draws, unlabelled.
+        let mut i = inputs(StripZoom::Cuts, &cs, &sz, NOW, true);
+        i.window.start = 100.0;
+        let row = row_vm(&i);
+        assert!(row.blocks[0].x0 < i.lane.0);
+        let words: Vec<_> = row.labels.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(words, vec!["00:07", "00:14", "live"]);
         // Crowded, the selected one's label stays and the others give way.
         let crowd = |s: &str| 40.0 * s.len() as f32;
         let mut i = inputs(StripZoom::Cuts, &cs, &sz, 500.0, false);

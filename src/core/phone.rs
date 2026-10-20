@@ -269,6 +269,10 @@ pub(crate) const MINI_LEAD_VOLUMES: f64 = 0.75;
 /// where the next volume's ghost starts.
 pub(crate) const MINI_GHOST_VOLUMES: f64 = 0.25;
 
+/// The room kept left of the first block at NOW, as a share of the window,
+/// so a tap on that block lands clear of the edge and the row holds still.
+pub(crate) const MINI_EDGE_SHARE: f64 = 0.1;
+
 /// The mini timeline's time window, in Unix seconds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct MiniWindow {
@@ -322,8 +326,9 @@ pub(crate) fn mini_near_now(now: f64, playhead: f64, pinned: bool, volume_starts
 /// The mini timeline's window. `volume_starts` are the containers' starts,
 /// oldest first (received, archived, live and the next volume's ghost).
 ///
-/// Near now (pinned, or a playhead within four volumes of now) it starts at
-/// the third complete volume before the live one and ends past the live
+/// Near now (pinned, or a playhead within four volumes of now) it starts
+/// [`MINI_EDGE_SHARE`] of the window before the third complete volume before
+/// the live one and ends past the live
 /// volume's expected end (its start plus a typical volume) by
 /// [`MINI_GHOST_VOLUMES`], where the next volume's ghost begins. The live
 /// block's whole span is kept, so the window holds still while the live
@@ -363,15 +368,15 @@ pub(crate) fn mini_window(
         .checked_sub(MINI_VOLUMES as usize)
         .map(|i| begun[i])
         .filter(|&s| s < live_start && live_start - s <= 2.0 * complete * vol);
-    let mut start = first.unwrap_or(live_start - complete * vol);
+    let first = first.unwrap_or(live_start - complete * vol);
+    let end = (live_start + vol).max(now) + MINI_GHOST_VOLUMES * vol;
+    // first = start + MINI_EDGE_SHARE · (end − start), solved for start.
+    let mut start = (first - MINI_EDGE_SHARE * end) / (1.0 - MINI_EDGE_SHARE);
     if !pinned {
         // Keep the playhead off the left edge.
-        start = start.min(playhead - 0.1 * span);
+        start = start.min(playhead - MINI_EDGE_SHARE * (end - start));
     }
-    MiniWindow {
-        start,
-        end: (live_start + vol).max(now) + MINI_GHOST_VOLUMES * vol,
-    }
+    MiniWindow { start, end }
 }
 
 /// How long a still finger must stay down to be a long-press.
@@ -687,11 +692,15 @@ mod tests {
         // Volumes every 300 s; the live one began at 1_200; the ghost at 1_500.
         let starts = [0.0, 300.0, 600.0, 900.0, 1_200.0, 1_500.0];
         let w = mini_window(1_320.0, 1_320.0, true, &starts);
-        assert_eq!(w.start, 300.0, "three complete volumes before the live one");
         assert_eq!(w.end, 1_500.0 + MINI_GHOST_VOLUMES * 300.0);
+        // Three complete volumes before the live one, with the edge room.
+        assert!((300.0 - w.start - MINI_EDGE_SHARE * w.span()).abs() < 1e-9);
         assert!(w.end > 1_500.0, "room for the ghost's first cut");
         let share = (1_320.0 - w.start) / w.span();
-        assert!(share > 0.75 && share < 0.85, "now sits about 80 % across");
+        assert!(
+            share > 0.75 && share < 0.85,
+            "now sits about 80 % across: {share}"
+        );
     }
 
     #[wasm_bindgen_test]
@@ -716,9 +725,11 @@ mod tests {
     #[wasm_bindgen_test]
     fn with_no_volumes_the_window_still_ends_past_now() {
         let w = mini_window(10_000.0, 10_000.0, true, &[]);
-        assert_eq!(
-            w.span(),
-            DEFAULT_VOLUME_SECS * (MINI_VOLUMES + MINI_GHOST_VOLUMES)
+        assert!(
+            (w.span() * (1.0 - MINI_EDGE_SHARE)
+                - DEFAULT_VOLUME_SECS * (MINI_VOLUMES + MINI_GHOST_VOLUMES))
+                .abs()
+                < 1e-9
         );
         assert!(w.end > 10_000.0);
     }
@@ -726,13 +737,15 @@ mod tests {
     #[wasm_bindgen_test]
     fn detached_near_now_keeps_now_in_view_and_the_playhead_off_the_edge() {
         let starts = [0.0, 300.0, 600.0, 900.0, 1_200.0];
+        let pinned = mini_window(1_320.0, 1_320.0, true, &starts);
         let w = mini_window(1_320.0, 800.0, false, &starts);
-        assert_eq!(w.start, 300.0);
-        assert!(w.start < 800.0 - 0.05 * 1_200.0);
+        assert_eq!(w, pinned, "a tap back holds the row");
         assert!(w.end > 1_320.0);
-        // Under the finger at the first block, the window moves out.
-        let w = mini_window(1_320.0, 320.0, false, &starts);
-        assert!(w.start <= 320.0 - 0.1 * 1_200.0);
+        // A tap on the first block lands clear of the edge: still held.
+        assert_eq!(mini_window(1_320.0, 310.0, false, &starts), pinned);
+        // A playhead right at the edge moves it out.
+        let w = mini_window(1_320.0, w.start + 5.0, false, &starts);
+        assert!(w.start < pinned.start);
     }
 
     #[wasm_bindgen_test]

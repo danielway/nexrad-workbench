@@ -893,12 +893,12 @@ mod tests {
         let w = strip_window(StripZoom::Cuts, NOW, range.0, true, &s, None, Some(range));
         assert_eq!(w, base);
         assert_range_inside(w, range);
-        // Four frames start in the window's first block: it moves out just
-        // enough to keep the margin before that block.
+        // Four frames start in the window's first block, which already has
+        // more room before it than a range asks for.
         let range = last_frames(4.0);
         let w = strip_window(StripZoom::Cuts, NOW, range.0, true, &s, None, Some(range));
-        assert_eq!(w.end, base.end);
-        assert!(((range.0 - 20.0) - w.start - RANGE_EDGE_SHARE * w.span()).abs() < 1e-6);
+        assert_eq!(w, base);
+        assert!((range.0 - 20.0) - w.start >= RANGE_EDGE_SHARE * w.span());
     }
 
     #[wasm_bindgen_test]
