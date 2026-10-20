@@ -71,6 +71,25 @@ pub(crate) struct ChunkIngestActions {
     pub request_volume_render: bool,
 }
 
+/// The elevation a live partial-sweep render should draw after a chunk
+/// acknowledgement, or `None` when there is nothing in memory to draw.
+///
+/// The worker keeps radials in memory only until their elevation completes:
+/// the completing chunk flushes the sweep to IndexedDB and drops its radials,
+/// but `current_elevation` keeps naming it. A render request then would find
+/// no radials and come back as a worker error, although nothing is wrong (the
+/// sweep is stored and the live frame already shows it). So the request needs
+/// both an elevation and a non-zero radial count for that elevation.
+pub(crate) fn live_render_target(
+    current_elevation: Option<u8>,
+    current_elevation_radials: Option<u32>,
+) -> Option<u8> {
+    match (current_elevation, current_elevation_radials) {
+        (Some(elevation), Some(radials)) if radials > 0 => Some(elevation),
+        _ => None,
+    }
+}
+
 /// Apply one worker chunk-ingest outcome to the core state and describe the
 /// effects. Pure: in-memory mutation of the slices only (plus `log::debug!`).
 pub(crate) fn reduce_chunk_ingested(
@@ -321,11 +340,14 @@ pub(crate) fn reduce_chunk_ingested(
         }
 
         // ── Log + dispatch: live partial-sweep render ─────────────
-        // Always render whatever elevation is currently being
-        // accumulated — the user expects to see live progress
-        // regardless of which elevation was previously displayed.
+        // Render whatever elevation is currently being accumulated — the
+        // user expects to see live progress regardless of which elevation
+        // was previously displayed — but only while the accumulator still
+        // holds radials for it (see `live_render_target`).
         if !result.is_end {
-            if let Some(target_elev) = result.current_elevation {
+            if let Some(target_elev) =
+                live_render_target(result.current_elevation, result.current_elevation_radials)
+            {
                 let product = env.product_worker_string.to_string();
 
                 // Summarize what the accumulator holds for this elevation
@@ -594,6 +616,66 @@ mod tests {
         assert_eq!(obs.current_in_progress_radials, Some(120));
         assert_eq!(obs.chunk_elev_spans, vec![(1, 1_000.0, 1_010.0, 120)]);
         assert_eq!(obs.current_elev_chunks, vec![(0.0, 120.0, 120)]);
+    }
+
+    // The completing chunk of an elevation flushes its radials to IndexedDB:
+    // the ack still names the elevation but holds none of its radials. No
+    // live render is requested (it would only come back as a worker error);
+    // the stored sweep and the timeline refresh carry on as usual.
+    #[wasm_bindgen_test]
+    fn live_elevation_completing_chunk_requests_no_live_render() {
+        let mut fx = Fx::new();
+        let mut r = base_result(1_000.0);
+        r.current_elevation = Some(1);
+        r.current_elevation_radials = Some(0);
+        r.elevations_completed = vec![1];
+        r.sweeps_stored = 4;
+        r.chunk_elev_spans = vec![(1, 1_060.0, 1_071.0, 120)];
+
+        let a = fx.run(env(true, false, &[1]), &r);
+
+        assert_eq!(a.render_live, None);
+        assert_eq!(
+            a.intents,
+            vec![Intent::RefreshTimeline {
+                auto_position: false
+            }]
+        );
+        assert!(a.force_fresh_render);
+        // The engine still records which cut the stream is on.
+        assert_eq!(
+            fx.engine.observations().current_in_progress_elevation,
+            Some(1)
+        );
+    }
+
+    // The next elevation's first chunk resumes live rendering.
+    #[wasm_bindgen_test]
+    fn live_render_resumes_on_next_elevation_after_completion() {
+        let mut fx = Fx::new();
+        let mut done = base_result(1_000.0);
+        done.current_elevation = Some(1);
+        done.current_elevation_radials = Some(0);
+        done.elevations_completed = vec![1];
+        assert_eq!(fx.run(env(true, false, &[1]), &done).render_live, None);
+
+        let mut next = base_result(1_000.0);
+        next.current_elevation = Some(2);
+        next.current_elevation_radials = Some(120);
+        let a = fx.run(env(true, true, &[1]), &next);
+        assert_eq!(a.render_live, Some((2, "reflectivity".to_string())));
+    }
+
+    #[wasm_bindgen_test]
+    fn live_render_target_needs_an_elevation_with_radials_in_memory() {
+        assert_eq!(live_render_target(Some(3), Some(240)), Some(3));
+        assert_eq!(live_render_target(Some(3), Some(1)), Some(3));
+        // Flushed (completed) elevation, or nothing counted yet.
+        assert_eq!(live_render_target(Some(3), Some(0)), None);
+        assert_eq!(live_render_target(Some(3), None), None);
+        // Start chunk of a mid-volume join: no radials, no elevation.
+        assert_eq!(live_render_target(None, Some(0)), None);
+        assert_eq!(live_render_target(None, None), None);
     }
 
     // (3) Live volume end: promote, seal-before-reset, both
