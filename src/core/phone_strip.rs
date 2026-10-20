@@ -22,7 +22,8 @@
 //! Pinned, the window ends just past now and slides with it. Detached, it
 //! centres on the playhead when the playhead arrives from off the window,
 //! holds still while the finger works inside it, and slides once the
-//! playhead nears an edge ([`strip_window`]). Landscape keeps the spans and
+//! playhead nears an edge, or with now when it showed now and the playhead
+//! keeps its margin ([`strip_window`]). Landscape keeps the spans and
 //! gets more pixels per unit.
 //!
 //! A pinch moves one stop and settles on release ([`PinchTrack`]); the
@@ -195,6 +196,14 @@ pub(crate) fn strip_window(
                     playhead + margin - span
                 } else {
                     p.start
+                };
+                // A window that showed now keeps showing it while the
+                // playhead keeps its margin: a tap back from live leaves
+                // the now line in view as now moves on.
+                let start = if p.end >= now - margin {
+                    start.max((limit - span).min(playhead - margin))
+                } else {
+                    start
                 };
                 (start + span).min(limit)
             }
@@ -1614,6 +1623,26 @@ mod tests {
         }
         // The volume not on the device: just inside its start.
         assert_eq!(tap_landing(450.0, &u, 10_000.0), 310.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn tapping_the_oldest_block_from_live_holds_the_now_window() {
+        // Volumes every 7 minutes, the live one 5 minutes in.
+        let s: Vec<f64> = (0..20)
+            .map(|k| NOW - 300.0 - 420.0 * k as f64)
+            .rev()
+            .collect();
+        let pinned = strip_window(StripZoom::Cuts, NOW, NOW, true, &s, None, None);
+        let oldest = s.iter().copied().find(|&t| t >= pinned.start).unwrap();
+        let tapped = volume_landing(oldest, oldest + 420.0);
+        let w = strip_window(StripZoom::Cuts, NOW, tapped, false, &s, Some(pinned), None);
+        assert!(w.end >= NOW, "{w:?} lost now (pinned {pinned:?})");
+        assert!(w.start <= oldest);
+        // A minute later now is still in view and the tapped block too.
+        let later = NOW + 60.0;
+        let w2 = strip_window(StripZoom::Cuts, later, tapped, false, &s, Some(w), None);
+        assert!(w2.end >= later, "{w2:?} lost now");
+        assert!(w2.start < tapped, "{w2:?} lost the tapped block");
     }
 
     #[wasm_bindgen_test]

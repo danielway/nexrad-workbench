@@ -305,16 +305,18 @@ pub(crate) fn mini_lead_secs(volume_starts: &[f64]) -> f64 {
 }
 
 /// Whether the mini timeline's window is anchored to now: pinned, or a
-/// playhead within two volumes of now (and not past the ghost room).
+/// playhead within three volumes of now (any of the blocks the window
+/// shows from now, and not past the ghost room).
 pub(crate) fn mini_near_now(now: f64, playhead: f64, pinned: bool, volume_starts: &[f64]) -> bool {
     let vol = typical_volume_secs(volume_starts);
-    pinned || (playhead <= now + mini_lead_secs(volume_starts) && now - playhead <= 2.0 * vol)
+    pinned
+        || (playhead <= now + mini_lead_secs(volume_starts) && now - playhead <= MINI_VOLUMES * vol)
 }
 
 /// The mini timeline's window. `volume_starts` are the containers' starts,
 /// oldest first (received, archived, live and the next volume's ghost).
 ///
-/// Near now (pinned, or a playhead within two volumes of now) it shows the
+/// Near now (pinned, or a playhead within three volumes of now) it shows the
 /// last three volumes that have begun, with room right of now for the next
 /// volume's ghost and the cap. A playhead further back gets its own three
 /// volumes centered on it, and the now cap moves to the edge.
