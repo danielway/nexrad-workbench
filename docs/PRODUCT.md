@@ -277,9 +277,12 @@ cached scans.
   (kept in IndexedDB, revalidated by ETag), so bars appear at any zoom for
   one request. Only the days the index lacks (the last day or two, gaps
   while it backfills) are listed live, a few at a time once the overview
-  stops moving, and, zoomed in to scans, the days in view, for their
-  per-volume sizes. Without an index (dev builds) every day is listed live
-  as before. Listed days are stored, so each is listed once. Days the
+  stops moving. Zoomed in to scans, the per-volume sizes for the newest
+  twelve months come from the index's month files (one per site-month,
+  ~50 KB gzipped for a busy month), one request for a month in view;
+  only days no month file holds (older months, the newest day or two) are
+  listed live, for their per-volume sizes. Without an index (dev builds)
+  every day is listed live as before. Listed days are stored, so each is listed once. Days the
   radar recorded nothing show as a red line.
 
 ### 5.6 Saved events (bookmarks)
