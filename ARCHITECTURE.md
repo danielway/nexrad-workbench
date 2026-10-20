@@ -392,7 +392,10 @@ a selected range. It also decides the loading state (`LoadingVm`): while the
 selection is not pinned, the volume under the playhead is not on the device
 and the frame on screen is another volume's, the selected block carries an
 `Arc` (the download's stage from the acquisition's queued / active /
-in-flight spans, or spinning when none is known). The strip writes that to
+in-flight spans, and while it downloads the bytes received over the
+response's `Content-Length` or the listing's size, from the
+`DownloadBytes` the streaming archive GET in `nexrad::acquisition::download`
+reports chunk by chunk; spinning when none is known). The strip writes that to
 `Chrome::phone_loading` each frame; the canvas reads it for a 40 % dim and a
 `Loading 23:49` pill (the phone draws no canvas caption), the chip for its
 dashed outline and the top bar for its clock. `core::phone_dock` holds the

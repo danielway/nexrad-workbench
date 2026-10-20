@@ -684,8 +684,9 @@ nor zooms on the row's pinch.
 **Loading is shown, not announced.** While the frame under the playhead is
 not on the device (a tapped or scrubbed hollow volume, a day from the
 calendar), its block turns white at once and carries a progress arc (its
-share is the download's stage: queued, downloading, decoding; with nothing
-known it spins), the map dims 40 % with the old frame still visible under
+share is the bytes received over the volume's size while it downloads,
+from 45 % to 80 %, with the stage standing in where no size is known:
+queued 15 %, downloading 45 %, decoding 80 %; with nothing known it spins), the map dims 40 % with the old frame still visible under
 it, and a small pill in the middle says `Loading 23:49`. The chip's outline
 is dashed meanwhile and the top bar's clock already reads the time asked
 for. When the frame lands the dim lifts and the block fills.

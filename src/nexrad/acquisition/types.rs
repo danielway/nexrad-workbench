@@ -77,6 +77,18 @@ pub(crate) enum DownloadResult {
     CacheHit(CachedScan),
 }
 
+impl DownloadResult {
+    /// The scan start (Unix seconds) the download was asked for.
+    pub(crate) fn scan_start_secs(&self) -> i64 {
+        match self {
+            DownloadResult::Success { scan, .. } | DownloadResult::CacheHit(scan) => {
+                scan.key.scan_start.as_secs()
+            }
+            DownloadResult::Error { scan_start, .. } => *scan_start,
+        }
+    }
+}
+
 #[cfg(test)]
 mod coverage_tests {
     use super::*;

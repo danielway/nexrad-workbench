@@ -5,6 +5,7 @@
 
 use super::archive_index::{current_timestamp_secs, ArchiveListing};
 use super::types::{CachedScan, DownloadResult};
+use crate::core::acquisition::DownloadProgress;
 use crate::data::{MainThreadStore, ScanCompleteness, ScanKey};
 use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
 use chrono::NaiveDate;
@@ -13,6 +14,15 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::JsFuture;
+
+/// The public NEXRAD Level II archive bucket.
+const ARCHIVE_BUCKET_URL: &str = "https://unidata-nexrad-level2.s3.amazonaws.com";
+
+/// A download's byte progress, by the request's scan start (the listing's
+/// file time, Unix seconds).
+pub(crate) type ProgressReport = (i64, DownloadProgress);
 
 /// Result of an archive listing request.
 #[derive(Debug, Clone)]
@@ -96,6 +106,9 @@ pub(crate) struct DownloadChannel {
     pending_listings: Rc<RefCell<HashSet<String>>>,
     /// Live network statistics
     stats: NetworkStats,
+    /// Byte progress of the downloads in flight, as their chunks arrive.
+    progress_sender: Sender<ProgressReport>,
+    progress_receiver: Receiver<ProgressReport>,
 }
 
 impl Default for DownloadChannel {
@@ -108,6 +121,7 @@ impl DownloadChannel {
     pub(crate) fn new() -> Self {
         let (sender, receiver) = channel();
         let (listing_sender, listing_receiver) = channel();
+        let (progress_sender, progress_receiver) = channel();
         Self {
             sender,
             receiver,
@@ -116,6 +130,8 @@ impl DownloadChannel {
             pending_downloads: Rc::new(RefCell::new(HashSet::new())),
             pending_listings: Rc::new(RefCell::new(HashSet::new())),
             stats: NetworkStats::new(),
+            progress_sender,
+            progress_receiver,
         }
     }
 
@@ -153,6 +169,12 @@ impl DownloadChannel {
         let sender = self.sender.clone();
         let pending = self.pending_downloads.clone();
         let stats = self.stats.clone();
+        let progress = self.progress_sender.clone();
+        let progress_ctx = ctx.clone();
+        let report = move |p: DownloadProgress| {
+            let _ = progress.send((timestamp, p));
+            progress_ctx.request_repaint();
+        };
 
         wasm_bindgen_futures::spawn_local(async move {
             let result = download_specific_file(
@@ -162,6 +184,7 @@ impl DownloadChannel {
                 facade,
                 stats,
                 elevation_filter,
+                &report,
             )
             .await;
 
@@ -237,6 +260,11 @@ impl DownloadChannel {
     }
 
     /// Non-blocking check for a completed listing request.
+    /// The next byte progress report from a download in flight, if any.
+    pub(crate) fn try_recv_progress(&self) -> Option<ProgressReport> {
+        self.progress_receiver.try_recv().ok()
+    }
+
     pub(crate) fn try_recv_listing(&self) -> Option<ListingResult> {
         self.listing_receiver.try_recv().ok()
     }
@@ -315,6 +343,7 @@ async fn download_specific_file(
     facade: MainThreadStore,
     stats: NetworkStats,
     elevation_filter: Option<u8>,
+    report: &dyn Fn(DownloadProgress),
 ) -> DownloadResult {
     use nexrad::data::aws::archive;
 
@@ -343,23 +372,28 @@ async fn download_specific_file(
 
     log::debug!("Cache miss, downloading: {}", file_name);
 
-    // The archive identifier is derived entirely from the file name (site,
-    // date, and S3 key are parsed out of it), and the name came from an
-    // archive listing in the first place — so no pre-GET LIST is needed.
-    // A name that doesn't exist surfaces as a terminal 404 on the GET, the
-    // same outcome the old listing lookup produced with an extra request.
-    let file_meta = archive::Identifier::new(file_name.to_string());
+    // The archive key is derived entirely from the file name (site, date,
+    // and S3 key are parsed out of it), and the name came from an archive
+    // listing in the first place — so no pre-GET LIST is needed. A name
+    // that doesn't exist surfaces as a terminal 404 on the GET.
+    let Some(url) = archive_url(&archive::Identifier::new(file_name.to_string())) else {
+        return DownloadResult::Error {
+            message: format!("Download failed: bad file name {file_name}"),
+            scan_start: timestamp,
+        };
+    };
 
-    // Download the file
+    // Download the file, its body read chunk by chunk so the bytes received
+    // reach the timeline as they arrive.
     stats.request_started();
     let fetch_start = web_time::Instant::now();
-    let file = match with_retry(&DEFAULT_POLICY, "archive_download", |_attempt| {
-        let id = file_meta.clone();
-        async move { classify_nexrad_result(archive::download_file(id).await) }
+    let data = match with_retry(&DEFAULT_POLICY, "archive_download", |_attempt| {
+        let url = url.clone();
+        async move { fetch_streaming(&url, report).await }
     })
     .await
     {
-        Ok(file) => file,
+        Ok(data) => data,
         Err(msg) => {
             stats.request_completed(0);
             return DownloadResult::Error {
@@ -370,7 +404,6 @@ async fn download_specific_file(
     };
     let fetch_ms = fetch_start.elapsed().as_secs_f64() * 1000.0;
 
-    let data = file.data().to_vec();
     let bytes_downloaded = data.len() as u64;
     log::debug!("Downloaded {} bytes in {:.0}ms", bytes_downloaded, fetch_ms);
 
@@ -382,6 +415,106 @@ async fn download_specific_file(
         fetch_latency_ms: fetch_ms,
         decode_latency_ms: 0.0,
     }
+}
+
+/// The archive URL of a volume file: `<bucket>/YYYY/MM/DD/SITE/<name>`.
+fn archive_url(id: &nexrad::data::aws::archive::Identifier) -> Option<String> {
+    let date = id.date_time()?;
+    let site = id.site()?;
+    Some(format!(
+        "{}/{}/{}/{}",
+        ARCHIVE_BUCKET_URL,
+        date.format("%Y/%m/%d"),
+        site,
+        id.name()
+    ))
+}
+
+/// One GET of an archive file, its body read as a stream: each chunk that
+/// arrives is reported (bytes so far, and the response's `Content-Length`
+/// when it has one). Classified for the retry loop: a 404 or another client
+/// error is terminal; a dropped connection, 408, 429 or 5xx retries.
+async fn fetch_streaming(url: &str, report: &dyn Fn(DownloadProgress)) -> Verdict<Vec<u8>> {
+    let global = js_sys::global();
+    let promise = if let Some(window) = global.dyn_ref::<web_sys::Window>() {
+        window.fetch_with_str(url)
+    } else if let Some(worker) = global.dyn_ref::<web_sys::WorkerGlobalScope>() {
+        worker.fetch_with_str(url)
+    } else {
+        return Verdict::Terminal("no fetch".into());
+    };
+    let response: web_sys::Response = match JsFuture::from(promise).await {
+        Ok(v) => match v.dyn_into() {
+            Ok(r) => r,
+            Err(_) => return Verdict::Terminal("invalid response".into()),
+        },
+        Err(_) => return Verdict::Retry { after: None },
+    };
+    let status = response.status();
+    if status == 408 || status == 429 || (500..=599).contains(&status) {
+        return Verdict::Retry { after: None };
+    }
+    if status == 404 {
+        return Verdict::Terminal("Object not found (404)".into());
+    }
+    if !response.ok() {
+        return Verdict::Terminal(format!("HTTP {status}"));
+    }
+    let total = response
+        .headers()
+        .get("content-length")
+        .ok()
+        .flatten()
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    report(DownloadProgress { received: 0, total });
+    let Some(body) = response.body() else {
+        // No stream to read: take the body whole.
+        let Ok(buf) = response.array_buffer() else {
+            return Verdict::Retry { after: None };
+        };
+        return match JsFuture::from(buf).await {
+            Ok(buf) => {
+                let data = js_sys::Uint8Array::new(&buf).to_vec();
+                report(DownloadProgress {
+                    received: data.len() as u64,
+                    total,
+                });
+                Verdict::Ok(data)
+            }
+            Err(_) => Verdict::Retry { after: None },
+        };
+    };
+    let reader: web_sys::ReadableStreamDefaultReader = body.get_reader().unchecked_into();
+    let mut data: Vec<u8> = Vec::with_capacity(total.unwrap_or(0).min(64 << 20) as usize);
+    loop {
+        let chunk = match JsFuture::from(reader.read()).await {
+            Ok(c) => c,
+            Err(_) => return Verdict::Retry { after: None },
+        };
+        let done = js_sys::Reflect::get(&chunk, &"done".into())
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        if done {
+            break;
+        }
+        let Ok(value) = js_sys::Reflect::get(&chunk, &"value".into()) else {
+            return Verdict::Retry { after: None };
+        };
+        let bytes = js_sys::Uint8Array::new(&value);
+        let start = data.len();
+        data.resize(start + bytes.length() as usize, 0);
+        bytes.copy_to(&mut data[start..]);
+        report(DownloadProgress {
+            received: data.len() as u64,
+            total,
+        });
+    }
+    if total.is_some_and(|t| t != data.len() as u64) {
+        // Cut off mid-body.
+        return Verdict::Retry { after: None };
+    }
+    Verdict::Ok(data)
 }
 
 #[cfg(test)]

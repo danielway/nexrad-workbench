@@ -199,6 +199,7 @@ fn draw_strip(
             queued: &state.download_progress.pending_scans,
             downloading: &state.download_progress.active_scans,
             decoding: &state.download_progress.in_flight_scans,
+            bytes: state.download_progress.bytes.entries(),
         },
         tz_offset_secs: super::tz_offset_secs(
             window.start + window.span() / 2.0,

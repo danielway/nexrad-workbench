@@ -25,13 +25,16 @@
 //!
 //! While the frame under the playhead is not on the device yet, the row
 //! says so on its block (a progress arc, [`Arc`]) and the map says so
-//! with a dim and a pill ([`LoadingVm`]). The progress is the download's
-//! stage (queued, downloading, decoding), the only progress acquisition
-//! knows; with none known the arc spins.
+//! with a dim and a pill ([`LoadingVm`]). While it downloads the arc is the
+//! bytes received over the bytes expected (the response's size, else the
+//! listing's), from the queued share to the decoding one; without a size
+//! it is the stage (queued, downloading, decoding); with none known the
+//! arc spins.
 //!
 //! All pure, in the row's own points (x along the lane, y from the row's
 //! top): the shell paints rectangles, lines and text where this says.
 
+use crate::core::acquisition::DownloadProgress;
 use crate::core::phone::MiniWindow;
 use crate::core::phone_strip::{activity_bars, StripZoom, DAY_BUCKET_SECS};
 use crate::core::storm_activity::{ScanSizes, ViewScale, MIN_BAR_FRAC};
@@ -98,7 +101,8 @@ pub(crate) const DECODING_SHARE: f32 = 0.8;
 /// How far the frame under the playhead has come.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Arc {
-    /// A share of the circle, from the download's stage.
+    /// A share of the circle, from the bytes received or the download's
+    /// stage.
     Share(f32),
     /// Nothing known yet: the arc spins.
     Spinning,
@@ -206,6 +210,8 @@ pub(crate) struct Downloads<'a> {
     pub downloading: &'a [(i64, i64)],
     /// Downloaded, being decoded and stored.
     pub decoding: &'a [(i64, i64)],
+    /// The bytes each download in flight has received, by its scan start.
+    pub bytes: &'a [(i64, DownloadProgress)],
 }
 
 /// Everything the row reads.
@@ -349,8 +355,22 @@ fn live_fill(v: &Vol<'_>, now: f64) -> f32 {
     share.clamp(0.0, 1.0)
 }
 
-/// How far the volume's download has come, from the acquisition's spans.
-fn download_arc(v: &Vol<'_>, d: &Downloads<'_>) -> Arc {
+/// The arc's share while a download is under way: the bytes received over
+/// the bytes expected, from [`DOWNLOADING_SHARE`] (nothing yet) to
+/// [`DECODING_SHARE`] (all of it, decoding next), or the stage's
+/// [`DOWNLOADING_SHARE`] when the size isn't known, so the arc only ever
+/// moves forward (queued, then downloading, then decoding).
+pub(crate) fn downloading_share(progress: Option<DownloadProgress>, listed: Option<u64>) -> f32 {
+    match progress.and_then(|p| p.fraction(listed)) {
+        Some(f) => DOWNLOADING_SHARE + (DECODING_SHARE - DOWNLOADING_SHARE) * f,
+        None => DOWNLOADING_SHARE,
+    }
+}
+
+/// How far the volume's download has come, from the acquisition's spans and
+/// the bytes received (over the response's size, else the listing's).
+fn download_arc(v: &Vol<'_>, d: &Downloads<'_>, sizes: &ScanSizes) -> Arc {
+    let mine = |s: f64| s >= v.start - KEY_SLACK_SECS && s < v.end.max(v.start + 1.0);
     let hits = |spans: &[(i64, i64)]| {
         spans.iter().any(|&(s, e)| {
             let (s, e) = (s as f64, e as f64);
@@ -360,7 +380,17 @@ fn download_arc(v: &Vol<'_>, d: &Downloads<'_>) -> Arc {
     if hits(d.decoding) {
         Arc::Share(DECODING_SHARE)
     } else if hits(d.downloading) {
-        Arc::Share(DOWNLOADING_SHARE)
+        let progress = d
+            .bytes
+            .iter()
+            .find(|(k, _)| mine(*k as f64))
+            .map(|(_, p)| *p);
+        let listed = sizes
+            .scans
+            .iter()
+            .find(|s| (s.start - v.start).abs() <= KEY_SLACK_SECS)
+            .map(|s| u64::from(s.bytes));
+        Arc::Share(downloading_share(progress, listed))
     } else if hits(d.queued) {
         Arc::Share(QUEUED_SHARE)
     } else {
@@ -391,7 +421,7 @@ fn loading_vm(i: &RowInputs<'_>, vols: &[Vol<'_>], selected: Option<usize>) -> O
         start: v.start,
         label: format!("Loading {time}"),
         time,
-        arc: download_arc(v, &i.downloads),
+        arc: download_arc(v, &i.downloads, i.sizes),
     })
 }
 
@@ -995,6 +1025,77 @@ mod tests {
             ..Downloads::default()
         };
         assert_eq!(row_vm(&i).loading.unwrap().arc, Arc::Spinning);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_downloading_share_runs_from_downloading_to_decoding_by_bytes() {
+        let at = |received, total| Some(DownloadProgress { received, total });
+        assert_eq!(downloading_share(at(0, Some(100)), None), DOWNLOADING_SHARE);
+        assert_eq!(downloading_share(at(100, Some(100)), None), DECODING_SHARE);
+        let half = downloading_share(at(50, Some(100)), None);
+        assert!((half - (DOWNLOADING_SHARE + DECODING_SHARE) / 2.0).abs() < 1e-6);
+        // No response size: the listing's.
+        assert_eq!(downloading_share(at(25, None), Some(25)), DECODING_SHARE);
+        // No size anywhere, or no bytes yet: the stage.
+        assert_eq!(downloading_share(at(25, None), None), DOWNLOADING_SHARE);
+        assert_eq!(downloading_share(None, Some(100)), DOWNLOADING_SHARE);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_arc_follows_the_bytes_received() {
+        let cs = strip();
+        let span = [(420_i64, 840_i64)];
+        // The listing says 4 MB; the response has said nothing of its size.
+        let sz = ScanSizes {
+            scans: vec![ScanActivity {
+                start: 420.0,
+                end: 840.0,
+                bytes: 4_000_000,
+                level: 0.5,
+            }],
+            known_days: vec![0],
+        };
+        let mut last = 0.0;
+        for received in [0_u64, 1_000_000, 2_000_000, 4_000_000] {
+            let bytes = [(
+                425_i64,
+                DownloadProgress {
+                    received,
+                    total: None,
+                },
+            )];
+            let mut i = inputs(StripZoom::Cuts, &cs, &sz, 430.0, false);
+            i.downloads = Downloads {
+                downloading: &span,
+                bytes: &bytes,
+                ..Downloads::default()
+            };
+            let Arc::Share(share) = row_vm(&i).loading.unwrap().arc else {
+                panic!("a share while downloading");
+            };
+            assert!(share >= last, "the arc only advances");
+            last = share;
+        }
+        assert_eq!(last, DECODING_SHARE, "all of it: decoding next");
+        // Another download's bytes are not this one's.
+        let bytes = [(
+            900_i64,
+            DownloadProgress {
+                received: 4_000_000,
+                total: Some(4_000_000),
+            },
+        )];
+        let mut i = inputs(StripZoom::Cuts, &cs, &sz, 430.0, false);
+        i.downloads = Downloads {
+            downloading: &span,
+            bytes: &bytes,
+            ..Downloads::default()
+        };
+        assert_eq!(
+            row_vm(&i).loading.unwrap().arc,
+            Arc::Share(DOWNLOADING_SHARE),
+            "no bytes reported: the stage"
+        );
     }
 
     #[wasm_bindgen_test]

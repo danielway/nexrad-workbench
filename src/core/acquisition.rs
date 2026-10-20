@@ -1266,6 +1266,98 @@ pub(crate) fn plan_lookback_backfill(
     }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Byte progress
+// ───────────────────────────────────────────────────────────────────────────
+
+/// How far one archive download has come: the bytes received so far and,
+/// when the response says (its `Content-Length`), how many it will be.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DownloadProgress {
+    pub received: u64,
+    pub total: Option<u64>,
+}
+
+impl DownloadProgress {
+    /// The share received, 0–1: over the response's own total, else over
+    /// `listed` (the volume's size in the day's listing), else unknown.
+    pub(crate) fn fraction(&self, listed: Option<u64>) -> Option<f32> {
+        let total = self.total.or(listed).filter(|t| *t > 0)?;
+        Some((self.received as f64 / total as f64).clamp(0.0, 1.0) as f32)
+    }
+}
+
+/// The byte progress of the downloads in flight, keyed by the request's
+/// scan start (the listing's file time, Unix seconds), as the download
+/// queue keys its items.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct DownloadBytes {
+    entries: Vec<(i64, DownloadProgress)>,
+}
+
+impl DownloadBytes {
+    /// A report from the download: the latest wins (a retry starts again
+    /// from zero).
+    pub(crate) fn record(&mut self, scan_start: i64, progress: DownloadProgress) {
+        match self.entries.iter_mut().find(|(k, _)| *k == scan_start) {
+            Some(e) => e.1 = progress,
+            None => self.entries.push((scan_start, progress)),
+        }
+    }
+
+    /// The download finished or failed: its bytes no longer say anything.
+    pub(crate) fn finish(&mut self, scan_start: i64) {
+        self.entries.retain(|(k, _)| *k != scan_start);
+    }
+
+    /// Every download's progress, by scan start.
+    pub(crate) fn entries(&self) -> &[(i64, DownloadProgress)] {
+        &self.entries
+    }
+}
+
+#[cfg(test)]
+mod download_bytes_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn the_share_is_over_the_response_total_then_the_listing() {
+        let p = DownloadProgress {
+            received: 2_500_000,
+            total: Some(10_000_000),
+        };
+        assert_eq!(p.fraction(Some(5_000_000)), Some(0.25), "the response wins");
+        let p = DownloadProgress {
+            received: 2_500_000,
+            total: None,
+        };
+        assert_eq!(p.fraction(Some(5_000_000)), Some(0.5));
+        assert_eq!(p.fraction(None), None, "nothing to divide by");
+        assert_eq!(p.fraction(Some(0)), None);
+        // A listing that undercounts never reads past whole.
+        assert_eq!(p.fraction(Some(1_000_000)), Some(1.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_report_replaces_the_last_and_finishing_forgets_it() {
+        let mut b = DownloadBytes::default();
+        let at = |received| DownloadProgress {
+            received,
+            total: Some(100),
+        };
+        b.record(10, at(20));
+        b.record(20, at(5));
+        b.record(10, at(60));
+        assert_eq!(b.entries(), &[(10, at(60)), (20, at(5))]);
+        // A retry starts again from zero.
+        b.record(10, at(0));
+        assert_eq!(b.entries()[0].1.received, 0);
+        b.finish(10);
+        assert_eq!(b.entries(), &[(20, at(5))]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

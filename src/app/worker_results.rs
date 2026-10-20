@@ -53,7 +53,20 @@ impl WorkbenchApp {
             }
         }
 
+        // Byte progress first: a download's reports all precede its result.
+        while let Some((start, progress)) = self
+            .acquisition
+            .coordinator
+            .download_channel
+            .try_recv_progress()
+        {
+            self.state.download_progress.bytes.record(start, progress);
+        }
         if let Some(result) = self.acquisition.coordinator.download_channel.try_recv() {
+            self.state
+                .download_progress
+                .bytes
+                .finish(result.scan_start_secs());
             self.handle_download_outcome(result);
         }
 
