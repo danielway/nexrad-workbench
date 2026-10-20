@@ -429,7 +429,7 @@ mod tests {
         next: Option<Vec<ChunkProjectionInfo>>,
     ) -> StreamingPlan {
         StreamingPlan {
-            filter: StreamingFilter::Elevation(1),
+            filter: StreamingFilter::elevation(1),
             built_at_secs: 0.0,
             revision: 0,
             current_volume_chunks: current,
@@ -509,7 +509,7 @@ mod coverage_tests {
         next: Option<Vec<ChunkProjectionInfo>>,
     ) -> StreamingPlan {
         StreamingPlan {
-            filter: StreamingFilter::Elevation(1),
+            filter: StreamingFilter::elevation(1),
             built_at_secs: 0.0,
             revision: 0,
             current_volume_chunks: current,

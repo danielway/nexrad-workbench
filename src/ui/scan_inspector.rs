@@ -99,7 +99,7 @@ fn draw_scan_inspector(
     };
 
     // Rebuild the merged view and find the inspected container. We use
-    // `tilt: None` so EVERY elevation becomes a frame cell (the full volume
+    // `TiltFilter::Every` so EVERY elevation becomes a frame cell (the full volume
     // breakdown), unlike the strip which filters to the selected tilt; the
     // per-cell state resolution (cached/in-flight/available/...) is identical.
     let view = TimelineView::build(
@@ -128,7 +128,7 @@ fn draw_scan_inspector(
         product,
         // `None` ⇒ every elevation is a frame cell, so the inspector lists the
         // whole volume (all tilts), not just the selected one.
-        tilt: None,
+        tilt: crate::core::tilt::TiltFilter::Every,
         active,
         prev_active: None,
     };

@@ -418,7 +418,8 @@ pub(crate) fn render_canvas_with_geo(
                             .and_then(|s| s.chunk_time_spans.last().map(|&(_, end, _)| end)),
                         offscreen_cut: crate::core::canvas::offscreen_live_cut(
                             playback.state.playback_mode() == crate::core::PlaybackMode::Macro,
-                            state.viz_state.elevation_selection.elevation_number(),
+                            live.radar_model
+                                .selected_cut(&state.viz_state.elevation_selection),
                             live.radar_model.collecting_elevation(),
                             active_sweep.and_then(|s| s.data_azimuth_range),
                         ),
@@ -694,7 +695,9 @@ fn compute_gpu_sweep_state(
     // keep driving the GPU sweep boundary and age desaturation between visits
     // of a fixed elevation. Frames mode never composites the partial.
     // Archive animation still uses effective_sweep_animation.
-    let selected_elev = state.viz_state.elevation_selection.elevation_number();
+    let selected_elev = live
+        .radar_model
+        .selected_cut(&state.viz_state.elevation_selection);
     let live_range = crate::core::canvas::live_compositing_azimuth_range(
         playback.state.playback_mode() == crate::core::PlaybackMode::Macro,
         selected_elev,

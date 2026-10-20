@@ -96,7 +96,8 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         );
 
         // --- Phase 2: Group + extract sweeps into uploads ---
-        // A filter-scoped fetch only keeps the requested elevation cuts. The
+        // A filter-scoped fetch only keeps the requested elevation cuts (and
+        // every other visit of their angles). The
         // whole file was still decoded above (records are interleaved, so the
         // VCP and timing depend on seeing them all), but dropping unwanted cuts
         // here skips the expensive sweep-blob extraction + IDB write for them.
@@ -104,7 +105,10 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let mut by_elevation =
             crate::nexrad::decode::ingest_phases::group_radials_by_elevation(&all_radials);
         if !wanted_elevations.is_empty() {
-            by_elevation.retain(|elev, _| wanted_elevations.contains(elev));
+            // A held tilt is an angle: keep its SAILS/MRLE repeats too.
+            let wanted =
+                crate::core::tilt::scope_with_repeats(&wanted_elevations, extracted_vcp.as_ref());
+            by_elevation.retain(|elev, _| wanted.contains(elev));
         }
         let elevations = crate::nexrad::decode::ingest_phases::build_elevation_uploads(
             &by_elevation,

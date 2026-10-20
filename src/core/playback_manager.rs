@@ -212,7 +212,7 @@ impl PlaybackManager {
         timeline: &RadarTimeline,
         playback_ts: f64,
         displayed_elev: u8,
-        is_auto: bool,
+        tilt: crate::core::tilt::TiltFilter,
         max_scan_age: f64,
     ) -> Option<(f64, u8, f32, f64, f64)> {
         let current_scan = timeline.find_recent_scan(playback_ts, max_scan_age)?;
@@ -227,14 +227,33 @@ impl PlaybackManager {
             )
         };
 
-        if !is_auto {
-            // Fixed: same elevation from the previous scan
+        if !tilt.is_every() {
+            // Fixed: the previous visit of the held angle — an earlier
+            // SAILS/MRLE repeat in this volume, else the last visit in the
+            // previous one.
+            fn latest_visit_before(
+                scan: &Scan,
+                tilt: crate::core::tilt::TiltFilter,
+                before: f64,
+            ) -> Option<&Sweep> {
+                let cuts = tilt.cuts(scan.vcp_pattern.as_ref());
+                scan.sweeps
+                    .iter()
+                    .filter(|s| cuts.contains(s.elevation_number) && s.start_time < before)
+                    .max_by(|a, b| a.start_time.total_cmp(&b.start_time))
+            }
+            let shown = current_scan
+                .sweeps
+                .iter()
+                .find(|s| s.elevation_number == displayed_elev);
+            if let Some(prev) =
+                shown.and_then(|d| latest_visit_before(current_scan, tilt, d.start_time))
+            {
+                return Some(sweep_to_info(current_scan, prev));
+            }
             let prev_scan = timeline.find_previous_scan(playback_ts, max_scan_age);
             prev_scan.and_then(|ps| {
-                ps.sweeps
-                    .iter()
-                    .find(|s| s.elevation_number == displayed_elev)
-                    .map(|s| sweep_to_info(ps, s))
+                latest_visit_before(ps, tilt, f64::INFINITY).map(|s| sweep_to_info(ps, s))
             })
         } else {
             // Latest: previous sweep in time order within the same scan
@@ -325,10 +344,11 @@ impl PlaybackManager {
 /// Resolve the user's intent against the timeline into a fully-qualified
 /// sweep identity, or `None` if the requested sweep is not available.
 ///
-/// **No fuzzy fallback**: in `Fixed` mode, only an exact `elevation_number`
-/// match qualifies; if the selected elevation has no started sweep in the
-/// resolved scan, this returns `None`. Callers must blank the canvas
-/// rather than fall back to a different elevation.
+/// **No fuzzy fallback**: in `Fixed` mode, only a cut at the held angle
+/// qualifies (the newest started visit of it: the base cut or a SAILS/MRLE
+/// repeat, see [`crate::core::tilt`]); if the scan has none started, this
+/// returns `None`. Callers must blank the canvas rather than fall back to a
+/// different elevation.
 ///
 /// In `Latest` mode, the most recent started sweep at or before the
 /// playback position is selected (any elevation).
@@ -350,18 +370,18 @@ pub(crate) fn resolve_active_sweep_target(
     let product_str = product.to_worker_string();
 
     let sweep = match elevation_selection {
-        crate::core::ElevationSelection::Fixed {
-            elevation_number, ..
-        } => scan
-            .sweeps
-            .iter()
-            .filter(|s| s.elevation_number == *elevation_number)
-            .filter(|s| s.start_time <= playback_position)
-            .max_by(|a, b| {
-                a.start_time
-                    .partial_cmp(&b.start_time)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })?,
+        sel @ crate::core::ElevationSelection::Fixed { .. } => {
+            let cuts = crate::core::tilt::TiltFilter::from(sel).cuts(scan.vcp_pattern.as_ref());
+            scan.sweeps
+                .iter()
+                .filter(|s| cuts.contains(s.elevation_number))
+                .filter(|s| s.start_time <= playback_position)
+                .max_by(|a, b| {
+                    a.start_time
+                        .partial_cmp(&b.start_time)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })?
+        }
         crate::core::ElevationSelection::Latest => scan
             .sweeps
             .iter()
@@ -389,7 +409,8 @@ pub(crate) fn resolve_active_sweep_target(
 
 /// The newest *complete* sweep (product blob cached) matching the selection
 /// at or before `playback_position`, looking in the scan at the playhead and
-/// then the one before it. `Latest` means the most recently completed cut.
+/// then the one before it. `Latest` means the most recently completed cut; a
+/// held angle the newest completed visit of it (SAILS/MRLE repeats count).
 pub(crate) fn resolve_latest_complete_sweep(
     site_id: &str,
     playback_position: f64,
@@ -399,7 +420,7 @@ pub(crate) fn resolve_latest_complete_sweep(
     max_scan_age_secs: f64,
 ) -> Option<crate::core::SweepIdentity> {
     let product_str = product.to_worker_string();
-    let wanted = elevation_selection.elevation_number();
+    let tilt = crate::core::tilt::TiltFilter::from(elevation_selection);
     [
         timeline.find_recent_scan(playback_position, max_scan_age_secs),
         timeline.find_previous_scan(playback_position, max_scan_age_secs),
@@ -407,9 +428,10 @@ pub(crate) fn resolve_latest_complete_sweep(
     .into_iter()
     .flatten()
     .find_map(|scan| {
+        let cuts = tilt.cuts(scan.vcp_pattern.as_ref());
         scan.sweeps
             .iter()
-            .filter(|s| wanted.is_none_or(|n| s.elevation_number == n))
+            .filter(|s| cuts.contains(s.elevation_number))
             .filter(|s| s.start_time <= playback_position)
             .filter(|s| s.cached_products.iter().any(|p| p == product_str))
             .max_by(|a, b| {
@@ -458,8 +480,8 @@ pub(crate) enum DesiredDisplay {
 /// Precedence (mirrors `merge_cached_into_live`):
 /// 1. If the live session is actively collecting cut `E` in volume `V`, and
 ///    the user's intent points at *that same cut* (the resolved scan is `V`
-///    and the selected elevation is `E`, or selection is `Latest`), the live
-///    partial wins → [`DesiredDisplay::LivePartial`].
+///    and `E` is a visit of the held angle, or selection is `Latest`), the
+///    live partial wins → [`DesiredDisplay::LivePartial`].
 /// 2. Otherwise the cache answers: [`resolve_active_sweep_target`] →
 ///    [`DesiredDisplay::Cached`] when a sweep matches, else
 ///    [`DesiredDisplay::Blank`].
@@ -504,15 +526,13 @@ pub(crate) fn resolve_desired_display(
     if let Some((elev, anchor_ms)) = live_cut {
         if let Some(scan) = timeline.find_recent_scan(playback_position, max_scan_age_secs) {
             let scan_ms = scan.key_ms();
+            // A held angle points at the collecting cut when the cut is a
+            // visit of that angle (a SAILS/MRLE repeat counts). The collecting
+            // cut *is* the latest, so `Latest` always points at it while the
+            // resolved scan is the live volume.
             let intent_is_live_cut = scan_ms == anchor_ms
-                && match elevation_selection {
-                    crate::core::ElevationSelection::Fixed {
-                        elevation_number, ..
-                    } => *elevation_number == elev,
-                    // The collecting cut *is* the latest, so `Latest` always
-                    // points at it while the resolved scan is the live volume.
-                    crate::core::ElevationSelection::Latest => true,
-                };
+                && crate::core::tilt::TiltFilter::from(elevation_selection)
+                    .matches(scan.vcp_pattern.as_ref(), elev);
             if intent_is_live_cut {
                 return DesiredDisplay::LivePartial {
                     elevation_number: elev,
@@ -1387,8 +1407,22 @@ mod coverage_tests {
             vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
         )]);
         // Playback far beyond MAX_AGE.
-        assert!(PlaybackManager::find_prev_sweep(&tl, 9999.0, 1, true, MAX_AGE).is_none());
-        assert!(PlaybackManager::find_prev_sweep(&tl, 9999.0, 1, false, MAX_AGE).is_none());
+        assert!(PlaybackManager::find_prev_sweep(
+            &tl,
+            9999.0,
+            1,
+            crate::core::tilt::TiltFilter::Every,
+            MAX_AGE
+        )
+        .is_none());
+        assert!(PlaybackManager::find_prev_sweep(
+            &tl,
+            9999.0,
+            1,
+            crate::core::tilt::TiltFilter::number(1),
+            MAX_AGE
+        )
+        .is_none());
     }
 
     #[wasm_bindgen_test]
@@ -1405,9 +1439,14 @@ mod coverage_tests {
                 sweep_with(1010.0, 1020.0, 0.9, 2, vec!["reflectivity"]),
             ],
         )]);
-        let (key_ts, elev_num, elev_deg, start, end) =
-            PlaybackManager::find_prev_sweep(&tl, 1015.0, 2, true, MAX_AGE)
-                .expect("prev sweep within same scan");
+        let (key_ts, elev_num, elev_deg, start, end) = PlaybackManager::find_prev_sweep(
+            &tl,
+            1015.0,
+            2,
+            crate::core::tilt::TiltFilter::Every,
+            MAX_AGE,
+        )
+        .expect("prev sweep within same scan");
         assert!((key_ts - 1000.0).abs() < 1e-9);
         assert_eq!(elev_num, 1);
         assert!(
@@ -1442,9 +1481,14 @@ mod coverage_tests {
         let tl = timeline_with(vec![prev_scan, cur_scan]);
         // Generous max_age so the ~1000s gap to the prior scan isn't age-gated
         // (age gating is covered by its own test); this checks the fallback path.
-        let (key_ts, elev_num, _deg, start, end) =
-            PlaybackManager::find_prev_sweep(&tl, 2005.0, 1, true, 5_000.0)
-                .expect("falls back to prior scan's last sweep");
+        let (key_ts, elev_num, _deg, start, end) = PlaybackManager::find_prev_sweep(
+            &tl,
+            2005.0,
+            1,
+            crate::core::tilt::TiltFilter::Every,
+            5_000.0,
+        )
+        .expect("falls back to prior scan's last sweep");
         // Prev scan's LAST sweep = elev_num 2, 1010..1020.
         assert!((key_ts - 1000.0).abs() < 1e-9);
         assert_eq!(elev_num, 2);
@@ -1463,7 +1507,14 @@ mod coverage_tests {
             215,
             vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
         )]);
-        assert!(PlaybackManager::find_prev_sweep(&tl, 1005.0, 1, true, MAX_AGE).is_none());
+        assert!(PlaybackManager::find_prev_sweep(
+            &tl,
+            1005.0,
+            1,
+            crate::core::tilt::TiltFilter::Every,
+            MAX_AGE
+        )
+        .is_none());
     }
 
     #[wasm_bindgen_test]
@@ -1488,9 +1539,14 @@ mod coverage_tests {
         );
         let tl = timeline_with(vec![prev_scan, cur_scan]);
         // Generous max_age so the ~1000s gap to the prior scan isn't age-gated.
-        let (key_ts, elev_num, _deg, start, end) =
-            PlaybackManager::find_prev_sweep(&tl, 2005.0, 2, false, 5_000.0)
-                .expect("prev scan has elev 2");
+        let (key_ts, elev_num, _deg, start, end) = PlaybackManager::find_prev_sweep(
+            &tl,
+            2005.0,
+            2,
+            crate::core::tilt::TiltFilter::number(2),
+            5_000.0,
+        )
+        .expect("prev scan has elev 2");
         assert!((key_ts - 1000.0).abs() < 1e-9);
         assert_eq!(elev_num, 2);
         assert!((start - 1010.0).abs() < 1e-9);
@@ -1516,7 +1572,14 @@ mod coverage_tests {
         );
         let tl = timeline_with(vec![prev_scan, cur_scan]);
         // Requesting elev 7 which the prev scan does not have.
-        assert!(PlaybackManager::find_prev_sweep(&tl, 2005.0, 7, false, MAX_AGE).is_none());
+        assert!(PlaybackManager::find_prev_sweep(
+            &tl,
+            2005.0,
+            7,
+            crate::core::tilt::TiltFilter::number(7),
+            MAX_AGE
+        )
+        .is_none());
     }
 
     #[wasm_bindgen_test]
@@ -1540,9 +1603,14 @@ mod coverage_tests {
         let tl = timeline_with(vec![prev_scan, cur_scan]);
         // elev 9 absent from current scan → prev scan's last sweep (elev 1).
         // Generous max_age so the ~1000s gap to the prior scan isn't age-gated.
-        let (key_ts, elev_num, _deg, _s, _e) =
-            PlaybackManager::find_prev_sweep(&tl, 2005.0, 9, true, 5_000.0)
-                .expect("falls back to prior scan last sweep");
+        let (key_ts, elev_num, _deg, _s, _e) = PlaybackManager::find_prev_sweep(
+            &tl,
+            2005.0,
+            9,
+            crate::core::tilt::TiltFilter::Every,
+            5_000.0,
+        )
+        .expect("falls back to prior scan last sweep");
         assert!((key_ts - 1000.0).abs() < 1e-9);
         assert_eq!(elev_num, 1);
     }

@@ -52,12 +52,12 @@ impl Derived {
     /// before any subsystem tick or panel render, so every consumer
     /// downstream reads the same values. `streaming` is the live
     /// subsystem's `mode_state.is_active()` — an active stream session.
-    /// `collecting_elevation` is the live in-progress cut when known.
+    /// `live` is the frame's live radar snapshot (the in-progress cut).
     pub(crate) fn for_frame(
         state: &AppState,
         playback: &Playback,
         streaming: bool,
-        collecting_elevation: Option<u8>,
+        live: &crate::core::LiveRadarModel,
     ) -> Self {
         Self {
             frame_now_secs: state.frame_now.secs(),
@@ -66,7 +66,7 @@ impl Derived {
             effective_sweep_animation: state.effective_sweep_animation(
                 &playback.state,
                 streaming,
-                collecting_elevation,
+                live,
             ),
         }
     }

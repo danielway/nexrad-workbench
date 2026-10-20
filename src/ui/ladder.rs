@@ -166,6 +166,15 @@ pub(super) fn ladder(
                 theme::SELECTED,
             );
         }
+        if let Some(repeats) = &row.tilt.repeats {
+            painter.text(
+                Pos2::new(track.right(), r.center().y),
+                Align2::RIGHT_CENTER,
+                repeats,
+                FontId::proportional(theme::CAPTION - 1.0),
+                theme::TEXT_FAINT,
+            );
+        }
         if let Some(hint) = row.hint {
             painter.text(
                 Pos2::new(track.left(), r.center().y),

@@ -419,10 +419,10 @@ mod tests {
         assert_eq!(eng.input_revision, 0);
 
         // First filter set changes the value → bump.
-        eng.set_filter(StreamingFilter::Elevation(2));
+        eng.set_filter(StreamingFilter::elevation(2));
         assert_eq!(eng.input_revision, 1);
         // Same filter again → no bump.
-        eng.set_filter(StreamingFilter::Elevation(2));
+        eng.set_filter(StreamingFilter::elevation(2));
         assert_eq!(eng.input_revision, 1);
         // Different filter → bump.
         eng.set_filter(StreamingFilter::All);

@@ -110,8 +110,10 @@ impl WorkbenchApp {
                 // then returns metadata. We render on the Ingested callback.
                 //
                 // Scope the ingest to the elevation this download was queued
-                // for (if any), so a filter-scoped fetch only stores the cut we
-                // care about. The queue item is still present (Active) here.
+                // for (if any), so a filter-scoped fetch only stores the tilt we
+                // care about (the worker adds that angle's SAILS/MRLE repeats
+                // from the volume's VCP). The queue item is still present
+                // (Active) here.
                 let wanted_elevations: Vec<u8> = self
                     .acquisition
                     .coordinator
@@ -274,9 +276,10 @@ impl WorkbenchApp {
         // each frame. The manager diffs internally so this is a no-op when
         // the selection hasn't changed; on a real change it bumps the
         // channel's filter epoch so any in-flight sleep wakes within ~250ms.
-        self.live
-            .channel
-            .sync_filter(&self.state.viz_state.elevation_selection);
+        self.live.channel.sync_filter(
+            &self.state.viz_state.elevation_selection,
+            self.live.radar_model.vcp_pattern(),
+        );
 
         for result in self.live.channel.poll() {
             self.handle_realtime_result(result, ctx);

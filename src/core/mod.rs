@@ -63,6 +63,7 @@ pub(crate) mod site_picker;
 pub(crate) mod storm_activity;
 pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;
+pub(crate) mod tilt;
 pub(crate) mod time_field;
 pub(crate) mod timeline_geometry;
 pub(crate) mod timeline_interaction;

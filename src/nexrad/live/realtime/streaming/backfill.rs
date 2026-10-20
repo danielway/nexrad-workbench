@@ -283,7 +283,7 @@ pub(super) async fn run_mid_stream_backfill(
 ) -> u32 {
     use nexrad_data::aws::realtime::list_chunks_in_volume;
 
-    let StreamingFilter::Elevation(_) = filter else {
+    let StreamingFilter::Cuts(_) = filter else {
         return 0;
     };
     let current_seq = iter.current_sequence();
