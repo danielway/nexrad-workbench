@@ -156,6 +156,13 @@ impl StormTracks {
     }
 
     /// The frame for the shown volume, if it is tracked.
+    /// The newest letter handed out so far on this site, if any. For the
+    /// debug log: how quickly letters are used up measures how stable the
+    /// tracking is.
+    pub(crate) fn newest_label(&self) -> Option<String> {
+        self.tracker.next_id().checked_sub(1).map(track_label)
+    }
+
     pub(crate) fn current(&self) -> Option<&Frame> {
         self.current.as_ref().map(|(_, f)| f)
     }

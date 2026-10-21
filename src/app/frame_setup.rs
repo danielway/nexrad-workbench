@@ -211,7 +211,12 @@ impl WorkbenchApp {
             &self.state.viz_state.storm_cells,
             &history,
         );
-        if tracks != crate::core::storm_tracks::TrackSync::Off {
+        if let crate::core::storm_tracks::TrackSync::Observed { history } = tracks {
+            log::debug!(
+                "storm tracks: observed with {history} history volumes, newest letter {:?}",
+                self.state.viz_state.storm_tracks.newest_label()
+            );
+        } else if tracks != crate::core::storm_tracks::TrackSync::Off {
             log::trace!("storm tracks: {tracks:?}");
         }
         if let Some(request) = request {
