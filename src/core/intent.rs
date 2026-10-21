@@ -168,6 +168,10 @@ pub(crate) enum Intent {
     /// A button of the map's corner toolbar (data probe, distance). Decided
     /// by [`crate::core::panels::toggle_map_tool`].
     ToggleMapTool(crate::core::panels::MapTool),
+    /// The storm cell overlay: the Layers checkbox and envelope slider, the
+    /// desktop pointer and the phone tap. Reduced by
+    /// [`crate::core::storm_cell_view::reduce`].
+    StormCells(crate::core::storm_cell_view::StormCellIntent),
     /// Switch one map overlay on or off. Carries the new value (not a flip) so
     /// a repeated intent is idempotent.
     SetGeoLayer(GeoLayer, bool),

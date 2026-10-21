@@ -1,7 +1,7 @@
 //! Colors that encode data categories, not chrome.
 //!
 //! These answer "which kind of thing is this" for map data (mPING report
-//! categories, storm-cell intensity) and tell saved events apart in a list.
+//! categories) and tell saved events apart in a list.
 //! They sit outside [`crate::ui::theme`]'s color grammar on purpose: the
 //! grammar governs chrome, and these are legends for data. The radar color
 //! tables themselves live in `crate::nexrad::render::color_table`.
@@ -50,17 +50,6 @@ pub(crate) fn mosaic_reflectivity(dbz: f32) -> Color32 {
         .map_or(BANDS[0].1, |(_, c)| *c)
 }
 
-/// Storm-cell outline color by its maximum reflectivity (dBZ).
-pub(crate) fn storm_cell(max_dbz: f32) -> Color32 {
-    if max_dbz >= 60.0 {
-        Color32::from_rgb(255, 50, 50) // Severe
-    } else if max_dbz >= 50.0 {
-        Color32::from_rgb(255, 150, 50) // Strong
-    } else {
-        Color32::from_rgb(255, 220, 80) // Moderate
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,14 +72,5 @@ mod tests {
                 assert!(mping_fill(*a) != mping_fill(*b));
             }
         }
-    }
-
-    #[wasm_bindgen_test]
-    fn storm_cell_thresholds() {
-        assert!(storm_cell(65.0) == storm_cell(60.0));
-        assert!(storm_cell(59.9) == storm_cell(50.0));
-        assert!(storm_cell(49.9) == storm_cell(10.0));
-        assert!(storm_cell(60.0) != storm_cell(50.0));
-        assert!(storm_cell(50.0) != storm_cell(49.0));
     }
 }

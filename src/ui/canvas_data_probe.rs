@@ -1,16 +1,15 @@
 //! Canvas data-probe tool and measurement overlays.
 //!
 //! Renders the hover tooltip (lat/lon, azimuth, range, product value),
-//! the crosshair cursor, distance measurement lines, and detected storm
-//! cell bounding boxes on top of the radar canvas. The "Data probe" name
+//! the crosshair cursor and distance measurement lines on top of the radar
+//! canvas. The "Data probe" name
 //! distinguishes this map-space hover tool from the scan inspector (the
 //! per-scan volume breakdown), which is a separate surface.
 
-use crate::core::StormCell;
 use crate::geo::MapProjection;
 use crate::nexrad::RadarGpuRenderer;
 use crate::ui::theme;
-use eframe::egui::{self, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
 use geo_types::Coord;
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +26,8 @@ pub(crate) fn render_data_probe(
     product: &crate::core::RadarProduct,
     use_local_time: bool,
     sweep_params: Option<(f32, f32)>,
+    // The storm cell under the pointer (core::storm_cell_view::probe_line).
+    cell_line: Option<String>,
 ) {
     let geo = projection.screen_to_geo(hover_pos);
     let lat = geo.y;
@@ -61,6 +62,7 @@ pub(crate) fn render_data_probe(
     if let Some(ts) = collection_time {
         lines.push(format_unix_timestamp(ts, use_local_time));
     }
+    lines.extend(cell_line);
     let text = lines.join("\n");
 
     // Draw tooltip background
@@ -175,68 +177,6 @@ fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
         + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
     let c = 2.0 * a.sqrt().asin();
     r * c
-}
-
-/// Number of samples for each cell's extent ellipse. A ~32-gon is
-/// indistinguishable from a true ellipse at typical zoom levels while
-/// staying cheap to tessellate.
-const ELLIPSE_SEGMENTS: usize = 32;
-
-pub(crate) fn render_storm_cells(
-    painter: &Painter,
-    projection: &MapProjection,
-    cells: &[StormCell],
-    _dark: bool,
-) {
-    for cell in cells {
-        let center = projection.geo_to_screen(Coord {
-            x: cell.lon,
-            y: cell.lat,
-        });
-
-        let color = crate::ui::data_colors::storm_cell(cell.peak_dbz);
-
-        // Derive ellipse semi-axes from area + elongation: an ellipse of
-        // area A and ratio e has semi-minor b = √(A / (π·e)) and semi-major
-        // a = b·e. Clamp to avoid imaginary/zero axes for tiny cells.
-        let elongation = cell.elongation.max(1.0);
-        let area = cell.area_km2.max(1.0);
-        let semi_minor_km = (area as f64 / (std::f64::consts::PI * elongation as f64)).sqrt();
-        let semi_major_km = semi_minor_km * elongation as f64;
-
-        let cos_lat = cell.lat.to_radians().cos().max(1e-6);
-        // Compass heading (0° = N, CW) → math angle (0 = +x east, CCW).
-        let math_angle_rad = (90.0 - cell.orientation_deg as f64).to_radians();
-        let (sin_t, cos_t) = math_angle_rad.sin_cos();
-
-        let mut points = Vec::with_capacity(ELLIPSE_SEGMENTS);
-        for i in 0..ELLIPSE_SEGMENTS {
-            let phi = (i as f64) / (ELLIPSE_SEGMENTS as f64) * std::f64::consts::TAU;
-            // Ellipse point in axis-aligned frame (km).
-            let ex = semi_major_km * phi.cos();
-            let ey = semi_minor_km * phi.sin();
-            // Rotate into radar-local frame (x = east, y = north, km).
-            let dx_km = ex * cos_t - ey * sin_t;
-            let dy_km = ex * sin_t + ey * cos_t;
-            // km → lat/lon offset (equirectangular, matches projection).
-            let lat = cell.lat + dy_km / 111.0;
-            let lon = cell.lon + dx_km / (111.0 * cos_lat);
-            points.push(projection.geo_to_screen(Coord { x: lon, y: lat }));
-        }
-        painter.add(Shape::closed_line(points, Stroke::new(1.5_f32, color)));
-
-        // Small centroid marker + peak-dBZ label. Bearing/range stay
-        // available in the state struct for future tooltip / side-panel
-        // consumers; surfacing them inline on the map was too noisy.
-        painter.circle_stroke(center, 3.0, Stroke::new(1.5_f32, color));
-        painter.text(
-            center + Vec2::new(6.0, -6.0),
-            egui::Align2::LEFT_BOTTOM,
-            format!("{:.0}", cell.peak_dbz),
-            egui::FontId::proportional(10.0),
-            color,
-        );
-    }
 }
 
 #[cfg(test)]
