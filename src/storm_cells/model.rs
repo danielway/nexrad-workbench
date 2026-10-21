@@ -9,6 +9,12 @@ use serde::{Deserialize, Serialize};
 
 /// A storm cell: the finest distinct object found by the nested-threshold
 /// segmentation (see the module docs of `storm_cells`).
+///
+/// Its *footprint* is its share of the envelope (the connected echo at or
+/// above the user's threshold that holds it): a lone cell's footprint is
+/// the whole envelope; the cells of a group split their envelope by a
+/// watershed grown from each cell's core, so they tile it without overlap.
+/// Every field below except `level_dbz` describes the footprint.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct StormCell {
     /// Index within this result, 0 = strongest. Cells are sorted by
@@ -17,36 +23,55 @@ pub(crate) struct StormCell {
     /// The group (an envelope component holding two or more cells) this cell
     /// belongs to, if any.
     pub group_id: Option<u32>,
-    /// The threshold level (dBZ) whose component is this cell's footprint.
-    /// A lone storm keeps its envelope (the user's level); a storm inside a
-    /// group uses the level at which it became distinct from its neighbours.
+    /// The level (dBZ) at which the cell's core became distinct: the
+    /// envelope level (the user's threshold) for a lone storm, the level
+    /// that separated it from its neighbours for a storm in a group. The
+    /// core at this level seeds the footprint; the footprint itself reaches
+    /// down to the envelope level.
     pub level_dbz: f32,
-    /// Maximum of the median-filtered field inside the footprint.
+    /// Maximum of the median-filtered field inside the footprint (it lies
+    /// in the core).
     pub peak_dbz: f32,
-    /// Mean of the filtered field over the footprint, in dB.
+    /// Mean of the filtered field over the whole footprint, in dB (so it
+    /// includes the weaker echo around the core).
     pub mean_dbz: f32,
     /// Footprint area in km² (sum of gate footprints, so range-scaled).
     pub area_km2: f32,
     /// Number of gates in the footprint.
     pub gate_count: u32,
-    /// Reflectivity-weighted centroid latitude.
+    /// Centroid latitude of the footprint, each gate weighted by how far it
+    /// is above the envelope level (so the core pulls hardest).
     pub lat: f64,
-    /// Reflectivity-weighted centroid longitude.
+    /// Centroid longitude, weighted as `lat`.
     pub lon: f64,
-    /// Bounding box (min_lat, min_lon, max_lat, max_lon).
+    /// Bounding box of the footprint (min_lat, min_lon, max_lat, max_lon).
     pub bounds: (f64, f64, f64, f64),
     /// Compass bearing (0° = N, clockwise) from radar to centroid.
     pub bearing_from_radar_deg: f32,
     /// Distance from radar to centroid, km.
     pub range_from_radar_km: f32,
-    /// Orientation of the major axis in compass degrees, in [0, 180).
+    /// Orientation of the footprint's major axis in compass degrees, in
+    /// [0, 180), from the same weighted covariance as the centroid.
     pub orientation_deg: f32,
-    /// √(λ_major / λ_minor) of the weighted covariance. 1.0 = round.
+    /// √(λ_major / λ_minor) of that covariance. 1.0 = round.
     pub elongation: f32,
     /// Footprint boundary as a closed ring of (lat, lon) points (first point
-    /// repeated at the end), simplified to about 1 km and at most
-    /// [`MAX_OUTLINE_VERTICES`] distinct vertices. Outer boundary only.
+    /// repeated at the end), simplified to about 1 km with no edge longer
+    /// than 10 km and at most [`MAX_OUTLINE_VERTICES`] distinct vertices.
+    /// Outer boundary only. This is the footprint the area, centroid and
+    /// hit test refer to; the overlay draws `core_outline` as the cell and,
+    /// for a lone cell, this ring (its envelope) faintly around it. A lone
+    /// cell's ring is simplified like a group's (about 2.5 km).
     pub outline: Vec<(f64, f64)>,
+    /// The boundary of the cell's core, what the overlay draws at full
+    /// stroke (same conventions as `outline`). For a grouped cell, the
+    /// component at `level_dbz` that seeded the footprint; for a lone cell
+    /// (`level_dbz` is the envelope), the component around its peak at the
+    /// core level, the lowest ladder rung at or above the envelope plus the
+    /// core margin (45 dBZ by default). Empty only if the peak never reaches
+    /// that level, which the core minimum rules out; such a cell draws
+    /// `outline` instead.
+    pub core_outline: Vec<(f64, f64)>,
 }
 
 /// A group: one envelope component that resolved into two or more cells
@@ -67,7 +92,8 @@ pub(crate) struct StormGroup {
     pub lat: f64,
     /// Reflectivity-weighted centroid longitude of the envelope.
     pub lon: f64,
-    /// Envelope boundary, same conventions as [`StormCell::outline`].
+    /// Envelope boundary, same conventions as [`StormCell::outline`] but
+    /// simplified more loosely (about 2.5 km): drawn as a faint ring.
     pub outline: Vec<(f64, f64)>,
 }
 
@@ -106,5 +132,7 @@ impl StormCellsResult {
     }
 }
 
-/// Upper bound on distinct vertices in an outline ring.
-pub(crate) const MAX_OUTLINE_VERTICES: usize = 64;
+/// Upper bound on distinct vertices in an outline ring. Generous: the
+/// ~1 km tolerance and the 10 km edge bound decide the count; this only
+/// keeps a pathological ring from growing without limit.
+pub(crate) const MAX_OUTLINE_VERTICES: usize = 512;

@@ -48,20 +48,17 @@ pub(super) struct Labeler<'a> {
     grid: &'a [f32],
     az_adjacent: &'a [bool],
     gate_count: usize,
-    azimuth_count: usize,
     stamp: Vec<u8>,
     stack: Vec<usize>,
 }
 
 impl<'a> Labeler<'a> {
     pub(super) fn new(grid: &'a [f32], az_adjacent: &'a [bool], gate_count: usize) -> Self {
-        let azimuth_count = az_adjacent.len();
-        debug_assert_eq!(grid.len(), azimuth_count * gate_count);
+        debug_assert_eq!(grid.len(), az_adjacent.len() * gate_count);
         Self {
             grid,
             az_adjacent,
             gate_count,
-            azimuth_count,
             stamp: vec![0; grid.len()],
             stack: Vec::new(),
         }
@@ -82,38 +79,13 @@ impl<'a> Labeler<'a> {
         self.stamp[seed] = stamp_val;
 
         while let Some(idx) = self.stack.pop() {
-            let az = idx / gate_count;
-            let g = idx % gate_count;
-            pixels.push((az as u16, g as u16));
-
-            for daz in [-1i32, 0, 1] {
-                let naz = wrap_az(az, daz, self.azimuth_count);
-                // `az_adjacent[i]` says whether index `i` is spatially
-                // adjacent to `i + 1 (mod)`. Going forward checks the
-                // edge at `az`; going backward checks the edge at
-                // `naz` (which is `az - 1 mod`).
-                if daz > 0 && !self.az_adjacent[az] {
-                    continue;
-                }
-                if daz < 0 && !self.az_adjacent[naz] {
-                    continue;
-                }
-                for dg in [-1i32, 0, 1] {
-                    if daz == 0 && dg == 0 {
-                        continue;
-                    }
-                    let ng_signed = g as i32 + dg;
-                    if ng_signed < 0 || ng_signed >= gate_count as i32 {
-                        continue;
-                    }
-                    let nidx = naz * gate_count + ng_signed as usize;
-                    if !self.open(nidx, level, stamp_val) {
-                        continue;
-                    }
+            pixels.push(((idx / gate_count) as u16, (idx % gate_count) as u16));
+            for_each_neighbour(idx, gate_count, self.az_adjacent, |nidx| {
+                if self.stamp[nidx] < stamp_val && self.grid[nidx] >= level {
                     self.stamp[nidx] = stamp_val;
                     self.stack.push(nidx);
                 }
-            }
+            });
         }
         Some(pixels)
     }
@@ -121,6 +93,41 @@ impl<'a> Labeler<'a> {
     fn open(&self, idx: usize, level: f32, stamp_val: u8) -> bool {
         // NaN compares false, so background never opens.
         self.stamp[idx] < stamp_val && self.grid[idx] >= level
+    }
+}
+
+/// Call `f` with the flat index of every 8-neighbour of gate `idx` on an
+/// `az_adjacent.len() × gate_count` grid: azimuth wraps only where the two
+/// radials are adjacent (`az_adjacent[i]`: radial `i` neighbours radial
+/// `i + 1 (mod n)`), range never wraps. The one connectivity rule shared by
+/// the labeling and the watershed.
+#[inline]
+pub(super) fn for_each_neighbour(
+    idx: usize,
+    gate_count: usize,
+    az_adjacent: &[bool],
+    mut f: impl FnMut(usize),
+) {
+    let azimuth_count = az_adjacent.len();
+    let az = idx / gate_count;
+    let g = idx % gate_count;
+    for daz in [-1i32, 0, 1] {
+        let naz = wrap_az(az, daz, azimuth_count);
+        // Going forward checks the edge at `az`; going backward checks the
+        // edge at `naz` (which is `az - 1 mod`).
+        if (daz > 0 && !az_adjacent[az]) || (daz < 0 && !az_adjacent[naz]) {
+            continue;
+        }
+        for dg in [-1i32, 0, 1] {
+            if daz == 0 && dg == 0 {
+                continue;
+            }
+            let ng = g as i32 + dg;
+            if ng < 0 || ng >= gate_count as i32 {
+                continue;
+            }
+            f(naz * gate_count + ng as usize);
+        }
     }
 }
 

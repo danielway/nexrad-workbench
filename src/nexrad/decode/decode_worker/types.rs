@@ -795,6 +795,12 @@ mod detect_wire_tests {
                 orientation_deg: 45.0,
                 elongation: 1.8,
                 outline: vec![(41.2, -94.6), (41.4, -94.6), (41.3, -94.4), (41.2, -94.6)],
+                core_outline: vec![
+                    (41.25, -94.55),
+                    (41.35, -94.55),
+                    (41.3, -94.45),
+                    (41.25, -94.55),
+                ],
             }],
             ..StormCellsResult::default()
         };

@@ -10,9 +10,10 @@
 //!
 //! - **One volume, one set of cells.** The input is the volume's lowest
 //!   reflectivity cut ([`lowest_reflectivity_cut`]: elevation 1 of a split
-//!   cut, the surveillance half), whatever tilt is on screen, so the overlay
-//!   does not change as the tilt ladder moves and the Doppler cut's range gap
-//!   cannot split bands. When that cut was never ingested (a fixed-tilt fetch
+//!   cut, the surveillance half), whatever tilt and product are on screen,
+//!   so the overlay does not change as the tilt ladder moves, the Doppler
+//!   cut's range gap cannot split bands, and the cells stay over velocity,
+//!   correlation coefficient and the rest (a couplet inside a cell). When that cut was never ingested (a fixed-tilt fetch
 //!   brings only one cut) the displayed sweep is used instead if it is
 //!   reflectivity, and the key says so ([`StormCellKey::fallback`]).
 //! - **Live.** While the stream fills the cut, results are provisional and
@@ -451,8 +452,6 @@ pub(crate) struct StormCellEnv<'a> {
     pub visible: bool,
     /// `viz_state.view_mode()`.
     pub view_mode: ViewMode,
-    /// `viz_state.product` — the selected product.
-    pub product: RadarProduct,
     /// `viz_state.displayed` — what is on the GPU main slot. Its volume is
     /// the volume cells are shown for.
     pub displayed: Option<&'a DisplayedSweep>,
@@ -603,7 +602,8 @@ fn wanted(env: &StormCellEnv<'_>, displayed: &DisplayedSweep, state: &StormCells
 
 /// Decide what to show, and whether a worker has to run.
 ///
-/// - Off, nothing displayed, or reflectivity not selected: clear.
+/// - Off or nothing displayed: clear. The product on screen does not matter:
+///   cells come from the lowest reflectivity cut whatever is shown.
 /// - Globe3D: keep. Cells are not drawn there; a changed volume waits for
 ///   the return to 2D.
 /// - Otherwise want the displayed volume's lowest reflectivity cut (or the
@@ -621,7 +621,7 @@ pub(crate) fn decide(env: &StormCellEnv<'_>, state: &StormCells) -> StormCellAct
             StormCellAction::Clear
         }
     };
-    if !env.visible || env.product != RadarProduct::Reflectivity {
+    if !env.visible {
         return clear();
     }
     let Some(displayed) = env.displayed else {
@@ -676,19 +676,13 @@ pub(crate) struct ThresholdSliderVm {
     pub hint: Option<&'static str>,
 }
 
-/// Detection works on reflectivity only; for any other product the slider
-/// stays visible but disabled with a hint.
+/// The slider works over every product (cells always come from the lowest
+/// reflectivity cut); over any other product a hint says that its dBZ are
+/// reflectivity's.
 pub(crate) fn threshold_slider(product: RadarProduct) -> ThresholdSliderVm {
-    if product == RadarProduct::Reflectivity {
-        ThresholdSliderVm {
-            enabled: true,
-            hint: None,
-        }
-    } else {
-        ThresholdSliderVm {
-            enabled: false,
-            hint: Some("Reflectivity only"),
-        }
+    ThresholdSliderVm {
+        enabled: true,
+        hint: (product != RadarProduct::Reflectivity).then_some("Cells from reflectivity"),
     }
 }
 
@@ -772,7 +766,6 @@ mod tests {
         StormCellEnv {
             visible: true,
             view_mode: ViewMode::Flat2D,
-            product: RadarProduct::Reflectivity,
             displayed,
             threshold_dbz: 35.0,
             volume,
@@ -814,6 +807,7 @@ mod tests {
             orientation_deg: 0.0,
             elongation: 1.0,
             outline: Vec::new(),
+            core_outline: Vec::new(),
         };
         StormCellsResult {
             cells: (0..n as u32).map(cell).collect(),
@@ -1246,7 +1240,7 @@ mod tests {
     // ── Gates ────────────────────────────────────────────────────────
 
     #[wasm_bindgen_test]
-    fn off_blank_or_other_product_clears_but_keeps_the_cache() {
+    fn off_or_blank_clears_but_keeps_the_cache() {
         let vol = volume(0, &[1]);
         let d = displayed(0, 1, "reflectivity");
         let e = env(Some(&d), Some(&vol));
@@ -1258,12 +1252,6 @@ mod tests {
         let mut off = env(Some(&d), Some(&vol));
         off.visible = false;
         assert_eq!(decide(&off, &state), StormCellAction::Clear);
-        let mut vel = env(Some(&d), Some(&vol));
-        vel.product = RadarProduct::Velocity;
-        assert_eq!(decide(&vel, &state), StormCellAction::Clear);
-        // Clutter filter power shares the reflectivity worker string.
-        vel.product = RadarProduct::ClutterFilterPower;
-        assert_eq!(decide(&vel, &state), StormCellAction::Clear);
         assert_eq!(decide(&env(None, None), &state), StormCellAction::Clear);
 
         frame(&mut state, &off);
@@ -1271,6 +1259,37 @@ mod tests {
         assert_eq!(decide(&off, &state), StormCellAction::Keep);
         // Back on: from the cache, no worker run.
         assert!(matches!(decide(&e, &state), StormCellAction::Show(_)));
+    }
+
+    #[wasm_bindgen_test]
+    fn cells_stay_over_every_product_in_2d() {
+        let (v0, v1) = (volume(0, &[1, 2]), volume(1, &[1, 2]));
+        let d0 = displayed(0, 1, "reflectivity");
+        let mut state = StormCells::default();
+        let req = requested(&mut state, &env(Some(&d0), Some(&v0)));
+        state.accept(reply(&req, cells(3), true));
+        frame(&mut state, &env(Some(&d0), Some(&v0)));
+
+        // Velocity, correlation coefficient, ... of the same volume: the
+        // same cells, no new run.
+        for product in ["velocity", "correlation_coefficient", "spectrum_width"] {
+            let d = displayed(0, 2, product);
+            assert_eq!(
+                decide(&env(Some(&d), Some(&v0)), &state),
+                StormCellAction::Keep,
+                "{product}"
+            );
+        }
+        // Velocity of the next volume: its own lowest reflectivity cut.
+        let d1 = displayed(1, 2, "velocity");
+        match decide(&env(Some(&d1), Some(&v1)), &state) {
+            StormCellAction::Request(key) => {
+                assert_eq!(key.scan_key, scan_key(1));
+                assert_eq!(key.elevation_number, 1);
+                assert!(!key.fallback);
+            }
+            other => panic!("expected Request, got {other:?}"),
+        }
     }
 
     #[wasm_bindgen_test]
@@ -1352,7 +1371,7 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn slider_is_disabled_with_hint_off_reflectivity() {
+    fn slider_works_over_every_product_with_a_hint_off_reflectivity() {
         assert_eq!(
             threshold_slider(RadarProduct::Reflectivity),
             ThresholdSliderVm {
@@ -1363,8 +1382,8 @@ mod tests {
         for &p in RadarProduct::all() {
             if p != RadarProduct::Reflectivity {
                 let vm = threshold_slider(p);
-                assert!(!vm.enabled);
-                assert_eq!(vm.hint, Some("Reflectivity only"));
+                assert!(vm.enabled);
+                assert_eq!(vm.hint, Some("Cells from reflectivity"));
             }
         }
     }

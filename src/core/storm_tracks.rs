@@ -415,6 +415,7 @@ mod tests {
             orientation_deg: 0.0,
             elongation: 1.0,
             outline: Vec::new(),
+            core_outline: Vec::new(),
         }
     }
 
