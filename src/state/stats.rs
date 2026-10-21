@@ -210,6 +210,8 @@ pub(crate) struct DownloadProgress {
     /// Scan boundaries of files downloaded but still being ingested/decoded/rendered.
     /// Ghosts for these stay visible until processing completes.
     pub in_flight_scans: Vec<(i64, i64)>,
+    /// Bytes received by each download in flight, by scan start.
+    pub bytes: crate::core::acquisition::DownloadBytes,
 }
 
 impl DownloadProgress {

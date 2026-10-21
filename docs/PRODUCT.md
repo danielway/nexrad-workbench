@@ -686,8 +686,9 @@ way to each other rather than overlap). At **3 H** each volume is an 11 px
 column as tall as the weather it held (its file size in the day's listing,
 on the view's scale) over a 6 px floor, so a quiet day is a row of short
 even columns; filled on the device, white under the playhead, with hour
-labels. At **24 H** the storm hill keeps its half-hour steps in the storm
-blue, the stretch on the device drawn in slate over it and a 2 px white line
+labels. At **24 H** the storm hill is a smooth area through its half-hour
+samples in the storm blue (it never overshoots a sample or dips below the
+floor), the stretch on the device drawn in slate and a 2 px white line
 at the playhead, labelled 06 · 12 · 18 · 00. At every stop a red 2 px now
 line with a small `NOW` cap marks now when it is in the window, and a
 selected range is **one amber bracket** above the marks (its end on the now
@@ -696,8 +697,10 @@ ring, no playhead line at NOW or 3 H, no on-device underline, no ruler, no
 dashed pending ring, no now tab and no range handles, and the phone draws no
 canvas caption.
 
-A thumb gets three stops rather than a continuous zoom: **NOW** (the last
-three volumes, widened to show a whole selected range), **3 H** and
+A thumb gets three stops rather than a continuous zoom: **NOW** (four
+blocks: three complete volumes and the live one, with the live volume's
+whole expected span kept so now sits about 80 % across and the row holds
+still while it grows, widened to show a whole selected range), **3 H** and
 **24 H**. A pinch moves one stop and settles on release; the small
 NOW · 3 H · 24 H control in the transport row shows the stop and taps to
 another. A **drag** scrubs cut by cut inside a block on the device and volume
@@ -705,7 +708,8 @@ by volume elsewhere (just inside a volume's start, its first cut), with a
 still finger holding the playhead, so when a volume arrives its cuts appear
 in place and nothing jumps; a **tap** goes to the tapped volume's first cut
 and drops the pin; a **long-press** opens the sheet below. Pinned, now sits
-near the right edge and the window slides with now; detached, the window
+near the right edge; at NOW the row steps one volume when the next begins,
+and at 3 H and 24 H it slides with now; detached, the window
 centres on the playhead when it lands somewhere new, holds still while you
 scrub inside it and slides near the edges. Zoom is independent of the
 selection, and landscape keeps the same spans with more pixels per unit. The
@@ -715,8 +719,9 @@ nor zooms on the row's pinch.
 **Loading is shown, not announced.** While the frame under the playhead is
 not on the device (a tapped or scrubbed hollow volume, a day from the
 calendar), its block turns white at once and carries a progress arc (its
-share is the download's stage: queued, downloading, decoding; with nothing
-known it spins), the map dims 40 % with the old frame still visible under
+share is the bytes received over the volume's size while it downloads,
+from 45 % to 80 %, with the stage standing in where no size is known:
+queued 15 %, downloading 45 %, decoding 80 %; with nothing known it spins), the map dims 40 % with the old frame still visible under
 it, and a small pill in the middle says `Loading 23:49`. The chip's outline
 is dashed meanwhile and the top bar's clock already reads the time asked
 for. When the frame lands the dim lifts and the block fills.

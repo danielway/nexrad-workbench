@@ -5,11 +5,11 @@
 //! draws is [`crate::core::phone_row`]; this module owns the windows, the
 //! scrub and tap landings, and the touch.
 //!
-//! - **Cuts** ("NOW") — the last three volumes
+//! - **Cuts** ("NOW") — three complete volumes and the live one
 //!   ([`crate::core::phone::mini_window`]), each a block. A scrub snaps per
 //!   cut where cuts are known and per volume elsewhere
 //!   ([`StripUnits::landing_units`]). A selected range always shows whole:
-//!   the window widens past three volumes when the range needs it
+//!   the window widens past four volumes when the range needs it
 //!   ([`strip_window`]'s `range`).
 //! - **Volumes** ("3 H") — three hours, one column per volume, as tall as
 //!   the weather the volume held. A scrub snaps to volumes.
@@ -61,7 +61,7 @@ pub(crate) const PINCH_OUT_FACTOR: f32 = 0.8;
 /// One of the strip's three zoom stops.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum StripZoom {
-    /// The last three volumes, every cut ("NOW").
+    /// Three complete volumes and the live one, every cut ("NOW").
     #[default]
     Cuts,
     /// Three hours of storm bars, one per volume ("3 H").
@@ -139,10 +139,10 @@ const SAME_STOP_SHARE: f64 = 0.3;
 /// last frame.
 ///
 /// Cuts near now is [`mini_window`] (anchored to now). Further back it
-/// follows the same rule as the other stops over three volumes, so a scrub
+/// follows the same rule as the other stops over four volumes, so a scrub
 /// moves the playhead under a still strip instead of re-centring the strip
 /// on every hop. At Volumes and Day, pinned, the window ends at
-/// now plus the ghost room Cuts leaves ([`mini_lead_secs`]), so now sits
+/// now plus a ghost room ([`mini_lead_secs`]), so now sits
 /// near the right edge with the ring on it and the window slides with now.
 /// Detached, it centres on the playhead when the playhead lands off the
 /// last window (a typed time, a day from the calendar, a zoom change); while
@@ -181,7 +181,7 @@ pub(crate) fn strip_window(
         limit
     } else {
         // The last window is kept when it is this stop's (a 15 MIN window
-        // near now spans a little more or less than three volumes) and the
+        // near now spans a little more or less than four volumes) and the
         // playhead is still inside it.
         match prev.filter(|p| {
             (p.span() - span).abs() < SAME_STOP_SHARE * span
@@ -221,14 +221,14 @@ pub(crate) fn strip_window(
 pub(crate) const RANGE_EDGE_SHARE: f64 = 0.05;
 
 /// The Cuts window while a range is selected: never narrower than the
-/// stop's three volumes, and as wide as it takes to show the whole range.
+/// stop's four volumes, and as wide as it takes to show the whole range.
 ///
-/// Near now (the range ends within three volumes of now, as a range pinned
-/// to now always does) it is [`mini_window`] anchored to now, ending at now
-/// plus the ghost room; the left edge moves out as far as it takes to keep
+/// Near now (the range ends within four volumes of now, as a range pinned
+/// to now always does) it is [`mini_window`] anchored to now, ending past
+/// the live volume's expected end; the left edge moves out as far as it takes to keep
 /// [`RANGE_EDGE_SHARE`] of the span before the block the range starts in
 /// (four frames at a tilt are four volumes), so that block shows whole.
-/// Further back it centres on the range, spanning the three volumes or the
+/// Further back it centres on the range, spanning the four volumes or the
 /// range plus that room either side, whichever is wider, and never reaches
 /// past now plus the ghost room. Either way the window follows only the
 /// range, now and the volumes, never the playhead looping inside the range,
@@ -269,7 +269,7 @@ const MAX_FIRST_FRAME_LAG_SECS: f64 = 900.0;
 /// The span whose volume sizes a stop reads: the window at Volumes and
 /// Day; at Cuts the three hours around the window's middle, so a volume's
 /// bar is as tall at 15 MIN as at 3 H (bars are scaled to the volumes in
-/// view, and three volumes alone would exaggerate any difference).
+/// view, and four volumes alone would exaggerate any difference).
 pub(crate) fn sizes_span(stop: StripZoom, window: MiniWindow) -> (f64, f64) {
     match stop {
         StripZoom::Cuts => {
@@ -709,7 +709,7 @@ pub(crate) fn activity_bars(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::phone::{DEFAULT_VOLUME_SECS, MINI_LEAD_SHARE, MINI_VOLUMES};
+    use crate::core::phone::{DEFAULT_VOLUME_SECS, MINI_LEAD_VOLUMES, MINI_VOLUMES};
     use wasm_bindgen_test::wasm_bindgen_test;
 
     /// Volumes every 300 s up to `last`, oldest first.
@@ -746,7 +746,7 @@ mod tests {
     }
 
     fn lead() -> f64 {
-        MINI_VOLUMES * DEFAULT_VOLUME_SECS * MINI_LEAD_SHARE
+        MINI_LEAD_VOLUMES * DEFAULT_VOLUME_SECS
     }
 
     // ── stops, pill, cycle ────────────────────────────────────────────
@@ -862,10 +862,10 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn cuts_widens_so_four_frames_pinned_to_now_all_show() {
+    fn cuts_widens_so_five_frames_pinned_to_now_all_show() {
         let s = live_volumes();
         let base = mini_window(NOW, NOW, true, &s);
-        let range = last_frames(4.0);
+        let range = last_frames(5.0);
         assert!(range.0 < base.start, "the nominal window cuts the range");
         let w = strip_window(
             StripZoom::Cuts,
@@ -878,10 +878,10 @@ mod tests {
         );
         assert_range_inside(w, range);
         // About 5 % of the span before the block it starts in, and still
-        // ending at now plus the ghost room. The margin is kept before the block the range starts in (its
-        // first frame is 20 s into it).
+        // ending where the nominal window does. The margin is kept before
+        // the block the range starts in (its first frame is 20 s into it).
         assert!(((range.0 - 20.0) - w.start - RANGE_EDGE_SHARE * w.span()).abs() < 1e-6);
-        assert_eq!(w.end, NOW + lead());
+        assert_eq!(w.end, base.end);
         assert!(w.span() > base.span());
     }
 
@@ -889,16 +889,16 @@ mod tests {
     fn cuts_keeps_its_window_for_a_range_that_already_fits() {
         let s = live_volumes();
         let base = mini_window(NOW, NOW, true, &s);
-        let range = last_frames(2.0);
+        let range = last_frames(3.0);
         let w = strip_window(StripZoom::Cuts, NOW, range.0, true, &s, None, Some(range));
         assert_eq!(w, base);
         assert_range_inside(w, range);
-        // Three frames start in the window's first block: it moves out just
-        // enough to keep the margin before that block.
-        let range = last_frames(3.0);
+        // Four frames start in the window's first block, which already has
+        // more room before it than a range asks for.
+        let range = last_frames(4.0);
         let w = strip_window(StripZoom::Cuts, NOW, range.0, true, &s, None, Some(range));
-        assert_eq!(w.end, base.end);
-        assert!(((range.0 - 20.0) - w.start - RANGE_EDGE_SHARE * w.span()).abs() < 1e-6);
+        assert_eq!(w, base);
+        assert!((range.0 - 20.0) - w.start >= RANGE_EDGE_SHARE * w.span());
     }
 
     #[wasm_bindgen_test]
@@ -958,7 +958,7 @@ mod tests {
                 w
             );
         }
-        // A short range far back keeps the stop's three volumes, centred on
+        // A short range far back keeps the stop's four volumes, centred on
         // it.
         let short = (NOW - 30_000.0, NOW - 29_700.0);
         let w = strip_window(StripZoom::Cuts, NOW, short.0, false, &s, None, Some(short));
@@ -1050,12 +1050,12 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn pinned_the_window_ends_at_cuts_ghost_room() {
+    fn pinned_the_window_ends_at_the_ghost_room() {
         let s = starts(NOW - 100_000.0, NOW);
         let cuts = strip_window(StripZoom::Cuts, NOW, NOW, true, &s, None, None);
+        assert!(cuts.end > NOW, "Cuts keeps the live block's span past now");
         for stop in [StripZoom::Volumes, StripZoom::Day] {
             let w = strip_window(stop, NOW, NOW, true, &s, None, None);
-            assert_eq!(w.end, cuts.end, "{stop:?} ends where Cuts does");
             assert!((w.end - (NOW + lead())).abs() < 1e-9);
             assert!(w.start < NOW && NOW < w.end, "now sits inside");
         }
@@ -1110,7 +1110,7 @@ mod tests {
         // VCP 35-ish: 10-minute volumes leave twice the room.
         let slow: Vec<f64> = (0..20).map(|i| NOW - 12_000.0 + i as f64 * 600.0).collect();
         let w = strip_window(StripZoom::Day, NOW, NOW, true, &slow, None, None);
-        assert!((w.end - (NOW + MINI_VOLUMES * 600.0 * MINI_LEAD_SHARE)).abs() < 1e-9);
+        assert!((w.end - (NOW + MINI_LEAD_VOLUMES * 600.0)).abs() < 1e-9);
     }
 
     #[wasm_bindgen_test]
