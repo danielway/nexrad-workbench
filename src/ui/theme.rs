@@ -230,13 +230,15 @@ pub(crate) mod storm_cells {
     pub(crate) fn outline_provisional() -> Color32 {
         alpha(OUTLINE, 150)
     }
-    /// The dashed group outline: fainter than a cell's.
+    /// The faint envelope ring around a group's cells or a lone cell's
+    /// core: solid but subordinate to a cell's stroke (thinner, and at about
+    /// two thirds of its opacity), legible over yellow and orange echo.
     pub(crate) fn group() -> Color32 {
-        alpha(OUTLINE, 165)
+        alpha(OUTLINE, 185)
     }
-    /// The faint halo under the dashed group outline.
+    /// The faint halo under the group ring.
     pub(crate) fn group_halo() -> Color32 {
-        alpha(INK, 110)
+        alpha(INK, 90)
     }
     /// The peak dBZ on a chip: the one warm value, as in the mock.
     pub(crate) const CHIP_VALUE: Color32 = Color32::from_rgb(255, 210, 122);

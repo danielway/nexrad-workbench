@@ -783,7 +783,7 @@ lowest reflectivity cut), the result cache and the decision of when it runs
 which cells draw in 2D and Rays, projected footprint rings, decluttered peak
 chips, the hit test and the hover/selected card). Only running the detector
 (a `detect` message to a decode worker) and painting that view-model
-(outline over halo, dashed group, chip, card) are in the shell.
+(outline over halo, faint group ring, chip, card) are in the shell.
 
 ---
 
