@@ -2,9 +2,15 @@ name: Build activity index
 
 # Lists each radar site's archive days and publishes one small summary file
 # per site under activity-index/ on gh-pages, for the timeline overview's
-# storm-activity bars (see tools/activity_index/README.md). Each run resumes
-# from the files already published: the first runs backfill the archive
-# within a request budget, later ones only add the newest days.
+# storm-activity bars, plus per-site month files of every volume's start and
+# size for its volume zoom (see tools/activity_index/README.md). Each run
+# resumes from the files already published: the first runs backfill the
+# archive within a request budget, later ones only add the newest days.
+#
+# The nightly run never re-lists a day already indexed. Days indexed before
+# month files existed get theirs from a manual run with backfill_months
+# ticked (the default when dispatched), newest first, within the budget; a
+# day once backfilled is never listed again.
 
 on:
   schedule:
@@ -19,6 +25,15 @@ on:
         description: "Stop starting new days after this many minutes (at most 330; the job gets 20 more)"
         required: false
         default: "40"
+      backfill_months:
+        description: "Also re-list indexed days that have no month file data yet, newest first"
+        type: boolean
+        required: false
+        default: true
+      month_files:
+        description: "Keep month files for the newest N months (0 keeps every month)"
+        required: false
+        default: "12"
 
 permissions:
   contents: write
@@ -74,6 +89,9 @@ jobs:
       - name: Build index
         env:
           BUDGET: ${{ inputs.budget || '100000' }}
+          # Scheduled runs have no inputs: no backfill, the default window.
+          BACKFILL_MONTHS: ${{ inputs.backfill_months && '--backfill-months' || '' }}
+          MONTH_FILES: ${{ inputs.month_files || '12' }}
           # The job timeout is derived from this; see the limits job.
           MAX_MINUTES: ${{ needs.limits.outputs.max_minutes }}
           # Print checkpoints as they happen, not all at exit.
@@ -82,14 +100,17 @@ jobs:
           python3 tools/activity_index/build_index.py \
             --out pages/activity-index \
             --budget "$BUDGET" \
-            --max-minutes "$MAX_MINUTES"
+            --max-minutes "$MAX_MINUTES" \
+            --month-files "$MONTH_FILES" \
+            $BACKFILL_MONTHS
 
       - name: Publish
         working-directory: pages
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add activity-index
+          # -A: month files the builder pruned are deleted too.
+          git add -A activity-index
           if git diff --cached --quiet; then
             echo "Index unchanged"
             exit 0

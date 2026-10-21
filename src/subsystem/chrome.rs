@@ -77,6 +77,9 @@ pub(crate) struct Chrome {
     /// activity sheet last showed the errors; the chip counts the rest
     /// ([`crate::core::activity::errors_acked`]).
     pub errors_acked: u64,
+    /// Keeps the activity chip's word from flickering between "Up to date"
+    /// and "Processing" ([`crate::core::activity::HeadlineSettle`]).
+    pub activity_settle: crate::core::activity::HeadlineSettle,
     /// Whether the activity sheet's Details disclosure is expanded. Real state
     /// rather than egui memory so it survives a re-layout and is testable.
     pub activity_details_open: bool,
