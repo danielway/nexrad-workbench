@@ -176,6 +176,18 @@ impl RenderCoordinator {
         }
     }
 
+    /// Post a storm cell detection. Returns `false` when there is no worker
+    /// to run it.
+    pub(crate) fn detect(&mut self, request: crate::core::storm_cells::DetectRequest) -> bool {
+        match self.worker {
+            Some(ref mut worker) => {
+                worker.detect(request);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Forward raw bytes to worker for ingest. When `wanted_elevations` is
     /// non-empty, the worker stores only those cuts (filter-scoped fetch).
     #[allow(clippy::too_many_arguments)]

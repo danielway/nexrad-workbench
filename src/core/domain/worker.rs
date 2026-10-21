@@ -28,6 +28,8 @@ pub(crate) struct WorkerLoad {
     pub render_live: usize,
     /// Whole-volume packs for the 3-D ray marcher.
     pub volume: usize,
+    /// Storm cell detections.
+    pub detect: usize,
     /// Requests posted before the worker signalled `ready`, still parked in
     /// its local queue.
     pub queued_pre_ready: usize,
@@ -42,6 +44,7 @@ impl WorkerLoad {
             + self.render
             + self.render_live
             + self.volume
+            + self.detect
             + self.queued_pre_ready
     }
 
@@ -53,6 +56,7 @@ impl WorkerLoad {
             render: a.render + b.render,
             render_live: a.render_live + b.render_live,
             volume: a.volume + b.volume,
+            detect: a.detect + b.detect,
             queued_pre_ready: a.queued_pre_ready + b.queued_pre_ready,
         }
     }
@@ -296,6 +300,7 @@ mod coverage_tests {
             render: 3,
             render_live: 4,
             volume: 5,
+            detect: 7,
             queued_pre_ready: 6,
         };
         let b = WorkerLoad {
@@ -304,6 +309,7 @@ mod coverage_tests {
             render: 30,
             render_live: 40,
             volume: 50,
+            detect: 70,
             queued_pre_ready: 60,
         };
         let merged = WorkerLoad::merge(a, b);
@@ -312,6 +318,7 @@ mod coverage_tests {
         assert_eq!(merged.render, 33);
         assert_eq!(merged.render_live, 44);
         assert_eq!(merged.volume, 55);
+        assert_eq!(merged.detect, 77);
         assert_eq!(merged.queued_pre_ready, 66);
     }
 

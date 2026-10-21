@@ -33,6 +33,10 @@
 //       (the elevation was stored to IDB after the request was sent, so the
 //       accumulator no longer holds it; not an error, the main thread ignores it)
 //
+//   Storm cell detection (one reflectivity cut, stored in IDB or live in the accumulator):
+//     Main → Worker:  { type: 'detect', id, scanKey, elevationNumber, input: 'stored' | 'live', params, radarLat, radarLon }
+//     Worker → Main:  { type: 'detected', id, result: StormCellsResult, fetchMs, detectMs, totalMs, azimuthCount, gateCount, complete }
+//
 //   Errors:
 //     Worker → Main:  { type: 'error', id, message }
 //
@@ -228,6 +232,26 @@ self.onmessage = async function (e) {
                 id: msg.id,
             });
             self.postMessage(payload, transferList);
+        } catch (err) {
+            postError(msg.id, err);
+        }
+        return;
+    }
+
+    if (msg.type === 'detect') {
+        try {
+            // worker_detect: JsValue -> Promise<JsValue>. A live request reads
+            // the accumulator synchronously; a stored one awaits IDB.
+            const result = await wasm.worker_detect({
+                scanKey: msg.scanKey,
+                elevationNumber: msg.elevationNumber,
+                input: msg.input,
+                params: msg.params,
+                radarLat: msg.radarLat,
+                radarLon: msg.radarLon,
+            });
+            const payload = Object.assign({}, result, { type: 'detected', id: msg.id });
+            self.postMessage(payload);
         } catch (err) {
             postError(msg.id, err);
         }

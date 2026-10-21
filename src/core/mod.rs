@@ -66,6 +66,7 @@ pub(crate) mod storm_cell_view;
 pub(crate) mod storm_cells;
 pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;
+pub(crate) mod tilt;
 pub(crate) mod time_field;
 pub(crate) mod timeline_geometry;
 pub(crate) mod timeline_interaction;

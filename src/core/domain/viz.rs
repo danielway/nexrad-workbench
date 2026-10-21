@@ -69,6 +69,11 @@ impl RadarProduct {
         }
     }
 
+    /// The products a person can pick: the product chips (desktop rail and
+    /// phone View sheet), the top bar's menu and P's cycle. Clutter Filter
+    /// Power is left out: the worker cannot decode it into its own product
+    /// yet (it would draw reflectivity under a CFP legend), so it waits
+    /// here, decoder and all, until it can.
     pub(crate) fn all() -> &'static [RadarProduct] {
         &[
             RadarProduct::Reflectivity,
@@ -77,8 +82,12 @@ impl RadarProduct {
             RadarProduct::DifferentialReflectivity,
             RadarProduct::CorrelationCoefficient,
             RadarProduct::DifferentialPhase,
-            RadarProduct::ClutterFilterPower,
         ]
+    }
+
+    /// Whether a person can pick this product (see [`Self::all`]).
+    pub(crate) fn is_offered(self) -> bool {
+        Self::all().contains(&self)
     }
 
     /// String identifier used by the worker protocol.
@@ -428,9 +437,18 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
+    fn clutter_filter_power_is_not_offered() {
+        let codes: Vec<_> = RadarProduct::all().iter().map(|p| p.short_code()).collect();
+        assert_eq!(codes, ["REF", "VEL", "SW", "ZDR", "CC", "KDP"]);
+        assert!(!RadarProduct::ClutterFilterPower.is_offered());
+        // The decoder's moment stays: the code still names it.
+        assert!(RadarProduct::from_short_code("CFP") == Some(RadarProduct::ClutterFilterPower));
+    }
+
+    #[wasm_bindgen_test]
     fn radar_product_all_and_default() {
         let all = RadarProduct::all();
-        assert_eq!(all.len(), 7);
+        assert_eq!(all.len(), 6);
         assert!(all[0] == RadarProduct::Reflectivity);
         // Default is Reflectivity.
         assert!(RadarProduct::default() == RadarProduct::Reflectivity);

@@ -36,17 +36,6 @@ use std::rc::Rc;
 mod streaming;
 use streaming::streaming_loop;
 
-impl From<&crate::core::ElevationSelection> for StreamingFilter {
-    fn from(selection: &crate::core::ElevationSelection) -> Self {
-        match selection {
-            crate::core::ElevationSelection::Latest => StreamingFilter::All,
-            crate::core::ElevationSelection::Fixed {
-                elevation_number, ..
-            } => StreamingFilter::Elevation(*elevation_number),
-        }
-    }
-}
-
 /// Result type for realtime streaming events.
 ///
 /// `ChunkReceived` is significantly larger than the other variants because it
@@ -176,6 +165,9 @@ pub(crate) struct RealtimeChannel {
     /// called.
     control: RefCell<ControlChannel>,
     stats: NetworkStats,
+    /// The filter last pushed by [`Self::sync_filter`], so a volume
+    /// boundary (VCP briefly unknown) keeps the resolved set.
+    synced_filter: Cell<StreamingFilter>,
 }
 
 struct ResultsChannel {
@@ -244,6 +236,7 @@ impl RealtimeChannel {
             observations: RefCell::new(ObservationsChannel::new()),
             control: RefCell::new(ControlChannel::new()),
             stats: NetworkStats::new(),
+            synced_filter: Cell::new(StreamingFilter::All),
         }
     }
 
@@ -254,6 +247,7 @@ impl RealtimeChannel {
             observations: RefCell::new(ObservationsChannel::new()),
             control: RefCell::new(ControlChannel::new()),
             stats,
+            synced_filter: Cell::new(StreamingFilter::All),
         }
     }
 
@@ -364,11 +358,18 @@ impl RealtimeChannel {
             .unbounded_send(ControlMessage::SetFilter(filter));
     }
 
-    /// Push the user's elevation selection down as a [`StreamingFilter`].
-    /// Called once per frame from the UI; the loop's de-dupe makes this
-    /// cheap.
-    pub(crate) fn sync_filter(&self, selection: &crate::core::ElevationSelection) {
-        self.set_filter(StreamingFilter::from(selection));
+    /// Push the user's elevation selection down as a [`StreamingFilter`],
+    /// resolved against the live volume's VCP `plan` so every visit of a
+    /// held angle streams (see [`StreamingFilter::for_selection`]). Called
+    /// once per frame from the UI; the loop's de-dupe makes this cheap.
+    pub(crate) fn sync_filter(
+        &self,
+        selection: &crate::core::ElevationSelection,
+        plan: Option<&crate::data::ExtractedVcp>,
+    ) {
+        let filter = StreamingFilter::for_selection(selection, plan, self.synced_filter.get());
+        self.synced_filter.set(filter);
+        self.set_filter(filter);
     }
 
     /// Drain every pending result.
@@ -385,47 +386,6 @@ impl RealtimeChannel {
 mod coverage_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
-
-    // --- From<&ElevationSelection> for StreamingFilter ---
-
-    #[wasm_bindgen_test]
-    fn filter_from_latest_is_all() {
-        let sel = crate::core::ElevationSelection::Latest;
-        let filter = StreamingFilter::from(&sel);
-        assert_eq!(filter, StreamingFilter::All);
-    }
-
-    #[wasm_bindgen_test]
-    fn filter_from_fixed_maps_to_elevation_number() {
-        let sel = crate::core::ElevationSelection::Fixed {
-            elevation_number: 3,
-            angle: 1.5,
-        };
-        let filter = StreamingFilter::from(&sel);
-        assert_eq!(filter, StreamingFilter::Elevation(3));
-    }
-
-    #[wasm_bindgen_test]
-    fn filter_from_fixed_preserves_distinct_numbers() {
-        let sel1 = crate::core::ElevationSelection::Fixed {
-            elevation_number: 1,
-            angle: 0.5,
-        };
-        let sel7 = crate::core::ElevationSelection::Fixed {
-            elevation_number: 7,
-            angle: 4.0,
-        };
-        assert_eq!(StreamingFilter::from(&sel1), StreamingFilter::Elevation(1));
-        assert_eq!(StreamingFilter::from(&sel7), StreamingFilter::Elevation(7));
-        assert_ne!(StreamingFilter::from(&sel1), StreamingFilter::from(&sel7));
-    }
-
-    #[wasm_bindgen_test]
-    fn filter_from_default_selection_is_elevation_one() {
-        // ElevationSelection::default() is Fixed { 1, 0.5 }.
-        let sel = crate::core::ElevationSelection::default();
-        assert_eq!(StreamingFilter::from(&sel), StreamingFilter::Elevation(1));
-    }
 
     // --- RealtimeChannel construction / is_active ---
 
@@ -504,13 +464,13 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn set_and_sync_filter_do_not_emit_results() {
         let ch = RealtimeChannel::new();
-        ch.set_filter(StreamingFilter::Elevation(2));
+        ch.set_filter(StreamingFilter::elevation(2));
         ch.set_filter(StreamingFilter::All);
         let sel = crate::core::ElevationSelection::Fixed {
             elevation_number: 4,
             angle: 2.4,
         };
-        ch.sync_filter(&sel);
+        ch.sync_filter(&sel, None);
         // Filter changes flow over the control channel, not results.
         assert!(ch.try_recv().is_none());
         assert!(!ch.is_active());

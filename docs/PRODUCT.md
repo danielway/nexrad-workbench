@@ -99,9 +99,9 @@ alerting/notifications, offline-first guarantees beyond the existing cache.
 | **Volume scan** | A complete set of sweeps across several elevations, ~5 minutes. The unit an archive file represents. |
 | **Dead time** | The gap between sweeps while the instrument changes elevation and adjusts speed for the next sweep's parameters. |
 | **VCP (Volume Coverage Pattern)** | Dictates the pattern of sweeps (elevations, products, ordering, timing) for each scan. Carried in the scan's header record (Message Type 5). |
-| **Product / Elevation** | Filterable dimensions enumerated by the active VCP. Elevations are addressed by **elevation number** within the VCP, unique within a scan even when the literal angle repeats (SAILS/MRLE supplemental cuts). |
+| **Product / Elevation** | Filterable dimensions enumerated by the active VCP. A cut is identified by its **elevation number** within the VCP, unique within a scan even when the literal angle repeats (SAILS/MRLE supplemental cuts); storage keys and the inspector use it. A held **tilt is an angle**, not a number: it matches every cut whose angle rounds to the same 0.1° and that plays the same part of a split pair (surveillance for reflectivity, Doppler otherwise), in volume order — the base cut and each SAILS/MRLE repeat. |
 | **Chunk** | Live-streaming delivery unit; 3 or 6 chunks compose a sweep. |
-| **Frame** | UI term: a sweep matching the *currently selected product + tilt* — something the canvas can render. The timeline's primary unit. |
+| **Frame** | UI term: a sweep matching the *currently selected product + tilt* — something the canvas can render. The timeline's primary unit. Under SAILS ×3 a held 0.5° is four frames a volume (about one every two minutes); under VCP 35 it is one. |
 | **Live edge** | The right boundary of acquired data; "now" minus dissemination latency. |
 | **Tether** | Whether the playhead is following the live edge. |
 | **Loop window** | A time/frame range playback cycles over; may be pinned to the live edge. |
@@ -412,8 +412,12 @@ tilt selected, the reveal pauses while the antenna is on other tilts.
 
 ### 9.1 Filters
 
-The user selects an **elevation** (by number within the active VCP — §3) and a
-**product** from the available set. The filter does double duty: it **drives
+The user selects a **tilt** (an angle; every visit of it in the volume is a
+frame — §3) and a **product** from the available set: reflectivity (REF),
+velocity (VEL), spectrum width (SW), differential reflectivity (ZDR),
+correlation coefficient (CC) and differential phase (KDP). Clutter Filter
+Power is not offered until the worker decodes it as its own product (the
+decoder keeps its moment for that day). The filter does double duty: it **drives
 sweep matching** for rendering (below) and it **scopes acquisition** (§10) — only
 matching data is fetched/cached.
 
@@ -858,7 +862,7 @@ decision are `core::link`; preferences are `core::prefs`.
 | Playhead time | `t` | Unix seconds; not written while pinned |
 | Selection | `sel` | `now` (pinned point), `last6f` / `last1800s` (range ending now), `START~END` (fixed range); absent = a point at `t` |
 | Play mode | `mode` | `frames` or `rays` |
-| Product | `product` | Short code (`REF`, `VEL`, …) |
+| Product | `product` | Short code: `REF`, `VEL`, `SW`, `ZDR`, `CC` or `KDP`. A product that is not offered (`CFP`) is ignored and the default applies |
 | Tilt | `tilt` | An angle (`0.5`) or `latest` |
 | Map center | `lat`, `lon` | |
 | 2D/3D, camera, map and timeline zoom, volume rendering and cutoff | `v` | Base64 JSON blob; its old `rt` flag is read as `sel=now` |

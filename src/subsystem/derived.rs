@@ -55,12 +55,12 @@ impl Derived {
     /// before any subsystem tick or panel render, so every consumer
     /// downstream reads the same values. `follows_live` is
     /// [`crate::subsystem::Live::canvas_follows_live`].
-    /// `collecting_elevation` is the live in-progress cut when known.
+    /// `live` is the frame's live radar snapshot (the in-progress cut).
     pub(crate) fn for_frame(
         state: &AppState,
         playback: &Playback,
         follows_live: bool,
-        collecting_elevation: Option<u8>,
+        live: &crate::core::LiveRadarModel,
     ) -> Self {
         Self {
             frame_now_secs: state.frame_now.secs(),
@@ -69,7 +69,7 @@ impl Derived {
             effective_sweep_animation: state.effective_sweep_animation(
                 &playback.state,
                 follows_live,
-                collecting_elevation,
+                live,
             ),
             canvas_follows_live: follows_live,
         }

@@ -111,6 +111,9 @@ pub(crate) struct ActivityDevInputs {
     /// Live chunk latency: `(avg fetch ms, p95 fetch ms, avg end-to-end ms)`.
     /// `None` until the live stream has produced samples.
     pub chunk_latency: Option<(f64, f64, Option<f64>)>,
+    /// The shown storm cell result: counts, cut and worker timing. `None`
+    /// while no cells are shown.
+    pub storm_cells: Option<crate::core::storm_cells::StormCellStats>,
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -317,6 +320,9 @@ pub(crate) struct ActivityDetailVm {
     pub render_phases: Option<[(&'static str, f64); 4]>,
     /// Live chunk latency: `(avg fetch ms, p95 fetch ms, avg end-to-end ms)`.
     pub chunk_latency: Option<(f64, f64, Option<f64>)>,
+    /// Storm cell detection readout; its
+    /// [`label`](crate::core::storm_cells::StormCellStats::label) is the row.
+    pub storm_cells: Option<crate::core::storm_cells::StormCellStats>,
     /// Scans the ledger has given up on: the volume genuinely lacks the
     /// requested cut, so no amount of retrying will produce it.
     pub unavailable: u32,
@@ -504,6 +510,7 @@ impl ActivityVm {
                 ingest_phases: dev.ingest_phases,
                 render_phases: dev.render_phases,
                 chunk_latency: dev.chunk_latency,
+                storm_cells: dev.storm_cells,
                 unavailable: inputs.ledger.unavailable,
             }),
         }

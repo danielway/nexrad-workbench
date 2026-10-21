@@ -489,13 +489,14 @@ fn render_dev_rows(
     ui.label(RichText::new("Worker jobs").size(10.0).color(label_color));
     ui.label(
         RichText::new(format!(
-            "{} (ingest {} \u{00b7} chunk {} \u{00b7} render {} \u{00b7} live {} \u{00b7} vol {})",
+            "{} (ingest {} \u{00b7} chunk {} \u{00b7} render {} \u{00b7} live {} \u{00b7} vol {} \u{00b7} cells {})",
             w.total(),
             w.ingest,
             w.chunk_ingest,
             w.render,
             w.render_live,
-            w.volume
+            w.volume,
+            w.detect
         ))
         .size(10.0)
         .color(value_color),
@@ -544,6 +545,9 @@ fn render_dev_rows(
     }
     for (label, ms) in detail.render_phases.iter().flatten() {
         detail_row(ui, label, format!("{ms:.1} ms"), label_color, value_color);
+    }
+    if let Some(stats) = detail.storm_cells {
+        detail_row(ui, "Storm cells", stats.label(), label_color, value_color);
     }
     if let Some((avg, p95, e2e)) = detail.chunk_latency {
         detail_row(

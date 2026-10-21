@@ -1,4 +1,4 @@
-//! CPU-side inspection methods: value lookups and storm cell detection.
+//! CPU-side inspection methods: value and collection-time lookups.
 
 use super::RadarGpuRenderer;
 use crate::core::canvas::{
@@ -89,60 +89,5 @@ impl RadarGpuRenderer {
             &self.cpu.azimuths,
             &self.cpu.radial_times,
         )
-    }
-
-    /// Detect storm cells from the current CPU-side data.
-    ///
-    /// Thin adapter over `crate::storm_cells` — packages the shadow
-    /// copies of the rendered sweep into a `DetectionInput`, runs the
-    /// nested-threshold detector and stamps the result with the sweep id.
-    pub(crate) fn detect_storm_cells(
-        &self,
-        radar_lat: f64,
-        radar_lon: f64,
-        threshold_dbz: f32,
-    ) -> crate::storm_cells::StormCellsResult {
-        let params = crate::storm_cells::DetectionParams {
-            threshold_dbz,
-            ..Default::default()
-        };
-        if !self.has_data || self.cpu.azimuths.is_empty() {
-            let mut empty = crate::storm_cells::StormCellsResult::default();
-            empty.source.params = params;
-            return empty;
-        }
-
-        let t_total = web_time::Instant::now();
-
-        let az_count = self.current.azimuth_count as usize;
-        let gate_count = self.current.gate_count as usize;
-
-        let input = crate::storm_cells::DetectionInput {
-            azimuths: &self.cpu.azimuths,
-            gate_values: &self.cpu.gate_values,
-            azimuth_count: az_count,
-            gate_count,
-            first_gate_km: self.current.first_gate_km,
-            gate_interval_km: self.current.gate_interval_km,
-            data_scale: self.current.data_scale,
-            data_offset: self.current.data_offset,
-            radar_lat,
-            radar_lon,
-            azimuth_spacing_deg: Some(self.current.azimuth_spacing_deg),
-        };
-        let mut result = crate::storm_cells::detect_cells(&input, &params);
-        result.source.sweep_id = self.current.sweep_id.clone();
-
-        log::debug!(
-            "detect_storm_cells: {}x{} grid, {} cells in {} groups (envelope {:.0} dBZ), {:.1}ms",
-            az_count,
-            gate_count,
-            result.cells.len(),
-            result.groups.len(),
-            threshold_dbz,
-            t_total.elapsed().as_secs_f64() * 1000.0,
-        );
-
-        result
     }
 }

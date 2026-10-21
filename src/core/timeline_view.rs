@@ -169,9 +169,9 @@ pub(crate) struct FrameJoinInputs<'i> {
     /// Selected product (worker-string) — a cell counts as Cached only when the
     /// sweep holds a blob for this product.
     pub product: &'i str,
-    /// Selected tilt (1-based elevation number); `None` ⇒ Latest/auto (every
-    /// elevation is a frame).
-    pub tilt: Option<u8>,
+    /// Selected tilt: Latest (every cut is a frame) or a held angle (every
+    /// visit of it is a frame, SAILS/MRLE repeats included).
+    pub tilt: crate::core::tilt::TiltFilter,
     /// On-GPU `(scan_key_secs, elevation_number)` for the active-ring cell.
     pub active: Option<(f64, u8)>,
     /// Previous on-GPU `(scan_key_secs, elevation_number)` during blend.
@@ -423,9 +423,10 @@ impl<'a> TimelineView<'a> {
             .map(|s| (s.start_time, s.end_time))
             .collect();
 
+        let cuts = join.tilt.cuts(scan.vcp_pattern.as_ref());
         let mut cells: Vec<FrameCell> = Vec::new();
         for sw in &scan.sweeps {
-            if !tilt_matches(join.tilt, sw.elevation_number) {
+            if !cuts.contains(sw.elevation_number) {
                 continue;
             }
             let has_product = sw.cached_products.iter().any(|p| p == join.product)
@@ -467,7 +468,7 @@ impl<'a> TimelineView<'a> {
             cells.push(FrameCell {
                 start_secs: scan.start_time,
                 end_secs: clamped_end,
-                elevation_number: join.tilt.unwrap_or(0),
+                elevation_number: join.tilt.anchor().unwrap_or(0),
                 elevation_angle: 0.0,
                 state,
                 chunks: None,
@@ -513,12 +514,6 @@ impl<'a> TimelineView<'a> {
 }
 
 // ── Frame-cell join helpers (free functions; pure, unit-tested) ────────────
-
-/// Whether a selected tilt matches an elevation number. `None` ⇒ Latest/auto,
-/// where every elevation is a frame.
-fn tilt_matches(tilt: Option<u8>, elevation_number: u8) -> bool {
-    tilt.is_none_or(|t| t == elevation_number)
-}
 
 /// Whether any `(start, end)` range in `ranges` contains the scan-start
 /// `key_i` within [`SCAN_JOIN_TOLERANCE_SECS`] of its start.
@@ -587,7 +582,7 @@ fn container_from_shadow(b: &ScanBoundary, join: &FrameJoinInputs<'_>) -> ScanCo
     let cell = FrameCell {
         start_secs: b.start as f64,
         end_secs: b.end as f64,
-        elevation_number: join.tilt.unwrap_or(0),
+        elevation_number: join.tilt.anchor().unwrap_or(0),
         elevation_angle: 0.0,
         state,
         chunks: None,
@@ -619,9 +614,10 @@ fn container_from_live(pos: &ScanProjection, join: &FrameJoinInputs<'_>) -> Scan
         .map(|s| (s.collection_start_secs, s.collection_end_secs))
         .collect();
 
+    let cuts = join.tilt.cuts(pos.vcp_pattern.as_ref());
     let mut cells: Vec<FrameCell> = Vec::new();
     for sp in &pos.sweeps {
-        if !tilt_matches(join.tilt, sp.elevation_number) {
+        if !cuts.contains(sp.elevation_number) {
             continue;
         }
         let (state, chunks) = match sp.status {
@@ -677,10 +673,11 @@ fn container_from_ghost(ghost: &ScanProjection, join: &FrameJoinInputs<'_>) -> S
         .iter()
         .map(|s| (s.collection_start_secs, s.collection_end_secs))
         .collect();
+    let cuts = join.tilt.cuts(ghost.vcp_pattern.as_ref());
     let cells: Vec<FrameCell> = ghost
         .sweeps
         .iter()
-        .filter(|sp| tilt_matches(join.tilt, sp.elevation_number))
+        .filter(|sp| cuts.contains(sp.elevation_number))
         .map(|sp| FrameCell {
             start_secs: sp.collection_start_secs,
             end_secs: sp.collection_end_secs,
@@ -1431,7 +1428,10 @@ mod tests {
             in_flight: &[],
             failed: &[],
             product,
-            tilt,
+            tilt: tilt.map_or(
+                crate::core::tilt::TiltFilter::Every,
+                crate::core::tilt::TiltFilter::number,
+            ),
             active: None,
             prev_active: None,
         }
@@ -1815,7 +1815,10 @@ mod coverage_tests {
             in_flight: &[],
             failed: &[],
             product,
-            tilt,
+            tilt: tilt.map_or(
+                crate::core::tilt::TiltFilter::Every,
+                crate::core::tilt::TiltFilter::number,
+            ),
             active: None,
             prev_active: None,
         }
@@ -1823,12 +1826,13 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn tilt_matches_none_is_wildcard() {
-        assert!(tilt_matches(None, 0));
-        assert!(tilt_matches(None, 1));
-        assert!(tilt_matches(None, 7));
-        assert!(tilt_matches(Some(3), 3));
-        assert!(!tilt_matches(Some(3), 2));
-        assert!(!tilt_matches(Some(3), 4));
+        use crate::core::tilt::TiltFilter;
+        assert!(TiltFilter::Every.matches(None, 0));
+        assert!(TiltFilter::Every.matches(None, 1));
+        assert!(TiltFilter::Every.matches(None, 7));
+        assert!(TiltFilter::number(3).matches(None, 3));
+        assert!(!TiltFilter::number(3).matches(None, 2));
+        assert!(!TiltFilter::number(3).matches(None, 4));
     }
 
     #[wasm_bindgen_test]

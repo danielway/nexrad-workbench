@@ -456,7 +456,7 @@ pub(super) fn render_timeline(
         in_flight: &in_flight_all,
         failed: &failed_secs,
         product,
-        tilt: state.viz_state.elevation_selection.elevation_number(),
+        tilt: (&state.viz_state.elevation_selection).into(),
         active: active_sweep,
         prev_active: prev_active_sweep,
     };

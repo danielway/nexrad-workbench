@@ -38,9 +38,10 @@ impl WorkbenchApp {
         // Push the current elevation filter into the channel before starting
         // so the streaming loop's init-time backfill targets the user's
         // selected elevation rather than a default.
-        self.live
-            .channel
-            .sync_filter(&self.state.viz_state.elevation_selection);
+        self.live.channel.sync_filter(
+            &self.state.viz_state.elevation_selection,
+            self.live.radar_model.vcp_pattern(),
+        );
         self.live.channel.start(
             ctx.clone(),
             site_id,

@@ -45,6 +45,22 @@ impl LiveRadarModel {
     pub(crate) fn collecting_elevation(&self) -> Option<u8> {
         self.active_sweep.as_ref().map(|s| s.elevation_number)
     }
+
+    /// The live volume's VCP pattern (its cuts' angles and waveforms).
+    pub(crate) fn vcp_pattern(&self) -> Option<&crate::data::ExtractedVcp> {
+        self.position.as_ref().and_then(|p| p.vcp_pattern.as_ref())
+    }
+
+    /// The held tilt as a cut number to compare with the collecting cut:
+    /// the collecting cut itself when it is a visit of the held angle (see
+    /// [`crate::core::tilt::selected_cut_against`]).
+    pub(crate) fn selected_cut(&self, selection: &crate::core::ElevationSelection) -> Option<u8> {
+        crate::core::tilt::selected_cut_against(
+            selection,
+            self.vcp_pattern(),
+            self.collecting_elevation(),
+        )
+    }
 }
 
 /// Derived values that need to be evaluated at "now" for live mode but

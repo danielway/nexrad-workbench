@@ -777,12 +777,13 @@ Both paths share the same GPU textures (data / lut / azimuth) and the same GLSL
 snippet blocks, so 2D and 3D radar can't drift. Geographic layers (states,
 counties, cities) are **embedded shapefiles** loaded at compile time; storm-cell
 detection (the `storm_cells` leaf module) runs connected-component analysis on
-reflectivity and is pure/testable, as is the decision of when it runs
-(`core::storm_cells`) and what the overlay shows (`core::storm_cell_view`:
+reflectivity and is pure/testable, as are the choice of cut (the volume's
+lowest reflectivity cut), the result cache and the decision of when it runs
+(`core::storm_cells`), and what the overlay shows (`core::storm_cell_view`:
 which cells draw in 2D and Rays, projected footprint rings, decluttered peak
 chips, the hit test and the hover/selected card). Only running the detector
-and painting that view-model (outline over halo, dashed group, chip, card)
-are in the shell.
+(a `detect` message to a decode worker) and painting that view-model
+(outline over halo, dashed group, chip, card) are in the shell.
 
 ---
 

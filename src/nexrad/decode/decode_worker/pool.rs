@@ -7,6 +7,8 @@
 //!   IDB and every worker has its own connection.
 //! - `ingest_chunk` and `render_live` — pinned to worker 0 because the live
 //!   accumulator (`CHUNK_ACCUM`) is a per-worker thread-local.
+//! - `detect` — pinned to worker 0 for a live cut (it reads the
+//!   accumulator), round-robined like `render` for a stored one.
 //!
 //! Each worker in the pool owns its own JS `Worker` handle and its own
 //! `pending_*` maps, so message correlation remains per-worker. `try_recv`
@@ -145,6 +147,16 @@ impl WorkerPool {
     ) {
         let idx = self.next_render_index();
         self.workers[idx].render_volume(scan_key, product, elevation_numbers);
+    }
+
+    /// Submit a storm cell detection. A live cut reads the accumulator, so it
+    /// goes to the live worker; a stored cut is round-robined like a render.
+    pub(crate) fn detect(&mut self, request: crate::core::storm_cells::DetectRequest) {
+        let idx = match request.key.input {
+            crate::core::storm_cells::CutInput::Live { .. } => LIVE_WORKER_INDEX,
+            crate::core::storm_cells::CutInput::Stored => self.next_render_index(),
+        };
+        self.workers[idx].detect(request);
     }
 
     /// Drain pending outcomes from every worker.
