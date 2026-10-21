@@ -629,65 +629,71 @@ impl WorkbenchApp {
     /// Pure gathering: every decision (which counter is authoritative for
     /// which stage, how stages are deduplicated, when a worker load is stale)
     /// lives in [`core::activity`] and is tested headlessly there.
-    fn build_activity_vm(&self) -> core::activity::ActivityVm {
+    fn build_activity_vm(
+        &self,
+        settle: &mut core::activity::HeadlineSettle,
+    ) -> core::activity::ActivityVm {
         let now_ms = self.state.frame_now.millis();
         let stats = &self.state.session_stats;
-        core::activity::ActivityVm::build(core::activity::ActivityInputs {
-            now_ms,
-            operations: &self.acquisition.state.operations,
-            queue_paused: self.acquisition.state.is_paused(),
-            ledger: self.acquisition.request_ledger.summarize(now_ms),
-            awaiting_scan_starts: &self.acquisition.request_ledger.awaiting_scan_starts(now_ms),
-            worker: stats.worker_load,
-            last_worker_outcome_ms: stats.last_worker_outcome_ms,
-            gpu_render_in_flight: stats.pipeline.rendering,
-            throughput: &stats.throughput,
-            http_in_flight: stats.active_request_count,
-            session_requests: stats.session_request_count,
-            session_bytes: stats.session_transferred_bytes,
-            sw_aggregate: &self.state.network_aggregate,
-            fps: stats.avg_fps,
-            recent_requests: &self.state.recent_network_requests,
-            cache_size_bytes: stats.cache_size_bytes,
-            stream: self.live.session.stream,
-            sheet_open: self.chrome.activity_sheet_open,
-            errors: &self.state.errors,
-            errors_acked: self.chrome.errors_acked,
-            dev: self
-                .state
-                .dev_mode
-                .then_some(core::activity::ActivityDevInputs {
-                    cross_origin_isolated: self.state.cross_origin_isolated,
-                    avg_fetch_ms: stats.median_chunk_latency_ms,
-                    avg_processing_ms: stats.median_processing_time_ms,
-                    avg_render_ms: stats.avg_render_time_ms,
-                    vcp_forecast_available: self.live.mode_state.volume_start_plan.is_some()
-                        || self.live.mode_state.last_completed_volume.is_some(),
-                    ingest_phases: stats.last_ingest_detail.as_ref().map(|d| {
-                        [
-                            ("Split", d.split_ms),
-                            ("Decompress", d.decompress_ms),
-                            ("Decode", d.decode_ms),
-                            ("Extract", d.extract_ms),
-                            ("Store (IDB)", d.store_ms),
-                            ("Index", d.index_ms),
-                        ]
+        core::activity::ActivityVm::build_settled(
+            core::activity::ActivityInputs {
+                now_ms,
+                operations: &self.acquisition.state.operations,
+                queue_paused: self.acquisition.state.is_paused(),
+                ledger: self.acquisition.request_ledger.summarize(now_ms),
+                awaiting_scan_starts: &self.acquisition.request_ledger.awaiting_scan_starts(now_ms),
+                worker: stats.worker_load,
+                last_worker_outcome_ms: stats.last_worker_outcome_ms,
+                gpu_render_in_flight: stats.pipeline.rendering,
+                throughput: &stats.throughput,
+                http_in_flight: stats.active_request_count,
+                session_requests: stats.session_request_count,
+                session_bytes: stats.session_transferred_bytes,
+                sw_aggregate: &self.state.network_aggregate,
+                fps: stats.avg_fps,
+                recent_requests: &self.state.recent_network_requests,
+                cache_size_bytes: stats.cache_size_bytes,
+                stream: self.live.session.stream,
+                sheet_open: self.chrome.activity_sheet_open,
+                errors: &self.state.errors,
+                errors_acked: self.chrome.errors_acked,
+                dev: self
+                    .state
+                    .dev_mode
+                    .then_some(core::activity::ActivityDevInputs {
+                        cross_origin_isolated: self.state.cross_origin_isolated,
+                        avg_fetch_ms: stats.median_chunk_latency_ms,
+                        avg_processing_ms: stats.median_processing_time_ms,
+                        avg_render_ms: stats.avg_render_time_ms,
+                        vcp_forecast_available: self.live.mode_state.volume_start_plan.is_some()
+                            || self.live.mode_state.last_completed_volume.is_some(),
+                        ingest_phases: stats.last_ingest_detail.as_ref().map(|d| {
+                            [
+                                ("Split", d.split_ms),
+                                ("Decompress", d.decompress_ms),
+                                ("Decode", d.decode_ms),
+                                ("Extract", d.extract_ms),
+                                ("Store (IDB)", d.store_ms),
+                                ("Index", d.index_ms),
+                            ]
+                        }),
+                        render_phases: stats.last_render_detail.as_ref().map(|d| {
+                            [
+                                ("IDB fetch", d.fetch_ms),
+                                ("Deserialize", d.deser_ms),
+                                ("Marshal", d.marshal_ms),
+                                ("GPU upload", d.gpu_upload_ms),
+                            ]
+                        }),
+                        chunk_latency: self
+                            .acquisition
+                            .state
+                            .latency_summary()
+                            .map(|l| (l.avg_fetch_ms, l.p95_fetch_ms, l.avg_e2e_ms)),
                     }),
-                    render_phases: stats.last_render_detail.as_ref().map(|d| {
-                        [
-                            ("IDB fetch", d.fetch_ms),
-                            ("Deserialize", d.deser_ms),
-                            ("Marshal", d.marshal_ms),
-                            ("GPU upload", d.gpu_upload_ms),
-                        ]
-                    }),
-                    chunk_latency: self
-                        .acquisition
-                        .state
-                        .latency_summary()
-                        .map(|l| (l.avg_fetch_ms, l.p95_fetch_ms, l.avg_e2e_ms)),
-                }),
-        })
+            },
+            settle,
+        )
     }
 
     /// Assemble this frame's top-bar view-model. Pure gathering: the words,
@@ -1107,7 +1113,9 @@ impl eframe::App for WorkbenchApp {
         // Activity view-model: the one reconciled answer to "what is the app
         // doing?", built once from this frame's inputs so the chip, the sheet
         // and the mobile bar all read the same numbers.
-        let activity_vm = self.build_activity_vm();
+        let mut settle = self.chrome.activity_settle;
+        let activity_vm = self.build_activity_vm(&mut settle);
+        self.chrome.activity_settle = settle;
         self.chrome.errors_acked = core::activity::errors_acked(
             &self.state.errors,
             self.chrome.errors_acked,
