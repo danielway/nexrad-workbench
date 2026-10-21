@@ -783,6 +783,12 @@ pub(crate) struct PlaybackState {
     /// `speed` valid for the mode.
     pub play_mode: PlaybackMode,
 
+    /// Rays was the user's choice when volume rendering took over the
+    /// frame ([`Self::apply_tilt_role`]): Frames plays meanwhile, and Rays
+    /// comes back when the volume stops drawing every tilt. It is the
+    /// choice the link writes ([`Self::chosen_play_mode`]).
+    pub rays_held: bool,
+
     /// Timeline zoom level (pixels per second)
     pub timeline_zoom: f64,
 
@@ -1109,6 +1115,7 @@ impl PlaybackState {
     /// carry (Rays is locked to 1×, spec §8.2), so each mode gets its live
     /// default instead. No-op when the mode is unchanged.
     pub(crate) fn set_play_mode(&mut self, mode: PlaybackMode) {
+        self.rays_held = false;
         let prev = self.play_mode;
         if prev == mode {
             return;
@@ -1125,6 +1132,29 @@ impl PlaybackState {
             self.preserve_cadence_across_snap(prev, mode, spacing);
         }
         self.macro_playback.frame_accumulator = 0.0;
+    }
+
+    /// The mode the user chose: Rays while volume rendering holds it, else
+    /// the mode that plays.
+    pub(crate) fn chosen_play_mode(&self) -> PlaybackMode {
+        if self.rays_held {
+            PlaybackMode::Micro
+        } else {
+            self.play_mode
+        }
+    }
+
+    /// Volume rendering draws whole volumes, one per frame, so Rays has
+    /// nothing to play while it does: Frames takes over and the Rays choice
+    /// is held for when the volume stops drawing every tilt. Called every
+    /// frame with the tilt role; a no-op while nothing changes.
+    pub(crate) fn apply_tilt_role(&mut self, draws_all: bool) {
+        if draws_all && self.play_mode == PlaybackMode::Micro {
+            self.set_play_mode(PlaybackMode::Macro);
+            self.rays_held = true;
+        } else if !draws_all && self.rays_held {
+            self.set_play_mode(PlaybackMode::Micro);
+        }
     }
 
     /// Restore a saved mode at boot, alongside an already-restored `speed`.
@@ -1966,6 +1996,46 @@ mod tests {
             assert!(ps.is_live_range(), "left lookback at zoom {z}");
             assert_eq!(ps.selection, window);
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Rays stands down while the volume draws every tilt
+    // ---------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn volume_rendering_holds_rays_and_gives_it_back() {
+        let mut ps = PlaybackState::default();
+        ps.set_play_mode(PlaybackMode::Micro);
+        ps.apply_tilt_role(true);
+        assert_eq!(ps.playback_mode(), PlaybackMode::Macro);
+        assert_eq!(ps.chosen_play_mode(), PlaybackMode::Micro);
+        assert!(ps.rays_held);
+        // Frame after frame: nothing changes.
+        ps.apply_tilt_role(true);
+        assert_eq!(ps.playback_mode(), PlaybackMode::Macro);
+        // The volume stops drawing every tilt: Rays comes back.
+        ps.apply_tilt_role(false);
+        assert_eq!(ps.playback_mode(), PlaybackMode::Micro);
+        assert!(!ps.rays_held);
+        ps.apply_tilt_role(false);
+        assert_eq!(ps.playback_mode(), PlaybackMode::Micro);
+    }
+
+    #[wasm_bindgen_test]
+    fn frames_is_left_alone_and_a_new_choice_drops_the_hold() {
+        let mut ps = PlaybackState::default();
+        ps.apply_tilt_role(true);
+        assert_eq!(ps.playback_mode(), PlaybackMode::Macro);
+        assert!(!ps.rays_held);
+        ps.apply_tilt_role(false);
+        assert_eq!(ps.playback_mode(), PlaybackMode::Macro);
+        // Choosing Frames while Rays is held is a new choice.
+        ps.set_play_mode(PlaybackMode::Micro);
+        ps.apply_tilt_role(true);
+        ps.set_play_mode(PlaybackMode::Macro);
+        assert!(!ps.rays_held);
+        ps.apply_tilt_role(false);
+        assert_eq!(ps.playback_mode(), PlaybackMode::Macro);
     }
 
     // ---------------------------------------------------------------

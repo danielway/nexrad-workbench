@@ -104,7 +104,7 @@ fn render_transport_row(
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    let vm = crate::core::transport::transport_vm(&playback.state);
+    let vm = crate::core::transport::transport_vm(&playback.state, state.viz_state.tilt_role());
     let strip_view = chrome.phone_strip_view.map(|(w, _)| (w.start, w.end));
     let narrow = ui.available_width() < 380.0;
     let gap = if narrow { 6.0 } else { 10.0 };
