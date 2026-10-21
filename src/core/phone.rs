@@ -14,9 +14,9 @@
 //!   playback without a touch, never on the first tether, never under a
 //!   menu or a finger; and how the map holds still while it slides
 //!   ([`hold_map_still`]).
-//! - **What the mini timeline spans** ([`mini_window`]): the last three
-//!   volumes up to now and the ghost of the next, or the playhead's own
-//!   three volumes when it is far from now.
+//! - **What the mini timeline spans** ([`mini_window`]): three complete
+//!   volumes, the live one's whole expected span and room for the ghost of
+//!   the next, or the playhead's own four volumes when it is far from now.
 //! - **What a press on it is** ([`PressTrack`]): a tap, a scrub, or a
 //!   long-press that opens the action sheet, never two of them. Its zoom stops,
 //!   pinch and snapping are [`crate::core::phone_strip`]'s.
@@ -259,12 +259,22 @@ pub(crate) fn hold_map_still(prev: Option<CanvasFrame>, now: CanvasFrame) -> (f3
 /// is about four and a half minutes).
 pub(crate) const DEFAULT_VOLUME_SECS: f64 = 300.0;
 
-/// How many volumes the mini timeline shows.
-pub(crate) const MINI_VOLUMES: f64 = 3.0;
+/// How many volumes the mini timeline shows near now: three complete ones
+/// and the live one.
+pub(crate) const MINI_VOLUMES: f64 = 4.0;
 
-/// The room right of now, as a share of the window, where the next volume's
-/// ghost draws.
-pub(crate) const MINI_LEAD_SHARE: f64 = 0.25;
+/// The room right of now at the zoomed-out stops (and the furthest any
+/// window reaches past now when it is not anchored to the live volume), in
+/// volumes.
+pub(crate) const MINI_LEAD_VOLUMES: f64 = 0.75;
+
+/// The room kept after the live volume's expected end at NOW, in volumes,
+/// where the next volume's ghost starts.
+pub(crate) const MINI_GHOST_VOLUMES: f64 = 0.25;
+
+/// The room kept left of the first block at NOW, as a share of the window,
+/// so a tap on that block lands clear of the edge and the row holds still.
+pub(crate) const MINI_EDGE_SHARE: f64 = 0.1;
 
 /// The mini timeline's time window, in Unix seconds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -301,14 +311,14 @@ pub(crate) fn typical_volume_secs(volume_starts: &[f64]) -> f64 {
         .clamp(120.0, 900.0)
 }
 
-/// The room right of now where the next volume's ghost and the cap draw:
-/// the same seconds at every zoom stop.
+/// The room right of now where the next volume's ghost and the cap draw at
+/// the zoomed-out stops: the same seconds at 3 H and 24 H.
 pub(crate) fn mini_lead_secs(volume_starts: &[f64]) -> f64 {
-    MINI_VOLUMES * typical_volume_secs(volume_starts) * MINI_LEAD_SHARE
+    MINI_LEAD_VOLUMES * typical_volume_secs(volume_starts)
 }
 
 /// Whether the mini timeline's window is anchored to now: pinned, or a
-/// playhead within three volumes of now (any of the blocks the window
+/// playhead within four volumes of now (any of the blocks the window
 /// shows from now, and not past the ghost room).
 pub(crate) fn mini_near_now(now: f64, playhead: f64, pinned: bool, volume_starts: &[f64]) -> bool {
     let vol = typical_volume_secs(volume_starts);
@@ -319,10 +329,17 @@ pub(crate) fn mini_near_now(now: f64, playhead: f64, pinned: bool, volume_starts
 /// The mini timeline's window. `volume_starts` are the containers' starts,
 /// oldest first (received, archived, live and the next volume's ghost).
 ///
-/// Near now (pinned, or a playhead within three volumes of now) it shows the
-/// last three volumes that have begun, with room right of now for the next
-/// volume's ghost and the cap. A playhead further back gets its own three
-/// volumes centered on it, and the now cap moves to the edge.
+/// Near now (pinned, or a playhead within four volumes of now) it starts
+/// [`MINI_EDGE_SHARE`] of the window before the third complete volume before
+/// the live one and ends past the live
+/// volume's expected end (its start plus a typical volume) by
+/// [`MINI_GHOST_VOLUMES`], where the next volume's ghost begins. The live
+/// block's whole span is kept, so the window holds still while the live
+/// volume grows (now walks from about 70 % to about 95 % across) and steps
+/// one volume when the next one begins; only a volume running past its
+/// expected end pushes the end along with now. A playhead further back
+/// gets its own four volumes centered on it, and the now cap moves to the
+/// edge.
 pub(crate) fn mini_window(
     now: f64,
     playhead: f64,
@@ -331,7 +348,6 @@ pub(crate) fn mini_window(
 ) -> MiniWindow {
     let vol = typical_volume_secs(volume_starts);
     let span = MINI_VOLUMES * vol;
-    let lead = mini_lead_secs(volume_starts);
     if !mini_near_now(now, playhead, pinned, volume_starts) {
         return MiniWindow {
             start: playhead - span / 2.0,
@@ -343,20 +359,27 @@ pub(crate) fn mini_window(
         .copied()
         .filter(|&s| s <= now)
         .collect();
-    let third_last = begun
+    // The live volume: the newest begun, unless it is long stale.
+    let live_start = begun
+        .last()
+        .copied()
+        .filter(|&s| now - s < 2.0 * vol)
+        .unwrap_or(now);
+    let complete = MINI_VOLUMES - 1.0;
+    let first = begun
         .len()
         .checked_sub(MINI_VOLUMES as usize)
         .map(|i| begun[i])
-        .filter(|&s| now - s <= 2.0 * span);
-    let mut start = third_last.unwrap_or(now - span);
+        .filter(|&s| s < live_start && live_start - s <= 2.0 * complete * vol);
+    let first = first.unwrap_or(live_start - complete * vol);
+    let end = (live_start + vol).max(now) + MINI_GHOST_VOLUMES * vol;
+    // first = start + MINI_EDGE_SHARE · (end − start), solved for start.
+    let mut start = (first - MINI_EDGE_SHARE * end) / (1.0 - MINI_EDGE_SHARE);
     if !pinned {
         // Keep the playhead off the left edge.
-        start = start.min(playhead - 0.1 * span);
+        start = start.min(playhead - MINI_EDGE_SHARE * (end - start));
     }
-    MiniWindow {
-        start,
-        end: now + lead,
-    }
+    MiniWindow { start, end }
 }
 
 /// How long a still finger must stay down to be a long-press.
@@ -714,21 +737,48 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn pinned_the_mini_timeline_shows_the_last_three_volumes_and_the_ghost() {
+    fn pinned_the_mini_timeline_shows_three_volumes_the_live_one_and_the_ghost() {
         // Volumes every 300 s; the live one began at 1_200; the ghost at 1_500.
         let starts = [0.0, 300.0, 600.0, 900.0, 1_200.0, 1_500.0];
         let w = mini_window(1_320.0, 1_320.0, true, &starts);
-        assert_eq!(w.start, 600.0, "three volumes that have begun");
-        assert!((w.end - (1_320.0 + MINI_LEAD_SHARE * 900.0)).abs() < 1e-9);
+        assert_eq!(w.end, 1_500.0 + MINI_GHOST_VOLUMES * 300.0);
+        // Three complete volumes before the live one, with the edge room.
+        assert!((300.0 - w.start - MINI_EDGE_SHARE * w.span()).abs() < 1e-9);
         assert!(w.end > 1_500.0, "room for the ghost's first cut");
+        let share = (1_320.0 - w.start) / w.span();
+        assert!(
+            share > 0.75 && share < 0.85,
+            "now sits about 80 % across: {share}"
+        );
     }
 
     #[wasm_bindgen_test]
-    fn with_no_volumes_the_window_still_ends_at_now() {
+    fn the_window_holds_still_while_the_live_volume_grows() {
+        let starts = [0.0, 300.0, 600.0, 900.0, 1_200.0, 1_500.0];
+        let first = mini_window(1_201.0, 1_201.0, true, &starts);
+        let mut now = 1_201.0;
+        while now < 1_500.0 {
+            assert_eq!(mini_window(now, now, true, &starts), first, "at {now}");
+            now += 7.0;
+        }
+        // The next volume begins: one volume's step.
+        let starts = [0.0, 300.0, 600.0, 900.0, 1_200.0, 1_500.0, 1_800.0];
+        let next = mini_window(1_510.0, 1_510.0, true, &starts);
+        assert_eq!(next.start - first.start, 300.0);
+        assert_eq!(next.end - first.end, 300.0);
+        // A volume running long pushes the end with now.
+        let late = mini_window(1_850.0, 1_850.0, true, &starts[..6]);
+        assert_eq!(late.end, 1_850.0 + MINI_GHOST_VOLUMES * 300.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn with_no_volumes_the_window_still_ends_past_now() {
         let w = mini_window(10_000.0, 10_000.0, true, &[]);
-        assert_eq!(
-            w.span(),
-            3.0 * DEFAULT_VOLUME_SECS * (1.0 + MINI_LEAD_SHARE)
+        assert!(
+            (w.span() * (1.0 - MINI_EDGE_SHARE)
+                - DEFAULT_VOLUME_SECS * (MINI_VOLUMES + MINI_GHOST_VOLUMES))
+                .abs()
+                < 1e-9
         );
         assert!(w.end > 10_000.0);
     }
@@ -736,18 +786,23 @@ mod tests {
     #[wasm_bindgen_test]
     fn detached_near_now_keeps_now_in_view_and_the_playhead_off_the_edge() {
         let starts = [0.0, 300.0, 600.0, 900.0, 1_200.0];
+        let pinned = mini_window(1_320.0, 1_320.0, true, &starts);
         let w = mini_window(1_320.0, 800.0, false, &starts);
-        assert_eq!(w.start, 600.0);
-        assert!(w.start < 800.0 - 0.05 * 900.0);
+        assert_eq!(w, pinned, "a tap back holds the row");
         assert!(w.end > 1_320.0);
+        // A tap on the first block lands clear of the edge: still held.
+        assert_eq!(mini_window(1_320.0, 310.0, false, &starts), pinned);
+        // A playhead right at the edge moves it out.
+        let w = mini_window(1_320.0, w.start + 5.0, false, &starts);
+        assert!(w.start < pinned.start);
     }
 
     #[wasm_bindgen_test]
     fn far_from_now_the_window_centers_on_the_playhead() {
         let starts = [0.0, 300.0, 600.0, 900.0];
         let w = mini_window(100_000.0, 600.0, false, &starts);
-        assert_eq!(w.start, 600.0 - 450.0);
-        assert_eq!(w.end, 600.0 + 450.0);
+        assert_eq!(w.start, 0.0, "four volumes centred on the playhead");
+        assert_eq!(w.end, 600.0 + 600.0);
     }
 
     #[wasm_bindgen_test]

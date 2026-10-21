@@ -1,7 +1,8 @@
 //! Visualization state (canvas, zoom/pan, product selection).
 
 use crate::core::canvas::CaptionContext;
-use crate::core::{DisplayedSweep, ElevationSelection, RadarProduct, StormCellsResult};
+use crate::core::storm_cells::StormCells;
+use crate::core::{DisplayedSweep, ElevationSelection, RadarProduct};
 use crate::geo::{Camera, Flat2DState, ViewMode};
 use eframe::egui::Vec2;
 
@@ -76,8 +77,9 @@ pub(crate) struct VizState {
     /// Minimum dBZ threshold for storm cell detection.
     pub storm_cell_threshold_dbz: f32,
 
-    /// Cached storm cell detection result (cells, groups, source).
-    pub detected_storm_cells: StormCellsResult,
+    /// The last storm cell detection result and the sweep/threshold it was
+    /// computed for (see `crate::core::storm_cells`).
+    pub storm_cells: StormCells,
 
     /// Last observed visible map bounds in 2D mode, as
     /// `(min_lon, min_lat, max_lon, max_lat)`. Updated each frame by the
@@ -131,7 +133,7 @@ impl Default for VizState {
             distance_end: None,
             storm_cells_visible: false,
             storm_cell_threshold_dbz: 35.0,
-            detected_storm_cells: StormCellsResult::default(),
+            storm_cells: StormCells::default(),
             last_visible_bounds: None,
             displayed: None,
             previous_displayed: None,
@@ -150,6 +152,12 @@ impl VizState {
     /// every volume-render gate and the fetch scope share.
     pub(crate) fn volume_3d_active(&self) -> bool {
         self.volume_3d_enabled && self.view_mode() == ViewMode::Globe3D
+    }
+
+    /// What the tilt controls do: every cut while volume rendering is
+    /// active, else the one you pick.
+    pub(crate) fn tilt_role(&self) -> crate::core::session::TiltRole {
+        crate::core::session::TiltRole::from_volume_3d(self.volume_3d_active())
     }
 
     /// The tilt scope archive fetches store: the whole volume while volume

@@ -51,6 +51,11 @@ pub(crate) struct DetectionInput<'a> {
     pub data_offset: f32,
     pub radar_lat: f64,
     pub radar_lon: f64,
+    /// Angular width of one radial in degrees. The renderer knows the
+    /// sweep's real spacing; a partial live sweep holds only the radials
+    /// received so far, so `360 / azimuth_count` would overstate it. When
+    /// `None`, the median gap between the supplied azimuths is used.
+    pub azimuth_spacing_deg: Option<f32>,
 }
 
 /// Tuning knobs for the detector.
@@ -133,7 +138,7 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
         params.threshold_dbz,
     );
 
-    let az_spacing_rad = (360.0_f64 / input.azimuth_count as f64).to_radians();
+    let az_spacing_rad = (features::radial_width_deg(input) as f64).to_radians();
     let gate_area_km2: Vec<f64> = (0..input.gate_count)
         .map(|g| {
             let range_km = input.first_gate_km + (g as f64 + 0.5) * input.gate_interval_km;
@@ -156,6 +161,8 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
     for (envelope, members) in &seg.envelopes {
         let group_idx = (members.len() >= 2).then(|| {
             let comp = &seg.components[*envelope];
+            // The centroid weight is measured from the envelope level (the
+            // lowest dBZ a member gate can have).
             let fp = features::summarize(&comp.pixels, &filtered, input, params.threshold_dbz);
             groups.push(StormGroup {
                 id: 0,
@@ -172,6 +179,8 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
         for &c in members {
             let comp = &seg.components[c];
             let level = seg.levels[comp.level_idx];
+            // A cell's gates all sit at or above its own level, so that is
+            // its edge threshold for the centroid weight.
             let fp = features::summarize(&comp.pixels, &filtered, input, level);
             let cell = StormCell {
                 id: 0,
@@ -255,6 +264,7 @@ mod coverage_tests {
             data_offset: 0.0,
             radar_lat: 35.0,
             radar_lon: -97.0,
+            azimuth_spacing_deg: None,
         }
     }
 
@@ -480,6 +490,49 @@ mod coverage_tests {
         assert_eq!(cells.len(), 1);
         assert_eq!(cells[0].gate_count, 6);
         assert!((cells[0].peak_dbz - 50.0).abs() < 1e-3);
+    }
+
+    /// A 4-radial × 4-gate core starting at azimuth 10°, in a sweep of
+    /// `n_radials` radials spaced 0.5° apart from 0°.
+    fn half_degree_sweep(n_radials: usize) -> (Vec<f32>, Vec<f32>, usize) {
+        let gate_count = 20;
+        let az: Vec<f32> = (0..n_radials).map(|i| i as f32 * 0.5).collect();
+        let mut gates = vec![0.0_f32; n_radials * gate_count];
+        for a in 20..24 {
+            for g in 10..14 {
+                gates[a * gate_count + g] = 45.0;
+            }
+        }
+        (az, gates, gate_count)
+    }
+
+    #[wasm_bindgen_test]
+    fn quarter_sweep_area_matches_full_sweep() {
+        // A live partial holding a quarter of a 0.5° sweep must give each
+        // gate the same 0.5° width as the full sweep, not 360/180 = 2°.
+        let (full_az, full_gates, gc) = half_degree_sweep(720);
+        let (q_az, q_gates, _) = half_degree_sweep(180);
+        let area = |input: &DetectionInput| {
+            let r = detect_cells(input, &permissive());
+            assert_eq!(r.cells.len(), 1);
+            r.cells[0].area_km2
+        };
+
+        let mut full = mk_input(&full_az, &full_gates, gc);
+        full.azimuth_spacing_deg = Some(0.5);
+        let full_area = area(&full);
+
+        // Spacing supplied by the renderer.
+        let mut quarter = mk_input(&q_az, &q_gates, gc);
+        quarter.azimuth_spacing_deg = Some(0.5);
+        let q_area = area(&quarter);
+        assert!((q_area - full_area).abs() < 1e-4, "{q_area} vs {full_area}");
+
+        // Spacing not supplied: the median gap of the azimuths is used.
+        let q_area = area(&mk_input(&q_az, &q_gates, gc));
+        assert!((q_area - full_area).abs() < 1e-4, "{q_area} vs {full_area}");
+        let f_area = area(&mk_input(&full_az, &full_gates, gc));
+        assert!((f_area - full_area).abs() < 1e-4, "{f_area} vs {full_area}");
     }
 
     #[wasm_bindgen_test]

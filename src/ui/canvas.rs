@@ -399,12 +399,12 @@ pub(crate) fn render_canvas_with_geo(
                 );
 
                 if state.viz_state.storm_cells_visible
-                    && !state.viz_state.detected_storm_cells.is_empty()
+                    && !state.viz_state.storm_cells.result.cells.is_empty()
                 {
                     render_storm_cells(
                         &painter,
                         &projection,
-                        &state.viz_state.detected_storm_cells.cells,
+                        &state.viz_state.storm_cells.result.cells,
                         dark,
                     );
                 }

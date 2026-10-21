@@ -131,11 +131,18 @@ pub(super) fn ladder(
             Pos2::new(rect.left(), rect.top() + i as f32 * row_h),
             Vec2::new(rect.width(), row_h),
         );
-        let resp = ui
-            .interact(r, ui.id().with(("ladder_row", i)), Sense::click())
-            .on_hover_cursor(egui::CursorIcon::PointingHand);
-        if resp.hovered() {
-            painter.rect_filled(r, 2.0, theme::alpha(theme::HOVER, 160));
+        // While the volume draws every tilt the rows only explain themselves.
+        let sense = if vm.picks {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let mut resp = ui.interact(r, ui.id().with(("ladder_row", i)), sense);
+        if vm.picks {
+            resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+            if resp.hovered() {
+                painter.rect_filled(r, 2.0, theme::alpha(theme::HOVER, 160));
+            }
         }
         let color = if row.tilt.selected {
             theme::SELECTED
@@ -179,7 +186,7 @@ pub(super) fn ladder(
             Some(note) => format!("{} \u{00B7} {note}", row.tilt.hover),
             None => row.tilt.hover.clone(),
         };
-        if resp.on_hover_text(hover).clicked() {
+        if resp.on_hover_text(hover).clicked() && vm.picks {
             state.push_command(Intent::TopBar(TopBarIntent::SetTilt(row.tilt.pick)));
         }
     }

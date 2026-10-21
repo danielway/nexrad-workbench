@@ -245,6 +245,33 @@ pub(crate) const DESIGN_GLYPHS: ChipGlyphs = ChipGlyphs {
 // The view-model
 // ───────────────────────────────────────────────────────────────────────────
 
+/// What the tilt controls do, decided by what the canvas draws.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum TiltRole {
+    /// A sweep is drawn: the tilt you pick is the tilt you see.
+    #[default]
+    Picks,
+    /// Volume rendering in 3D draws every cut on the device. The ladder,
+    /// the tilt chip and Rays stand down; the stored tilt waits for the
+    /// box to be turned off.
+    DrawsAll,
+}
+
+impl TiltRole {
+    /// Volume rendering in 3D draws every tilt; anything else draws one.
+    pub(crate) fn from_volume_3d(active: bool) -> Self {
+        if active {
+            TiltRole::DrawsAll
+        } else {
+            TiltRole::Picks
+        }
+    }
+
+    pub(crate) fn draws_all(self) -> bool {
+        self == TiltRole::DrawsAll
+    }
+}
+
 /// Everything [`SessionVm::build`] reads: plain data from existing state.
 pub(crate) struct SessionInputs<'a> {
     pub now: FrameNow,
@@ -264,6 +291,9 @@ pub(crate) struct SessionInputs<'a> {
     /// frame's length, a render in flight, downloads, the wanted tilt) — the
     /// caption rule reads it beside the frame and playhead facts.
     pub caption_context: CaptionContext,
+    /// Volume rendering is on and the camera is in 3D
+    /// (`VizState::volume_3d_active`).
+    pub volume_3d_active: bool,
 }
 
 /// One session, four facts, five surfaces. Rebuilt once per frame.
@@ -296,6 +326,10 @@ pub(crate) struct SessionVm {
     /// A stream runs and the selection is pinned to now: what the favicon,
     /// the tab title and the link's pinned selection read.
     pub live_now: bool,
+
+    /// What the tilt controls do this frame (the ladder, the tilt chip and
+    /// the Frames / Rays toggle project it).
+    pub tilt_role: TiltRole,
 }
 
 impl Default for SessionVm {
@@ -319,6 +353,7 @@ impl Default for SessionVm {
             activity_hover: None,
             canvas_caption: CanvasCaption::None,
             live_now: false,
+            tilt_role: TiltRole::Picks,
         }
     }
 }
@@ -413,6 +448,7 @@ impl SessionVm {
             activity_hover,
             canvas_caption,
             live_now,
+            tilt_role: TiltRole::from_volume_3d(inputs.volume_3d_active),
         }
     }
 
@@ -786,6 +822,7 @@ mod tests {
         displayed: Option<&'a DisplayedSweep>,
         live_cut: Option<LiveCut>,
         caption: CaptionContext,
+        volume_3d_active: bool,
     }
 
     impl<'a> S<'a> {
@@ -801,6 +838,7 @@ mod tests {
                 displayed: None,
                 live_cut: None,
                 caption: CaptionContext::default(),
+                volume_3d_active: false,
             }
         }
 
@@ -827,6 +865,7 @@ mod tests {
                 displayed: self.displayed,
                 live_cut: self.live_cut.clone(),
                 caption_context: self.caption,
+                volume_3d_active: self.volume_3d_active,
             })
         }
     }
@@ -1478,6 +1517,44 @@ mod tests {
             s.vm().canvas_caption_text(&Utc).as_deref(),
             Some("waiting for the volume to complete · volume rendering needs every tilt")
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn volume_rendering_decides_the_tilt_role() {
+        let mut s = S::at(t(12, 0, 0));
+        assert_eq!(s.vm().tilt_role, TiltRole::Picks);
+        s.volume_3d_active = true;
+        assert_eq!(s.vm().tilt_role, TiltRole::DrawsAll);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_partial_volume_says_how_much_it_draws() {
+        let f = frame(t(11, 59, 0), 1, 0.5);
+        let mut s = S::at(t(12, 0, 0));
+        s.displayed = Some(&f);
+        s.caption = CaptionContext {
+            volume_cuts: Some((5, 23)),
+            ..tilt(300.0)
+        };
+        assert_eq!(
+            s.vm().canvas_caption_text(&Utc).as_deref(),
+            Some("drawing 5 of 23 cuts")
+        );
+        s.caption.fetch_covers_playhead = true;
+        assert_eq!(
+            s.vm().canvas_caption_text(&Utc).as_deref(),
+            Some("drawing 5 of 23 cuts · fetching the rest")
+        );
+        // Waiting for the live volume comes first; with no frame the blank
+        // map says why instead.
+        s.caption.volume_waiting = true;
+        assert_eq!(s.vm().canvas_caption, CanvasCaption::VolumeWaiting);
+        s.caption.volume_waiting = false;
+        s.displayed = None;
+        assert!(matches!(
+            s.vm().canvas_caption,
+            CanvasCaption::NoFrame { .. }
+        ));
     }
 
     /// Live now needs a running stream and a pinned selection.

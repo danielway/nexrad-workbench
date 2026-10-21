@@ -383,6 +383,7 @@ mod coverage_tests {
             data_offset: 0.0,
             radar_lat: 35.0,
             radar_lon: -97.0,
+            azimuth_spacing_deg: None,
         }
     }
 

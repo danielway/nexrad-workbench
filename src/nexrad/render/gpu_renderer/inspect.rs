@@ -128,6 +128,7 @@ impl RadarGpuRenderer {
             data_offset: self.current.data_offset,
             radar_lat,
             radar_lon,
+            azimuth_spacing_deg: Some(self.current.azimuth_spacing_deg),
         };
         let mut result = crate::storm_cells::detect_cells(&input, &params);
         result.source.sweep_id = self.current.sweep_id.clone();

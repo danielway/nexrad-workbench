@@ -80,6 +80,7 @@ fn detect(bytes: &[u8], threshold_dbz: f32) -> (StormCellsResult, (f64, f64)) {
         data_offset: f.offset,
         radar_lat: f.radar_lat,
         radar_lon: f.radar_lon,
+        azimuth_spacing_deg: None,
     };
     let r = detect_cells(
         &input,
@@ -217,44 +218,44 @@ fn greenfield_snapshot() {
 }
 
 const GREENFIELD_SNAPSHOT: &str = "
-    0 g1 L45 peak 58.5 area 435 at 39.35,-94.71
+    0 g1 L45 peak 58.5 area 439 at 39.35,-94.71
     1 g0 L55 peak 58.5 area 17 at 42.32,-94.67
-    2 g0 L50 peak 58.0 area 460 at 41.27,-94.73
+    2 g0 L50 peak 58.0 area 464 at 41.27,-94.73
     3 g2 L45 peak 58.0 area 48 at 40.50,-94.67
     4 g0 L55 peak 58.0 area 23 at 42.01,-94.82
-    5 g- L35 peak 57.5 area 373 at 42.42,-91.01
-    6 g- L35 peak 56.0 area 487 at 43.60,-94.75
-    7 g- L35 peak 55.5 area 206 at 43.02,-94.26
-    8 g0 L50 peak 55.5 area 120 at 41.64,-94.89
+    5 g- L35 peak 57.5 area 376 at 42.42,-91.01
+    6 g- L35 peak 56.0 area 491 at 43.60,-94.75
+    7 g- L35 peak 55.5 area 208 at 43.02,-94.26
+    8 g0 L50 peak 55.5 area 121 at 41.64,-94.89
     9 g0 L50 peak 55.0 area 15 at 43.24,-94.31
-    10 g0 L40 peak 54.0 area 215 at 42.96,-94.66
-    11 g0 L45 peak 53.5 area 173 at 42.67,-94.70
-    12 g0 L45 peak 53.5 area 79 at 43.38,-94.88
-    13 g0 L40 peak 53.0 area 134 at 43.11,-94.66
+    10 g0 L40 peak 54.0 area 217 at 42.96,-94.66
+    11 g0 L45 peak 53.5 area 174 at 42.67,-94.70
+    12 g0 L45 peak 53.5 area 80 at 43.38,-94.88
+    13 g0 L40 peak 53.0 area 135 at 43.11,-94.66
     14 g0 L45 peak 53.0 area 76 at 40.87,-94.71
-    15 g3 L50 peak 53.0 area 40 at 39.97,-94.66
+    15 g3 L50 peak 53.0 area 41 at 39.97,-94.66
     16 g3 L50 peak 53.0 area 20 at 40.02,-94.62
     17 g0 L50 peak 53.0 area 18 at 43.28,-94.51
     18 g0 L50 peak 53.0 area 11 at 41.51,-94.82
-    19 g- L35 peak 50.5 area 226 at 43.92,-92.91
-    20 g- L35 peak 50.5 area 118 at 42.85,-94.12
-    21 g3 L40 peak 50.0 area 163 at 39.67,-94.69
+    19 g- L35 peak 50.5 area 228 at 43.92,-92.91
+    20 g- L35 peak 50.5 area 119 at 42.85,-94.12
+    21 g3 L40 peak 50.0 area 164 at 39.67,-94.69
     22 g- L35 peak 49.5 area 24 at 42.64,-94.40
     23 g2 L45 peak 49.5 area 15 at 40.55,-94.63
     24 g1 L45 peak 48.8 area 18 at 39.19,-94.82
     25 g0 L45 peak 48.5 area 24 at 43.34,-94.74
-    26 g4 L40 peak 48.0 area 271 at 43.85,-94.29
-    27 g- L35 peak 48.0 area 111 at 43.36,-94.11
-    28 g- L35 peak 47.0 area 246 at 43.19,-95.18
-    29 g- L35 peak 46.5 area 119 at 43.73,-92.96
-    30 g- L35 peak 46.0 area 72 at 43.49,-94.28
-    31 g4 L40 peak 45.0 area 104 at 44.02,-93.76
-    32 g4 L40 peak 45.0 area 71 at 44.17,-93.35
-    group 0 peak 58.5 area 6275 cells [1, 2, 4, 8, 9, 10, 11, 12, 13, 14, 17, 18, 25]
-    group 1 peak 58.5 area 942 cells [0, 24]
-    group 2 peak 58.0 area 189 cells [3, 23]
-    group 3 peak 53.0 area 1396 cells [15, 16, 21]
-    group 4 peak 48.0 area 1158 cells [26, 31, 32]
+    26 g4 L40 peak 48.0 area 273 at 43.85,-94.29
+    27 g- L35 peak 48.0 area 112 at 43.36,-94.11
+    28 g- L35 peak 47.0 area 248 at 43.19,-95.18
+    29 g- L35 peak 46.5 area 120 at 43.73,-92.96
+    30 g- L35 peak 46.0 area 73 at 43.49,-94.28
+    31 g4 L40 peak 45.0 area 105 at 44.02,-93.76
+    32 g4 L40 peak 45.0 area 72 at 44.17,-93.35
+    group 0 peak 58.5 area 6325 cells [1, 2, 4, 8, 9, 10, 11, 12, 13, 14, 17, 18, 25]
+    group 1 peak 58.5 area 949 cells [0, 24]
+    group 2 peak 58.0 area 190 cells [3, 23]
+    group 3 peak 53.0 area 1407 cells [15, 16, 21]
+    group 4 peak 48.0 area 1168 cells [26, 31, 32]
 ";
 
 // --- KFWS 2024-05-28 10:27Z, MCS north of the Metroplex -----------------

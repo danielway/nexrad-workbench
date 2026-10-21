@@ -67,7 +67,7 @@ pub(crate) fn build_link(
         site: Some(state.viz_state.site_id.clone()),
         time: Some(playback.playback_position()),
         selection: Some(link_selection(playback.selection)),
-        play_mode: Some(playback.play_mode),
+        play_mode: Some(playback.chosen_play_mode()),
         product: Some(state.viz_state.product.short_code().to_string()),
         tilt: Some(match state.viz_state.elevation_selection {
             ElevationSelection::Latest => LinkTilt::Latest,
