@@ -212,6 +212,17 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     OneShotShortcut {
         section: SECTION_PLAYBACK,
         owned: None,
+        key_label: "G",
+        description: "Go to a day",
+        pressed: |i| no_mods(i, egui::Key::G),
+        scope: KeyScope::Always,
+        handler: |state, _live, _timeline, _playback, _chrome, _| {
+            state.push_command(crate::core::Intent::OpenGoToDay)
+        },
+    },
+    OneShotShortcut {
+        section: SECTION_PLAYBACK,
+        owned: None,
         key_label: "S",
         description: "Open site selection (2D)",
         pressed: |i| no_mods(i, egui::Key::S),

@@ -40,6 +40,15 @@ pub(super) fn render_playback_controls(
             gesture: SeekGesture::Typed,
         });
     }
+    // The calendar: pick a day by its storm activity, or type a time.
+    let calendar = ui
+        .button(RichText::new(egui_phosphor::regular::CALENDAR_BLANK).size(14.0))
+        .on_hover_text("Go to a day (G)");
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(super::go_to_day::anchor_id(), calendar.rect));
+    if calendar.clicked() {
+        state.push_command(Intent::OpenGoToDay);
+    }
     ui.separator();
 
     // What plays, and the menu that sets it.

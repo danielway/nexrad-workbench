@@ -1,4 +1,5 @@
-//! Shell for the phone's calendar sheet, "Go to a day": runs the core's
+//! Shell for the calendar, "Go to a day" (the phone's sheet and the
+//! desktop's popover): runs the core's
 //! landing rule against the app's state. Every decision is in
 //! [`crate::core::calendar`]; this assembles its inputs and applies what it
 //! returns.
@@ -10,9 +11,10 @@ use crate::core::Intent;
 use crate::data::SiteId;
 
 impl DispatchState<'_> {
-    /// [`Intent::GoToDay`]: a running stream stopped, the 3 H stop, the
-    /// playhead paused on the day's stormiest volume (or its midday while the
-    /// listing is out), and the sheet closed.
+    /// [`Intent::GoToDay`]: a running stream stopped, the phone's 3 H stop
+    /// or the desktop's strip showing the day, the playhead paused on the
+    /// day's stormiest volume (or its midday while the listing is out), and
+    /// the calendar closed.
     pub(crate) fn go_to_day(&mut self, day: CalendarDay, intent: &Intent) {
         let site = SiteId::new(self.state.viz_state.site_id.clone());
         let now = self.state.frame_now.secs();
@@ -30,9 +32,43 @@ impl DispatchState<'_> {
         self.transport(|env, slices| {
             crate::core::transport::reduce_seek(env, slices, ts, SeekGesture::Typed)
         });
+        crate::core::calendar::frame_day(
+            &mut self.playback.state,
+            day,
+            now,
+            crate::core::NEXRAD_ARCHIVE_START_SECS,
+        );
         self.playback.state.playing = false;
         self.chrome.go_to_day = None;
         self.chrome.go_to_day_landing = landing;
+        super::dialogs::sync_dialogs(self.chrome, self.diagnostics);
+    }
+}
+
+impl DispatchState<'_> {
+    /// [`Intent::GoToTime`]: a running stream stopped in place, the playhead
+    /// paused on the typed time (the strip brought to it), the overview
+    /// framed around it, and the calendar closed.
+    pub(crate) fn go_to_time(&mut self, ts: f64) {
+        let now = self.state.frame_now.secs();
+        if let Some(placement) =
+            crate::core::calendar::landing_stops_stream(self.live.mode_state.is_active())
+        {
+            self.transport(|env, slices| {
+                crate::core::transport::reduce_stop_live(env, slices, placement)
+            });
+        }
+        self.transport(|env, slices| {
+            crate::core::transport::reduce_seek(env, slices, ts, SeekGesture::Typed)
+        });
+        crate::core::calendar::frame_time(
+            &mut self.playback.state,
+            ts.min(now),
+            now,
+            crate::core::NEXRAD_ARCHIVE_START_SECS,
+        );
+        self.playback.state.playing = false;
+        self.chrome.go_to_day = None;
         super::dialogs::sync_dialogs(self.chrome, self.diagnostics);
     }
 }
