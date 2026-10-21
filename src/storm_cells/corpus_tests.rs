@@ -136,15 +136,10 @@ fn check_invariants(r: &StormCellsResult) {
         // Simplification never cuts a long chord across the footprint
         // (10 km in the outline's projection; this one differs slightly).
         assert!(longest_edge_km(&c.outline) < 10.5, "cell {i}");
-        // A grouped cell carries its core ring; a lone cell draws its
-        // footprint and carries none.
-        if c.group_id.is_some() {
-            assert!(c.core_outline.len() >= 5, "cell {i}");
-            assert_eq!(c.core_outline.first(), c.core_outline.last());
-            assert!(longest_edge_km(&c.core_outline) < 10.5, "cell {i}");
-        } else {
-            assert!(c.core_outline.is_empty(), "cell {i}");
-        }
+        // Every cell, lone or grouped, carries the core ring it is drawn as.
+        assert!(c.core_outline.len() >= 5, "cell {i}");
+        assert_eq!(c.core_outline.first(), c.core_outline.last());
+        assert!(longest_edge_km(&c.core_outline) < 10.5, "cell {i}");
         assert!(c.peak_dbz >= c.level_dbz);
         if let Some(g) = c.group_id {
             assert!(r.groups[g as usize].cell_ids.contains(&c.id));

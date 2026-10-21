@@ -230,10 +230,11 @@ pub(crate) mod storm_cells {
     pub(crate) fn outline_provisional() -> Color32 {
         alpha(OUTLINE, 150)
     }
-    /// The group ring around a group's cells: solid but subordinate to a
-    /// cell's stroke (thinner, and at about half its opacity).
+    /// The faint envelope ring around a group's cells or a lone cell's
+    /// core: solid but subordinate to a cell's stroke (thinner, and at about
+    /// two thirds of its opacity), legible over yellow and orange echo.
     pub(crate) fn group() -> Color32 {
-        alpha(OUTLINE, 120)
+        alpha(OUTLINE, 185)
     }
     /// The faint halo under the group ring.
     pub(crate) fn group_halo() -> Color32 {

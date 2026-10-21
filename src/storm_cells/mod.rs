@@ -162,6 +162,16 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
     );
     let half_spacing = components::median_spacing_deg(input.azimuths, input.azimuth_count) * 0.5;
     let mut shed = watershed::Watershed::new(&filtered, &az_adjacent, input.gate_count);
+    // A lone storm's cell is its envelope; its drawn core is the component
+    // around its peak at the core level (the lowest rung at or above the
+    // envelope + core margin), labeled here because segmentation keeps
+    // only components that split.
+    let core_level = seg
+        .levels
+        .iter()
+        .copied()
+        .find(|l| *l >= params.threshold_dbz + params.core_margin_dbz);
+    let mut core_labeler = components::Labeler::new(&filtered, &az_adjacent, input.gate_count);
 
     // Cells, tagged with the index of their envelope while it is a group.
     let mut cells: Vec<(StormCell, Option<usize>)> = Vec::new();
@@ -203,6 +213,21 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
             // Weights are measured from the envelope level, the weakest
             // value a footprint gate can have, as for groups.
             let fp = features::summarize(pixels, &filtered, input, params.threshold_dbz);
+            // The drawn core: the component the cell was found at when that
+            // is above the envelope (every grouped cell), else the core-level
+            // component around the footprint's peak. None only if the peak
+            // never reaches the core level, which the core minimum rules out.
+            let core: Option<Vec<components::Pixel>> = if level > params.threshold_dbz {
+                Some(seg.components[c].pixels.clone())
+            } else {
+                let peak_gate = pixels
+                    .iter()
+                    .map(|&(a, g)| a as usize * input.gate_count + g as usize)
+                    .max_by(|&x, &y| filtered[x].total_cmp(&filtered[y]));
+                core_level
+                    .zip(peak_gate)
+                    .and_then(|(l, seed)| core_labeler.fill(seed, l, 1))
+            };
             let cell = StormCell {
                 id: 0,
                 group_id: None,
@@ -218,19 +243,21 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
                 range_from_radar_km: fp.range_from_radar_km,
                 orientation_deg: fp.orientation_deg,
                 elongation: fp.elongation,
-                outline: outline::outline(pixels, input, half_spacing, outline::TOLERANCE_KM),
-                // A grouped cell's core: what the overlay draws inside the
-                // group's ring. A lone cell draws its footprint instead.
-                core_outline: if group_idx.is_some() {
-                    outline::outline(
-                        &seg.components[c].pixels,
-                        input,
-                        half_spacing,
-                        outline::TOLERANCE_KM,
-                    )
-                } else {
-                    Vec::new()
-                },
+                // A lone cell's footprint is its envelope, drawn as a faint
+                // ring like a group's, so it is simplified like one.
+                outline: outline::outline(
+                    pixels,
+                    input,
+                    half_spacing,
+                    if group_idx.is_some() {
+                        outline::TOLERANCE_KM
+                    } else {
+                        outline::GROUP_TOLERANCE_KM
+                    },
+                ),
+                core_outline: core.map_or_else(Vec::new, |px| {
+                    outline::outline(&px, input, half_spacing, outline::TOLERANCE_KM)
+                }),
             };
             cells.push((cell, group_idx));
         }
@@ -443,9 +470,9 @@ mod coverage_tests {
         // radials); the lone cell has its 9.
         assert_eq!(r.cells[0].gate_count + r.cells[1].gate_count, 36);
         assert_eq!(r.cells[2].gate_count, 9);
-        // Grouped cells carry their core ring, inside their footprint.
-        assert!(r.cells[0].core_outline.len() >= 4 && r.cells[1].core_outline.len() >= 4);
-        assert!(r.cells[2].core_outline.is_empty());
+        // Every cell carries its core ring, the lone one too (its 50 dBZ
+        // block reaches the 45 dBZ core level).
+        assert!(r.cells.iter().all(|c| c.core_outline.len() >= 4));
         assert_eq!(r.source.params, permissive());
     }
 

@@ -679,13 +679,15 @@ Interactive measurement and analysis affordances on the 2D canvas:
     is its whole envelope. Area, mean dBZ, centroid and the hit test refer to
     the footprint.
   - **Outline.** What is drawn picks out the storms without interior
-    borders. A group draws its envelope as one faint, thin solid ring (1 px;
-    1.5 px on the phone, at about half the cell stroke's opacity, simplified
-    to about 2.5 km so a rainband reads as a smooth ring). Inside it each
-    cell draws its core. A lone cell draws its footprint. Cell outlines are
-    one light stroke over a thin dark halo (1.6 px; 2 px on the phone) so
-    they read on every part of the palette. Intensity is never the stroke's
-    color.
+    borders. Every envelope, a group's or a lone cell's, draws as one faint,
+    thin solid ring (1 px; 1.5 px on the phone, at about two thirds of the
+    cell stroke's opacity over a thin halo, simplified to about 2.5 km so a
+    rainband reads as a smooth ring). Inside it each cell draws its core:
+    for a cell in a group, the echo at the level where it became distinct;
+    for a lone cell, the echo around its peak at the core level (envelope
+    + 10 dB). Cores are one light stroke over a thin dark halo (1.6 px; 2 px
+    on the phone) so they read on every part of the palette. Intensity is
+    never the stroke's color.
   - **Chip.** The cell's peak dBZ sits in a small mono chip at the outline's
     top-right (11 px; 12 px on the phone). Chips are placed strongest first
     and skipped when they would crowd one already placed; an outline smaller

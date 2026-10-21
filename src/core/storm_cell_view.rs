@@ -10,11 +10,13 @@
 //!   sweep ahead of the sweep line and the current one behind it, and the
 //!   cells belong to the current sweep, so a cell draws only once its whole
 //!   footprint is behind the line ([`footprint_behind_sweep_line`]).
-//! - **Grammar.** A group draws its envelope as one faint, thin solid ring;
-//!   inside it each member cell draws its core (`StormCell::core_outline`),
-//!   so the strongest part of each storm stands out and no borders run
-//!   between the footprints that tile the envelope. A lone cell draws its
-//!   footprint, its whole envelope ([`drawn_outline`]). Cell rings are one
+//! - **Grammar.** Every envelope draws as one faint, thin solid ring: a
+//!   group's around its members, a lone cell's around itself. Inside it
+//!   each cell draws its core (`StormCell::core_outline`, [`drawn_outline`])
+//!   at full stroke, so the strongest part of each storm stands out and no
+//!   borders run between the footprints that tile a group's envelope. (A
+//!   cell without a core ring, which detection should not produce, draws
+//!   its footprint at full stroke and no faint ring.) Cell rings are one
 //!   light stroke over a dark halo, intensity left out of the color. The
 //!   peak dBZ sits in a chip at the drawn outline's top-right; chips
 //!   are placed strongest first and skipped when they would crowd one
@@ -131,11 +133,11 @@ pub(crate) fn point_in_ring(ring: &[(f64, f64)], lat: f64, lon: f64) -> bool {
     inside
 }
 
-/// The ring the overlay draws for a cell: its core when it belongs to a
-/// group (the group's ring stands for the rest of its footprint), else its
-/// footprint.
+/// The ring the overlay draws at full stroke for a cell: its core (the
+/// faint envelope ring stands for the rest of its footprint), or its
+/// footprint when it has no core ring.
 pub(crate) fn drawn_outline(cell: &StormCell) -> &[(f64, f64)] {
-    if cell.group_id.is_some() && cell.core_outline.len() >= 4 {
+    if cell.core_outline.len() >= 4 {
         &cell.core_outline
     } else {
         &cell.outline
@@ -317,7 +319,8 @@ pub(crate) struct CardVm {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StormCellsVm {
     pub style: OverlayStyle,
-    /// Group rings (faint, solid), closed rings in screen px.
+    /// Faint envelope rings, closed rings in screen px: each group's, and
+    /// each lone cell's that draws its core.
     pub groups: Vec<Vec<[f32; 2]>>,
     pub cells: Vec<CellOutlineVm>,
     pub chips: Vec<ChipVm>,
@@ -401,6 +404,15 @@ pub(crate) fn build(
             && footprint_behind_sweep_line(&g.outline, (g.lat, g.lon), i.radar, i.sweep)
         {
             vm.groups.push(ring_px(&g.outline));
+        }
+    }
+
+    // A lone cell drawn as its core gets its envelope as a faint ring too.
+    for &id in &shown {
+        if let Some(cell) = i.result.cells.get(id as usize) {
+            if cell.group_id.is_none() && cell.core_outline.len() >= 4 && cell.outline.len() >= 3 {
+                vm.groups.push(ring_px(&cell.outline));
+            }
         }
     }
 
@@ -1015,30 +1027,47 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn grouped_cells_draw_their_core_and_lone_cells_their_footprint() {
+    fn cells_draw_their_core_inside_a_faint_envelope_ring() {
         let mut r = result();
         // Cell 0's core: most of its footprint, big enough for a chip.
         r.cells[0].core_outline = square(42.2, -93.2, 0.08);
-        // A lone cell (no group): a stray core ring is not drawn.
+        // A lone cell (no group) with its core: core at full stroke, its
+        // envelope as a faint ring.
         let mut lone = cell(2, 42.8, -92.0, 0.1, 50.0);
-        lone.core_outline = square(42.8, -92.0, 0.02);
+        lone.core_outline = square(42.8, -92.0, 0.08);
         r.cells.push(lone);
+        // A lone cell without a core ring: its footprint, no faint ring.
+        r.cells.push(cell(3, 41.0, -92.0, 0.1, 48.0));
         let p = StormCellPointer::default();
         let vm = build(&inputs(&r, &p), project);
-        assert_eq!(vm.cells.len(), 3);
+        assert_eq!(vm.cells.len(), 4);
         let open = |ring: Vec<(f64, f64)>| -> Vec<[f32; 2]> {
             ring[..4].iter().map(|&(la, lo)| project(la, lo)).collect()
         };
         assert_eq!(vm.cells[0].ring, open(square(42.2, -93.2, 0.08)));
-        assert_eq!(vm.cells[2].ring, open(square(42.8, -92.0, 0.1)));
+        assert_eq!(vm.cells[2].ring, open(square(42.8, -92.0, 0.08)));
+        assert_eq!(vm.cells[3].ring, open(square(41.0, -92.0, 0.1)));
         // A grouped cell without a core ring falls back to its footprint.
         assert_eq!(vm.cells[1].ring, open(square(42.2, -92.6, 0.1)));
-        // The chip sits at the drawn core's top-right, inside the footprint.
-        let core_east = project(42.28, -93.12);
-        let chip = &vm.chips[0];
-        assert_eq!(chip.cell_id, 0);
-        assert!(chip.min[0] > core_east[0] && chip.min[0] < core_east[0] + 6.0);
-        assert!(chip.min[1] < core_east[1] && chip.min[1] + chip.size[1] > core_east[1]);
+        // Faint rings: the group's envelope and the lone cell's, not the
+        // coreless cell's.
+        assert_eq!(
+            vm.groups,
+            vec![
+                open(square(42.2, -92.9, 0.45)),
+                open(square(42.8, -92.0, 0.1))
+            ]
+        );
+        // Chips sit at the drawn core's top-right.
+        for (id, (lat, lon)) in [(0u32, (42.28, -93.12)), (2, (42.88, -91.92))] {
+            let chip = vm.chips.iter().find(|c| c.cell_id == id).expect("chip");
+            let east = project(lat, lon);
+            assert!(chip.min[0] > east[0] && chip.min[0] < east[0] + 6.0, "{id}");
+            assert!(
+                chip.min[1] < east[1] && chip.min[1] + chip.size[1] > east[1],
+                "{id}"
+            );
+        }
 
         // The hit test still takes the whole footprint: a point outside the
         // core but inside cell 0's share of the envelope opens its card.

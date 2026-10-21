@@ -11,9 +11,8 @@ fn pos(p: [f32; 2]) -> Pos2 {
     Pos2::new(p[0], p[1])
 }
 
-/// Group rings (faint, thin, solid), cell outlines (light stroke over a dark
-/// halo: a grouped cell's core, a lone cell's footprint) and the peak dBZ
-/// chips.
+/// Envelope rings (faint, thin, solid: each group's and each lone cell's),
+/// cell cores (light stroke over a dark halo) and the peak dBZ chips.
 pub(crate) fn paint_storm_cells(painter: &Painter, vm: &StormCellsVm) {
     if vm.is_empty() {
         return;

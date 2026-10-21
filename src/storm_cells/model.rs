@@ -59,15 +59,18 @@ pub(crate) struct StormCell {
     /// repeated at the end), simplified to about 1 km with no edge longer
     /// than 10 km and at most [`MAX_OUTLINE_VERTICES`] distinct vertices.
     /// Outer boundary only. This is the footprint the area, centroid and
-    /// hit test refer to; for a grouped cell the overlay draws
-    /// `core_outline` instead.
+    /// hit test refer to; the overlay draws `core_outline` as the cell and,
+    /// for a lone cell, this ring (its envelope) faintly around it. A lone
+    /// cell's ring is simplified like a group's (about 2.5 km).
     pub outline: Vec<(f64, f64)>,
-    /// For a cell in a group: the boundary of its core, the component at
-    /// `level_dbz` that seeded the footprint (same conventions as
-    /// `outline`). This is what the overlay draws for a grouped cell, inside
-    /// the group's ring, so the strongest part of each storm stands out
-    /// without interior borders between footprints. Empty for a lone cell,
-    /// whose drawn outline is `outline` (its whole envelope).
+    /// The boundary of the cell's core, what the overlay draws at full
+    /// stroke (same conventions as `outline`). For a grouped cell, the
+    /// component at `level_dbz` that seeded the footprint; for a lone cell
+    /// (`level_dbz` is the envelope), the component around its peak at the
+    /// core level, the lowest ladder rung at or above the envelope plus the
+    /// core margin (45 dBZ by default). Empty only if the peak never reaches
+    /// that level, which the core minimum rules out; such a cell draws
+    /// `outline` instead.
     pub core_outline: Vec<(f64, f64)>,
 }
 
