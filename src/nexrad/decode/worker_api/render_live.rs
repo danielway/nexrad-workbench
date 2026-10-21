@@ -13,10 +13,64 @@ struct RenderLiveParams {
     elevation_number: Option<u8>,
 }
 
+/// What a live render request for `target` finds in the accumulator.
+#[derive(Debug, PartialEq, Eq)]
+enum LiveTarget {
+    /// The accumulator holds radials for the elevation: draw them.
+    Radials,
+    /// The radials are gone because the elevation was flushed to IndexedDB
+    /// (or the accumulator moved on to a later elevation) after the main
+    /// thread asked. The request is stale, not wrong: the completing
+    /// chunk's acknowledgement already asked for the stored sweep.
+    Superseded,
+    /// No radials and no sign the elevation was ever collected: a real error.
+    Missing,
+}
+
+/// Classify a live render request. Pure, so the race it handles is testable.
+///
+/// Chunk ingests are queued in `worker.js` but `render_live` runs as soon as
+/// its message arrives. When several chunks reach the worker together (the
+/// backfill burst on joining mid-sweep, or any catch-up), the worker ingests
+/// chunk k and the completing chunk k+1 back to back before the main thread
+/// has read k's acknowledgement and posted `render_live` for it. By then
+/// k+1 has flushed the elevation and dropped its radials.
+fn classify_live_target(
+    target: u8,
+    has_radials: bool,
+    current_elevation: Option<u8>,
+    completed_elevations: &std::collections::HashSet<u8>,
+) -> LiveTarget {
+    if has_radials {
+        LiveTarget::Radials
+    } else if completed_elevations.contains(&target)
+        || current_elevation.is_some_and(|current| current > target)
+    {
+        LiveTarget::Superseded
+    } else {
+        LiveTarget::Missing
+    }
+}
+
+/// Response for a request that [`classify_live_target`] found superseded.
+/// `worker.js` turns it into a `live_superseded` message, which the main
+/// thread treats as a no-op.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveSupersededResponse {
+    superseded: bool,
+    elevation_number: u8,
+    current_elevation: Option<u8>,
+}
+
 /// Render the current partial sweep from the in-memory ChunkAccumulator.
 ///
 /// This reads directly from memory (no IDB), so it's very fast (~1ms).
-/// Returns the same RenderResponse shape as `worker_render`.
+/// Returns the same RenderResponse shape as `worker_render`, or
+/// `{ superseded: true, elevationNumber, currentElevation }` when the
+/// elevation was stored after the request was sent (see
+/// [`classify_live_target`]). An elevation the accumulator never held is
+/// still an error.
 ///
 /// Parameters (JS object): `{ product: string, elevationNumber?: number }`
 #[allow(unreachable_pub)] // wasm_bindgen export invoked from worker.js; must stay pub
@@ -48,11 +102,34 @@ pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsVa
             .filter(|r| r.elevation_number() == target_elev)
             .collect();
 
-        if sorted.is_empty() {
-            return Err(JsValue::from_str(&format!(
-                "No radials for elevation {} in accumulator",
-                target_elev
-            )));
+        match classify_live_target(
+            target_elev,
+            !sorted.is_empty(),
+            accum.current_elevation,
+            &accum.completed_elevations,
+        ) {
+            LiveTarget::Radials => {}
+            LiveTarget::Superseded => {
+                log::debug!(
+                    "render_live: elev={} already stored (current={:?}), request superseded",
+                    target_elev,
+                    accum.current_elevation,
+                );
+                let response = LiveSupersededResponse {
+                    superseded: true,
+                    elevation_number: target_elev,
+                    current_elevation: accum.current_elevation,
+                };
+                return serde_wasm_bindgen::to_value(&response).map_err(|e| {
+                    JsValue::from_str(&format!("Failed to serialize response: {}", e))
+                });
+            }
+            LiveTarget::Missing => {
+                return Err(JsValue::from_str(&format!(
+                    "No radials for elevation {} in accumulator",
+                    target_elev
+                )));
+            }
         }
 
         sorted.sort_by(|a, b| {
@@ -158,4 +235,110 @@ pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsVa
         attach_buffer_field(&result, "radialTimes", &rt_buf);
         Ok(result)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::ingest::{set_chunk_accum, ChunkAccumulator};
+    use super::*;
+    use std::collections::HashSet;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn set(elevations: &[u8]) -> HashSet<u8> {
+        elevations.iter().copied().collect()
+    }
+
+    #[wasm_bindgen_test]
+    fn classify_draws_radials_when_present() {
+        assert_eq!(
+            classify_live_target(1, true, Some(1), &set(&[])),
+            LiveTarget::Radials
+        );
+        // Radials win even for a completed elevation (backfill revisits).
+        assert_eq!(
+            classify_live_target(1, true, Some(2), &set(&[1])),
+            LiveTarget::Radials
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn classify_stored_elevation_is_superseded() {
+        // The completing chunk flushed elev 1 while it was still current.
+        assert_eq!(
+            classify_live_target(1, false, Some(1), &set(&[1])),
+            LiveTarget::Superseded
+        );
+        // The accumulator has moved on to a later elevation.
+        assert_eq!(
+            classify_live_target(1, false, Some(2), &set(&[])),
+            LiveTarget::Superseded
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn classify_never_seen_elevation_is_missing() {
+        assert_eq!(
+            classify_live_target(3, false, Some(1), &set(&[1])),
+            LiveTarget::Missing
+        );
+        assert_eq!(
+            classify_live_target(1, false, None, &set(&[])),
+            LiveTarget::Missing
+        );
+        assert_eq!(
+            classify_live_target(2, false, Some(2), &set(&[1])),
+            LiveTarget::Missing
+        );
+    }
+
+    fn accum(current: Option<u8>, completed: &[u8]) -> ChunkAccumulator {
+        ChunkAccumulator {
+            scan_key: crate::data::ScanKey::new(
+                "KTLX",
+                crate::data::UnixMillis::from_secs_f64(1_000.0),
+            ),
+            current_radials: Vec::new(),
+            current_radial_metas: Vec::new(),
+            current_elevation: current,
+            completed_elevations: set(completed),
+            completed_sweep_metas: Vec::new(),
+            coverage: crate::core::live_coverage::LiveCoverage::default(),
+            vcp: None,
+            has_vcp: false,
+            total_chunks: 12,
+            total_size_bytes: 0,
+            file_name: "test".to_string(),
+        }
+    }
+
+    fn params(elevation: u8) -> JsValue {
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"product".into(), &"reflectivity".into()).unwrap();
+        js_sys::Reflect::set(&obj, &"elevationNumber".into(), &elevation.into()).unwrap();
+        obj.into()
+    }
+
+    #[wasm_bindgen_test]
+    fn render_live_after_completing_chunk_is_superseded_not_an_error() {
+        // The burst: render_live(1) arrives after the chunk that completed
+        // elevation 1 was ingested and its radials dropped.
+        set_chunk_accum(Some(accum(Some(1), &[1])));
+        let result = worker_render_live(params(1)).expect("superseded is not an error");
+        let superseded = js_sys::Reflect::get(&result, &"superseded".into()).unwrap();
+        assert_eq!(superseded.as_bool(), Some(true));
+        let elev = js_sys::Reflect::get(&result, &"elevationNumber".into()).unwrap();
+        assert_eq!(elev.as_f64(), Some(1.0));
+        set_chunk_accum(None);
+    }
+
+    #[wasm_bindgen_test]
+    fn render_live_for_never_seen_elevation_is_still_an_error() {
+        set_chunk_accum(Some(accum(Some(1), &[])));
+        let err = worker_render_live(params(1)).expect_err("nothing was ever collected");
+        assert_eq!(
+            err.as_string().as_deref(),
+            Some("No radials for elevation 1 in accumulator")
+        );
+        set_chunk_accum(None);
+    }
 }

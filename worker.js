@@ -29,6 +29,9 @@
 //   Live render (partial sweep from in-memory accumulator, synchronous):
 //     Main → Worker:  { type: 'render_live', id, elevationNumber, product }
 //     Worker → Main:  { type: 'live_decoded', id, azimuths: ArrayBuffer, gateValues: ArrayBuffer, ... }
+//     Worker → Main:  { type: 'live_superseded', id, elevationNumber, currentElevation }
+//       (the elevation was stored to IDB after the request was sent, so the
+//       accumulator no longer holds it; not an error, the main thread ignores it)
 //
 //   Errors:
 //     Worker → Main:  { type: 'error', id, message }
@@ -238,6 +241,19 @@ self.onmessage = async function (e) {
                 product: msg.product,
                 elevationNumber: msg.elevationNumber,
             });
+
+            // render_live is not queued behind chunkIngestQueue, so a burst
+            // can ingest the chunk that completes (and flushes) an elevation
+            // before this request arrives. Answer without arrays.
+            if (result.superseded) {
+                self.postMessage({
+                    type: 'live_superseded',
+                    id: msg.id,
+                    elevationNumber: result.elevationNumber,
+                    currentElevation: result.currentElevation,
+                });
+                return;
+            }
 
             const { azimuths, gateValues } = result;
             const transferList = [azimuths, gateValues];

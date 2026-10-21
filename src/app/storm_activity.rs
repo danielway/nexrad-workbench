@@ -1,6 +1,6 @@
 //! Shell for the overview's storm activity: reads a site's stored day
-//! summaries and its published index once, lists the days the overview
-//! shows that neither covers (nearest
+//! summaries and its published index once, fetches the index's month files
+//! and lists the days the overview shows that none of them covers (nearest
 //! the middle first, a few at a time, once the overview stops moving), and
 //! stores what comes back. Every decision is in
 //! [`crate::core::storm_activity`]; this only runs it.
@@ -73,11 +73,16 @@ impl crate::WorkbenchApp {
             now_secs: self.state.frame_now.secs(),
             need_scans,
         };
-        let days = acq
+        let plan = acq
             .activity_fetcher
             .plan(&self.timeline.activity, &site, &window, now_ms);
         let stats = acq.coordinator.download_channel.stats();
-        for day_start in days {
+        for month in plan.months {
+            acq.activity_fetcher.start_month(&site, month);
+            acq.activity_channel
+                .fetch_month(ctx.clone(), stats.clone(), site.clone(), month);
+        }
+        for day_start in plan.list {
             acq.activity_fetcher.start(&site, day_start);
             acq.activity_channel
                 .list_day(ctx.clone(), stats.clone(), site.clone(), day_start);
@@ -92,10 +97,12 @@ impl crate::WorkbenchApp {
                     site,
                     days,
                     index_days,
+                    month_days,
                 } => {
                     let stored = days.len();
                     self.timeline.activity.insert_many(days);
                     let indexed = self.timeline.activity.insert_index(index_days);
+                    self.timeline.activity.set_month_days(&site, month_days);
                     log::debug!(
                         "Read {} stored and {} indexed activity days for {}",
                         stored,
@@ -103,6 +110,23 @@ impl crate::WorkbenchApp {
                         site
                     );
                     self.acquisition.activity_fetcher.finish_load(&site);
+                }
+                ActivityMessage::Month {
+                    site,
+                    month,
+                    result,
+                } => {
+                    self.acquisition.activity_fetcher.finish_month(
+                        &site,
+                        month,
+                        result.is_ok(),
+                        now_ms,
+                    );
+                    if let Ok(days) = result {
+                        // Stored like listed days, so the month isn't
+                        // fetched again for them.
+                        listed.extend(self.timeline.activity.insert_month(days));
+                    }
                 }
                 ActivityMessage::Listed {
                     site,
