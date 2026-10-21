@@ -7,8 +7,11 @@
 //! The overview is a map of the view, never a control of playback. Dragging
 //! the box moves the view, dragging its sides zooms the view, dragging the
 //! rest of the lane slides the overview itself, scrolling zooms it, and a
-//! click looks there (or, zoomed out to bars, goes to that day). While its
-//! right edge is on now it slides forward with the clock. There are no edge
+//! click looks there (or, zoomed out to bars, goes to that day). Zooming keeps
+//! the time under the pointer in place, as on the strip, even past now (up
+//! to half the span). While its right edge is on now it slides forward with
+//! the clock; a view that merely rides the clock while streaming never pulls
+//! an overview the user moved back to now. There are no edge
 //! traps: the overview can slide anywhere in the archive era, and the box
 //! can leave it (an edge chip brings it back).
 //!
@@ -41,6 +44,11 @@ const MIN_BAR_PX: f64 = 2.5;
 /// the live edge never lands on the lane's last pixel.
 const FUTURE_SLACK_FRAC: f64 = 0.03;
 
+/// A wheel zoom keeps the time under the pointer in place even when that
+/// carries the right edge past now, up to this fraction of the span (the
+/// strip below allows the same overscroll).
+const MAX_ZOOM_FUTURE_FRAC: f64 = 0.5;
+
 /// When the view moves near an edge of the overview, the overview slides to
 /// keep this fraction of its span between the box and the edge.
 const CONTAIN_MARGIN_FRAC: f64 = 0.04;
@@ -65,10 +73,15 @@ pub(crate) struct Overview {
     pub span: f64,
     /// The right edge is on now, so the overview slides with the clock.
     pub follows_now: bool,
-    /// The main view at the last [`Overview::reconcile`]. When the view
-    /// moves, the overview slides to keep it in sight; when only the overview
-    /// moves, the view is left where the user put it.
-    last_view: Option<(f64, f64)>,
+    /// Seconds past the usual live-edge slack that a zoom left on the right
+    /// (zooming out anchored at the pointer). It only ever shrinks after the
+    /// zoom: as the overview slides back or zooms in again.
+    extra_future: f64,
+    /// The main view and now at the last [`Overview::reconcile`]. When the
+    /// user moves the view, the overview slides to keep it in sight; when only
+    /// the overview moves, or the view merely rides the clock while
+    /// streaming, the overview is left where the user put it.
+    last_view: Option<(f64, f64, f64)>,
 }
 
 impl Default for Overview {
@@ -77,6 +90,7 @@ impl Default for Overview {
             start: 0.0,
             span: OVERVIEW_DEFAULT_SPAN_SECS,
             follows_now: true,
+            extra_future: 0.0,
             last_view: None,
         }
     }
@@ -119,10 +133,18 @@ impl Overview {
         if self.follows_now {
             self.start = self.max_end(now) - self.span;
         }
-        let view = (view_start, view_span);
-        if self.last_view != Some(view) && view_start.is_finite() && view_span > 0.0 {
-            self.contain(view_start, view_start + view_span);
-            self.last_view = Some(view);
+        if view_start.is_finite() && view_span > 0.0 {
+            let moved = self
+                .last_view
+                .is_none_or(|(s, w, _)| s != view_start || w != view_span);
+            let rides_clock = self.last_view.is_some_and(|(s, w, last_now)| {
+                let shift = view_start - s;
+                (w - view_span).abs() <= 1e-9 * w && shift > 0.0 && shift <= now - last_now + 1e-6
+            });
+            if moved && !rides_clock {
+                self.contain(view_start, view_start + view_span);
+            }
+            self.last_view = Some((view_start, view_span, now));
         }
         self.clamp(now, era_start);
     }
@@ -151,8 +173,10 @@ impl Overview {
         }
         let min = MIN_OVERVIEW_SPAN_SECS.max(view_span / MAX_VIEW_FRAC);
         let span = (self.span * factor).clamp(min, Self::max_span(now, era_start).max(min));
-        self.start = anchor - (anchor - self.start) * span / self.span;
+        self.start = crate::core::zoom_about(anchor, self.start, self.span, span);
         self.span = span;
+        let past_slack = self.end() - (now + span * FUTURE_SLACK_FRAC);
+        self.extra_future = past_slack.clamp(0.0, span * MAX_ZOOM_FUTURE_FRAC);
         self.clamp(now, era_start);
     }
 
@@ -196,7 +220,7 @@ impl Overview {
     }
 
     fn max_end(&self, now: f64) -> f64 {
-        now + self.span * FUTURE_SLACK_FRAC
+        now + self.span * FUTURE_SLACK_FRAC + self.extra_future
     }
 
     fn contain(&mut self, view_start: f64, view_end: f64) {
@@ -210,6 +234,8 @@ impl Overview {
 
     fn clamp(&mut self, now: f64, era_start: f64) {
         self.start = self.start.min(self.max_end(now) - self.span).max(era_start);
+        let past_slack = self.end() - (now + self.span * FUTURE_SLACK_FRAC);
+        self.extra_future = self.extra_future.min(past_slack.max(0.0));
         self.follows_now = self.end() >= now;
     }
 }
@@ -714,6 +740,56 @@ mod tests {
         let anchor = ov.start + ov.span * 0.25;
         ov.zoom(anchor, 2.0, H, NOW, ERA);
         assert!(approx((anchor - ov.start) / ov.span, 0.25));
+    }
+
+    #[wasm_bindgen_test]
+    fn zooming_out_on_the_live_edge_keeps_the_anchor_and_rides_the_clock() {
+        let mut ov = live_overview();
+        let anchor = ov.start + ov.span * 0.6;
+        ov.zoom(anchor, 1.5, H, NOW, ERA);
+        assert!(approx((anchor - ov.start) / ov.span, 0.6));
+        assert!(ov.follows_now);
+        // The next frames leave it there and slide it with the clock.
+        let start = ov.start;
+        ov.reconcile(NOW - H, H, NOW, ERA);
+        assert!(approx(ov.start, start));
+        ov.reconcile(NOW - H + 60.0, H, NOW + 60.0, ERA);
+        assert!(approx(ov.start, start + 60.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn zooming_out_shows_at_most_half_a_span_of_future() {
+        let mut ov = live_overview();
+        for _ in 0..10 {
+            ov.zoom(ov.start, 1.5, H, NOW, ERA);
+        }
+        assert!(ov.end() <= NOW + ov.span * (FUTURE_SLACK_FRAC + MAX_ZOOM_FUTURE_FRAC) + 1e-6);
+        // Sliding it never adds future; sliding back drops what it shows.
+        let end = ov.end();
+        ov.slide_to(ov.start + 100.0 * H, NOW, ERA);
+        assert!(approx(ov.end(), end));
+        ov.slide_to(ov.start - 1000.0 * H, NOW, ERA);
+        ov.slide_to(NOW, NOW, ERA);
+        assert!(approx(ov.end(), NOW + ov.span * FUTURE_SLACK_FRAC));
+    }
+
+    #[wasm_bindgen_test]
+    fn zooming_in_off_the_live_edge_stays_put_while_the_view_rides_the_clock() {
+        let mut ov = live_overview();
+        let anchor = ov.start + ov.span * 0.25;
+        ov.zoom(anchor, 0.25, H, NOW, ERA);
+        assert!(!ov.follows_now);
+        let (start, span) = (ov.start, ov.span);
+        // Streaming: the view slides forward with now every frame.
+        for i in 1..=5 {
+            let t = NOW + i as f64 * 0.016;
+            ov.reconcile(t - H, H, t, ERA);
+        }
+        assert!(approx(ov.start, start) && approx(ov.span, span));
+        assert!(approx((anchor - ov.start) / ov.span, 0.25));
+        // A deliberate move of the view still brings it into sight.
+        ov.reconcile(NOW - 2.0 * H, H, NOW + 1.0, ERA);
+        assert!(ov.end() >= NOW - H);
     }
 
     #[wasm_bindgen_test]
