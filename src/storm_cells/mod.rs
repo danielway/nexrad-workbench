@@ -20,6 +20,8 @@
 //! echo that can belong to a cell; a cell needs a core of envelope + 10 dB.
 
 mod components;
+#[cfg(test)]
+mod corpus_tests;
 mod features;
 mod median;
 mod model;

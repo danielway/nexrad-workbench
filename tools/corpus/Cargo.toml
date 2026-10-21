@@ -1,0 +1,17 @@
+# Native generator for the storm cell test corpus
+# (tests/fixtures/storm_cells/). Its own project, not part of the app build:
+# the app's default target is wasm32, this runs on the host.
+[package]
+name = "storm-cell-corpus"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone: keep it out of any parent workspace.
+[workspace]
+
+[dependencies]
+# Same releases the app uses (see the root Cargo.lock), without the AWS client.
+nexrad-data = { version = "=1.0.0-rc.7", default-features = false, features = ["nexrad-model"] }
+nexrad-model = "=1.0.0-rc.2"
+flate2 = "1.1"
