@@ -97,6 +97,10 @@ pub(crate) struct TrackParams {
     pub stationary_kmh: f64,
     /// Motion confidence needed before a track can be called stationary.
     pub stationary_confidence: f64,
+    /// A fitted speed above this is not a storm moving but a track that
+    /// hopped between fragments of a storm: its motion gets no confidence,
+    /// so no forecast arrow or closest approach is drawn from it.
+    pub max_plausible_kmh: f64,
 }
 
 impl Default for TrackParams {
@@ -112,6 +116,7 @@ impl Default for TrackParams {
             peak_weight: 1.0,
             stationary_kmh: 10.0,
             stationary_confidence: MIN_FORECAST_CONFIDENCE,
+            max_plausible_kmh: 130.0,
         }
     }
 }
@@ -140,7 +145,8 @@ pub(crate) struct Motion {
     /// Northward speed, km/h.
     pub north_kmh: f64,
     /// 0..1: grows with the number of centroids in the fit (a quarter per
-    /// step, full at five) and shrinks with the fit's residual.
+    /// step, full at five) and shrinks with the fit's residual; zero above
+    /// [`TrackParams::max_plausible_kmh`].
     pub confidence: f64,
 }
 
@@ -217,6 +223,9 @@ impl Track {
     fn refit(&mut self, params: &TrackParams) {
         let n = self.points.len().min(params.fit_points.max(2));
         self.motion = fit_motion(&self.points[self.points.len() - n..]);
+        if self.motion.speed_kmh() > params.max_plausible_kmh {
+            self.motion.confidence = 0.0;
+        }
     }
 
     fn snapshot(&self, time_ms: i64, cell_id: Option<u32>, params: &TrackParams) -> TrackSnapshot {
@@ -937,6 +946,22 @@ mod tests {
         let (dx, dy) = offset_km((s.lat, s.lon), s.forecast(30.0));
         assert!((dx - 20.0).abs() < 0.2 && dy.abs() < 0.2, "{dx} {dy}");
         assert_eq!(tr.next_id(), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn an_implausibly_fast_track_has_no_confident_motion() {
+        let mut tr = Tracker::default();
+        // 15 km per 5-minute volume: 180 km/h.
+        let mut f = Frame::default();
+        for v in 0..4 {
+            f = tr
+                .observe(t(v), &result(vec![c(v as f64 * 15.0, 0.0)]), false)
+                .unwrap();
+        }
+        assert_eq!(ids(&f), vec![Some(0)]);
+        let s = f.track(0).unwrap();
+        assert!((s.motion.speed_kmh() - 180.0).abs() < 1.0);
+        assert_eq!(s.motion.confidence, 0.0);
     }
 
     #[wasm_bindgen_test]
