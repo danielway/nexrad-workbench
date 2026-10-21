@@ -229,7 +229,7 @@ Heavy computation (bzip2 decompression, NEXRAD decoding, sweep extraction, IDB I
 | `ingest_chunk` | Main → Worker | Real-time chunk: decode, accumulate, flush completed sweeps |
 | `render` | Main → Worker | Read pre-computed sweep from IDB, marshal for GPU upload |
 | `render_volume` | Main → Worker | Pack all elevations for 3D ray-marching |
-| `render_live` | Main → Worker | Read partial sweep from in-memory accumulator (synchronous) |
+| `render_live` | Main → Worker | Read partial sweep from in-memory accumulator (synchronous); answered with `live_decoded`, or `live_superseded` when the elevation was stored after the request was sent (a no-op on the main thread) |
 
 The Rust side of this protocol lives in `nexrad/decode/worker_api/` (the
 `#[wasm_bindgen]` exports worker.js calls) and `nexrad/decode/decode_worker/`
