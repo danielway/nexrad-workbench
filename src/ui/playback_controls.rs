@@ -40,6 +40,15 @@ pub(super) fn render_playback_controls(
             gesture: SeekGesture::Typed,
         });
     }
+    // The calendar: pick a day by its storm activity, or type a time.
+    let calendar = ui
+        .button(RichText::new(egui_phosphor::regular::CALENDAR_BLANK).size(14.0))
+        .on_hover_text("Go to a day (G)");
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(super::go_to_day::anchor_id(), calendar.rect));
+    if calendar.clicked() {
+        state.push_command(Intent::OpenGoToDay);
+    }
     ui.separator();
 
     // What plays, and the menu that sets it.
@@ -142,5 +151,23 @@ pub(super) fn render_playback_controls(
     // What the app is doing to get data, at the right edge.
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         super::activity_chip::render_activity_chip(ui, activity_vm, state, 11.0, false);
+        readout(ui, &activity_vm.readout);
     });
+}
+
+/// The frame rate and request count, faint and small to the left of the
+/// activity chip.
+fn readout(ui: &mut egui::Ui, readout: &crate::core::activity::Readout) {
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new(readout.text())
+            .monospace()
+            .size(theme::CAPTION)
+            .color(theme::TEXT_FAINT),
+    )
+    .on_hover_text(
+        "Frames per second while the map is moving (the app redraws only \
+         when something changes), and network requests this session: \
+         S3 listings and scans, the activity index and mosaic images.",
+    );
 }

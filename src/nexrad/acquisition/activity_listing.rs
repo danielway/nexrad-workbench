@@ -11,6 +11,9 @@
 //! [`crate::core::activity_index`]): its cached copy comes out of
 //! IndexedDB, is revalidated with `If-None-Match`, and a new copy replaces
 //! it. Without an index (404, a dev server) the days are listed as before.
+//! Zoomed in to volumes, a month the index has a month file for is fetched
+//! from beside it (`activity-index/<SITE>/<YYYY-MM>.json`) instead of
+//! listing its days; its days are then stored like listed ones.
 //!
 //! Results come back over a channel polled each frame, like the download
 //! channel. Stored summaries are read and written through the
@@ -18,7 +21,8 @@
 
 use super::download::NetworkStats;
 use crate::core::activity_index::{
-    index_path, resolve_index, revalidation_tag, IndexOutcome, IndexResponse,
+    index_path, month_path, resolve_index, resolve_month, revalidation_tag, IndexOutcome,
+    IndexResponse, MonthKey,
 };
 use crate::core::storm_activity::{parse_s3_listing, summarize_day};
 use crate::data::{DayActivity, MainThreadStore, SiteId};
@@ -33,12 +37,21 @@ const ARCHIVE_BUCKET_URL: &str = "https://unidata-nexrad-level2.s3.amazonaws.com
 
 /// A finished activity request.
 pub(crate) enum ActivityMessage {
-    /// A site's stored day summaries (empty when the read failed), and its
-    /// published index's days (empty without an index).
+    /// A site's stored day summaries (empty when the read failed), its
+    /// published index's days (empty without an index), and which of those
+    /// a month file holds the volumes of.
     Loaded {
         site: SiteId,
         days: Vec<DayActivity>,
         index_days: Vec<DayActivity>,
+        month_days: Vec<i64>,
+    },
+    /// A month file's days (none when it isn't published or doesn't parse),
+    /// or why it couldn't be fetched.
+    Month {
+        site: SiteId,
+        month: MonthKey,
+        result: Result<Vec<DayActivity>, String>,
     },
     /// One day's listing, summarized, or why it failed.
     Listed {
@@ -79,11 +92,53 @@ impl ActivityChannel {
                     Vec::new()
                 }
             };
-            let index_days = load_index(&stats, &store, &site).await;
+            let index = load_index(&stats, &store, &site).await;
             let _ = sender.send(ActivityMessage::Loaded {
                 site,
                 days,
-                index_days,
+                index_days: index.days,
+                month_days: index.month_days,
+            });
+            ctx.request_repaint();
+        });
+    }
+
+    /// Fetch one month file of `site`'s index.
+    pub(crate) fn fetch_month(
+        &self,
+        ctx: egui::Context,
+        stats: NetworkStats,
+        site: SiteId,
+        month: MonthKey,
+    ) {
+        let sender = self.sender.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let response = match page_path() {
+                Some(page) => {
+                    let path = month_path(&page, &site, month);
+                    stats.request_started();
+                    // No If-None-Match of our own: the days are stored, and
+                    // the browser's HTTP cache revalidates a repeat.
+                    let response = fetch_index(&path, None).await;
+                    stats.request_completed(0);
+                    response
+                }
+                None => IndexResponse::Failed,
+            };
+            let result = resolve_month(&site, month, response);
+            match &result {
+                Ok(days) => log::info!(
+                    "Activity month file {} {}: {} days with volumes",
+                    site,
+                    month.name(),
+                    days.len()
+                ),
+                Err(e) => log::debug!("Activity month file {} {}: {}", site, month.name(), e),
+            }
+            let _ = sender.send(ActivityMessage::Month {
+                site,
+                month,
+                result,
             });
             ctx.request_repaint();
         });
@@ -133,11 +188,7 @@ impl ActivityChannel {
 /// The site's index days: the cached copy, revalidated against the
 /// published file, with the cache updated as [`resolve_index`] decides.
 /// Each IndexedDB step is its own transaction, finished before the next.
-async fn load_index(
-    stats: &NetworkStats,
-    store: &MainThreadStore,
-    site: &SiteId,
-) -> Vec<DayActivity> {
+async fn load_index(stats: &NetworkStats, store: &MainThreadStore, site: &SiteId) -> IndexOutcome {
     let cached = store.activity_index(site).await.unwrap_or_else(|e| {
         log::debug!(
             "Reading the cached activity index for {} failed: {}",
@@ -147,21 +198,26 @@ async fn load_index(
         None
     });
     let Some(path) = page_path().map(|p| index_path(&p, site)) else {
-        return resolve_index(site, cached, IndexResponse::Failed).days;
+        return resolve_index(site, cached, IndexResponse::Failed);
     };
     stats.request_started();
     let response = fetch_index(&path, revalidation_tag(cached.as_ref())).await;
     stats.request_completed(0);
-    let IndexOutcome { days, save, forget } = resolve_index(site, cached, response);
-    if let Some(record) = save {
+    let mut outcome = resolve_index(site, cached, response);
+    if let Some(record) = outcome.save.take() {
         if let Err(e) = store.put_activity_index(&record).await {
             log::warn!("Caching the activity index for {} failed: {}", site, e);
         }
-    } else if forget {
+    } else if outcome.forget {
         let _ = store.delete_activity_index(site).await;
     }
-    log::debug!("Activity index for {}: {} days", site, days.len());
-    days
+    log::debug!(
+        "Activity index for {}: {} days, {} in month files",
+        site,
+        outcome.days.len(),
+        outcome.month_days.len()
+    );
+    outcome
 }
 
 /// The page's path (`/nexrad-workbench/` in production), to find the index
@@ -170,7 +226,7 @@ fn page_path() -> Option<String> {
     web_sys::window()?.location().pathname().ok()
 }
 
-/// GET the index file, conditionally on `etag`.
+/// GET an index file, conditionally on `etag`.
 async fn fetch_index(path: &str, etag: Option<&str>) -> IndexResponse {
     let Some(window) = web_sys::window() else {
         return IndexResponse::Failed;

@@ -1,15 +1,17 @@
-//! The phone's calendar sheet, "Go to a day" (phone timeline §2): a thin
-//! projection of [`crate::core::calendar::calendar_vm`].
+//! The calendar, "Go to a day": a thin projection of
+//! [`crate::core::calendar::calendar_vm`].
 //!
-//! A bottom sheet in portrait and a right sheet in landscape, on the dialog
-//! component and the Esc stack. The month grid shades each day by its storm
+//! On the phone, a bottom sheet in portrait and a right sheet in landscape
+//! (phone timeline §2); on the desktop, a popover above the transport clock's
+//! calendar button, with the clock's time field under the grid for an exact
+//! time. Both are on the dialog component and the Esc stack. The month grid shades each day by its storm
 //! activity, underlines the days held on device, outlines today in the now
 //! red and dims the days after it. Tapping the month name opens the years,
 //! a year its months, a month its grid; a horizontal swipe on the grid moves
 //! a month. A tapped day emits [`Intent::GoToDay`]. Every decision (levels,
 //! flags, clamping, the swipe rule) is the core's.
 
-use super::super::layout::{Layer, LayerKind, LayoutCtx};
+use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::calendar::{
     calendar_sheet_rect, calendar_vm, swipe_nav, CalendarBody, CalendarFacts, CalendarNav, DayCell,
     MonthVm, YearVm, YearsVm, WEEKDAYS,
@@ -18,7 +20,7 @@ use crate::core::dialogs::{DialogId, DialogIntent};
 use crate::core::Intent;
 use crate::data::SiteId;
 use crate::state::AppState;
-use crate::ui::dialog::Sheet;
+use crate::ui::dialog::{Popover, Sheet, Width};
 use crate::ui::theme;
 use crate::ui::time_format::ZoneClock;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
@@ -43,6 +45,11 @@ const MAX_SHADE: f32 = 0.95;
 
 pub(in crate::ui) struct GoToDayLayer;
 
+/// Where the desktop's calendar button stores its rect for the popover.
+pub(in crate::ui) fn anchor_id() -> egui::Id {
+    egui::Id::new("go_to_day_anchor")
+}
+
 impl Layer for GoToDayLayer {
     fn kind(&self) -> LayerKind {
         LayerKind::Modal
@@ -51,7 +58,7 @@ impl Layer for GoToDayLayer {
         95
     }
     fn visible(&self, ctx: &LayoutCtx) -> bool {
-        ctx.chrome.go_to_day.is_some() && ctx.state.is_mobile
+        ctx.chrome.go_to_day.is_some()
     }
     fn render(&self, ctx: &mut LayoutCtx) {
         draw(ctx);
@@ -87,25 +94,82 @@ fn draw(ctx: &mut LayoutCtx) {
     );
 
     let egui_ctx = ctx.ctx;
-    let viewport = egui_ctx.input(|i| i.viewport_rect());
-    let r = calendar_sheet_rect(
-        viewport.width(),
-        viewport.height(),
-        ctx.chrome.device_layout.is_landscape_phone(),
-        super::safe_area_insets(),
-    );
-    let rect = Rect::from_min_size(Pos2::new(r.x, r.y), Vec2::new(r.w, r.h));
     let state = &mut *ctx.state;
-    let out = Sheet::new(DialogId::GoToDay, vm.title, rect)
-        .trailing(&vm.site)
-        .show(egui_ctx, |ui, room| match &vm.body {
-            CalendarBody::Month(m) => month(ui, m, &vm.legend, state),
-            CalendarBody::Year(y) => year(ui, y, state),
-            CalendarBody::Years(y) => years(ui, y, room, state),
-        });
+    let body = |ui: &mut egui::Ui, room: f32, state: &mut AppState| match &vm.body {
+        CalendarBody::Month(m) => month(ui, m, &vm.legend, state),
+        CalendarBody::Year(y) => year(ui, y, state),
+        CalendarBody::Years(y) => years(ui, y, room, state),
+    };
+    let out = if state.is_mobile {
+        let viewport = egui_ctx.input(|i| i.viewport_rect());
+        let r = calendar_sheet_rect(
+            viewport.width(),
+            viewport.height(),
+            ctx.chrome.device_layout.is_landscape_phone(),
+            super::mobile::safe_area_insets(),
+        );
+        let rect = Rect::from_min_size(Pos2::new(r.x, r.y), Vec2::new(r.w, r.h));
+        Sheet::new(DialogId::GoToDay, vm.title, rect)
+            .trailing(&vm.site)
+            .show(egui_ctx, |ui, room| body(ui, room, state))
+    } else {
+        let anchor = egui_ctx
+            .data(|d| d.get_temp::<Rect>(anchor_id()))
+            .unwrap_or_else(|| {
+                let vp = egui_ctx.input(|i| i.viewport_rect());
+                Rect::from_min_size(Pos2::new(vp.left() + 12.0, vp.bottom() - 80.0), Vec2::ZERO)
+            });
+        let playhead = ctx.playback.state.playback_position();
+        let now = state.frame_now.secs();
+        Popover::new(DialogId::GoToDay, anchor)
+            .title(vm.title)
+            .subtitle(vm.site.clone())
+            .width(Width::Narrow)
+            .show(egui_ctx, |ui, room| {
+                body(ui, room - TIME_ROW_H, state);
+                time_row(ui, playhead, now, state);
+            })
+    };
     if out.close {
         state.push_command(Intent::Dialog(DialogIntent::Close(DialogId::GoToDay)));
     }
+}
+
+/// The desktop's time row under the grid.
+const TIME_ROW_H: f32 = 40.0;
+
+/// "Or type a time": the transport clock's field, so a full date and time
+/// (or a time on the playhead's day) lands exactly there and closes the
+/// calendar.
+fn time_row(ui: &mut egui::Ui, playhead: f64, now: f64, state: &mut AppState) {
+    ui.add_space(8.0);
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new("Or type a time")
+                    .size(theme::CAPTION)
+                    .color(theme::TEXT_DIM),
+            )
+            .selectable(false),
+        );
+        let look = crate::ui::time_field::TimeFieldLook {
+            color: theme::SEEN,
+            size: theme::BODY,
+            hover: "Type or paste a date and time, then Enter",
+        };
+        let typed = crate::ui::time_field::time_field(
+            ui,
+            "go_to_day_time",
+            playhead,
+            now,
+            state.use_local_time,
+            &look,
+        );
+        if let Some(ts) = typed {
+            state.push_command(Intent::GoToTime(ts));
+        }
+    });
 }
 
 fn nav(state: &mut AppState, to: CalendarNav) {
