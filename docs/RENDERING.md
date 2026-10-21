@@ -42,9 +42,12 @@ preserves two properties the renderer relies on:
   space produce the same answer. The shader interpolates first and
   converts last.
 
-The same trick lets `value_at_polar()` and `detect_storm_cells()` —
-both CPU consumers — share the GPU's `gate_values` buffer without
-maintaining a parallel "physical units" copy.
+The same trick lets `value_at_polar()`, a CPU consumer, share the GPU's
+`gate_values` buffer without maintaining a parallel "physical units"
+copy. Storm cell detection reads raw codes too, but not from the
+renderer: it runs in a decode worker on the volume's lowest reflectivity
+cut (see `core::storm_cells` and the worker's `detect` message), so the
+cells do not depend on the tilt on screen.
 
 ## File layout
 
@@ -53,7 +56,7 @@ maintaining a parallel "physical units" copy.
 | [`mod.rs`](../src/nexrad/render/gpu_renderer/mod.rs) | `RadarGpuRenderer` struct, GL setup, uniform table, `paint()` |
 | [`shaders.rs`](../src/nexrad/render/gpu_renderer/shaders.rs) | All GLSL — vertex shader, fragment-shader builder, shared snippets |
 | [`textures.rs`](../src/nexrad/render/gpu_renderer/textures.rs) | Texture upload entry points: data, previous data, LUT |
-| [`inspect.rs`](../src/nexrad/render/gpu_renderer/inspect.rs) | CPU-side polar lookups (inspector hover, storm-cell detection) — thin binders over the pure lookup math in [`core::canvas`](../src/core/canvas.rs) |
+| [`inspect.rs`](../src/nexrad/render/gpu_renderer/inspect.rs) | CPU-side polar lookups (inspector hover, collection time) — thin binders over the pure lookup math in [`core::canvas`](../src/core/canvas.rs) |
 
 Everything else under [src/nexrad/](../src/nexrad/) feeds this module
 or composes its output:
@@ -111,8 +114,8 @@ disc. Each holds:
   a re-render is needed).
 
 CPU shadow copies of `azimuths`, `gate_values`, and `radial_times`
-also exist for both sweeps. They power inspector hovers and storm-cell
-detection without round-tripping the GPU.
+also exist for both sweeps. They power inspector hovers without
+round-tripping the GPU.
 
 The fragment shader picks current vs. previous per-pixel based on
 `u_sweep_enabled` and the swept-arc test, then funnels both branches
@@ -220,9 +223,6 @@ so the renderer doesn't need to. It does explicitly:
   line in a partial sweep.
 - `collection_time_at_polar(azimuth_deg, sweep_params)` — Unix seconds
   for the radial that produced this azimuth.
-- `detect_storm_cells(radar_lat, radar_lon, threshold_dbz)` — adapter
-  over [`storm_cells`](../src/storm_cells/) that wraps the CPU
-  shadow data into a `DetectionInput`.
 
 The inspector path uses `find_nearest_azimuth_index` (the CPU twin of
 `FIND_NEAREST_AZ_P`, in [`core::canvas`](../src/core/canvas.rs) — the

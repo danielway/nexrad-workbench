@@ -56,7 +56,7 @@ fastest, so this table names *responsibilities*; find the file with `grep`.
 | `geo` | Camera system (2D flat + unified 3D orbit camera with fly-to transitions — pure math), map projection, geographic feature types + rendering (`ViewMode`, `GeoLayerVisibility` live here), 3D globe/line renderers, built-in cities. | `geo/camera.rs`, `geo/projection.rs` |
 | `data` | True leaf. Static data (`sites`, `vcp`), storage key vocabulary (`keys`), the sweep-blob wire format (`blob_format`), VCP sweep-duration physics (`vcp_timing`), the live-volume anchor state machine (`live_anchor`), the IndexedDB store (`indexeddb/`), quota policy (`quota`), and the main-thread eviction facade (`facade`). | `data/mod.rs`, `data/indexeddb/mod.rs` |
 | `alerts` / `mping` | Polling feed modules: API client, parse, async channel, manager (cadence/dedup/viewport policy). Their pure state containers live in `core/domain/feeds.rs`. | `alerts/manager.rs`, `mping/manager.rs` |
-| `storm_cells` | Leaf. Storm cell detection: median filter, nested-threshold segmentation, cell/group model and outlines. Imports nothing from the crate (std only) so it can move upstream into the nexrad crates; `core` re-exports its types and the renderer's `detect_storm_cells` adapter feeds it a sweep. | `storm_cells/mod.rs` |
+| `storm_cells` | Leaf. Storm cell detection: median filter, nested-threshold segmentation, cell/group model and outlines. Imports nothing from the crate (std, plus serde derives for the worker transport) so it can move upstream into the nexrad crates; `core` re-exports its types, `core::storm_cells` decides which cut to detect on and caches results, and the decode worker's `detect` message runs it on a stored or live sweep. | `storm_cells/mod.rs` |
 | `net` | Unified retry policy (`with_retry`, `Verdict`, per-context policies) applied to every outbound HTTP request. | `net/retry.rs` |
 
 ### JavaScript / HTML
@@ -120,6 +120,9 @@ Start live mode
   → Each chunk → worker.ingest_chunk → decode + accumulate radials
   → Completed elevations → sweep blobs stored to IDB (upsert_scan)
   → Partial elevations → worker.render_live (reads in-memory accumulator)
+  → Storm cells (when on): worker.detect on the volume's lowest reflectivity
+    cut — from the accumulator per chunk while the cut fills (provisional),
+    then from the stored blob once it completes (final)
   → The chunk that completes the cut being collected → normal `render` of the
     stored sweep blob (the accumulator no longer holds its radials, so the
     live partial lets go of that cut: `core::worker_ingest::live_cut`)
@@ -226,6 +229,7 @@ Heavy computation (bzip2 decompression, NEXRAD decoding, sweep extraction, IDB I
 | `render` | Main → Worker | Read pre-computed sweep from IDB, marshal for GPU upload |
 | `render_volume` | Main → Worker | Pack all elevations for 3D ray-marching |
 | `render_live` | Main → Worker | Read partial sweep from in-memory accumulator (synchronous); answered with `live_decoded`, or `live_superseded` when the elevation was stored after the request was sent (a no-op on the main thread) |
+| `detect` | Main → Worker | Storm cell detection on one reflectivity cut (the volume's lowest, see `core::storm_cells`), read from IDB (`stored`) or from the live accumulator (`live`, pinned to the live worker; falls back to IDB once the cut is flushed); answered with `detected`: the cells and groups, their source cut, and the worker's fetch/detect timing |
 
 The Rust side of this protocol lives in `nexrad/decode/worker_api/` (the
 `#[wasm_bindgen]` exports worker.js calls) and `nexrad/decode/decode_worker/`

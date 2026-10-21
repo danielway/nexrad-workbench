@@ -133,7 +133,10 @@ only shallow visual QA, because by construction it is a 1:1 projection of
 Drawing radar is inherently shell work, but the *decisions* around it are core:
 
 - **Core (pure, tested):** which sweep matches the playhead (the 0–2 rule),
-  `value_at_polar`, storm-cell detection, camera/projection math
+  `value_at_polar`, storm-cell detection (the `storm_cells` leaf) and which
+  cut it runs on, when, and which cached result is shown
+  (`core::storm_cells`; the worker run is a described `DetectRequest`),
+  camera/projection math
   (`geo_to_screen`/`screen_to_geo` round-trips), overlay visibility, what the
   view-model says to draw.
 - **Shell (effects / paint):** uploading raw gate values to the GPU texture
