@@ -150,14 +150,22 @@ impl LiveRenderCoalescer {
         render_live: Option<(u8, String)>,
         elevations_completed: &[u8],
     ) {
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|(elevation, _)| elevations_completed.contains(elevation))
-        {
-            self.pending = None;
+        if let Some((elevation, _)) = &self.pending {
+            if elevations_completed.contains(elevation) {
+                log::debug!(
+                    "render_live elev={} dropped: a later ack in this drain stored it",
+                    elevation
+                );
+                self.pending = None;
+            }
         }
         if render_live.is_some() {
+            if let Some((elevation, _)) = &self.pending {
+                log::debug!(
+                    "render_live elev={} replaced by a later ack in this drain",
+                    elevation
+                );
+            }
             self.pending = render_live;
         }
     }
