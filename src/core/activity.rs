@@ -74,6 +74,8 @@ pub(crate) struct ActivityInputs<'a> {
     pub session_requests: u32,
     pub session_bytes: u64,
     pub sw_aggregate: &'a NetworkAggregate,
+    /// Smoothed frame rate, for the always-on readout ([`Readout`]).
+    pub fps: Option<f64>,
     pub recent_requests: &'a VecDeque<NetworkRequest>,
     pub cache_size_bytes: u64,
     /// The session's stream fact — the activity chip projects its healthy
@@ -93,7 +95,6 @@ pub(crate) struct ActivityInputs<'a> {
 /// Dev-only inputs, surfaced under the sheet's Details disclosure.
 #[derive(Default, Clone, Copy)]
 pub(crate) struct ActivityDevInputs {
-    pub fps: Option<f64>,
     pub cross_origin_isolated: bool,
     pub avg_fetch_ms: Option<f64>,
     pub avg_processing_ms: Option<f64>,
@@ -305,7 +306,6 @@ pub(crate) struct ActivityDetailVm {
     pub failed_requests: u32,
     pub worker: WorkerLoad,
     pub http_in_flight: u32,
-    pub fps: Option<f64>,
     pub cross_origin_isolated: bool,
     pub avg_fetch_ms: Option<f64>,
     pub avg_processing_ms: Option<f64>,
@@ -322,6 +322,38 @@ pub(crate) struct ActivityDetailVm {
     pub unavailable: u32,
 }
 
+/// The small always-on readout beside the activity chip: how smoothly the app
+/// is drawing and how many network requests it has made.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Readout {
+    /// Frames per second, rounded. `None` before the first frame is timed.
+    pub fps: Option<u32>,
+    /// Network requests this session ([`session_requests`]).
+    pub requests: u32,
+}
+
+impl Readout {
+    /// The words drawn, e.g. `60 fps · 128 req`. The frame rate is left out
+    /// until a frame has been timed.
+    pub(crate) fn text(&self) -> String {
+        match self.fps {
+            Some(fps) => format!("{fps} fps · {} req", self.requests),
+            None => format!("{} req", self.requests),
+        }
+    }
+}
+
+/// Network requests this session: the service worker's count when it has
+/// seen traffic, since it sees every fetch the page makes (S3 listings and
+/// volumes, the activity index, mosaic images), else the download channel's.
+fn session_requests(inputs: &ActivityInputs<'_>) -> u32 {
+    if inputs.sw_aggregate.total_requests > 0 {
+        inputs.sw_aggregate.total_requests
+    } else {
+        inputs.session_requests
+    }
+}
+
 /// The complete activity projection, rebuilt once per frame.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ActivityVm {
@@ -332,6 +364,7 @@ pub(crate) struct ActivityVm {
     pub errors: ErrorSummary,
     pub throughput: Option<ThroughputReadout>,
     pub session: SessionTotals,
+    pub readout: Readout,
     /// Empty unless the sheet is open.
     pub rows: Vec<ActivityRow>,
     /// Empty unless the sheet is open.
@@ -428,21 +461,20 @@ impl ActivityVm {
                 },
                 cache_bytes: inputs.cache_size_bytes,
             },
+            readout: Readout {
+                fps: inputs
+                    .fps
+                    .filter(|fps| fps.is_finite())
+                    .map(|fps| fps.round().max(0.0) as u32),
+                requests: session_requests(&inputs),
+            },
             rows,
             network,
             detail: inputs.dev.map(|dev| ActivityDetailVm {
-                // The service-worker aggregate sees *all* traffic (including
-                // requests the download channel never issued), so prefer it
-                // when the listener is attached and has seen anything.
-                requests: if inputs.sw_aggregate.total_requests > 0 {
-                    inputs.sw_aggregate.total_requests
-                } else {
-                    inputs.session_requests
-                },
+                requests: session_requests(&inputs),
                 failed_requests: inputs.sw_aggregate.failed_requests,
                 worker: inputs.worker,
                 http_in_flight: inputs.http_in_flight,
-                fps: dev.fps,
                 cross_origin_isolated: dev.cross_origin_isolated,
                 avg_fetch_ms: dev.avg_fetch_ms,
                 avg_processing_ms: dev.avg_processing_ms,
@@ -732,6 +764,7 @@ mod coverage_tests {
         stream: Stream,
         sheet_open: bool,
         dev: Option<ActivityDevInputs>,
+        fps: Option<f64>,
         now_ms: f64,
         errors: crate::core::ErrorContext,
         errors_acked: u64,
@@ -754,6 +787,7 @@ mod coverage_tests {
                 stream: Stream::Off,
                 sheet_open: false,
                 dev: None,
+                fps: None,
                 now_ms: 1_000.0,
                 errors: crate::core::ErrorContext::default(),
                 errors_acked: 0,
@@ -775,6 +809,7 @@ mod coverage_tests {
                 session_requests: 0,
                 session_bytes: 0,
                 sw_aggregate: &self.aggregate,
+                fps: self.fps,
                 recent_requests: &self.requests,
                 cache_size_bytes: 0,
                 stream: self.stream,
@@ -1272,6 +1307,7 @@ mod coverage_tests {
                 session_requests: 0,
                 session_bytes: 0,
                 sw_aggregate: &f.aggregate,
+                fps: None,
                 recent_requests: &f.requests,
                 cache_size_bytes: 0,
                 stream: Stream::Off,
@@ -1282,6 +1318,7 @@ mod coverage_tests {
             }
         });
         assert_eq!(vm.detail.expect("developer rows").requests, 7);
+        assert_eq!(vm.readout.requests, 7);
         assert_eq!(vm.session.bytes, 700);
     }
 
@@ -1378,14 +1415,12 @@ mod coverage_tests {
         f.http_in_flight = 4;
         f.worker = ingesting(2);
         f.dev = Some(ActivityDevInputs {
-            fps: Some(59.5),
             cross_origin_isolated: true,
             ..ActivityDevInputs::default()
         });
         let detail = f.vm().detail.expect("detail");
         assert_eq!(detail.http_in_flight, 4);
         assert_eq!(detail.worker.ingest, 2);
-        assert_eq!(detail.fps, Some(59.5));
         assert!(detail.cross_origin_isolated);
     }
 
@@ -1465,5 +1500,49 @@ mod coverage_tests {
         assert_eq!(hover, "1 new error — click for details");
         f.errors_acked = 1;
         assert_eq!(f.vm().warning(), None);
+    }
+
+    // ── readout ─────────────────────────────────────────────────────────────
+
+    /// The readout is on outside dev mode, rounds the frame rate, and counts
+    /// requests from the service worker when it has seen any.
+    #[wasm_bindgen_test]
+    fn readout_is_always_present() {
+        let mut f = Fixture::new();
+        assert_eq!(
+            f.vm().readout,
+            Readout {
+                fps: None,
+                requests: 0
+            }
+        );
+        f.fps = Some(59.6);
+        f.aggregate.total_requests = 12;
+        assert!(f.vm().detail.is_none());
+        assert_eq!(
+            f.vm().readout,
+            Readout {
+                fps: Some(60),
+                requests: 12
+            }
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn readout_text() {
+        let r = Readout {
+            fps: Some(60),
+            requests: 128,
+        };
+        assert_eq!(r.text(), "60 fps · 128 req");
+        assert_eq!(Readout { fps: None, ..r }.text(), "128 req");
+    }
+
+    /// A bad frame-time sample never prints as a frame rate.
+    #[wasm_bindgen_test]
+    fn readout_drops_a_non_finite_fps() {
+        let mut f = Fixture::new();
+        f.fps = Some(f64::INFINITY);
+        assert_eq!(f.vm().readout.fps, None);
     }
 }
