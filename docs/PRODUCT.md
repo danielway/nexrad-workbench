@@ -721,10 +721,15 @@ Interactive measurement and analysis affordances on the 2D canvas:
     once its motion is confident (three volumes on a steady course).
     Turning tracks on also detects up to twelve volumes (about an hour)
     before the one on screen, nearest first, among those already on the
-    device; it never downloads volumes just for a path.
-    Scrubbing back over volumes already seen shows the same letters;
-    scrubbing further back than the first one seen starts over with new
-    letters.
+    device; it never downloads volumes just for a path. The volume on
+    screen does not wait for them: its tracks gain motion and path as they
+    land.
+    Scrubbing back over volumes already seen, or a loop wrapping, shows
+    the same letters. A volume whose cells arrive late (a loop that runs
+    ahead of detection) is tracked when they do, and the volumes after it
+    are tracked again; only storms that started after it can change
+    letter. Scrubbing more than 20 minutes before the first volume seen
+    starts over with new letters.
   - **Rays and live.** Rays shows the previous sweep ahead of the sweep line
     and the current one behind it; cells belong to the current sweep, so a
     cell draws only once its whole footprint is behind the line and never

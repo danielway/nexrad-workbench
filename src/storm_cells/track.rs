@@ -434,6 +434,7 @@ pub(crate) struct Tracker {
 
 impl Tracker {
     /// Time of the last committed (final) volume.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn last_time_ms(&self) -> Option<i64> {
         self.last_time_ms
     }

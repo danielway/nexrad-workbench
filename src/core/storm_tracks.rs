@@ -8,34 +8,39 @@
 //! the ones not cached yet, after the shown volume). This module performs no
 //! I/O: [`StormTracks::sync`] only reads that cache.
 //!
-//! # Scrubbing: when a volume is observed, and when it is looked up
+//! # Scrubbing, playback and late results
 //!
-//! The timeline moves both ways, but the tracker only moves forward, so the
-//! store observes each volume at most once and keeps the frame it gave
-//! (cell → track, and every track's state as of that volume) by volume time.
-//! For the shown volume at time `t`:
+//! The timeline moves both ways and detection results arrive in any order
+//! (a loop can outrun detection, history lands after the shown volume),
+//! but the tracker only moves forward. So the store keeps, per volume
+//! time, the frame the tracker gave (cell → track, every track's state)
+//! and the tracker right after it. For the shown volume at time `t`:
 //!
-//! 1. **Seen before:** `t` has a frame. Show it; nothing is re-observed, so
-//!    scrubbing back and forth over the same volumes always shows the same
-//!    IDs, trails and arrows.
-//! 2. **Ahead of the last observed volume:** first observe, oldest first, the
-//!    history volumes between the last observed one and `t` (at most
-//!    [`HISTORY_VOLUMES`] before `t`), then `t`. Volumes the timeline skips
-//!    are not waited for; the gap only widens the search radius, and a gap
-//!    longer than the tracker's `max_gap_ms` ends every track. Until every
-//!    history volume's cells are cached the shown volume has no tracks.
-//! 3. **Before the first frame kept:** history cannot be prepended to a
-//!    forward tracker, so the store restarts there: frames and live tracks
-//!    are dropped and step 2 runs from `t`'s own history. The ID counter is
-//!    kept, so the restarted tracks get new labels rather than reusing old
-//!    ones; one label never names two storms in a site session.
-//! 4. **Between kept frames but never observed** (a volume that joined the
-//!    timeline after the playhead passed it): shown without tracks.
+//! 1. **Seen before:** `t` has a frame for this cut. Show it; nothing is
+//!    observed again, so scrubbing back and forth, or a loop wrapping to
+//!    its start, always shows the same IDs, trails and arrows.
+//! 2. **Not seen yet:** observe `t` from the tracker after the nearest
+//!    frame before it (or the run's start), then observe every later frame
+//!    again, in time order, from its cached cells, replacing it. A volume
+//!    whose result arrives late (after the playhead moved on and later
+//!    volumes were tracked) is therefore tracked like any other; only
+//!    tracks that started after it can change letter.
+//! 3. **History:** the [`HISTORY_VOLUMES`] volumes before `t` that
+//!    [`history_keys`] names are observed the same way as their cells land
+//!    (`storm_cells::decide` asks for them nearest first). The shown volume
+//!    does not wait for them: it is tracked from whatever is cached, and
+//!    its tracks gain motion and path as history fills in.
+//! 4. **Far before every frame** (more than the tracker's `max_gap_ms`
+//!    before the first one): nothing links the two, so the store starts a
+//!    new run there. The ID counter is kept, so the new run's tracks get
+//!    new labels.
 //!
-//! A provisional (live, partial-cut) result is previewed against the tracker
-//! and not stored; the final result for that volume is observed when it
-//! arrives. A threshold change restarts the store (the cells differ), and
-//! a site change resets it, ID counter included.
+//! A frame whose cells have left the detection cache cannot be observed
+//! again; a replay drops it, and it is observed again when shown. A
+//! provisional (live, partial-cut) result is previewed from the tracker
+//! before it and not stored; the final result for that volume is observed
+//! when it arrives. A threshold change restarts the store (the cells
+//! differ), and a site change resets it, ID counter included.
 
 use std::collections::BTreeMap;
 
@@ -61,8 +66,8 @@ pub(crate) const MAX_FRAMES: usize = 96;
 pub(crate) const FORECAST_MINUTES: f64 = 30.0;
 
 /// The stored cuts of up to [`HISTORY_VOLUMES`] volumes before `displayed`,
-/// oldest first: the input the tracker needs before it can observe the
-/// displayed volume. `scans` is the timeline (sorted by start). Walking back
+/// oldest first: the volumes the tracker should see before the displayed
+/// one. `scans` is the timeline (sorted by start). Walking back
 /// stops at a gap longer than the tracker's `max_gap_ms` (nothing would be
 /// matched across it) and skips volumes whose lowest reflectivity cut is
 /// not stored.
@@ -107,6 +112,9 @@ pub(crate) fn history_keys(
 struct StoredFrame {
     key: StormCellKey,
     frame: Frame,
+    /// The tracker right after this volume: where a volume inserted after
+    /// this one starts from.
+    after: Tracker,
 }
 
 /// What [`StormTracks::sync`] did, for logs and tests.
@@ -118,20 +126,22 @@ pub(crate) enum TrackSync {
     NoCells,
     /// The shown volume was observed before; its frame is shown.
     LookedUp,
-    /// The shown volume (and `history` volumes before it) were observed.
-    Observed { history: usize },
-    /// The shown result is provisional: previewed, nothing stored.
+    /// The shown volume, or `history` volumes before it, were observed,
+    /// and `replayed` later frames observed again after them.
+    Observed { history: usize, replayed: usize },
+    /// The shown result is provisional: previewed, nothing stored (bar
+    /// `history` volumes before it that were observed).
     Previewed { history: usize },
-    /// A history volume's cells are not cached yet.
-    Waiting,
-    /// The shown volume cannot be tracked (see the module docs, case 4).
+    /// The shown volume could not be tracked.
     Untracked,
 }
 
 /// The per-site track store.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct StormTracks {
-    tracker: Tracker,
+    /// The tracker a run starts from: no tracks, and the ID counter the
+    /// run's first volume starts at.
+    run_start: Tracker,
     /// Final frames by volume time.
     frames: BTreeMap<i64, StoredFrame>,
     /// The threshold the stored frames were detected at.
@@ -140,6 +150,8 @@ pub(crate) struct StormTracks {
     current: Option<(StormCellKey, Frame)>,
     /// The last [`StormTracks::sync`] outcome.
     pub last_sync: Option<TrackSync>,
+    /// Volumes observed so far (replays included), for the debug log.
+    observations: u64,
 }
 
 impl StormTracks {
@@ -148,21 +160,52 @@ impl StormTracks {
         *self = Self::default();
     }
 
+    /// The tracker after the newest frame (or the run's start).
+    fn latest(&self) -> &Tracker {
+        self.frames
+            .values()
+            .next_back()
+            .map_or(&self.run_start, |f| &f.after)
+    }
+
+    /// The tracker to observe a volume at `t` from: the one after the
+    /// nearest frame before `t`, or the run's start.
+    fn state_before(&self, t: i64) -> Tracker {
+        self.frames
+            .range(..t)
+            .next_back()
+            .map_or_else(|| self.run_start.clone(), |(_, f)| f.after.clone())
+    }
+
     /// Drop the frames and live tracks, keeping the ID counter.
     fn restart(&mut self) {
-        self.tracker.restart();
+        let mut start = self.latest().clone();
+        start.restart();
+        self.run_start = start;
         self.frames.clear();
         self.current = None;
     }
 
-    /// The frame for the shown volume, if it is tracked.
+    /// Whether the volume of `key` has a frame for that cut.
+    fn framed(&self, key: &StormCellKey) -> bool {
+        self.frames
+            .get(&key.scan_key.scan_start.0)
+            .is_some_and(|f| f.key.same_cut(key))
+    }
+
     /// The newest letter handed out so far on this site, if any. For the
     /// debug log: how quickly letters are used up measures how stable the
     /// tracking is.
     pub(crate) fn newest_label(&self) -> Option<String> {
-        self.tracker.next_id().checked_sub(1).map(track_label)
+        self.latest().next_id().checked_sub(1).map(track_label)
     }
 
+    /// Volumes observed so far on this site, replays included.
+    pub(crate) fn observations(&self) -> u64 {
+        self.observations
+    }
+
+    /// The frame for the shown volume, if it is tracked.
     pub(crate) fn current(&self) -> Option<&Frame> {
         self.current.as_ref().map(|(_, f)| f)
     }
@@ -206,80 +249,111 @@ impl StormTracks {
             self.threshold_dbz = Some(key.threshold_dbz);
         }
         let t = key.scan_key.scan_start.0;
-        if let (Some((k, _)), Some(outcome)) = (&self.current, self.last_sync) {
-            if k == &key {
-                // Nothing changed since the last frame.
-                return outcome;
-            }
-        }
-        if let Some(stored) = self.frames.get(&t) {
-            if stored.key.same_cut(&key) {
-                self.current = Some((key, stored.frame.clone()));
-                return TrackSync::LookedUp;
-            }
-            self.current = None;
-            return TrackSync::Untracked;
-        }
-        if let Some(last) = self.tracker.last_time_ms() {
-            if t < last {
-                let first = self.frames.keys().next().copied();
-                if first.is_none_or(|first| t < first) {
-                    self.restart();
-                } else {
-                    self.current = None;
-                    return TrackSync::Untracked;
-                }
-            }
+        // Far before every frame: nothing links the two, start a new run.
+        let max_gap_ms = self.run_start.params.max_gap_ms;
+        if self
+            .frames
+            .keys()
+            .next()
+            .is_some_and(|&first| t + max_gap_ms < first)
+        {
+            self.restart();
         }
 
-        // History between the last observed volume and this one.
-        let last = self.tracker.last_time_ms();
-        let mut chain = Vec::new();
-        for h in history {
-            let ht = h.scan_key.scan_start.0;
-            if ht >= t || last.is_some_and(|l| ht <= l) {
-                continue;
-            }
-            match cells.cached_result(h) {
-                Some(result) => chain.push((h, ht, result)),
-                None => {
-                    self.current = None;
-                    return TrackSync::Waiting;
+        // History volumes whose cells have landed but are not tracked yet.
+        let pending: Vec<StormCellKey> = history
+            .iter()
+            .filter(|h| h.scan_key.scan_start.0 < t)
+            .filter(|h| !self.framed(h) && cells.cached_result(h).is_some())
+            .cloned()
+            .collect();
+        if pending.is_empty() {
+            if let (Some((k, _)), Some(outcome)) = (&self.current, self.last_sync) {
+                if k == &key {
+                    // Nothing changed since the last frame.
+                    return outcome;
                 }
-            }
-        }
-        let history_count = chain.len();
-        for (h, ht, result) in chain {
-            if let Some(frame) = self.tracker.observe(ht, result, false) {
-                self.store(ht, h.clone(), frame);
             }
         }
 
         let provisional = cells.is_provisional();
-        let Some(frame) = self.tracker.observe(t, &cells.result, provisional) else {
+        let mut new: Vec<(i64, StormCellKey)> = pending
+            .iter()
+            .map(|h| (h.scan_key.scan_start.0, h.clone()))
+            .collect();
+        if !provisional && !self.framed(&key) {
+            new.push((t, key.clone()));
+        }
+        let observed = new.len();
+        let replayed = self.insert(new, cells);
+
+        if provisional {
+            let mut tracker = self.state_before(t);
+            let Some(frame) = tracker.observe(t, &cells.result, true) else {
+                self.current = None;
+                return TrackSync::Untracked;
+            };
+            self.current = Some((key, frame));
+            return TrackSync::Previewed {
+                history: pending.len(),
+            };
+        }
+        let Some(stored) = self.frames.get(&t).filter(|f| f.key.same_cut(&key)) else {
             self.current = None;
             return TrackSync::Untracked;
         };
-        if !provisional {
-            self.store(t, key.clone(), frame.clone());
-        }
-        self.current = Some((key, frame));
-        if provisional {
-            TrackSync::Previewed {
-                history: history_count,
-            }
+        self.current = Some((key, stored.frame.clone()));
+        if observed == 0 {
+            TrackSync::LookedUp
         } else {
             TrackSync::Observed {
-                history: history_count,
+                history: pending.len(),
+                replayed,
             }
         }
     }
 
-    fn store(&mut self, t: i64, key: StormCellKey, frame: Frame) {
-        self.frames.insert(t, StoredFrame { key, frame });
+    /// Observe the `new` volumes and, after the earliest of them, observe
+    /// every later frame again in time order (from cached cells; a frame
+    /// whose cells were evicted is dropped, to be observed again when it is
+    /// shown). Returns the number of later frames observed again.
+    fn insert(&mut self, new: Vec<(i64, StormCellKey)>, cells: &StormCells) -> usize {
+        let Some(x0) = new.iter().map(|(t, _)| *t).min() else {
+            return 0;
+        };
+        let mut tracker = self.state_before(x0);
+        let mut seq: BTreeMap<i64, StormCellKey> = self
+            .frames
+            .split_off(&x0)
+            .into_iter()
+            .map(|(t, f)| (t, f.key))
+            .collect();
+        let mut replayed = seq.len();
+        for (t, key) in new {
+            if seq.insert(t, key).is_some() {
+                replayed -= 1;
+            }
+        }
+        for (t, key) in seq {
+            let Some(result) = cells.cached_result(&key) else {
+                continue;
+            };
+            if let Some(frame) = tracker.observe(t, result, false) {
+                self.observations += 1;
+                self.frames.insert(
+                    t,
+                    StoredFrame {
+                        key,
+                        frame,
+                        after: tracker.clone(),
+                    },
+                );
+            }
+        }
         while self.frames.len() > MAX_FRAMES {
             self.frames.pop_first();
         }
+        replayed
     }
 
     /// The tracks on the shown volume. `reference` is a point (the user's
@@ -468,17 +542,32 @@ mod tests {
             .clone()
     }
 
+    fn observed(history: usize, replayed: usize) -> TrackSync {
+        TrackSync::Observed { history, replayed }
+    }
+
     #[wasm_bindgen_test]
-    fn a_freshly_opened_volume_waits_for_its_history_then_has_motion() {
+    fn a_freshly_opened_volume_is_tracked_at_once_and_gains_motion_as_history_lands() {
         let (mut tracks, mut cells) = (StormTracks::default(), StormCells::default());
-        assert_eq!(show(&mut tracks, &mut cells, 5), TrackSync::Waiting);
-        assert!(tracks.view(None).is_none());
+        // No history cached yet: tracked anyway, a one-volume track.
+        assert_eq!(show(&mut tracks, &mut cells, 5), observed(0, 0));
+        let a = tracks.view(None).unwrap().for_cell(0).unwrap().clone();
+        assert_eq!((a.label.as_str(), a.age_volumes), ("A", 1));
+        // Part of the history lands: observed before 5, and 5 again.
         cache(&mut cells, [1, 2, 3]);
-        assert_eq!(show(&mut tracks, &mut cells, 5), TrackSync::Waiting);
-        cache(&mut cells, [4]);
+        assert_eq!(tracks.sync(true, &cells, &history(5)), observed(3, 1));
         assert_eq!(
-            show(&mut tracks, &mut cells, 5),
-            TrackSync::Observed { history: 4 }
+            tracks.view(None).unwrap().for_cell(0).unwrap().age_volumes,
+            4
+        );
+        // The rest: the same storm, the same letter, the whole path.
+        cache(&mut cells, [4]);
+        assert_eq!(tracks.sync(true, &cells, &history(5)), observed(1, 1));
+        // Nothing new: nothing observed.
+        assert_eq!(
+            tracks.sync(true, &cells, &history(5)),
+            observed(1, 1),
+            "the outcome is kept, not redone"
         );
         let view = tracks.view(None).unwrap();
         assert!(!view.provisional);
@@ -492,16 +581,16 @@ mod tests {
         let (dx, _) = crate::storm_cells::track::offset_km((a.lat, a.lon), (lat, lon));
         assert!((dx - 18.0).abs() < 0.3, "{dx}");
         assert_eq!(tracks.observed_times(), (1..=5).map(ms).collect::<Vec<_>>());
+        assert_eq!(tracks.newest_label().as_deref(), Some("A"));
     }
 
     #[wasm_bindgen_test]
     fn scrubbing_back_and_forth_shows_the_same_tracks() {
         let (mut tracks, mut cells) = (StormTracks::default(), StormCells::default());
-        cache(&mut cells, 0..=8);
-        assert_eq!(
-            show(&mut tracks, &mut cells, 6),
-            TrackSync::Observed { history: 4 }
-        );
+        // 0 and 1 are not detected, so going back to 4 finds no history to
+        // add.
+        cache(&mut cells, 2..=8);
+        assert_eq!(show(&mut tracks, &mut cells, 6), observed(4, 0));
         let at6 = tracks.view(None).unwrap();
         assert_eq!(label_of_cell(&tracks, 1), "B");
         // Back two volumes: looked up, not re-observed.
@@ -514,10 +603,7 @@ mod tests {
         assert_eq!(show(&mut tracks, &mut cells, 6), TrackSync::LookedUp);
         assert_eq!(tracks.view(None).unwrap(), at6);
         // On past it: observed once, IDs carry on.
-        assert_eq!(
-            show(&mut tracks, &mut cells, 8),
-            TrackSync::Observed { history: 1 }
-        );
+        assert_eq!(show(&mut tracks, &mut cells, 8), observed(1, 0));
         assert_eq!(label_of_cell(&tracks, 0), "A");
         assert_eq!(label_of_cell(&tracks, 1), "B");
         assert_eq!(show(&mut tracks, &mut cells, 7), TrackSync::LookedUp);
@@ -525,34 +611,95 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn a_volume_before_the_first_frame_restarts_with_new_labels() {
+    fn a_volume_just_before_the_first_frame_joins_the_run() {
         let (mut tracks, mut cells) = (StormTracks::default(), StormCells::default());
         cache(&mut cells, 0..=8);
         show(&mut tracks, &mut cells, 8);
+        assert_eq!(tracks.observed_times(), (4..=8).map(ms).collect::<Vec<_>>());
+        // Volume 1 (and its history, 0) come before every frame but within
+        // the tracker's gap: observed, and 4..8 again after them.
+        assert_eq!(show(&mut tracks, &mut cells, 1), observed(1, 5));
+        assert_eq!(label_of_cell(&tracks, 0), "A");
+        let mut times = vec![ms(0), ms(1)];
+        times.extend((4..=8).map(ms));
+        assert_eq!(tracks.observed_times(), times);
+        assert_eq!(show(&mut tracks, &mut cells, 8), TrackSync::LookedUp);
         assert_eq!(label_of_cell(&tracks, 0), "A");
         assert_eq!(label_of_cell(&tracks, 1), "B");
-        // Volume 1 was never observed and is older than every frame.
-        assert_eq!(
-            show(&mut tracks, &mut cells, 1),
-            TrackSync::Observed { history: 1 }
-        );
-        assert_eq!(label_of_cell(&tracks, 0), "C");
-        assert_eq!(tracks.observed_times(), vec![ms(0), ms(1)]);
     }
 
     #[wasm_bindgen_test]
-    fn a_volume_that_joined_between_frames_is_untracked() {
+    fn a_volume_far_before_the_first_frame_starts_a_new_run_with_new_labels() {
         let (mut tracks, mut cells) = (StormTracks::default(), StormCells::default());
-        cache(&mut cells, 0..=8);
-        // Observe 2 and 4..6 only: 3 was not in the timeline then.
+        cache(&mut cells, 0..=20);
+        show(&mut tracks, &mut cells, 20);
+        assert_eq!(label_of_cell(&tracks, 0), "A");
+        assert_eq!(label_of_cell(&tracks, 1), "B");
+        // Volume 2 is an hour before every frame.
+        assert_eq!(show(&mut tracks, &mut cells, 2), observed(2, 0));
+        assert_eq!(label_of_cell(&tracks, 0), "C");
+        assert_eq!(tracks.observed_times(), vec![ms(0), ms(1), ms(2)]);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_late_volume_between_frames_is_tracked_and_later_frames_replayed() {
+        let (mut tracks, mut cells) = (StormTracks::default(), StormCells::default());
+        // Volumes 2 and 4..6 tracked; 3's cells had not landed then.
+        for v in [2, 4, 5] {
+            cells.seed(key(v), result(v), true, false);
+        }
         cells.seed(key(6), result(6), true, true);
-        let sparse = vec![key(2), key(4), key(5)];
-        assert_eq!(
-            tracks.sync(true, &cells, &sparse),
-            TrackSync::Observed { history: 3 }
-        );
-        assert_eq!(show(&mut tracks, &mut cells, 3), TrackSync::Untracked);
-        assert!(tracks.view(None).is_none());
+        let sparse = vec![key(2), key(3), key(4), key(5)];
+        assert_eq!(tracks.sync(true, &cells, &sparse), observed(3, 0));
+        let a6 = tracks.view(None).unwrap().for_cell(0).unwrap().clone();
+        assert_eq!((a6.label.as_str(), a6.age_volumes), ("A", 4));
+        // 3 is shown and its cells land late (with 0 and 1 as history).
+        cache(&mut cells, [0, 1]);
+        assert_eq!(show(&mut tracks, &mut cells, 3), observed(2, 4));
+        let a3 = tracks.view(None).unwrap().for_cell(0).unwrap().clone();
+        assert_eq!((a3.label.as_str(), a3.age_volumes), ("A", 4));
+        assert_eq!(tracks.observed_times(), (0..=6).map(ms).collect::<Vec<_>>());
+        // The later frames were observed again: 6 now has the longer path.
+        assert_eq!(show(&mut tracks, &mut cells, 6), TrackSync::LookedUp);
+        let a6 = tracks.view(None).unwrap().for_cell(0).unwrap().clone();
+        assert_eq!((a6.label.as_str(), a6.age_volumes), ("A", 7));
+        assert_eq!(label_of_cell(&tracks, 1), "B");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_loop_that_outruns_detection_ends_with_every_volume_tracked() {
+        let (mut tracks, mut cells) = (StormTracks::default(), StormCells::default());
+        // Pass one: the playhead runs 0..=8, but 3 and 5 are shown before
+        // their cells land, so they are never seen by the store.
+        let skipped = [3, 5];
+        for v in 0..=8 {
+            if skipped.contains(&v) {
+                continue;
+            }
+            show(&mut tracks, &mut cells, v);
+        }
+        let after_pass_one = tracks.newest_label();
+        assert_eq!(after_pass_one.as_deref(), Some("B"));
+        // The wrap back to 0 looks up; nothing restarts.
+        assert_eq!(show(&mut tracks, &mut cells, 0), TrackSync::LookedUp);
+        assert_eq!(tracks.newest_label(), after_pass_one);
+        assert_eq!(label_of_cell(&tracks, 0), "A");
+        // Pass two: every volume shown again, 3 and 5 now detected.
+        for v in 1..=8 {
+            let outcome = show(&mut tracks, &mut cells, v);
+            assert!(
+                matches!(outcome, TrackSync::LookedUp | TrackSync::Observed { .. }),
+                "{v}: {outcome:?}"
+            );
+            assert_eq!(label_of_cell(&tracks, 0), "A", "volume {v}");
+        }
+        assert_eq!(tracks.observed_times(), (0..=8).map(ms).collect::<Vec<_>>());
+        // A third pass changes nothing: every volume is looked up.
+        for v in 0..=8 {
+            assert_eq!(show(&mut tracks, &mut cells, v), TrackSync::LookedUp);
+        }
+        assert_eq!(tracks.newest_label(), after_pass_one);
+        assert_eq!(label_of_cell(&tracks, 1), "B");
     }
 
     #[wasm_bindgen_test]
@@ -579,10 +726,7 @@ mod tests {
             TrackSync::Previewed { history: 0 }
         );
         // The cut completes: stored result, observed for good.
-        assert_eq!(
-            show(&mut tracks, &mut cells, 7),
-            TrackSync::Observed { history: 0 }
-        );
+        assert_eq!(show(&mut tracks, &mut cells, 7), observed(0, 0));
         assert!(!tracks.view(None).unwrap().provisional);
         assert!(tracks.observed_times().contains(&ms(7)));
         // A live key for the same cut that finished counts as the same cut.
@@ -604,10 +748,7 @@ mod tests {
         for (v, k) in (2..6).zip(&history45) {
             cells.seed(k.clone(), result(v), true, false);
         }
-        assert_eq!(
-            tracks.sync(true, &cells, &history45),
-            TrackSync::Observed { history: 4 }
-        );
+        assert_eq!(tracks.sync(true, &cells, &history45), observed(4, 0));
         assert_eq!(label_of_cell(&tracks, 0), "C");
         // New site: everything forgotten, labels from A again.
         tracks.reset();
@@ -625,10 +766,7 @@ mod tests {
         cells.seed(key(2), result(2), true, true);
         assert_eq!(tracks.sync(false, &cells, &history(2)), TrackSync::Off);
         assert!(tracks.view(None).is_none());
-        assert_eq!(
-            tracks.sync(true, &cells, &history(2)),
-            TrackSync::Observed { history: 2 }
-        );
+        assert_eq!(tracks.sync(true, &cells, &history(2)), observed(2, 0));
         assert!(tracks.view(None).is_some());
     }
 

@@ -206,30 +206,17 @@ impl WorkbenchApp {
         let cells = &mut self.state.viz_state.storm_cells;
         let action = decide(&env, cells);
         let request = cells.apply(action, &env);
-        let shown_before = self
-            .state
-            .viz_state
-            .storm_tracks
-            .current()
-            .map(|f| f.time_ms);
+        let observations = self.state.viz_state.storm_tracks.observations();
         let tracks = self.state.viz_state.storm_tracks.sync(
             tracks_on,
             &self.state.viz_state.storm_cells,
             &history,
         );
-        let newly_shown = self
-            .state
-            .viz_state
-            .storm_tracks
-            .current()
-            .map(|f| f.time_ms)
-            != shown_before;
-        if let (true, crate::core::storm_tracks::TrackSync::Observed { history }) =
-            (newly_shown, tracks)
-        {
+        let st = &self.state.viz_state.storm_tracks;
+        if st.observations() != observations {
             log::debug!(
-                "storm tracks: observed with {history} history volumes, newest letter {:?}",
-                self.state.viz_state.storm_tracks.newest_label()
+                "storm tracks: {tracks:?}, newest letter {:?}",
+                st.newest_label()
             );
         } else if tracks != crate::core::storm_tracks::TrackSync::Off {
             log::trace!("storm tracks: {tracks:?}");
