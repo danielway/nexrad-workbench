@@ -1,14 +1,15 @@
 //! Result types of storm cell detection.
 //!
-//! Plain data (`Clone + Debug + PartialEq`), no workbench types, so the module
-//! can move upstream unchanged. Positions use the flat (equirectangular,
+//! Plain data (`Clone + Debug + PartialEq`, serde for the worker transport),
+//! no workbench types, so the module can move upstream unchanged. Positions use the flat (equirectangular,
 //! 111 km per degree) projection around the radar that the 2D canvas uses.
 
 use super::DetectionParams;
+use serde::{Deserialize, Serialize};
 
 /// A storm cell: the finest distinct object found by the nested-threshold
 /// segmentation (see the module docs of `storm_cells`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct StormCell {
     /// Index within this result, 0 = strongest. Cells are sorted by
     /// `peak_dbz` (descending), then area. Not stable across volumes.
@@ -50,7 +51,7 @@ pub(crate) struct StormCell {
 
 /// A group: one envelope component that resolved into two or more cells
 /// (a supercell line, an MCS, a hurricane's rain shield).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct StormGroup {
     /// Index within this result, 0 = strongest (by peak, then area).
     pub id: u32,
@@ -71,7 +72,7 @@ pub(crate) struct StormGroup {
 }
 
 /// Where a result came from: enough to tell whether it is stale.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct DetectionSource {
     /// Caller-supplied identity of the sweep the cells were detected on.
     pub sweep_id: Option<String>,
@@ -84,7 +85,7 @@ pub(crate) struct DetectionSource {
 }
 
 /// The output of one detection run.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct StormCellsResult {
     /// Cells sorted strongest first; `cells[i].id == i`.
     pub cells: Vec<StormCell>,

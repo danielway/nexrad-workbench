@@ -115,43 +115,91 @@ impl WorkbenchApp {
         self.state.viz_state.displayed = None;
         self.state.viz_state.previous_displayed = None;
         self.timeline.shadow_scan_boundaries.clear();
-        self.state.viz_state.storm_cells.clear();
+        self.state.viz_state.storm_cells.reset();
     }
 
     /// Bring the storm cell result in line with what is displayed. The
-    /// decision (run, keep, clear) is [`crate::core::storm_cells::decide`];
-    /// this only executes it. Called every frame and right after each GPU
-    /// upload, so a new sweep gets its cells in the same frame.
+    /// decision (keep, clear, show a cached result, or ask a worker) is
+    /// [`crate::core::storm_cells::decide`]; this assembles its inputs and
+    /// executes the action, posting the described [`DetectRequest`] to the
+    /// worker pool. Called every frame, right after each GPU upload, and
+    /// after each detect reply, so a cached or fresh result shows at once.
+    ///
+    /// [`DetectRequest`]: crate::core::storm_cells::DetectRequest
     pub(crate) fn sync_storm_cells(&mut self) {
-        use crate::core::storm_cells::{decide, StormCellAction, StormCellEnv};
+        use crate::core::storm_cells::{decide, LiveCutProgress, StormCellEnv};
 
         let viz = &self.state.viz_state;
-        let action = decide(
-            &StormCellEnv {
-                visible: viz.storm_cells_visible,
-                view_mode: viz.view_mode(),
-                product: viz.product,
-                displayed: viz.displayed.as_ref(),
-                threshold_dbz: viz.storm_cell_threshold_dbz,
-            },
-            &viz.storm_cells,
+        let (visible, view_mode, product, threshold_dbz, radar_lat, radar_lon) = (
+            viz.storm_cells_visible,
+            viz.view_mode(),
+            viz.product,
+            viz.storm_cell_threshold_dbz,
+            viz.center_lat,
+            viz.center_lon,
         );
-        match action {
-            StormCellAction::Keep => {}
-            StormCellAction::Clear => self.state.viz_state.storm_cells.clear(),
-            StormCellAction::Run(key) => {
-                let Some(ref renderer) = self.gpu.gpu else {
-                    return;
-                };
-                let Ok(r) = renderer.lock() else {
-                    return;
-                };
-                let result = r.detect_storm_cells(
-                    self.state.viz_state.center_lat,
-                    self.state.viz_state.center_lon,
-                    key.threshold_dbz,
-                );
-                self.state.viz_state.storm_cells.store(key, result);
+        // A live partial is displayed under a placeholder scan key (live
+        // renders are not bound to a stored scan); its volume is the one the
+        // stream is collecting.
+        let live_anchor = self
+            .live
+            .mode_state
+            .is_active()
+            .then_some(self.live.mode_state.current_volume.as_ref())
+            .flatten();
+        let live_partial = self.state.viz_state.displayed.as_ref().and_then(|d| {
+            let anchor = live_anchor.filter(|_| d.identity.scan_key.site.0.is_empty())?;
+            let mut d = d.clone();
+            d.identity.scan_key = anchor.scan_key.clone();
+            Some(d)
+        });
+        let displayed = live_partial
+            .as_ref()
+            .or(self.state.viz_state.displayed.as_ref());
+        let displayed_ms = displayed.map(|d| d.identity.scan_key.scan_start.0);
+        let volume = displayed_ms.and_then(|ms| {
+            self.timeline
+                .scans
+                .scans
+                .iter()
+                .rev()
+                .find(|s| s.key_ms() == ms)
+        });
+        // The cut the live stream is filling, keyed to the live volume.
+        let live_cut = live_anchor.and_then(|anchor| {
+            let engine = self.live.engine.borrow();
+            let obs = engine.observations();
+            Some(LiveCutProgress {
+                scan_key: anchor.scan_key.clone(),
+                elevation_number: obs.current_in_progress_elevation?,
+                radials: obs.current_in_progress_radials?,
+            })
+        });
+        let live_vcp = live_anchor
+            .filter(|a| Some(a.scan_key.scan_start.0) == displayed_ms)
+            .and(self.live.radar_model.volume.as_ref())
+            .and_then(|v| v.vcp_pattern.as_ref());
+        let env = StormCellEnv {
+            visible,
+            view_mode,
+            product,
+            displayed,
+            threshold_dbz,
+            volume,
+            live_vcp,
+            live_cut: live_cut.as_ref(),
+            radar_lat,
+            radar_lon,
+            now_ms: self.state.frame_now.millis(),
+        };
+        let cells = &mut self.state.viz_state.storm_cells;
+        let action = decide(&env, cells);
+        let request = cells.apply(action, &env);
+        if let Some(request) = request {
+            log::debug!("storm cells: requesting {:?}", request.key);
+            let id = request.request_id;
+            if !self.render.coordinator.detect(request) {
+                self.state.viz_state.storm_cells.fail(id);
             }
         }
     }

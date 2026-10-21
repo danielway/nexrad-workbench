@@ -1,9 +1,10 @@
 //! Storm cell detection.
 //!
-//! A dependency-free leaf module: it imports nothing from the rest of the
-//! crate (only `std`), so it can move upstream into the nexrad crates. The
-//! renderer adapter (`nexrad::render::gpu_renderer::inspect`) feeds it a
-//! borrowed sweep, and `core` re-exports its result types.
+//! A leaf module: it imports nothing from the rest of the crate (only `std`,
+//! plus serde derives so results can cross the worker boundary), so it can
+//! move upstream into the nexrad crates. The decode worker's `detect` entry
+//! point (`nexrad::decode::worker_api::detect`) feeds it a stored or live
+//! sweep, and `core` re-exports its result types.
 //!
 //! Pipeline, all in polar (azimuth × gate) index space:
 //!
@@ -59,7 +60,7 @@ pub(crate) struct DetectionInput<'a> {
 }
 
 /// Tuning knobs for the detector.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DetectionParams {
     /// Envelope level in dBZ (the user's threshold): the weakest echo that
     /// can belong to a cell, and the bottom of the level ladder.

@@ -52,7 +52,7 @@ const ALLOWED: &[(&str, &str)] = &[
     ("nexrad", "data"),
     ("nexrad", "geo"),
     ("nexrad", "net"),
-    ("nexrad", "storm_cells"), // renderer adapter feeds the leaf detector a sweep
+    ("nexrad", "storm_cells"), // the decode worker's `detect` runs the leaf detector on a sweep
     // app state sits above the domain modules
     ("state", "core"),
     ("state", "data"),

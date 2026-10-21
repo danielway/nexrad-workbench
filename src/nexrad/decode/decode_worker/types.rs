@@ -26,6 +26,7 @@ pub(super) enum RequestType {
     Render,
     RenderLive,
     RenderVolume,
+    Detect,
 }
 
 impl RequestType {
@@ -41,6 +42,7 @@ impl RequestType {
         Self::Render,
         Self::RenderLive,
         Self::RenderVolume,
+        Self::Detect,
     ];
 
     /// Compile-time completeness check for [`Self::ALL`]: this match must list
@@ -55,6 +57,7 @@ impl RequestType {
             Self::Render => 3,
             Self::RenderLive => 4,
             Self::RenderVolume => 5,
+            Self::Detect => 6,
         }
     }
 
@@ -66,6 +69,7 @@ impl RequestType {
             Self::Render => "render",
             Self::RenderLive => "render_live",
             Self::RenderVolume => "render_volume",
+            Self::Detect => "detect",
         }
     }
 }
@@ -83,6 +87,8 @@ pub(super) enum ResponseType {
     /// A `render_live` request whose elevation was stored before it ran.
     LiveSuperseded,
     VolumeDecoded,
+    /// A `detect` request's storm cells.
+    Detected,
     Error,
 }
 
@@ -98,6 +104,7 @@ impl ResponseType {
         Self::LiveDecoded,
         Self::LiveSuperseded,
         Self::VolumeDecoded,
+        Self::Detected,
         Self::Error,
     ];
 
@@ -113,7 +120,8 @@ impl ResponseType {
             Self::LiveDecoded => 4,
             Self::LiveSuperseded => 5,
             Self::VolumeDecoded => 6,
-            Self::Error => 7,
+            Self::Detected => 7,
+            Self::Error => 8,
         }
     }
 
@@ -126,6 +134,7 @@ impl ResponseType {
             Self::LiveDecoded => "live_decoded",
             Self::LiveSuperseded => "live_superseded",
             Self::VolumeDecoded => "volume_decoded",
+            Self::Detected => "detected",
             Self::Error => "error",
         }
     }
@@ -139,6 +148,7 @@ impl ResponseType {
             "live_decoded" => Self::LiveDecoded,
             "live_superseded" => Self::LiveSuperseded,
             "volume_decoded" => Self::VolumeDecoded,
+            "detected" => Self::Detected,
             "error" => Self::Error,
             _ => return None,
         })
@@ -324,6 +334,25 @@ fn default_word_size() -> u8 {
     2
 }
 
+/// Storm cell detection result from the worker.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DetectedResultMsg {
+    pub result: crate::core::StormCellsResult,
+    #[serde(default)]
+    pub fetch_ms: f64,
+    #[serde(default)]
+    pub detect_ms: f64,
+    #[serde(default)]
+    pub total_ms: f64,
+    #[serde(default)]
+    pub azimuth_count: u32,
+    #[serde(default)]
+    pub gate_count: u32,
+    #[serde(default)]
+    pub complete: bool,
+}
+
 /// Error message from the worker.
 ///
 /// `kind` is the structured category set by `worker.js`'s `classifyError`
@@ -409,6 +438,22 @@ pub(super) struct RenderVolumeRequestMsg<'a> {
     pub elevation_numbers: &'a [u8],
 }
 
+/// Request message sent to the worker for storm cell detection.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DetectRequestMsg<'a> {
+    #[serde(rename = "type")]
+    pub msg_type: &'a str,
+    pub id: f64,
+    pub scan_key: &'a str,
+    pub elevation_number: u8,
+    /// `"stored"` or `"live"`.
+    pub input: &'a str,
+    pub params: &'a crate::storm_cells::DetectionParams,
+    pub radar_lat: f64,
+    pub radar_lon: f64,
+}
+
 /// Request message sent to the worker for live render operations.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -445,6 +490,11 @@ pub(crate) enum WorkerOutcome {
     LiveDecoded(DecodeResult),
     /// Volume decode completed (all elevations packed for ray marching).
     VolumeDecoded(VolumeData),
+    /// Storm cell detection completed.
+    Detected(crate::core::storm_cells::DetectReply),
+    /// Storm cell detection failed in the worker (or its reply did not
+    /// parse). Carries the core's request id, not the wire id.
+    DetectFailed { request_id: u64, message: String },
     /// Error from any operation.
     WorkerError {
         id: u64,
@@ -481,6 +531,7 @@ mod tests {
             ResponseType::LiveDecoded,
             ResponseType::LiveSuperseded,
             ResponseType::VolumeDecoded,
+            ResponseType::Detected,
             ResponseType::Error,
         ] {
             assert_eq!(
@@ -510,6 +561,7 @@ mod tests {
         assert_eq!(RequestType::Render.as_str(), "render");
         assert_eq!(RequestType::RenderLive.as_str(), "render_live");
         assert_eq!(RequestType::RenderVolume.as_str(), "render_volume");
+        assert_eq!(RequestType::Detect.as_str(), "detect");
     }
 }
 
@@ -532,6 +584,7 @@ mod coverage_tests {
         assert_eq!(ResponseType::LiveDecoded.as_str(), "live_decoded");
         assert_eq!(ResponseType::LiveSuperseded.as_str(), "live_superseded");
         assert_eq!(ResponseType::VolumeDecoded.as_str(), "volume_decoded");
+        assert_eq!(ResponseType::Detected.as_str(), "detected");
         assert_eq!(ResponseType::Error.as_str(), "error");
     }
 
@@ -561,6 +614,10 @@ mod coverage_tests {
         assert_eq!(
             ResponseType::parse("volume_decoded"),
             Some(ResponseType::VolumeDecoded)
+        );
+        assert_eq!(
+            ResponseType::parse("detected"),
+            Some(ResponseType::Detected)
         );
         assert_eq!(ResponseType::parse("error"), Some(ResponseType::Error));
     }
@@ -666,6 +723,7 @@ mod coverage_tests {
             RequestType::Render.as_str(),
             RequestType::RenderLive.as_str(),
             RequestType::RenderVolume.as_str(),
+            RequestType::Detect.as_str(),
         ];
         let responses = [
             ResponseType::Ready.as_str(),
@@ -675,6 +733,7 @@ mod coverage_tests {
             ResponseType::LiveDecoded.as_str(),
             ResponseType::LiveSuperseded.as_str(),
             ResponseType::VolumeDecoded.as_str(),
+            ResponseType::Detected.as_str(),
             ResponseType::Error.as_str(),
         ];
         for req in requests {
@@ -691,6 +750,80 @@ mod coverage_tests {
                 resp
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod detect_wire_tests {
+    use super::*;
+    use crate::core::{StormCell, StormCellsResult};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// The `detected` message as `worker.js` posts it: the worker's
+    /// serialized response plus `type` and `id`.
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Wire<'a> {
+        #[serde(rename = "type")]
+        msg_type: &'a str,
+        id: f64,
+        result: &'a StormCellsResult,
+        fetch_ms: f64,
+        detect_ms: f64,
+        total_ms: f64,
+        azimuth_count: u32,
+        gate_count: u32,
+        complete: bool,
+    }
+
+    #[wasm_bindgen_test]
+    fn detected_result_survives_the_js_boundary() {
+        let mut result = StormCellsResult {
+            cells: vec![StormCell {
+                id: 0,
+                group_id: Some(0),
+                level_dbz: 50.0,
+                peak_dbz: 62.5,
+                mean_dbz: 51.0,
+                area_km2: 182.0,
+                gate_count: 900,
+                lat: 41.3,
+                lon: -94.5,
+                bounds: (41.2, -94.6, 41.4, -94.4),
+                bearing_from_radar_deg: 239.0,
+                range_from_radar_km: 98.0,
+                orientation_deg: 45.0,
+                elongation: 1.8,
+                outline: vec![(41.2, -94.6), (41.4, -94.6), (41.3, -94.4), (41.2, -94.6)],
+            }],
+            ..StormCellsResult::default()
+        };
+        result.source.sweep_id = Some("KDMX|1716322647000|1|reflectivity".into());
+        result.source.elevation_deg = Some(0.48);
+        result.source.params.threshold_dbz = 40.0;
+        let wire = Wire {
+            msg_type: ResponseType::Detected.as_str(),
+            id: 7.0,
+            result: &result,
+            fetch_ms: 9.5,
+            detect_ms: 84.0,
+            total_ms: 95.0,
+            azimuth_count: 720,
+            gate_count: 1832,
+            complete: false,
+        };
+        let js = serde_wasm_bindgen::to_value(&wire).unwrap();
+        let header: ResponseHeader = serde_wasm_bindgen::from_value(js.clone()).unwrap();
+        assert_eq!(
+            ResponseType::parse(&header.msg_type),
+            Some(ResponseType::Detected)
+        );
+        assert_eq!(header.id, Some(7));
+        let back: DetectedResultMsg = serde_wasm_bindgen::from_value(js).unwrap();
+        assert_eq!(back.result, result);
+        assert_eq!(back.detect_ms, 84.0);
+        assert_eq!((back.azimuth_count, back.gate_count), (720, 1832));
+        assert!(!back.complete);
     }
 }
 

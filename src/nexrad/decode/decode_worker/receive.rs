@@ -37,9 +37,11 @@ pub(super) fn setup_onmessage(
     pending_render: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
     pending_render_live: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
     pending_volume: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
+    pending_detect: &Rc<RefCell<HashMap<RequestId, u64>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
     let ready_c = ready.clone();
+    let pending_detect_c = pending_detect.clone();
     let pending_ingest_c = pending_ingest.clone();
     let pending_chunk_ingest_c = pending_chunk_ingest.clone();
     let pending_render_c = pending_render.clone();
@@ -114,8 +116,29 @@ pub(super) fn setup_onmessage(
                     ctx_c.request_repaint();
                 }
             }
+            ResponseType::Detected => {
+                if let Some(id) = require_id(&header, kind_str) {
+                    handle_detected_message(id, &data, &pending_detect_c, &results_c);
+                    ctx_c.request_repaint();
+                }
+            }
             ResponseType::Error => {
                 if let Some(id) = require_id(&header, kind_str) {
+                    // A failed detection is not a scan failure: report it to
+                    // the storm cell state only.
+                    if let Some(request_id) = pending_detect_c.borrow_mut().remove(&id) {
+                        let message = js_sys::Reflect::get(&data, &"message".into())
+                            .ok()
+                            .and_then(|m| m.as_string())
+                            .unwrap_or_else(|| "Unknown worker error".to_string());
+                        log::warn!("Worker detect failed (request {}): {}", id, message);
+                        results_c.borrow_mut().push(WorkerOutcome::DetectFailed {
+                            request_id,
+                            message,
+                        });
+                        ctx_c.request_repaint();
+                        return;
+                    }
                     handle_error_message(
                         id,
                         &data,
@@ -564,6 +587,43 @@ fn handle_volume_decoded_message(
             product: r.product,
             total_ms: r.total_ms,
         }));
+}
+
+fn handle_detected_message(
+    id: RequestId,
+    data: &JsValue,
+    pending: &Rc<RefCell<HashMap<RequestId, u64>>>,
+    results: &Rc<RefCell<Vec<WorkerOutcome>>>,
+) {
+    let Some(request_id) = take_pending_context(id, "detected", pending) else {
+        return;
+    };
+    let r: DetectedResultMsg = match serde_wasm_bindgen::from_value(data.clone()) {
+        Ok(r) => r,
+        Err(e) => {
+            let message = format!("Failed to parse detected payload: {e}");
+            log::error!("{} (request {})", message, id);
+            results.borrow_mut().push(WorkerOutcome::DetectFailed {
+                request_id,
+                message,
+            });
+            return;
+        }
+    };
+    results.borrow_mut().push(WorkerOutcome::Detected(
+        crate::core::storm_cells::DetectReply {
+            request_id,
+            result: r.result,
+            timing: crate::core::storm_cells::DetectTiming {
+                fetch_ms: r.fetch_ms,
+                detect_ms: r.detect_ms,
+                total_ms: r.total_ms,
+                azimuth_count: r.azimuth_count,
+                gate_count: r.gate_count,
+            },
+            complete: r.complete,
+        },
+    ));
 }
 
 /// Handle an "error" message from the worker.
