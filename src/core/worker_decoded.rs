@@ -2,10 +2,10 @@
 //! `handle_decoded_outcome` / `handle_live_decoded_outcome` used to
 //! interleave with the GPU upload block.
 //!
-//! The GPU upload itself (renderer lock, `update_data`, color table, storm
-//! cell detection) is an effect and stays in the shell
-//! (`crate::app::worker_results`); these reducers decide *whether* it runs
-//! and what feeds it.
+//! The GPU upload itself (renderer lock, `update_data`, color table) is an
+//! effect and stays in the shell (`crate::app::worker_results`); these
+//! reducers decide *whether* it runs and what feeds it. Storm cell detection
+//! after an upload is decided by [`crate::core::storm_cells::decide`].
 //!
 //! Archived decode ([`reduce_decoded`]) is **one phase**: every decision is
 //! known before the upload executes. The only GPU feedback — upload success —
@@ -61,8 +61,6 @@ pub(crate) struct DecodedEnv<'a> {
     pub whole_sweeps_only: bool,
     /// `state.effective_sweep_animation(&playback.state, streaming, collecting)`.
     pub sweep_animation: bool,
-    /// `viz_state.storm_cells_visible`.
-    pub storm_cells_visible: bool,
     /// `state.download_progress.in_flight_scans`, read BEFORE the shell
     /// executes the retain — the clear predicate is decided against it.
     pub in_flight_scans: &'a [(i64, i64)],
@@ -86,8 +84,6 @@ pub(crate) struct DecodedActions {
     pub upload_to_gpu: bool,
     /// `set_current_sweep_id(Some(..))` inside the upload block.
     pub gpu_sweep_id: String,
-    /// Re-run storm cell detection inside the upload block.
-    pub run_storm_cells: bool,
     /// Assign to `viz_state.displayed` iff the shell's GPU upload succeeded.
     /// Always populated; only meaningful when `upload_to_gpu`.
     pub displayed_on_upload: Option<DisplayedSweep>,
@@ -199,7 +195,6 @@ pub(crate) fn reduce_decoded(
     }
     actions.upload_to_gpu = is_current_scan;
     actions.gpu_sweep_id = result_sweep_id;
-    actions.run_storm_cells = env.storm_cells_visible;
 
     // Capture the new on-GPU main-slot sweep identity. The
     // *previous-slot* identity is owned by `sync_prev_sweep_texture`
@@ -268,13 +263,11 @@ pub(crate) struct LiveDecodedEnv<'a> {
     /// Feeds the promote decision — GPU state enters as env, the decision
     /// lives here.
     pub gpu_current_sweep_id: Option<String>,
-    /// `viz_state.storm_cells_visible`.
-    pub storm_cells_visible: bool,
 }
 
 /// Described effects the shell executes, in this field order. When the
 /// playhead is detached every field is suppressed (upload false, no
-/// displayed roll, no overlay, no storm rerun) — only the azimuth
+/// displayed roll, no overlay) — only the azimuth
 /// bookkeeping ([`reduce_live_decoded_azimuths`]) still runs.
 #[derive(Default, Debug, PartialEq)]
 pub(crate) struct LiveDecodedActions {
@@ -289,8 +282,6 @@ pub(crate) struct LiveDecodedActions {
     /// promote → `displayed.replace(new)` with the prior moved into
     /// `previous_displayed`; else overwrite `displayed` in place.
     pub new_displayed: Option<DisplayedSweep>,
-    /// Re-run storm cell detection inside the block.
-    pub run_storm_cells: bool,
     /// `update_overlay_from_sweep(start, end, display_angle)`.
     pub update_overlay: Option<(f64, f64, f32)>,
 }
@@ -363,11 +354,6 @@ pub(crate) fn reduce_live_decoded(
             end_time: result.sweep_end_secs,
             elevation_deg: display_angle,
         });
-
-        // Re-run storm cell detection on the freshly-uploaded live
-        // sweep so the overlay tracks the incoming chunks rather
-        // than freezing until the user toggles the feature.
-        actions.run_storm_cells = env.storm_cells_visible;
     }
     actions.gpu_sweep_id = live_sweep_id;
 
@@ -539,7 +525,6 @@ mod tests {
             live_cut: None,
             whole_sweeps_only: false,
             sweep_animation: false,
-            storm_cells_visible: false,
             in_flight_scans: in_flight,
             pending_scans_empty: true,
         }
@@ -596,7 +581,6 @@ mod tests {
         // Non-dev frame: no timing effects.
         assert_eq!(a.record_render_time, None);
         assert!(!a.record_render_detail);
-        assert!(!a.run_storm_cells);
     }
 
     // (2) SAILS-style duplicate elevation: the resolver targets elev 1 at
@@ -700,7 +684,6 @@ mod tests {
 
         let mut e = env(&sel, 1005.0, &[]);
         e.dev_mode = true;
-        e.storm_cells_visible = true;
         let a = run(&mut pm, e, &empty, &r);
 
         assert!(!a.upload_to_gpu, "no scan → resolver Blank → not current");
@@ -709,7 +692,6 @@ mod tests {
         assert_eq!(a.update_overlay, Some((1000.0, 1010.0, 0.44)));
         assert_eq!(a.record_render_time, Some(42.0));
         assert!(a.record_render_detail);
-        assert!(a.run_storm_cells);
 
         // Unknown VCP number and no pattern → same fallback via the scan path.
         let mut s = scan(1000.0, vec![sweep(1, 1000.0, 1010.0, vec!["reflectivity"])]);
@@ -807,7 +789,6 @@ mod tests {
             whole_sweeps_only: false,
             live_volume,
             gpu_current_sweep_id: gpu_current_sweep_id.map(str::to_string),
-            storm_cells_visible: false,
         }
     }
 
@@ -819,14 +800,12 @@ mod tests {
         let r = decode_result(1000.0, 1, "reflectivity");
         let mut e = live_env(true, Some(&vol), Some("KDMX|1|1|reflectivity"));
         e.whole_sweeps_only = true;
-        e.storm_cells_visible = true;
 
         let a = reduce_live_decoded(e, &r);
 
         assert!(!a.upload_to_gpu);
         assert!(!a.promote_prev_texture);
         assert_eq!(a.new_displayed, None);
-        assert!(!a.run_storm_cells);
     }
 
     // (8) Detached playhead suppresses every display effect; only the live
@@ -835,15 +814,13 @@ mod tests {
     fn live_detached_suppresses_display_effects() {
         let vol = live_volume(&[0.5, 1.5]);
         let r = decode_result(1000.0, 1, "reflectivity");
-        let mut e = live_env(false, Some(&vol), Some("KDMX|1|1|reflectivity"));
-        e.storm_cells_visible = true;
+        let e = live_env(false, Some(&vol), Some("KDMX|1|1|reflectivity"));
 
         let a = reduce_live_decoded(e, &r);
 
         assert!(!a.upload_to_gpu);
         assert!(!a.promote_prev_texture);
         assert_eq!(a.new_displayed, None);
-        assert!(!a.run_storm_cells);
         assert_eq!(a.update_overlay, None);
         assert_eq!(a.gpu_sweep_id, "live|1");
     }
@@ -894,24 +871,19 @@ mod tests {
     }
 
     // (11) Display-angle fallbacks (live variant): no volume model, or a
-    // pattern without the requested cut → the encoder mean. Storm rerun
-    // mirrors the visibility toggle while attached.
+    // pattern without the requested cut → the encoder mean.
     #[wasm_bindgen_test]
-    fn live_display_angle_fallback_and_storm_gate() {
+    fn live_display_angle_fallback() {
         // No volume model at all.
         let r = decode_result(1000.0, 1, "reflectivity");
-        let mut e = live_env(true, None, None);
-        e.storm_cells_visible = true;
-        let a = reduce_live_decoded(e, &r);
+        let a = reduce_live_decoded(live_env(true, None, None), &r);
         assert_eq!(a.new_displayed.unwrap().elevation_deg, 0.44);
-        assert!(a.run_storm_cells);
 
         // Pattern too short for elev 3 → mean fallback.
         let vol = live_volume(&[0.5, 1.5]);
         let r3 = decode_result(1000.0, 3, "reflectivity");
         let a = reduce_live_decoded(live_env(true, Some(&vol), None), &r3);
         assert_eq!(a.update_overlay, Some((1000.0, 1010.0, 0.44)));
-        assert!(!a.run_storm_cells, "storm rerun follows the toggle");
     }
 
     // (12) Overlay gate (live variant): gated on sweep END time — a

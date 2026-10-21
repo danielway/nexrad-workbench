@@ -18,10 +18,10 @@ pub(super) fn summarize(
     pixels: &[Pixel],
     grid: &[f32],
     input: &DetectionInput,
-    threshold_dbz: f32,
+    edge_threshold_dbz: f32,
 ) -> StormCellInfo {
     let cos_lat = input.radar_lat.to_radians().cos().max(1e-6);
-    let az_spacing_rad = (360.0_f64 / input.azimuth_count as f64).to_radians();
+    let az_spacing_rad = (radial_width_deg(input) as f64).to_radians();
 
     let mut max_dbz = f32::NEG_INFINITY;
     let mut sum_dbz = 0.0_f64;
@@ -61,10 +61,10 @@ pub(super) fn summarize(
         let gate_area_km2 = range_km * az_spacing_rad * input.gate_interval_km;
         area_km2 += gate_area_km2;
 
-        // Weight = reflectivity above threshold. Linear-Z would be more
-        // physical (10^(dbz/10)), but this dampens extreme cores that would
-        // otherwise dominate the centroid.
-        let w = (dbz - threshold_dbz).max(0.0) as f64 + 0.001;
+        // Weight = reflectivity above the edge threshold. Linear-Z would be
+        // more physical (10^(dbz/10)), but this dampens extreme cores that
+        // would otherwise dominate the centroid.
+        let w = (dbz - edge_threshold_dbz).max(0.0) as f64 + 0.001;
         sum_w += w;
         sum_wx += w * x_km;
         sum_wy += w * y_km;
@@ -133,6 +133,29 @@ pub(super) fn summarize(
         orientation_deg,
         elongation,
         gate_count: pixels.len() as u32,
+    }
+}
+
+/// Angular width of one radial in degrees: the caller's spacing when given,
+/// else the median gap between the supplied azimuths, else `360 / count`.
+/// Using the real spacing keeps a partial sweep (only the radials received
+/// so far) from counting each radial as wider than it is.
+fn radial_width_deg(input: &DetectionInput) -> f32 {
+    if let Some(spacing) = input.azimuth_spacing_deg.filter(|s| *s > 0.0) {
+        return spacing;
+    }
+    // Negative azimuths mark padded rows; they are not radials.
+    let received: Vec<f32> = input
+        .azimuths
+        .iter()
+        .copied()
+        .filter(|a| *a >= 0.0)
+        .collect();
+    let median = crate::core::volume_plan::median_azimuth_spacing_deg(&received);
+    if median > 0.0 {
+        median
+    } else {
+        360.0 / input.azimuth_count.max(1) as f32
     }
 }
 
@@ -232,6 +255,7 @@ mod coverage_tests {
             data_offset: 0.0,
             radar_lat: 35.0,
             radar_lon: -97.0,
+            azimuth_spacing_deg: None,
         };
         // grid index = az_idx * gate_count + g = 0*4 + 1 = 1; gate g=1 → range
         // = 0 + (1 + 0.5) * 2 = 3 km.

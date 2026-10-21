@@ -301,6 +301,7 @@ impl WorkbenchApp {
         self.state.viz_state.displayed = None;
         self.state.viz_state.previous_displayed = None;
         self.render.scrub_cache.last_active_scan_ts = None;
+        self.state.viz_state.storm_cells.clear();
     }
 
     /// Clear the on-canvas sweep when the selected (elevation, product) isn't
@@ -320,6 +321,7 @@ impl WorkbenchApp {
         // also keeps the prev slot from drifting until a new sweep lands.
         self.state.viz_state.displayed = None;
         self.state.viz_state.previous_displayed = None;
+        self.state.viz_state.storm_cells.clear();
         // Keep `last_render` set to the failed identity. A "no pre-computed
         // sweep" answer is permanent for that exact (scan, elev, product), so
         // the dedup must suppress the next frame's identical request — clearing
