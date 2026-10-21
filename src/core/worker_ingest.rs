@@ -55,7 +55,8 @@ pub(crate) struct ChunkIngestActions {
     pub record_chunk_collection_end_secs: Option<f64>,
     /// `live.channel.record_availability_lag_secs(x)`.
     pub record_availability_lag_secs: Option<f64>,
-    /// `render.coordinator.render_live(elevation, product)`.
+    /// `render.coordinator.render_live(elevation, product)`, posted once per
+    /// drain after [`LiveRenderCoalescer`] folds the drain's acks.
     pub render_live: Option<(u8, String)>,
     /// GPU `promote_current_to_previous` under the renderer lock.
     pub promote_prev_texture: bool,
@@ -124,6 +125,47 @@ pub(crate) fn completed_current_elevation(result: &ChunkIngestResult) -> Option<
     let flushed =
         live_render_target(result.current_elevation, result.current_elevation_radials).is_none();
     (flushed && result.elevations_completed.contains(&elevation)).then_some(elevation)
+}
+
+/// Folds the live render requests of one worker-result drain into at most one.
+///
+/// Chunk ingests are not serialized on their acknowledgements: when several
+/// chunks reach the worker together (the backfill burst on joining mid-sweep,
+/// or any catch-up), it ingests them back to back and the main thread drains
+/// several acknowledgements in one frame. By then the worker's accumulator
+/// reflects the last of them, so only the last live target is worth drawing,
+/// and none if a later acknowledgement in the drain completed (stored) that
+/// elevation: its radials are gone, and the completing acknowledgement
+/// already asked for the stored sweep.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct LiveRenderCoalescer {
+    pending: Option<(u8, String)>,
+}
+
+impl LiveRenderCoalescer {
+    /// Observe one acknowledgement, in drain order: the reducer's
+    /// `render_live` for it and the elevations it completed.
+    pub(crate) fn observe(
+        &mut self,
+        render_live: Option<(u8, String)>,
+        elevations_completed: &[u8],
+    ) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|(elevation, _)| elevations_completed.contains(elevation))
+        {
+            self.pending = None;
+        }
+        if render_live.is_some() {
+            self.pending = render_live;
+        }
+    }
+
+    /// The one live render to post for the drain, if any.
+    pub(crate) fn finish(self) -> Option<(u8, String)> {
+        self.pending
+    }
 }
 
 /// Apply one worker chunk-ingest outcome to the core state and describe the
@@ -865,6 +907,90 @@ mod tests {
         );
         let a = fx.run(env(true, true, &[1]), &partial(2, 120));
         assert_eq!(a.render_live, Some((2, "reflectivity".to_string())));
+    }
+
+    /// Run each ack through the reducer in drain order and coalesce the
+    /// live renders the way the shell does; also report whether any ack
+    /// asked for the stored sweep.
+    fn drain(fx: &mut Fx, acks: &[ChunkIngestResult]) -> (Option<(u8, String)>, bool) {
+        let mut coalescer = LiveRenderCoalescer::default();
+        let mut stored = false;
+        for ack in acks {
+            let a = fx.run(env(true, false, &[1]), ack);
+            stored |= a.request_render;
+            coalescer.observe(a.render_live, &ack.elevations_completed);
+        }
+        (coalescer.finish(), stored)
+    }
+
+    fn refl(elev: u8) -> Option<(u8, String)> {
+        Some((elev, "reflectivity".to_string()))
+    }
+
+    #[wasm_bindgen_test]
+    fn coalesce_single_partial_ack_keeps_its_render() {
+        let mut fx = Fx::new();
+        assert_eq!(drain(&mut fx, &[partial(1, 120)]), (refl(1), false));
+    }
+
+    #[wasm_bindgen_test]
+    fn coalesce_two_partials_of_one_elevation_render_once() {
+        let mut fx = Fx::new();
+        assert_eq!(
+            drain(&mut fx, &[partial(1, 120), partial(1, 240)]),
+            (refl(1), false)
+        );
+    }
+
+    // The burst that used to raise "No radials for elevation 1 in
+    // accumulator": by the time render_live(1) reached the worker, the
+    // completing chunk had already flushed elevation 1.
+    #[wasm_bindgen_test]
+    fn coalesce_partial_then_completing_drops_live_and_keeps_stored_render() {
+        let mut fx = Fx::new();
+        assert_eq!(
+            drain(&mut fx, &[partial(1, 600), partial(1, 680), completing(1)]),
+            (None, true)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn coalesce_partials_across_elevations_render_the_last() {
+        let mut fx = Fx::new();
+        assert_eq!(
+            drain(&mut fx, &[partial(1, 600), partial(2, 120)]),
+            (refl(2), false)
+        );
+        // Completing 1 then starting 2 in one drain: stored render for 1,
+        // live render for 2.
+        let mut fx = Fx::new();
+        assert_eq!(
+            drain(&mut fx, &[partial(1, 600), completing(1), partial(2, 120)]),
+            (refl(2), true)
+        );
+    }
+
+    type LiveTarget = Option<(u8, String)>;
+
+    fn coalesce(drain: &[(LiveTarget, &[u8])]) -> LiveTarget {
+        let mut coalescer = LiveRenderCoalescer::default();
+        for (render_live, completed) in drain {
+            coalescer.observe(render_live.clone(), completed);
+        }
+        coalescer.finish()
+    }
+
+    #[wasm_bindgen_test]
+    fn coalesce_folds_render_and_completion_pairs() {
+        assert_eq!(coalesce(&[]), None);
+        assert_eq!(coalesce(&[(refl(1), &[][..]), (None, &[1][..])]), None);
+        // A completion of some other elevation leaves the pending one.
+        assert_eq!(coalesce(&[(refl(2), &[][..]), (None, &[1][..])]), refl(2));
+        // A target set in the same ack that completes an older one survives.
+        assert_eq!(
+            coalesce(&[(refl(1), &[][..]), (refl(2), &[1][..])]),
+            refl(2)
+        );
     }
 
     #[wasm_bindgen_test]
