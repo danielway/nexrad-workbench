@@ -1,8 +1,11 @@
-//! What the storm cell overlay shows.
+//! What the storm cell overlay shows and how the user talks to it.
 //!
 //! Detection (when it runs, which result is current) is
 //! [`crate::core::storm_cells`]; this module is the presentation half:
 //!
+//! - **Intents.** The Layers checkbox, the envelope slider, the desktop
+//!   pointer and the phone tap arrive as [`StormCellIntent`]s and are reduced
+//!   by [`reduce`]. Nothing under `src/ui/` writes the storm cell state.
 //! - **Which cells draw.** 2D only. In Rays the canvas shows the previous
 //!   sweep ahead of the sweep line and the current one behind it, and the
 //!   cells belong to the current sweep, so a cell draws only once its whole
@@ -14,21 +17,135 @@
 //!   already placed or when the outline is too small on screen to carry one.
 //!   Cells from a live sweep that is still arriving are provisional: drawn
 //!   muted, with a hollow chip.
+//! - **Hit test.** Point in polygon on the outline rings in lat/lon; when two
+//!   footprints contain the point the strongest cell wins ([`cell_at`]). It
+//!   drives the desktop hover card, the phone's tap-to-select card and the
+//!   data probe's cell line.
 //!
-//! Cell ids are per detection run, not tracks, so the chip shows no letter;
-//! it arrives with tracking.
+//! Cell ids are per detection run, not tracks, so the chip shows no letter
+//! and the card no history; both arrive with tracking.
 //!
 //! Screen math takes the projection as a closure (`lat, lon -> [x, y]`) so
 //! the module stays free of egui; text widths assume the monospace chip
 //! font's 0.6 em advance (IBM Plex Mono).
 
 use crate::core::canvas::{geo_to_polar, polar_in_prev_region};
+use crate::core::storm_cells::clamp_threshold;
 use crate::core::{StormCell, StormCellsResult};
 use crate::geo::ViewMode;
 
 // ───────────────────────────────────────────────────────────────────────────
-// Geometry: the Rays rule
+// Intents
 // ───────────────────────────────────────────────────────────────────────────
+
+/// What the user did to the storm cell overlay.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum StormCellIntent {
+    /// The Layers checkbox. Carries the new value so a repeat is idempotent.
+    SetVisible(bool),
+    /// The envelope slider, in dBZ (clamped to the slider's range).
+    SetThreshold(f32),
+    /// The desktop pointer over the 2D map, as `(lat, lon)`, or `None` when
+    /// it leaves.
+    Hover(Option<(f64, f64)>),
+    /// A phone tap: `Some((lat, lon))` selects the cell under it, `None`
+    /// dismisses the card.
+    Select(Option<(f64, f64)>),
+}
+
+/// Where the pointer and the phone's selection are, in `(lat, lon)`. The
+/// cell under each is resolved per frame by [`cell_at`], so a point that no
+/// longer falls in a cell (a new volume, a new threshold) shows no card.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct StormCellPointer {
+    pub hover: Option<(f64, f64)>,
+    pub selected: Option<(f64, f64)>,
+}
+
+/// The state [`reduce`] writes.
+pub(crate) struct StormCellControls<'a> {
+    /// `viz_state.storm_cells_visible`.
+    pub visible: &'a mut bool,
+    /// `viz_state.storm_cell_threshold_dbz`.
+    pub threshold_dbz: &'a mut f32,
+    /// `viz_state.storm_cell_pointer`.
+    pub pointer: &'a mut StormCellPointer,
+}
+
+/// Apply one intent. Turning the overlay off drops the hover and the
+/// selection; a point that is not finite is ignored.
+pub(crate) fn reduce(c: StormCellControls<'_>, intent: StormCellIntent) {
+    let finite = |p: Option<(f64, f64)>| p.filter(|(a, b)| a.is_finite() && b.is_finite());
+    match intent {
+        StormCellIntent::SetVisible(on) => {
+            *c.visible = on;
+            if !on {
+                *c.pointer = StormCellPointer::default();
+            }
+        }
+        StormCellIntent::SetThreshold(dbz) => *c.threshold_dbz = clamp_threshold(dbz),
+        StormCellIntent::Hover(p) => c.pointer.hover = finite(p),
+        StormCellIntent::Select(p) => c.pointer.selected = finite(p),
+    }
+}
+
+/// The extra intent a phone tap on the map sends beside its pick: a tap
+/// that lands anywhere but on a cell dismisses an open cell card.
+pub(crate) fn tap_dismisses_card(
+    tapped_cell: bool,
+    pointer: &StormCellPointer,
+) -> Option<StormCellIntent> {
+    (!tapped_cell && pointer.selected.is_some()).then_some(StormCellIntent::Select(None))
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Geometry: hit test and the Rays rule
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Even-odd point in polygon on a ring of `(lat, lon)` points. The ring may
+/// repeat its first point at the end.
+pub(crate) fn point_in_ring(ring: &[(f64, f64)], lat: f64, lon: f64) -> bool {
+    let n = ring.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (yi, xi) = ring[i];
+        let (yj, xj) = ring[j];
+        if (yi > lat) != (yj > lat) {
+            let x_cross = xi + (lat - yi) / (yj - yi) * (xj - xi);
+            if lon < x_cross {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
+/// The cell whose footprint contains `(lat, lon)`, among the `shown` ids.
+/// When footprints nest or overlap, the strongest (highest peak, then
+/// largest) wins.
+pub(crate) fn cell_at(result: &StormCellsResult, shown: &[u32], lat: f64, lon: f64) -> Option<u32> {
+    shown
+        .iter()
+        .filter_map(|id| result.cells.get(*id as usize))
+        .filter(|c| {
+            let (min_lat, min_lon, max_lat, max_lon) = c.bounds;
+            (min_lat..=max_lat).contains(&lat)
+                && (min_lon..=max_lon).contains(&lon)
+                && point_in_ring(&c.outline, lat, lon)
+        })
+        .max_by(|a, b| {
+            a.peak_dbz
+                .total_cmp(&b.peak_dbz)
+                .then(a.area_km2.total_cmp(&b.area_km2))
+                .then(b.id.cmp(&a.id))
+        })
+        .map(|c| c.id)
+}
 
 /// Whether a footprint lies wholly behind the Rays sweep line, i.e. on
 /// pixels of the sweep the cells were detected on. `sweep` is the canvas's
@@ -63,13 +180,19 @@ pub(crate) struct StormCellViewInputs<'a> {
     pub view_mode: ViewMode,
     /// Radar site `(lat, lon)`.
     pub radar: (f64, f64),
+    /// The site id, for the card's "from KDMX".
+    pub site_id: &'a str,
     /// The canvas's Rays sweep `(azimuth, start)`, `None` when the whole
     /// current sweep is on screen.
     pub sweep: Option<(f32, f32)>,
     /// The cells come from a live sweep that is still arriving.
     pub provisional: bool,
-    /// Phone layout: thicker strokes, larger and sparser chips.
+    /// Phone layout: thicker strokes, larger chips, tap instead of hover.
     pub phone: bool,
+    pub pointer: &'a StormCellPointer,
+    /// The data probe is on: it names the cell under the pointer itself, so
+    /// the desktop hover card stays away.
+    pub probe_on: bool,
 }
 
 /// Stroke widths and chip type for the layout, in screen px.
@@ -126,6 +249,8 @@ pub(crate) struct CellOutlineVm {
     pub id: u32,
     /// Closed ring in screen px (first point not repeated).
     pub ring: Vec<[f32; 2]>,
+    /// Hovered (desktop) or selected (phone): drawn a little heavier.
+    pub highlighted: bool,
 }
 
 /// A peak dBZ chip.
@@ -140,6 +265,32 @@ pub(crate) struct ChipVm {
     pub hollow: bool,
 }
 
+/// One line of the cell card.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CardLine {
+    pub text: String,
+    /// Secondary (position, provisional note).
+    pub dim: bool,
+}
+
+/// Where the cell card goes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum CardAnchor {
+    /// Desktop: beside this screen point (the pointer's place).
+    Pointer([f32; 2]),
+    /// Phone: centered above the bottom of the map.
+    Bottom,
+}
+
+/// The hover card (desktop) or the selected cell's card (phone).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CardVm {
+    pub cell_id: u32,
+    pub title: String,
+    pub lines: Vec<CardLine>,
+    pub anchor: CardAnchor,
+}
+
 /// What the overlay draws this frame. Empty when off, in 3D, or with no
 /// cells.
 #[derive(Clone, Debug, PartialEq)]
@@ -149,6 +300,9 @@ pub(crate) struct StormCellsVm {
     pub groups: Vec<Vec<[f32; 2]>>,
     pub cells: Vec<CellOutlineVm>,
     pub chips: Vec<ChipVm>,
+    pub card: Option<CardVm>,
+    /// Ids of the cells that draw, for hit tests ([`cell_at`]).
+    pub shown: Vec<u32>,
     /// Cells come from a live sweep still arriving: drawn muted.
     pub provisional: bool,
 }
@@ -160,6 +314,8 @@ impl StormCellsVm {
             groups: Vec::new(),
             cells: Vec::new(),
             chips: Vec::new(),
+            card: None,
+            shown: Vec::new(),
             provisional: false,
         }
     }
@@ -204,6 +360,17 @@ pub(crate) fn build(
         open.iter().map(|&(lat, lon)| project(lat, lon)).collect()
     };
 
+    // The cell the card is about: the phone's selection, or the desktop
+    // pointer when the probe is not already naming it.
+    let pointed = if i.phone {
+        i.pointer.selected
+    } else if i.probe_on {
+        None
+    } else {
+        i.pointer.hover
+    };
+    let focus = pointed.and_then(|(lat, lon)| cell_at(i.result, &shown, lat, lon));
+
     // Groups that have at least one member on screen, each wholly behind
     // the sweep line like its cells.
     for g in &i.result.groups {
@@ -233,8 +400,23 @@ pub(crate) fn build(
                 ..chip
             });
         }
-        vm.cells.push(CellOutlineVm { id, ring });
+        vm.cells.push(CellOutlineVm {
+            id,
+            ring,
+            highlighted: focus == Some(id),
+        });
     }
+
+    vm.card = focus.zip(pointed).and_then(|(id, (lat, lon))| {
+        let cell = i.result.cells.get(id as usize)?;
+        let anchor = if i.phone {
+            CardAnchor::Bottom
+        } else {
+            CardAnchor::Pointer(project(lat, lon))
+        };
+        Some(card(i, cell, anchor))
+    });
+    vm.shown = shown;
     vm
 }
 
@@ -288,6 +470,111 @@ fn place_chip(
         text,
         hollow: false,
     })
+}
+
+/// The card's words for a cell. The phone's card is compact: three lines.
+fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> CardVm {
+    let group = cell.group_id.and_then(|g| i.result.groups.get(g as usize));
+    let membership = group.and_then(|g| {
+        let pos = g.cell_ids.iter().position(|&c| c == cell.id)?;
+        Some(format!("{} of {} in this group", pos + 1, g.cell_ids.len()))
+    });
+    let place = format!(
+        "{:.0} km at {:03.0}\u{00B0} from {}",
+        cell.range_from_radar_km,
+        cell.bearing_from_radar_deg.rem_euclid(360.0),
+        i.site_id
+    );
+    let line = |text: String, dim: bool| CardLine { text, dim };
+    let mut lines = Vec::new();
+    if i.phone {
+        lines.push(line(
+            format!(
+                "{:.0} km\u{00B2} \u{00B7} mean {:.0} dBZ \u{00B7} outline {:.0} dBZ",
+                cell.area_km2, cell.mean_dbz, cell.level_dbz
+            ),
+            false,
+        ));
+        if let Some(m) = membership {
+            lines.push(line(m, false));
+        }
+        lines.push(line(place, true));
+    } else {
+        lines.push(line(
+            format!(
+                "Area {:.0} km\u{00B2} \u{00B7} mean {:.0} dBZ",
+                cell.area_km2, cell.mean_dbz
+            ),
+            false,
+        ));
+        lines.push(line(format!("Outline at {:.0} dBZ", cell.level_dbz), false));
+        if let Some(m) = membership {
+            lines.push(line(m, false));
+        }
+        lines.push(line(place, true));
+    }
+    if i.provisional {
+        lines.push(line("Provisional: sweep still arriving".to_string(), true));
+    }
+    CardVm {
+        cell_id: cell.id,
+        title: format!("Cell \u{00B7} {:.0} dBZ peak", cell.peak_dbz),
+        lines,
+        anchor,
+    }
+}
+
+/// The data probe's extra line when the pointer is over a cell that draws:
+/// `Cell 62 dBZ · 48 km²`.
+pub(crate) fn probe_line(i: &StormCellViewInputs<'_>, lat: f64, lon: f64) -> Option<String> {
+    let shown = shown_cells(i);
+    let id = cell_at(i.result, &shown, lat, lon)?;
+    let cell = i.result.cells.get(id as usize)?;
+    Some(format!(
+        "Cell {:.0} dBZ \u{00B7} {:.0} km\u{00B2}",
+        cell.peak_dbz, cell.area_km2
+    ))
+}
+
+/// Gap between the desktop pointer and its card.
+const CARD_POINTER_GAP: f32 = 16.0;
+/// Margin the card keeps from the map's edges.
+const CARD_EDGE_MARGIN: f32 = 8.0;
+
+/// Top-left of a card of `size` beside the pointer at `anchor`, inside
+/// `canvas` (`[min_x, min_y, max_x, max_y]`): below-right of the pointer,
+/// flipped left or up when it would leave the map.
+pub(crate) fn place_card_at_pointer(
+    anchor: [f32; 2],
+    size: [f32; 2],
+    canvas: [f32; 4],
+) -> [f32; 2] {
+    let mut x = anchor[0] + CARD_POINTER_GAP;
+    if x + size[0] > canvas[2] - CARD_EDGE_MARGIN {
+        x = anchor[0] - CARD_POINTER_GAP - size[0];
+    }
+    let mut y = anchor[1] + CARD_POINTER_GAP;
+    if y + size[1] > canvas[3] - CARD_EDGE_MARGIN {
+        y = anchor[1] - CARD_POINTER_GAP - size[1];
+    }
+    [
+        x.max(canvas[0] + CARD_EDGE_MARGIN),
+        y.max(canvas[1] + CARD_EDGE_MARGIN),
+    ]
+}
+
+/// Top-left of the phone's card: centered, its bottom `bottom_inset` px
+/// above the map's bottom edge (clear of the corner scrims).
+pub(crate) fn place_card_at_bottom(
+    size: [f32; 2],
+    canvas: [f32; 4],
+    bottom_inset: f32,
+) -> [f32; 2] {
+    let cx = (canvas[0] + canvas[2]) / 2.0;
+    [
+        (cx - size[0] / 2.0).max(canvas[0] + CARD_EDGE_MARGIN),
+        (canvas[3] - bottom_inset - size[1]).max(canvas[1] + CARD_EDGE_MARGIN),
+    ]
 }
 
 #[cfg(test)]
@@ -352,15 +639,18 @@ mod tests {
         }
     }
 
-    fn inputs(r: &StormCellsResult) -> StormCellViewInputs<'_> {
+    fn inputs<'a>(r: &'a StormCellsResult, p: &'a StormCellPointer) -> StormCellViewInputs<'a> {
         StormCellViewInputs {
             result: r,
             visible: true,
             view_mode: ViewMode::Flat2D,
             radar: RADAR,
+            site_id: "KDMX",
             sweep: None,
             provisional: false,
             phone: false,
+            pointer: p,
+            probe_on: false,
         }
     }
 
@@ -369,12 +659,125 @@ mod tests {
         [((lon + 94.0) * 100.0) as f32, ((43.0 - lat) * 100.0) as f32]
     }
 
+    fn controls<'a>(
+        v: &'a mut bool,
+        t: &'a mut f32,
+        p: &'a mut StormCellPointer,
+    ) -> StormCellControls<'a> {
+        StormCellControls {
+            visible: v,
+            threshold_dbz: t,
+            pointer: p,
+        }
+    }
+
+    // ── Intents ────────────────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn intents_set_visibility_threshold_and_pointer() {
+        let (mut v, mut t, mut p) = (false, 35.0, StormCellPointer::default());
+        reduce(
+            controls(&mut v, &mut t, &mut p),
+            StormCellIntent::SetVisible(true),
+        );
+        assert!(v);
+        reduce(
+            controls(&mut v, &mut t, &mut p),
+            StormCellIntent::SetThreshold(45.0),
+        );
+        assert_eq!(t, 45.0);
+        reduce(
+            controls(&mut v, &mut t, &mut p),
+            StormCellIntent::SetThreshold(5.0),
+        );
+        assert_eq!(t, crate::core::storm_cells::THRESHOLD_MIN_DBZ);
+        reduce(
+            controls(&mut v, &mut t, &mut p),
+            StormCellIntent::Hover(Some((42.0, -93.0))),
+        );
+        reduce(
+            controls(&mut v, &mut t, &mut p),
+            StormCellIntent::Select(Some((42.1, -93.1))),
+        );
+        assert_eq!(p.hover, Some((42.0, -93.0)));
+        assert_eq!(p.selected, Some((42.1, -93.1)));
+        reduce(
+            controls(&mut v, &mut t, &mut p),
+            StormCellIntent::Hover(Some((f64::NAN, -93.0))),
+        );
+        assert_eq!(p.hover, None);
+        // Off drops the pointer state.
+        reduce(
+            controls(&mut v, &mut t, &mut p),
+            StormCellIntent::SetVisible(false),
+        );
+        assert!(!v);
+        assert_eq!(p, StormCellPointer::default());
+    }
+
+    #[wasm_bindgen_test]
+    fn a_tap_off_a_cell_dismisses_an_open_card() {
+        let open = StormCellPointer {
+            selected: Some((42.2, -93.2)),
+            ..Default::default()
+        };
+        assert_eq!(
+            tap_dismisses_card(false, &open),
+            Some(StormCellIntent::Select(None))
+        );
+        assert_eq!(tap_dismisses_card(true, &open), None);
+        assert_eq!(
+            tap_dismisses_card(false, &StormCellPointer::default()),
+            None
+        );
+    }
+
+    // ── Hit test ───────────────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn point_in_ring_handles_concave_rings() {
+        // A "C" opening east: the notch is outside.
+        let c = vec![
+            (0.0, 0.0),
+            (0.0, 3.0),
+            (1.0, 3.0),
+            (1.0, 1.0),
+            (2.0, 1.0),
+            (2.0, 3.0),
+            (3.0, 3.0),
+            (3.0, 0.0),
+            (0.0, 0.0),
+        ];
+        assert!(point_in_ring(&c, 0.5, 2.0));
+        assert!(point_in_ring(&c, 1.5, 0.5));
+        assert!(!point_in_ring(&c, 1.5, 2.0), "the notch");
+        assert!(!point_in_ring(&c, 4.0, 1.0));
+        assert!(!point_in_ring(&c[..2], 0.0, 0.0), "degenerate ring");
+    }
+
+    #[wasm_bindgen_test]
+    fn strongest_cell_wins_when_footprints_nest() {
+        let mut r = result();
+        // A weak, large cell around the strong one.
+        let mut big = cell(2, 42.2, -93.2, 0.3, 48.0);
+        big.area_km2 = 4000.0;
+        r.cells.push(big);
+        let all = [0, 1, 2];
+        assert_eq!(cell_at(&r, &all, 42.2, -93.2), Some(0));
+        assert_eq!(cell_at(&r, &all, 42.4, -93.2), Some(2));
+        assert_eq!(cell_at(&r, &all, 42.2, -92.6), Some(1));
+        assert_eq!(cell_at(&r, &all, 41.0, -95.0), None);
+        // A cell that is not shown is not hit.
+        assert_eq!(cell_at(&r, &[1, 2], 42.2, -93.2), Some(2));
+    }
+
     // ── Rays rule ──────────────────────────────────────────────────────────
 
     #[wasm_bindgen_test]
     fn rays_draws_a_cell_only_behind_the_sweep_line() {
         let r = result();
-        let mut i = inputs(&r);
+        let p = StormCellPointer::default();
+        let mut i = inputs(&r, &p);
         // Cell 0 spans azimuths of about 29° to 52°, cell 1 about 53° to 68°.
         i.sweep = Some((20.0, 0.0));
         assert!(shown_cells(&i).is_empty(), "line has not reached them");
@@ -382,8 +785,8 @@ mod tests {
         assert_eq!(shown_cells(&i), vec![0], "only the nearer-north cell");
         i.sweep = Some((90.0, 0.0));
         assert_eq!(shown_cells(&i), vec![0, 1]);
-        // The sweep started inside cell 0: part of its footprint is
-        // previous-sweep pixels ahead of the line.
+        // Line just past them but the sweep started inside them: their
+        // footprint straddles the start, so part is previous-sweep pixels.
         i.sweep = Some((90.0, 50.0));
         assert!(!shown_cells(&i).contains(&0));
         // Wrapping through north: started at 350°, now at 60°.
@@ -397,73 +800,55 @@ mod tests {
     #[wasm_bindgen_test]
     fn nothing_draws_off_or_in_3d() {
         let r = result();
-        let mut i = inputs(&r);
+        let p = StormCellPointer {
+            hover: Some((42.2, -93.2)),
+            selected: None,
+        };
+        let mut i = inputs(&r, &p);
         i.view_mode = ViewMode::Globe3D;
-        assert!(build(&i, project).is_empty());
+        let vm = build(&i, project);
+        assert!(vm.is_empty() && vm.card.is_none() && vm.chips.is_empty());
+        assert_eq!(probe_line(&i, 42.2, -93.2), None);
         i.view_mode = ViewMode::Flat2D;
         i.visible = false;
         assert!(build(&i, project).is_empty());
-        assert!(build(&inputs(&StormCellsResult::default()), project).is_empty());
     }
 
     // ── View-model ─────────────────────────────────────────────────────────
 
     #[wasm_bindgen_test]
-    fn outlines_and_groups_project_to_screen() {
+    fn outlines_groups_and_chips_project_to_screen() {
         let r = result();
-        let vm = build(&inputs(&r), project);
+        let p = StormCellPointer::default();
+        let vm = build(&inputs(&r, &p), project);
         assert_eq!(vm.cells.len(), 2);
         assert_eq!(vm.groups.len(), 1);
         // The closing point is dropped: four corners.
         assert_eq!(vm.cells[0].ring.len(), 4);
-        assert_eq!(vm.cells[0].ring[0], project(42.1, -93.3));
-        assert_eq!(vm.groups[0].len(), 4);
-        assert_eq!(vm.style, overlay_style(false));
-        assert!(!vm.provisional);
-    }
-
-    #[wasm_bindgen_test]
-    fn phone_strokes_are_heavier() {
-        let r = result();
-        let mut i = inputs(&r);
-        i.phone = true;
-        i.provisional = true;
-        let vm = build(&i, project);
-        assert_eq!(vm.style, overlay_style(true));
-        assert!(vm.style.outline_px > overlay_style(false).outline_px);
-        assert_eq!(vm.style.chip_font_px, 12.0);
-        assert!(vm.style.chip_spacing_px > overlay_style(false).chip_spacing_px);
-        assert!(vm.provisional);
-        assert!(
-            vm.chips.iter().all(|c| c.hollow),
-            "provisional chips are hollow"
-        );
-    }
-
-    #[wasm_bindgen_test]
-    fn chips_sit_at_the_outline_top_right() {
-        let r = result();
-        let vm = build(&inputs(&r), project);
         assert_eq!(vm.chips.len(), 2);
         let chip = &vm.chips[0];
-        assert_eq!((chip.cell_id, chip.text.as_str()), (0, "62"));
+        assert_eq!(chip.text, "62");
         assert!(!chip.hollow);
-        // Right of cell 0's east edge (-93.1), straddling its north edge
-        // (42.3).
-        let ne = project(42.3, -93.1);
-        assert!(chip.min[0] > ne[0] && chip.min[0] < ne[0] + 6.0);
-        assert!(chip.min[1] < ne[1] && chip.min[1] + chip.size[1] > ne[1]);
+        // Top-right of cell 0's outline: x right of its east edge (-93.1),
+        // y straddling its north edge (42.3).
+        let east = project(42.3, -93.1);
+        assert!(chip.min[0] > east[0] && chip.min[0] < east[0] + 6.0);
+        assert!(chip.min[1] < east[1] && chip.min[1] + chip.size[1] > east[1]);
         // Two mono glyphs at 11 px plus padding; 16 px tall.
         assert!((chip.size[0] - (2.0 * 0.6 * 11.0 + 8.0)).abs() < 1e-4);
         assert_eq!(chip.size[1], 16.0);
+        // The closing point is dropped: four corners.
+        assert_eq!(vm.cells[0].ring[0], project(42.1, -93.3));
+        assert_eq!(vm.style, overlay_style(false));
     }
 
     #[wasm_bindgen_test]
     fn chips_go_strongest_first_and_skip_overlaps() {
         let mut r = result();
-        // Move cell 1 next to cell 0 so their chips would collide.
+        // Move cell 1 right next to cell 0 so their chips collide.
         r.cells[1] = cell(1, 42.2, -93.15, 0.1, 55.0);
-        let vm = build(&inputs(&r), project);
+        let p = StormCellPointer::default();
+        let vm = build(&inputs(&r, &p), project);
         assert_eq!(vm.cells.len(), 2, "both outlines still draw");
         assert_eq!(vm.chips.len(), 1);
         assert_eq!(vm.chips[0].cell_id, 0, "the stronger cell keeps its chip");
@@ -472,8 +857,9 @@ mod tests {
     #[wasm_bindgen_test]
     fn small_outlines_carry_no_chip() {
         let r = result();
+        let p = StormCellPointer::default();
         // 20 px per degree: cells are 4 px across.
-        let vm = build(&inputs(&r), |lat, lon| {
+        let vm = build(&inputs(&r, &p), |lat, lon| {
             [((lon + 94.0) * 20.0) as f32, ((43.0 - lat) * 20.0) as f32]
         });
         assert_eq!(vm.cells.len(), 2);
@@ -481,14 +867,108 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn group_outline_draws_only_wholly_behind_the_line() {
+    fn provisional_cells_get_hollow_chips_and_say_so() {
         let r = result();
-        let mut i = inputs(&r);
+        let p = StormCellPointer {
+            hover: Some((42.2, -93.2)),
+            selected: None,
+        };
+        let mut i = inputs(&r, &p);
+        i.provisional = true;
+        let vm = build(&i, project);
+        assert!(vm.provisional);
+        assert!(vm.chips.iter().all(|c| c.hollow));
+        let card = vm.card.expect("hover card");
+        assert!(card.lines.iter().any(|l| l.text.starts_with("Provisional")));
+    }
+
+    #[wasm_bindgen_test]
+    fn desktop_hover_card_reads_the_cell() {
+        let r = result();
+        let p = StormCellPointer {
+            hover: Some((42.2, -92.6)),
+            selected: None,
+        };
+        let vm = build(&inputs(&r, &p), project);
+        let card = vm.card.expect("hover card");
+        assert_eq!(card.cell_id, 1);
+        assert_eq!(card.title, "Cell \u{00B7} 55 dBZ peak");
+        let text: Vec<&str> = card.lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(text.contains(&"Outline at 50 dBZ"), "{text:?}");
+        assert!(text.contains(&"2 of 2 in this group"), "{text:?}");
+        assert!(text.contains(&"98 km at 239\u{00B0} from KDMX"), "{text:?}");
+        assert!(text[0].starts_with("Area ") && text[0].contains("mean 43 dBZ"));
+        assert_eq!(card.anchor, CardAnchor::Pointer(project(42.2, -92.6)));
+        assert!(vm.cells[1].highlighted && !vm.cells[0].highlighted);
+
+        // Off any cell: no card. With the probe on: no card either.
+        let off = StormCellPointer {
+            hover: Some((41.0, -95.0)),
+            selected: None,
+        };
+        assert_eq!(build(&inputs(&r, &off), project).card, None);
+        let mut i = inputs(&r, &p);
+        i.probe_on = true;
+        assert_eq!(build(&i, project).card, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn phone_card_follows_the_selection_not_the_pointer() {
+        let r = result();
+        let p = StormCellPointer {
+            hover: Some((42.2, -92.6)),
+            selected: Some((42.2, -93.2)),
+        };
+        let mut i = inputs(&r, &p);
+        i.phone = true;
+        let vm = build(&i, project);
+        assert_eq!(vm.style, overlay_style(true));
+        let card = vm.card.expect("selected card");
+        assert_eq!(card.cell_id, 0);
+        assert_eq!(card.anchor, CardAnchor::Bottom);
+        assert!(card.lines.len() <= 4, "compact");
+        assert!(overlay_style(true).outline_px > overlay_style(false).outline_px);
+        assert_eq!(overlay_style(true).chip_font_px, 12.0);
+        assert!(overlay_style(true).chip_spacing_px > overlay_style(false).chip_spacing_px);
+    }
+
+    #[wasm_bindgen_test]
+    fn probe_line_names_the_cell_under_the_pointer() {
+        let r = result();
+        let p = StormCellPointer::default();
+        let i = inputs(&r, &p);
+        let line = probe_line(&i, 42.2, -93.2).expect("over cell 0");
+        assert!(line.starts_with("Cell 62 dBZ \u{00B7} "), "{line}");
+        assert!(line.ends_with("km\u{00B2}"), "{line}");
+        assert_eq!(probe_line(&i, 41.0, -95.0), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn group_outline_draws_only_with_a_member_on_screen() {
+        let r = result();
+        let p = StormCellPointer::default();
+        let mut i = inputs(&r, &p);
         // The group's envelope spans past both cells; with the line short
-        // of the far cell the group does not draw.
+        // of the far cell neither the far cell nor the group draws.
         i.sweep = Some((60.0, 0.0));
         let vm = build(&i, project);
         assert_eq!(vm.cells.len(), 1);
         assert!(vm.groups.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn cards_stay_on_the_map() {
+        let canvas = [0.0, 0.0, 800.0, 600.0];
+        assert_eq!(
+            place_card_at_pointer([100.0, 100.0], [200.0, 80.0], canvas),
+            [116.0, 116.0]
+        );
+        // Near the right and bottom edges it flips to the other side.
+        assert_eq!(
+            place_card_at_pointer([700.0, 560.0], [200.0, 80.0], canvas),
+            [484.0, 464.0]
+        );
+        let at = place_card_at_bottom([300.0, 70.0], [0.0, 0.0, 390.0, 600.0], 40.0);
+        assert_eq!(at, [45.0, 490.0]);
     }
 }

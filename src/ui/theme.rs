@@ -257,6 +257,16 @@ pub(crate) mod storm_cells {
     pub(crate) fn text_halo() -> Color32 {
         alpha(INK, 220)
     }
+    /// The hover / selected cell card's surface.
+    pub(crate) fn card_fill() -> Color32 {
+        alpha(INK, 232)
+    }
+    /// The card's hairline edge.
+    pub(crate) fn card_edge() -> Color32 {
+        alpha(OUTLINE, 77)
+    }
+    /// The card's secondary lines (position, provisional note).
+    pub(crate) const CARD_DIM: Color32 = super::TEXT_DIM;
 }
 
 /// Radar sweep-position marks on the canvas (§7): white is what you see,

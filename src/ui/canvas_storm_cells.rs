@@ -3,9 +3,9 @@
 //! and how thick is the core's; this file only turns the view-model into
 //! egui shapes with the theme's storm cell tokens.
 
-use crate::core::storm_cell_view::StormCellsVm;
+use crate::core::storm_cell_view::{CardAnchor, CardVm, StormCellsVm};
 use crate::ui::theme::storm_cells as tokens;
-use eframe::egui::{Align2, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Align2, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
 
 fn pos(p: [f32; 2]) -> Pos2 {
     Pos2::new(p[0], p[1])
@@ -102,5 +102,75 @@ pub(crate) fn paint_storm_cells(painter: &Painter, vm: &StormCellsVm) {
                 tokens::CHIP_VALUE,
             );
         }
+    }
+}
+
+/// The hover card (desktop, beside the pointer) or the selected cell's
+/// compact card (phone, above the bottom of the map, clear of the corner
+/// scrims). Painted on a foreground layer so it sits over the map chrome.
+pub(crate) fn paint_card(
+    ctx: &egui::Context,
+    canvas: Rect,
+    card: &CardVm,
+    phone: bool,
+    bottom_scrims: &[crate::core::canvas::BottomScrim],
+) {
+    let painter = ctx
+        .layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("storm_cell_card"),
+        ))
+        .with_clip_rect(canvas);
+    let body = FontId::monospace(if phone { 12.0 } else { 11.5 });
+    let title_font = FontId::proportional(if phone { 13.0 } else { 12.5 });
+    let title = painter.layout_no_wrap(card.title.clone(), title_font, tokens::OUTLINE);
+    let lines: Vec<_> = card
+        .lines
+        .iter()
+        .map(|l| {
+            let color = if l.dim {
+                tokens::CARD_DIM
+            } else {
+                tokens::OUTLINE
+            };
+            painter.layout_no_wrap(l.text.clone(), body.clone(), color)
+        })
+        .collect();
+    let pad = Vec2::new(10.0, 8.0);
+    let gap = 3.0;
+    let width = lines
+        .iter()
+        .map(|g| g.size().x)
+        .fold(title.size().x, f32::max);
+    let height = title.size().y + lines.iter().map(|g| g.size().y + gap).sum::<f32>();
+    let size = [width + 2.0 * pad.x, height + 2.0 * pad.y];
+    let bounds = [canvas.min.x, canvas.min.y, canvas.max.x, canvas.max.y];
+    let min = match card.anchor {
+        CardAnchor::Pointer(at) => {
+            crate::core::storm_cell_view::place_card_at_pointer(at, size, bounds)
+        }
+        CardAnchor::Bottom => {
+            let inset =
+                crate::core::canvas::caption_bottom_inset(canvas.width(), size[0], bottom_scrims);
+            crate::core::storm_cell_view::place_card_at_bottom(size, bounds, inset)
+        }
+    };
+    let rect = Rect::from_min_size(pos(min), Vec2::new(size[0], size[1]));
+    painter.rect(
+        rect,
+        4.0,
+        tokens::card_fill(),
+        Stroke::new(1.0, tokens::card_edge()),
+        StrokeKind::Inside,
+    );
+    let mut y = rect.min.y + pad.y;
+    let x = rect.min.x + pad.x;
+    let title_h = title.size().y;
+    painter.galley(Pos2::new(x, y), title, tokens::OUTLINE);
+    y += title_h + gap;
+    for g in lines {
+        let h = g.size().y;
+        painter.galley(Pos2::new(x, y), g, tokens::OUTLINE);
+        y += h + gap;
     }
 }

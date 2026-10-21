@@ -26,6 +26,8 @@ pub(crate) fn render_data_probe(
     product: &crate::core::RadarProduct,
     use_local_time: bool,
     sweep_params: Option<(f32, f32)>,
+    // The storm cell under the pointer (core::storm_cell_view::probe_line).
+    cell_line: Option<String>,
 ) {
     let geo = projection.screen_to_geo(hover_pos);
     let lat = geo.y;
@@ -60,6 +62,7 @@ pub(crate) fn render_data_probe(
     if let Some(ts) = collection_time {
         lines.push(format_unix_timestamp(ts, use_local_time));
     }
+    lines.extend(cell_line);
     let text = lines.join("\n");
 
     // Draw tooltip background
