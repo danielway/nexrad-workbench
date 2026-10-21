@@ -27,6 +27,7 @@ mod median;
 mod model;
 mod outline;
 mod segment;
+pub(crate) mod track;
 
 pub(crate) use model::{DetectionSource, StormCell, StormCellsResult, StormGroup};
 

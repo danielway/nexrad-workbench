@@ -95,7 +95,7 @@ pub(crate) struct StormCellKey {
 
 impl StormCellKey {
     /// Same volume, cut, role and threshold; the input may differ.
-    fn same_cut(&self, other: &Self) -> bool {
+    pub(crate) fn same_cut(&self, other: &Self) -> bool {
         self.scan_key == other.scan_key
             && self.elevation_number == other.elevation_number
             && self.fallback == other.fallback
@@ -219,6 +219,12 @@ impl StormCells {
 
     fn cached(&self, key: &StormCellKey) -> Option<&CacheEntry> {
         self.cache.iter().find(|e| &e.key == key)
+    }
+
+    /// The cached result for `key`, shown or not (a failed run is an empty
+    /// result). Tracking reads the preceding volumes' cells from here.
+    pub(crate) fn cached_result(&self, key: &StormCellKey) -> Option<&StormCellsResult> {
+        self.cached(key).map(|e| &e.result)
     }
 
     /// Execute an action's state change. Returns the worker request to post
@@ -349,6 +355,25 @@ impl StormCells {
         }
     }
 
+    /// Put a result in the cache (and on screen when `show`), as a reply
+    /// followed by a `Show` would.
+    #[cfg(test)]
+    pub(crate) fn seed(
+        &mut self,
+        key: StormCellKey,
+        result: StormCellsResult,
+        complete: bool,
+        show: bool,
+    ) {
+        self.insert(key.clone(), result.clone(), None, complete);
+        if show {
+            self.result = result;
+            self.computed_for = Some(key);
+            self.timing = None;
+            self.complete = complete;
+        }
+    }
+
     /// Developer-mode summary of the shown result, `None` when nothing is
     /// shown.
     pub(crate) fn stats(&self) -> Option<StormCellStats> {
@@ -445,6 +470,10 @@ pub(crate) struct StormCellEnv<'a> {
     pub radar_lon: f64,
     /// Frame time, for the request timeout.
     pub now_ms: f64,
+    /// Cuts of the volumes before the displayed one that tracking needs
+    /// detected (oldest first, see `core::storm_tracks::history_keys`);
+    /// empty when tracks are off.
+    pub history: &'a [StormCellKey],
 }
 
 /// What the shell does with the storm cell result.
@@ -494,7 +523,7 @@ pub(crate) fn lowest_reflectivity_cut(vcp: Option<&ExtractedVcp>, sweeps: &[Swee
         .min()
 }
 
-fn has_reflectivity(sweep: &Sweep) -> bool {
+pub(crate) fn has_reflectivity(sweep: &Sweep) -> bool {
     sweep.cached_products.iter().any(|p| p == REFLECTIVITY)
 }
 
@@ -581,6 +610,9 @@ fn wanted(env: &StormCellEnv<'_>, displayed: &DisplayedSweep, state: &StormCells
 ///   displayed reflectivity sweep when that cut is unavailable): keep it if
 ///   shown, show it if cached, else request it, one request at a time. While
 ///   a request is in flight the previous result stays.
+/// - Once it is shown, request the [`StormCellEnv::history`] cuts that are
+///   not cached, nearest volume first, still one at a time. The displayed
+///   volume always goes first.
 pub(crate) fn decide(env: &StormCellEnv<'_>, state: &StormCells) -> StormCellAction {
     let clear = || {
         if state.shows_nothing() {
@@ -615,17 +647,21 @@ pub(crate) fn decide(env: &StormCellEnv<'_>, state: &StormCells) -> StormCellAct
             };
         }
     };
+    let busy = state
+        .in_flight
+        .as_ref()
+        .is_some_and(|f| env.now_ms - f.sent_ms < REQUEST_TIMEOUT_MS);
     if state.computed_for.as_ref() == Some(&key) {
-        return StormCellAction::Keep;
+        let missing = env.history.iter().rev().find(|h| state.cached(h).is_none());
+        return match missing {
+            Some(h) if !busy => StormCellAction::Request(h.clone()),
+            _ => StormCellAction::Keep,
+        };
     }
     if state.cached(&key).is_some() {
         return StormCellAction::Show(key);
     }
-    if state
-        .in_flight
-        .as_ref()
-        .is_some_and(|f| env.now_ms - f.sent_ms < REQUEST_TIMEOUT_MS)
-    {
+    if busy {
         return StormCellAction::Keep;
     }
     StormCellAction::Request(key)
@@ -745,6 +781,7 @@ mod tests {
             radar_lat: 32.57,
             radar_lon: -97.30,
             now_ms: 1_000.0,
+            history: &[],
         }
     }
 
@@ -1330,5 +1367,88 @@ mod tests {
                 assert_eq!(vm.hint, Some("Reflectivity only"));
             }
         }
+    }
+
+    // ── Tracking history ─────────────────────────────────────────────
+
+    fn stored_key(vol: i64) -> StormCellKey {
+        StormCellKey {
+            scan_key: scan_key(vol),
+            elevation_number: 1,
+            input: CutInput::Stored,
+            fallback: false,
+            threshold_dbz: 35.0,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn history_is_requested_after_the_shown_volume_nearest_first() {
+        let vol = volume(3, &[1, 2]);
+        let d = displayed(3, 1, "reflectivity");
+        let history = [stored_key(1), stored_key(2)];
+        let env = StormCellEnv {
+            history: &history,
+            ..env(Some(&d), Some(&vol))
+        };
+        let mut state = StormCells::default();
+        // The displayed volume first.
+        let req = requested(&mut state, &env);
+        assert_eq!(req.key, stored_key(3));
+        // Nothing else while it is in flight.
+        assert_eq!(decide(&env, &state), StormCellAction::Keep);
+        state.accept(reply(&req, cells(1), true));
+        assert!(frame(&mut state, &env).is_none(), "shows it");
+        assert_eq!(state.computed_for, Some(stored_key(3)));
+        // Then the history, nearest volume first, one at a time.
+        let req = requested(&mut state, &env);
+        assert_eq!(req.key, stored_key(2));
+        assert_eq!(decide(&env, &state), StormCellAction::Keep);
+        state.accept(reply(&req, cells(2), true));
+        let req = requested(&mut state, &env);
+        assert_eq!(req.key, stored_key(1));
+        state.fail(req.request_id);
+        // All cached (the failure as empty): nothing more to do, and the
+        // shown result never changed.
+        assert_eq!(decide(&env, &state), StormCellAction::Keep);
+        assert_eq!(state.computed_for, Some(stored_key(3)));
+        assert_eq!(state.result.cells.len(), 1);
+        assert_eq!(
+            state.cached_result(&stored_key(1)),
+            Some(&StormCellsResult {
+                source: crate::storm_cells::DetectionSource {
+                    params: DetectionParams::default(),
+                    ..Default::default()
+                },
+                ..StormCellsResult::default()
+            })
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_new_shown_volume_goes_ahead_of_history() {
+        let vol4 = volume(4, &[1]);
+        let d4 = displayed(4, 1, "reflectivity");
+        let mut state = StormCells::default();
+        // Volume 3 is shown and its history never asked for; the user
+        // scrubs to volume 4.
+        state.seed(stored_key(3), cells(1), true, true);
+        let history = [stored_key(2), stored_key(3)];
+        let env4 = StormCellEnv {
+            history: &history,
+            ..env(Some(&d4), Some(&vol4))
+        };
+        assert_eq!(requested(&mut state, &env4).key, stored_key(4));
+    }
+
+    #[wasm_bindgen_test]
+    fn no_history_is_requested_without_tracks() {
+        let vol = volume(3, &[1]);
+        let d = displayed(3, 1, "reflectivity");
+        let mut state = StormCells::default();
+        state.seed(stored_key(3), cells(1), true, true);
+        assert_eq!(
+            decide(&env(Some(&d), Some(&vol)), &state),
+            StormCellAction::Keep
+        );
     }
 }
