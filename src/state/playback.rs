@@ -47,6 +47,7 @@ impl Default for PlaybackState {
             speed: PlaybackSpeed::default(),
             held_speed: None,
             play_mode: crate::core::PlaybackMode::default(),
+            rays_held: false,
             timeline_zoom: zoom,
             timeline_tier: Self::seed_tier(zoom),
             timeline_view_start: now - view_width_secs / 2.0,

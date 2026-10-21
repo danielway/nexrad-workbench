@@ -243,7 +243,7 @@ fn playback_section(
     state: &mut AppState,
     playback: &crate::subsystem::Playback,
 ) {
-    let vm = crate::core::transport::transport_vm(&playback.state);
+    let vm = crate::core::transport::transport_vm(&playback.state, state.viz_state.tilt_role());
     let now = state.frame_now.secs();
 
     section(ui, "Playhead");
@@ -269,11 +269,16 @@ fn playback_section(
     ui.horizontal(|ui| {
         for choice in [PlaybackMode::Macro, PlaybackMode::Micro] {
             let on = vm.mode == choice;
+            let disabled = (choice == PlaybackMode::Micro)
+                .then_some(vm.rays_disabled)
+                .flatten();
             if ui
-                .add(
+                .add_enabled(
+                    disabled.is_none(),
                     egui::Button::selectable(on, choice.label())
                         .min_size(Vec2::new(72.0, TOUCH_ROW_H)),
                 )
+                .on_disabled_hover_text(disabled.unwrap_or_default())
                 .clicked()
                 && !on
             {

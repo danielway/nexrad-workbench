@@ -497,9 +497,38 @@ pub(crate) fn decide_prefetch_and_caption(
         },
         fetchable_scan_start,
         volume_waiting: env.volume_3d_active && env.live_active && playback.is_pinned(),
+        // The volume on screen is the coordinator's scan (a partial one can
+        // end before the playhead); the scan at the playhead before there is
+        // one.
+        volume_cuts: env
+            .volume_3d_active
+            .then(|| {
+                env.coordinator_scan_key
+                    .and_then(|k| {
+                        let start = k.scan_start.as_secs_f64();
+                        timeline
+                            .scans
+                            .iter()
+                            .find(|s| (s.key_timestamp - start).abs() < 0.5)
+                    })
+                    .or_else(|| timeline.find_scan_at_timestamp(pos))
+            })
+            .flatten()
+            .and_then(partial_volume_cuts),
     };
 
     followup
+}
+
+/// `(cuts on device, cuts in the volume)` for a volume the device holds
+/// only part of; `None` when it is whole or its VCP is unknown. A cut is
+/// one elevation number (a split cut's two sweeps share one).
+fn partial_volume_cuts(scan: &crate::core::Scan) -> Option<(usize, usize)> {
+    let total = scan.vcp_pattern.as_ref()?.elevations.len();
+    let mut numbers: Vec<u8> = scan.sweeps.iter().map(|s| s.elevation_number).collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    (numbers.len() < total).then_some((numbers.len(), total))
 }
 
 #[cfg(test)]
@@ -1225,6 +1254,74 @@ mod tests {
         env.live_active = true;
         env.volume_3d_active = true;
         assert!(fx.followup(env, &empty).caption_context.volume_waiting);
+    }
+
+    // (20b) Volume rendering of a volume the device holds only part of
+    // says how much it draws; a whole volume says nothing.
+    #[wasm_bindgen_test]
+    fn caption_context_counts_the_cuts_of_a_partial_volume() {
+        let vcp = |angles: &[f32]| ExtractedVcp {
+            number: 215,
+            elevations: angles
+                .iter()
+                .map(|&angle| ExtractedVcpElevation {
+                    angle,
+                    waveform: "CS".to_string(),
+                    prf_number: 1,
+                    is_sails: false,
+                    is_mrle: false,
+                    is_base_tilt: false,
+                    azimuth_rate: None,
+                })
+                .collect(),
+        };
+        let mut partial = scan(2000.0, vec![sweep(1, 2000.0, 2010.0, vec!["reflectivity"])]);
+        partial.vcp_pattern = Some(vcp(&[0.5, 1.5, 3.0]));
+        let tl = RadarTimeline {
+            scans: vec![partial],
+        };
+        let fx = Fx::at(2005.0, PlaybackMode::Macro);
+        let mut env = base_followup_env();
+        env.volume_3d_active = true;
+        assert_eq!(
+            fx.followup(env, &tl).caption_context.volume_cuts,
+            Some((1, 3))
+        );
+        // A partial volume ends before the playhead: the coordinator's scan
+        // is the one on screen.
+        let fx_later = Fx::at(2400.0, PlaybackMode::Macro);
+        let mut env = base_followup_env();
+        env.volume_3d_active = true;
+        assert_eq!(
+            fx_later.followup(env, &tl).caption_context.volume_cuts,
+            None
+        );
+        let key = ScanKey::from_secs_f64("KDMX", 2000.0);
+        let mut env = base_followup_env();
+        env.volume_3d_active = true;
+        env.coordinator_scan_key = Some(&key);
+        assert_eq!(
+            fx_later.followup(env, &tl).caption_context.volume_cuts,
+            Some((1, 3))
+        );
+        // Not while a sweep is drawn.
+        let env = base_followup_env();
+        assert_eq!(fx.followup(env, &tl).caption_context.volume_cuts, None);
+        // A whole volume (a split cut's two sweeps count once).
+        let mut whole = scan(
+            2000.0,
+            vec![
+                sweep(1, 2000.0, 2010.0, vec!["reflectivity"]),
+                sweep(1, 2010.0, 2020.0, vec!["velocity"]),
+                sweep(2, 2020.0, 2030.0, vec!["reflectivity"]),
+                sweep(3, 2030.0, 2040.0, vec!["reflectivity"]),
+            ],
+        );
+        whole.vcp_pattern = Some(vcp(&[0.5, 1.5, 3.0]));
+        let tl = RadarTimeline { scans: vec![whole] };
+        let mut env = base_followup_env();
+        env.volume_3d_active = true;
+        assert_eq!(fx.followup(env, &tl).caption_context.volume_cuts, None);
     }
 
     // (21) The acquisition-coverage predicate chains all three ghost-range

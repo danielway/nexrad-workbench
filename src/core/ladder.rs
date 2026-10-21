@@ -19,7 +19,7 @@
 use crate::core::projection::{
     scan_to_projection, ScanProjection, SweepProjection, SweepProjectionStatus,
 };
-use crate::core::session::Clock;
+use crate::core::session::{Clock, TiltRole};
 use crate::core::{ElevationListEntry, ElevationSelection, Intent, RadarProduct};
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -415,6 +415,9 @@ pub(crate) struct VolumeLadder {
     pub length_label: String,
     /// `rows[0]` is Latest; the rest are angles, lowest first.
     pub rows: Vec<LadderRow>,
+    /// Rows take clicks (false while the volume draws every tilt: no row
+    /// is selected and none picks).
+    pub picks: bool,
     pub moves: Vec<LadderMove>,
     pub caret: Option<Caret>,
     pub line: Option<LadderLine>,
@@ -450,7 +453,20 @@ pub(crate) struct LadderInputs<'a> {
     /// The antenna's estimated azimuth (live only).
     pub antenna_azimuth: Option<f32>,
     pub on_screen: Option<OnScreenCut>,
+    /// What the rows do: pick a tilt, or stand down while the volume draws
+    /// every tilt (then every cut on the device is on screen).
+    pub role: TiltRole,
+    /// A download or ingest covers the playhead (the status line says the
+    /// rest of a partial volume is on its way).
+    pub fetching: bool,
 }
+
+/// What a row says on hover while the volume draws every tilt.
+pub(crate) const DRAWS_ALL_HOVER: &str =
+    "Drawn as part of the volume \u{00B7} volume rendering draws every tilt";
+
+/// What the Latest row prints while the volume draws every tilt.
+const DRAWS_ALL_HINT: &str = "volume rendering draws every tilt";
 
 /// "VCP 212 Precipitation": the number with the pattern's name when the VCP
 /// table knows it, else the number alone.
@@ -497,9 +513,21 @@ fn nominal_durations(volume: &ScanProjection, count: usize, length: f64) -> Vec<
 
 impl VolumeLadder {
     pub(crate) fn build(inputs: LadderInputs<'_>, clock: &dyn Clock) -> Self {
-        let tilt = tilt_rows(inputs.selection, inputs.entries, inputs.product);
+        let mut tilt = tilt_rows(inputs.selection, inputs.entries, inputs.product);
+        let draws_all = inputs.role.draws_all();
+        if draws_all {
+            // No row is the one on screen: every cut is.
+            for t in &mut tilt {
+                t.selected = false;
+                if t.reaches_product {
+                    t.hover = DRAWS_ALL_HOVER.to_string();
+                }
+            }
+        }
         let live = matches!(inputs.clock, LadderClock::Live { .. });
-        let latest_hint = if live {
+        let latest_hint = if draws_all {
+            DRAWS_ALL_HINT
+        } else if live {
             "follows the newest cut"
         } else {
             "the newest cut at the playhead"
@@ -513,6 +541,7 @@ impl VolumeLadder {
                 bars: Vec::new(),
             })
             .collect();
+        let picks = !draws_all;
 
         let Some(volume) = inputs.volume.filter(|_| !inputs.entries.is_empty()) else {
             return VolumeLadder {
@@ -521,6 +550,7 @@ impl VolumeLadder {
                 length_secs: 0.0,
                 length_label: String::new(),
                 rows,
+                picks,
                 moves: Vec::new(),
                 caret: None,
                 line: None,
@@ -679,11 +709,16 @@ impl VolumeLadder {
                 BarMark::Filling { .. } => hover.push_str(" \u{00B7} receiving"),
                 _ => {}
             }
-            let on_screen = inputs.on_screen.is_some_and(|o| {
-                o.elevation_number == c.elevation_number
-                    && o.start_secs >= v0 - 1.0
-                    && o.start_secs <= v0 + length + 1.0
-            });
+            // One cut is on screen, or every cut on the device is.
+            let on_screen = if draws_all {
+                c.status == Some(SweepProjectionStatus::CollectedByUs)
+            } else {
+                inputs.on_screen.is_some_and(|o| {
+                    o.elevation_number == c.elevation_number
+                        && o.start_secs >= v0 - 1.0
+                        && o.start_secs <= v0 + length + 1.0
+                })
+            };
             rows[c.row].bars.push(LadderBar {
                 elevation_number: c.elevation_number,
                 start: c.start,
@@ -766,11 +801,15 @@ impl VolumeLadder {
                 .iter()
                 .filter(|c| c.status == Some(SweepProjectionStatus::CollectedByUs))
                 .count();
-            Some(format!(
+            let mut s = format!(
                 "volume of {} \u{00B7} {on_device} of {} cuts on device",
                 clock.hms(v0),
                 cuts.len()
-            ))
+            );
+            if draws_all && on_device < cuts.len() && inputs.fetching {
+                s.push_str(" \u{00B7} fetching the rest");
+            }
+            Some(s)
         };
 
         let projected = live || cuts.iter().any(|c| c.estimated);
@@ -805,6 +844,7 @@ impl VolumeLadder {
             length_secs: length,
             length_label,
             rows,
+            picks,
             moves,
             caret,
             line,
@@ -963,6 +1003,32 @@ mod tests {
                 clock,
                 antenna_azimuth: Some(148.2),
                 on_screen,
+                role: TiltRole::Picks,
+                fetching: false,
+            },
+            &Utc,
+        )
+    }
+
+    /// The ladder while the volume draws every tilt.
+    fn draws_all(
+        entries: &[ElevationListEntry],
+        volume: Option<&ScanProjection>,
+        fetching: bool,
+    ) -> VolumeLadder {
+        VolumeLadder::build(
+            LadderInputs {
+                entries,
+                selection: &FIXED_05,
+                product: RadarProduct::Reflectivity,
+                volume,
+                clock: LadderClock::AtTime {
+                    playhead_secs: 1_000_050.0,
+                },
+                antenna_azimuth: None,
+                on_screen: None,
+                role: TiltRole::DrawsAll,
+                fetching,
             },
             &Utc,
         )
@@ -1224,6 +1290,74 @@ mod tests {
         );
         assert_eq!(l.caret, None);
         assert_eq!(l.status.as_deref(), Some("next volume in ~0:01"));
+    }
+
+    // ── The volume draws every tilt ──────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn draws_all_rows_stand_down_and_every_cut_on_device_is_on_screen() {
+        let v = volume(
+            vec![
+                sweep(1, 0.5, 0.0, 40.0, Got),
+                sweep(4, 1.3, 126.0, 166.0, Got),
+            ],
+            166.0,
+        );
+        let l = draws_all(&roster(), Some(&v), false);
+        assert!(!l.picks);
+        assert!(l.rows.iter().all(|r| !r.tilt.selected));
+        assert_eq!(l.rows[0].hint, Some(DRAWS_ALL_HINT));
+        assert_eq!(l.rows[1].tilt.hover, DRAWS_ALL_HOVER);
+        // The cuts on the device are drawn; the hollow ones are not.
+        for row in &l.rows {
+            for b in &row.bars {
+                assert_eq!(b.on_screen, b.mark == BarMark::OnDevice, "{}", b.hover);
+            }
+        }
+        assert!(l
+            .status
+            .as_deref()
+            .unwrap()
+            .ends_with("2 of 5 cuts on device"));
+        // With a fetch under way the status says the rest is coming.
+        let l = draws_all(&roster(), Some(&v), true);
+        assert!(l
+            .status
+            .as_deref()
+            .unwrap()
+            .ends_with("2 of 5 cuts on device · fetching the rest"));
+        // A whole volume has nothing to fetch.
+        let mut v = live_volume();
+        for s in &mut v.sweeps {
+            s.status = Got;
+        }
+        let l = draws_all(&roster(), Some(&v), true);
+        assert!(l
+            .status
+            .as_deref()
+            .unwrap()
+            .ends_with("5 of 5 cuts on device"));
+    }
+
+    #[wasm_bindgen_test]
+    fn picks_keeps_the_selection_and_the_one_cut_on_screen() {
+        let v = volume(vec![sweep(1, 0.5, 0.0, 40.0, Got)], 40.0);
+        let l = build(
+            &roster(),
+            &FIXED_05,
+            RadarProduct::Reflectivity,
+            Some(&v),
+            LadderClock::AtTime {
+                playhead_secs: V0 + 10.0,
+            },
+            Some(OnScreenCut {
+                elevation_number: 1,
+                start_secs: V0,
+            }),
+        );
+        assert!(l.picks);
+        assert!(l.rows[1].tilt.selected);
+        assert!(l.rows[1].bars[0].on_screen);
     }
 
     // ── Archive ─────────────────────────────────────────────────────────

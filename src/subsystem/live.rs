@@ -37,6 +37,8 @@ pub(crate) struct LiveRefreshInputs<'a> {
     pub displayed: Option<&'a crate::core::DisplayedSweep>,
     /// What the render loop knows for this frame's caption rule.
     pub caption_context: crate::core::canvas::CaptionContext,
+    /// Volume rendering is on and the camera is in 3D.
+    pub volume_3d_active: bool,
 }
 
 /// Owner of the real-time streaming pipeline and the derived
@@ -336,6 +338,7 @@ impl Live {
             displayed: inputs.displayed,
             live_cut,
             caption_context: inputs.caption_context,
+            volume_3d_active: inputs.volume_3d_active,
         });
     }
 }

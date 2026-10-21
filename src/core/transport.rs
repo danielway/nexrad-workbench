@@ -37,6 +37,7 @@
 //! Pattern exemplar: [`crate::core::worker_ingest`] (Env / Slices / Actions).
 
 use crate::core::projection::ProjectionEngine;
+use crate::core::session::TiltRole;
 use crate::core::{
     FreezeAt, LiveExitReason, LiveModeState, LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState,
     RadarTimeline,
@@ -505,11 +506,18 @@ pub(crate) struct TransportVm {
     pub play: PlayButton,
     pub play_hover: &'static str,
     pub mode: PlaybackMode,
+    /// Why Rays cannot be chosen, when it cannot (its disabled hover).
+    pub rays_disabled: Option<&'static str>,
     pub speed: SpeedControl,
 }
 
-/// Build the transport row from the playback state.
-pub(crate) fn transport_vm(playback: &PlaybackState) -> TransportVm {
+/// Why Rays is disabled while volume rendering draws every tilt.
+pub(crate) const RAYS_DISABLED_BY_VOLUME: &str = "Rays plays sweeps as the radar collected them \
+     \u{00B7} volume rendering draws whole volumes, one per frame";
+
+/// Build the transport row from the playback state and this frame's tilt
+/// role.
+pub(crate) fn transport_vm(playback: &PlaybackState, role: TiltRole) -> TransportVm {
     let pinned = playback.is_pinned();
     let (play, play_hover) = if pinned {
         (PlayButton::Pause, "Pause (the stream keeps filling)")
@@ -539,6 +547,7 @@ pub(crate) fn transport_vm(playback: &PlaybackState) -> TransportVm {
     TransportVm {
         play,
         play_hover,
+        rays_disabled: role.draws_all().then_some(RAYS_DISABLED_BY_VOLUME),
         mode,
         speed,
     }
@@ -1341,7 +1350,7 @@ mod coverage_tests {
         ps.enter_pinned_live(1000.0);
         assert!(speed_locked(&ps));
         assert!(matches!(
-            transport_vm(&ps).speed,
+            transport_vm(&ps, TiltRole::Picks).speed,
             SpeedControl::Locked { .. }
         ));
         reduce_set_speed(&mut ps, PlaybackSpeed::FifteenToOne);
@@ -1351,7 +1360,7 @@ mod coverage_tests {
         // Frames keeps its menu while pinned.
         ps.set_play_mode(PlaybackMode::Macro);
         assert!(!speed_locked(&ps));
-        let SpeedControl::Menu { choices, .. } = transport_vm(&ps).speed else {
+        let SpeedControl::Menu { choices, .. } = transport_vm(&ps, TiltRole::Picks).speed else {
             panic!("Frames has a speed menu");
         };
         assert!(choices
@@ -1375,13 +1384,23 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
+    fn rays_is_disabled_while_the_volume_draws_every_tilt() {
+        let ps = PlaybackState::default();
+        assert_eq!(transport_vm(&ps, TiltRole::Picks).rays_disabled, None);
+        assert_eq!(
+            transport_vm(&ps, TiltRole::DrawsAll).rays_disabled,
+            Some(RAYS_DISABLED_BY_VOLUME)
+        );
+    }
+
+    #[wasm_bindgen_test]
     fn the_play_button_reads_pause_while_pinned_or_playing() {
         let mut ps = PlaybackState::default();
-        assert_eq!(transport_vm(&ps).play, PlayButton::Play);
+        assert_eq!(transport_vm(&ps, TiltRole::Picks).play, PlayButton::Play);
         ps.playing = true;
-        assert_eq!(transport_vm(&ps).play, PlayButton::Pause);
+        assert_eq!(transport_vm(&ps, TiltRole::Picks).play, PlayButton::Pause);
         ps.playing = false;
         ps.enter_pinned_live(1000.0);
-        assert_eq!(transport_vm(&ps).play, PlayButton::Pause);
+        assert_eq!(transport_vm(&ps, TiltRole::Picks).play, PlayButton::Pause);
     }
 }

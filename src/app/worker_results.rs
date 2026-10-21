@@ -62,7 +62,20 @@ impl WorkbenchApp {
             self.render.coordinator.render_live(elevation, product);
         }
 
+        // Byte progress first: a download's reports all precede its result.
+        while let Some((start, progress)) = self
+            .acquisition
+            .coordinator
+            .download_channel
+            .try_recv_progress()
+        {
+            self.state.download_progress.bytes.record(start, progress);
+        }
         if let Some(result) = self.acquisition.coordinator.download_channel.try_recv() {
+            self.state
+                .download_progress
+                .bytes
+                .finish(result.scan_start_secs());
             self.handle_download_outcome(result);
         }
 
@@ -342,7 +355,6 @@ impl WorkbenchApp {
                     self.live.mode_state.is_active(),
                     &self.live.radar_model,
                 ),
-                storm_cells_visible: self.state.viz_state.storm_cells_visible,
                 in_flight_scans: &self.state.download_progress.in_flight_scans,
                 pending_scans_empty: self.state.download_progress.pending_scans.is_empty(),
             };
@@ -379,15 +391,6 @@ impl WorkbenchApp {
                     r.set_current_sweep_id(Some(actions.gpu_sweep_id));
                     r.update_color_table(gl, &result.product);
                     gpu_upload_succeeded = true;
-
-                    // Run storm cell detection if enabled
-                    if actions.run_storm_cells {
-                        self.state.viz_state.detected_storm_cells = r.detect_storm_cells(
-                            self.state.viz_state.center_lat,
-                            self.state.viz_state.center_lon,
-                            self.state.viz_state.storm_cell_threshold_dbz,
-                        );
-                    }
                 }
             }
         }
@@ -395,6 +398,9 @@ impl WorkbenchApp {
 
         if gpu_upload_succeeded {
             self.state.viz_state.displayed = actions.displayed_on_upload;
+            // Detection for the new sweep, decided by the same rule as the
+            // per-frame check (which then sees it as already computed).
+            self.sync_storm_cells();
         }
 
         // Store detailed render timing for the detail modal (dev mode only).
@@ -442,7 +448,6 @@ impl WorkbenchApp {
                 whole_sweeps_only: self.live_shows_whole_sweeps(),
                 live_volume: self.live.radar_model.volume.as_ref(),
                 gpu_current_sweep_id,
-                storm_cells_visible: self.state.viz_state.storm_cells_visible,
             };
             reduce_live_decoded(env, &result)
         };
@@ -484,16 +489,11 @@ impl WorkbenchApp {
                             self.state.viz_state.displayed = Some(new_displayed);
                         }
                     }
-
-                    if actions.run_storm_cells {
-                        self.state.viz_state.detected_storm_cells = r.detect_storm_cells(
-                            self.state.viz_state.center_lat,
-                            self.state.viz_state.center_lon,
-                            self.state.viz_state.storm_cell_threshold_dbz,
-                        );
-                    }
                 }
             }
+            // Detection for the new chunk, decided by the same rule as the
+            // per-frame check. Runs after the lock above is released.
+            self.sync_storm_cells();
         }
 
         if let Some((start, end, angle)) = actions.update_overlay {

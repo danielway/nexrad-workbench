@@ -580,6 +580,8 @@ mod sails_frames {
                         elevation_number: n,
                         start_secs: end_of(0.0, n) - CUT,
                     }),
+                    role: crate::core::session::TiltRole::Picks,
+                    fetching: false,
                 },
                 &PlainClock,
             );
