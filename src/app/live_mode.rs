@@ -276,10 +276,20 @@ impl WorkbenchApp {
         );
 
         match desired {
-            DesiredDisplay::LivePartial { .. } => {
+            DesiredDisplay::LivePartial { elevation_number } => {
                 // The chunk-ingest → `render_live` path already owns the GPU
                 // for the actively-collecting cut. Don't request a cached blob
                 // for it and don't blank — leave the live partial in place.
+                // If a stored sweep is on the GPU instead (a live range's
+                // playhead just reached the live cut, or a scrubbed playhead
+                // was pinned again), draw the partial now rather than at the
+                // next chunk.
+                if !self.gpu_holds_live_sweep() {
+                    self.render.coordinator.render_live(
+                        elevation_number,
+                        self.state.viz_state.product.to_worker_string().to_string(),
+                    );
+                }
             }
             DesiredDisplay::Cached(identity) => {
                 if self.render.coordinator.request_render_for(identity) {
@@ -296,8 +306,7 @@ impl WorkbenchApp {
                 // resolve to `Blank` even though the GPU holds a good `live|*`
                 // sweep. Only blank when archive owns the canvas — which it
                 // does whenever the playhead is detached from the live edge.
-                let protecting_live_partial = self.live.mode_state.is_active()
-                    && !self.live.is_detached(&self.playback.state)
+                let protecting_live_partial = self.live.canvas_follows_live(&self.playback.state)
                     && self.gpu_holds_live_sweep();
                 // Don't blank merely because the playhead drifted into a gap
                 // (spec §11.2): a Blank with NO scan covering the playhead is the
@@ -319,15 +328,16 @@ impl WorkbenchApp {
 
     /// The live cut feeding [`crate::core::playback_manager::resolve_desired_display`]:
     /// `Some((collecting_elevation, anchor_key_ms))` while streaming with a
-    /// fully-known volume, the playhead attached to the live edge AND radials
-    /// of that elevation still in the accumulator (see
+    /// fully-known volume, the canvas following the live stream (see
+    /// [`crate::subsystem::Live::canvas_follows_live`]) AND radials of that
+    /// elevation still in the accumulator (see
     /// [`crate::core::worker_ingest::live_cut`]), else
     /// `None` (which collapses the resolver to the cache path — a detached
     /// playhead resolves whatever's cached under the cursor, untouched by
     /// the background stream). Shared by `request_worker_render` and the
     /// `Decoded` upload gate in `handle_decoded_outcome`.
     pub(crate) fn live_render_sources(&self) -> Option<(u8, i64)> {
-        if !self.live.mode_state.is_active() || self.live.is_detached(&self.playback.state) {
+        if !self.live.canvas_follows_live(&self.playback.state) {
             return None;
         }
         let anchor_ms = self

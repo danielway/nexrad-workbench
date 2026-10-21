@@ -59,7 +59,7 @@ pub(crate) struct DecodedEnv<'a> {
     pub live_cut: Option<(u8, i64)>,
     /// `self.live_shows_whole_sweeps()` — Frames mode: never show a partial.
     pub whole_sweeps_only: bool,
-    /// `state.effective_sweep_animation(&playback.state, streaming, collecting)`.
+    /// `state.effective_sweep_animation(&playback.state, follows_live, live)`.
     pub sweep_animation: bool,
     /// `state.download_progress.in_flight_scans`, read BEFORE the shell
     /// executes the retain — the clear predicate is decided against it.
@@ -252,7 +252,7 @@ pub(crate) fn reduce_decoded(
 
 /// Read-only frame context for one live decode outcome, shell-assembled.
 pub(crate) struct LiveDecodedEnv<'a> {
-    /// `!self.live.is_detached(&self.playback.state)`.
+    /// `self.live.canvas_follows_live(&self.playback.state)`.
     pub playhead_attached: bool,
     /// `self.live_shows_whole_sweeps()` — Frames mode keeps the last complete
     /// sweep on the canvas, so the partial is decoded but not shown.

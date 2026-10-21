@@ -352,20 +352,20 @@ impl AppState {
     /// reveal) runs this frame. See
     /// [`crate::core::canvas::sweep_animation_effective`].
     ///
+    /// `follows_live` is [`crate::subsystem::Live::canvas_follows_live`].
     /// `live` carries the live in-progress cut (none when not streaming or
-    /// between elevations). While attached to a live stream, a held tilt
-    /// suppresses animation while the antenna is on any other angle (a
+    /// between elevations). While the canvas follows the live stream, a held
+    /// tilt suppresses animation while the antenna is on any other angle (a
     /// SAILS/MRLE repeat of the held angle counts as the tilt).
     pub(crate) fn effective_sweep_animation(
         &self,
         playback: &PlaybackState,
-        streaming: bool,
+        follows_live: bool,
         live: &crate::core::LiveRadarModel,
     ) -> bool {
-        let live_attached = streaming && (playback.is_pinned() || playback.is_live_range());
         crate::core::canvas::sweep_animation_effective(
             playback.playback_mode(),
-            live_attached,
+            follows_live,
             live.selected_cut(&self.viz_state.elevation_selection),
             live.collecting_elevation(),
         )
