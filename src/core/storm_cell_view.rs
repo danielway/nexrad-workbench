@@ -10,7 +10,8 @@
 //!   sweep ahead of the sweep line and the current one behind it, and the
 //!   cells belong to the current sweep, so a cell draws only once its whole
 //!   footprint is behind the line ([`footprint_behind_sweep_line`]).
-//! - **Grammar.** The outline is the footprint: one light stroke over a dark
+//! - **Grammar.** The outline is the footprint (the cell's share of its
+//!   envelope, see `crate::storm_cells`): one light stroke over a dark
 //!   halo, intensity left out of the color. Groups get a fainter dashed
 //!   outline. The peak dBZ sits in a chip at the outline's top-right; chips
 //!   are placed strongest first and skipped when they would crowd one
@@ -536,7 +537,7 @@ fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> Ca
     if i.phone {
         lines.push(line(
             format!(
-                "{:.0} km\u{00B2} \u{00B7} mean {:.0} dBZ \u{00B7} outline {:.0} dBZ",
+                "{:.0} km\u{00B2} \u{00B7} mean {:.0} dBZ \u{00B7} distinct at {:.0}",
                 cell.area_km2, cell.mean_dbz, cell.level_dbz
             ),
             false,
@@ -553,7 +554,10 @@ fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> Ca
             ),
             false,
         ));
-        lines.push(line(format!("Outline at {:.0} dBZ", cell.level_dbz), false));
+        lines.push(line(
+            format!("Distinct at {:.0} dBZ", cell.level_dbz),
+            false,
+        ));
         if let Some(m) = membership {
             lines.push(line(m, false));
         }
@@ -940,7 +944,7 @@ mod tests {
         assert_eq!(card.cell_id, 1);
         assert_eq!(card.title, "Cell \u{00B7} 55 dBZ peak");
         let text: Vec<&str> = card.lines.iter().map(|l| l.text.as_str()).collect();
-        assert!(text.contains(&"Outline at 50 dBZ"), "{text:?}");
+        assert!(text.contains(&"Distinct at 50 dBZ"), "{text:?}");
         assert!(text.contains(&"2 of 2 in this group"), "{text:?}");
         assert!(text.contains(&"98 km at 239\u{00B0} from KDMX"), "{text:?}");
         assert!(text[0].starts_with("Area ") && text[0].contains("mean 43 dBZ"));

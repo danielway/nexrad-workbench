@@ -665,13 +665,19 @@ Interactive measurement and analysis affordances on the 2D canvas:
   and the radial's collection timestamp. (Named "Data probe" to free "inspector"
   for the scan inspector in §4.)
 - **Distance Measure** — click two points to read the great-circle distance.
-- **Storm Cells** (Layers › Analysis; reflectivity only, 2D only). The
-  detector segments the sweep at nested thresholds 5 dB apart and reports
-  *cells* (the finest distinct storms) and *groups* (one envelope holding two
-  or more cells: a supercell line, an MCS, a hurricane's shield).
-  - **Footprint.** Each cell draws its actual boundary, the outline at the
-    level where it became distinct, in one light stroke over a thin dark halo
-    (1.6 px; 2 px on the phone) so it reads on every part of the palette.
+- **Storm Cells** (Layers › Analysis; over any product, 2D only). The
+  detector runs on the volume's lowest reflectivity cut whatever product or
+  tilt is on screen, so the cells stay over velocity, CC and the rest (a
+  couplet inside a cell). It segments that sweep at nested thresholds 5 dB
+  apart and reports *cells* (the finest distinct storms) and *groups* (one
+  envelope holding two or more cells: a supercell line, an MCS, a
+  hurricane's shield).
+  - **Footprint.** Each cell draws its share of the envelope: its core (the
+    echo at the level where it became distinct) grown outward over the
+    envelope, strongest echo first, so the cells of a group tile it and two
+    storms split along the weakest echo between them. A lone cell's footprint
+    is its whole envelope. It is drawn in one light stroke over a thin dark
+    halo (1.6 px; 2 px on the phone) so it reads on every part of the palette.
     Intensity is never the stroke's color. A group draws a fainter dashed
     outline around its envelope.
   - **Chip.** The cell's peak dBZ sits in a small mono chip at the outline's
@@ -680,7 +686,8 @@ Interactive measurement and analysis affordances on the 2D canvas:
     than about 14 px on screen carries none. There is no track letter or
     trend mark yet: a cell's id lasts one volume until tracking lands.
   - **Card.** On the desktop, hovering inside a footprint opens a card beside
-    the pointer: peak, area, mean dBZ, the outline's level, group membership
+    the pointer: peak, area, mean dBZ, the level at which the cell became
+    distinct from its neighbours ("Distinct at 50 dBZ"), group membership
     ("1 of 5 in this group") and the bearing and range from the radar. On the
     phone a tap inside a cell selects it (its outline thickens) and a compact
     card sits above the bottom of the map; a tap anywhere else closes it.
@@ -695,7 +702,8 @@ Interactive measurement and analysis affordances on the 2D canvas:
     so.
   - **Slider.** "Min dBZ" (20–60, default 35) is the envelope: the weakest
     echo that can belong to a cell. A cell needs a core 10 dB above it. The
-    slider is disabled off reflectivity. A "Tracks" checkbox is shown
+    slider works over every product; off reflectivity it notes "Cells from
+    reflectivity". A "Tracks" checkbox is shown
     disabled until tracking lands.
   - **3D** draws no cells, card or probe line.
   - The link carries the overlay as `cells=<dbz>` (§13.4).
