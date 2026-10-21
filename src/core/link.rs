@@ -20,6 +20,7 @@
 //! | map center | `lat`, `lon` |
 //! | 2D/3D, camera, map and timeline zoom, volume rendering and cutoff | `v` |
 //! | storm cells on, at this envelope threshold (dBZ) | `cells` |
+//! | storm cell tracks on (`1`) or off (`0`) | `tracks` |
 //! | developer flag | `dev` |
 //!
 //! `sel` is `now` (pinned to now), `last6f` / `last1800s` (a range ending now
@@ -83,6 +84,9 @@ pub(crate) struct LinkState {
     /// `cells=<dbz>`: storm cells on at this envelope threshold. Absent says
     /// nothing (the preference stands); a bare `cells` means the default.
     pub cells: Option<f32>,
+    /// `tracks=1`: storm cell tracks (trails, forecast arrows) on; `tracks=0`
+    /// off. Absent says nothing.
+    pub tracks: Option<bool>,
     /// `Some(true)` for `dev=true`; wins over the saved preference for the
     /// session without being saved.
     pub dev: Option<bool>,
@@ -140,6 +144,13 @@ pub(crate) fn parse(query: &str) -> LinkState {
                     Some(crate::core::storm_cells::THRESHOLD_DEFAULT_DBZ)
                 } else {
                     value.parse::<f32>().ok().filter(|v| v.is_finite())
+                }
+            }
+            "tracks" => {
+                link.tracks = match value {
+                    "" | "1" | "true" => Some(true),
+                    "0" | "false" => Some(false),
+                    _ => None,
                 }
             }
             "dev" => {
@@ -202,6 +213,9 @@ pub(crate) fn to_query(link: &LinkState) -> String {
     }
     if let Some(dbz) = link.cells {
         parts.push(format!("cells={}", format_angle(dbz)));
+    }
+    if let Some(on) = link.tracks {
+        parts.push(format!("tracks={}", u8::from(on)));
     }
     if link.dev == Some(true) {
         parts.push("dev=true".to_string());
@@ -390,6 +404,7 @@ mod tests {
                 ..Default::default()
             },
             cells: Some(40.0),
+            tracks: Some(true),
             dev: Some(true),
         }
     }
@@ -414,6 +429,23 @@ mod tests {
         );
         assert_eq!(parse("?cells=lots").cells, None);
         assert_eq!(parse("?cells=NaN").cells, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn storm_tracks_travel_as_a_flag() {
+        let link = LinkState {
+            cells: Some(35.0),
+            tracks: Some(true),
+            ..Default::default()
+        };
+        let q = to_query(&link);
+        assert_eq!(q, "?cells=35&tracks=1");
+        assert_eq!(parse(&q).tracks, Some(true));
+        assert_eq!(parse("?tracks").tracks, Some(true));
+        assert_eq!(parse("?tracks=0").tracks, Some(false));
+        assert_eq!(parse("?tracks=maybe").tracks, None);
+        assert_eq!(parse("?cells=35").tracks, None);
+        assert!(!to_query(&LinkState::default()).contains("tracks"));
     }
 
     // ── Codec ──────────────────────────────────────────────────────────────

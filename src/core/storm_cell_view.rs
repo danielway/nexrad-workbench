@@ -22,8 +22,14 @@
 //!   drives the desktop hover card, the phone's tap-to-select card and the
 //!   data probe's cell line.
 //!
-//! Cell ids are per detection run, not tracks, so the chip shows no letter
-//! and the card no history; both arrive with tracking.
+//! - **Tracks** (the "Tracks" checkbox, [`crate::core::storm_tracks`]): the
+//!   chip leads with the track's letter and carries a trend mark when the
+//!   peak moved more than [`TREND_MARK_DB`] over the last three volumes; the
+//!   last three centroids draw as a trail of dots, and a dashed arrow points
+//!   to where the cell will be in 30 minutes once its motion is confident.
+//!   The card adds motion, age, trend and, with "My location" on, where the
+//!   cell is from you and its closest approach. A coasting track (no cell
+//!   this volume) draws nothing.
 //!
 //! Screen math takes the projection as a closure (`lat, lon -> [x, y]`) so
 //! the module stays free of egui; text widths assume the monospace chip
@@ -31,6 +37,7 @@
 
 use crate::core::canvas::{geo_to_polar, polar_in_prev_region};
 use crate::core::storm_cells::clamp_threshold;
+use crate::core::storm_tracks::{TrackVm, TracksView};
 use crate::core::{StormCell, StormCellsResult};
 use crate::geo::ViewMode;
 
@@ -45,6 +52,9 @@ pub(crate) enum StormCellIntent {
     SetVisible(bool),
     /// The envelope slider, in dBZ (clamped to the slider's range).
     SetThreshold(f32),
+    /// The "Tracks" checkbox under it: trails, forecast arrows and track
+    /// letters.
+    SetTracks(bool),
     /// The desktop pointer over the 2D map, as `(lat, lon)`, or `None` when
     /// it leaves.
     Hover(Option<(f64, f64)>),
@@ -68,6 +78,8 @@ pub(crate) struct StormCellControls<'a> {
     pub visible: &'a mut bool,
     /// `viz_state.storm_cell_threshold_dbz`.
     pub threshold_dbz: &'a mut f32,
+    /// `viz_state.storm_tracks_visible`.
+    pub tracks: &'a mut bool,
     /// `viz_state.storm_cell_pointer`.
     pub pointer: &'a mut StormCellPointer,
 }
@@ -84,6 +96,7 @@ pub(crate) fn reduce(c: StormCellControls<'_>, intent: StormCellIntent) {
             }
         }
         StormCellIntent::SetThreshold(dbz) => *c.threshold_dbz = clamp_threshold(dbz),
+        StormCellIntent::SetTracks(on) => *c.tracks = on,
         StormCellIntent::Hover(p) => c.pointer.hover = finite(p),
         StormCellIntent::Select(p) => c.pointer.selected = finite(p),
     }
@@ -193,6 +206,9 @@ pub(crate) struct StormCellViewInputs<'a> {
     /// The data probe is on: it names the cell under the pointer itself, so
     /// the desktop hover card stays away.
     pub probe_on: bool,
+    /// The tracks on these cells, when "Tracks" is on and the volume is
+    /// tracked ([`crate::core::storm_tracks::StormTracks::view`]).
+    pub tracks: Option<&'a TracksView>,
 }
 
 /// Stroke widths and chip type for the layout, in screen px.
@@ -208,6 +224,12 @@ pub(crate) struct OverlayStyle {
     pub chip_font_px: f32,
     /// Minimum gap between two chips.
     pub chip_spacing_px: f32,
+    /// A track's trail line and forecast arrow.
+    pub trail_px: f32,
+    /// Radius of a trail dot.
+    pub trail_dot_px: f32,
+    /// Length of the forecast arrow's head.
+    pub arrow_head_px: f32,
 }
 
 /// The style for the layout: 1.6 px outlines and 11 px chips on the
@@ -220,6 +242,9 @@ pub(crate) fn overlay_style(phone: bool) -> OverlayStyle {
             group_px: 1.2,
             chip_font_px: 12.0,
             chip_spacing_px: 6.0,
+            trail_px: 1.6,
+            trail_dot_px: 2.6,
+            arrow_head_px: 9.0,
         }
     } else {
         OverlayStyle {
@@ -228,6 +253,9 @@ pub(crate) fn overlay_style(phone: bool) -> OverlayStyle {
             group_px: 1.0,
             chip_font_px: 11.0,
             chip_spacing_px: 2.0,
+            trail_px: 1.2,
+            trail_dot_px: 2.2,
+            arrow_head_px: 7.0,
         }
     }
 }
@@ -265,6 +293,53 @@ pub(crate) struct ChipVm {
     pub hollow: bool,
 }
 
+/// A track's trail and forecast arrow on screen.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TrailVm {
+    pub cell_id: u32,
+    /// The last (up to) three centroids, oldest first; the last is the
+    /// cell's own. At least two.
+    pub dots: Vec<[f32; 2]>,
+    /// The forecast arrow, from the cell's centroid to its position in 30
+    /// minutes, when the motion is confident.
+    pub arrow: Option<ArrowVm>,
+    /// The hovered or selected cell's trail.
+    pub highlighted: bool,
+}
+
+/// A dashed forecast arrow on screen.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ArrowVm {
+    pub from: [f32; 2],
+    pub to: [f32; 2],
+    /// The head: a filled triangle with its tip at `to`.
+    pub head: [[f32; 2]; 3],
+}
+
+/// An arrow from `from` to `to` with a head `head_px` long, or `None` when
+/// the two points are under a pixel apart (a storm barely moving at this
+/// zoom).
+pub(crate) fn arrow(from: [f32; 2], to: [f32; 2], head_px: f32) -> Option<ArrowVm> {
+    let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+    let len = dx.hypot(dy);
+    if len < 1.0 {
+        return None;
+    }
+    let (ux, uy) = (dx / len, dy / len);
+    let head = head_px.min(len);
+    let base = [to[0] - ux * head, to[1] - uy * head];
+    let half = head * 0.45;
+    Some(ArrowVm {
+        from,
+        to,
+        head: [
+            to,
+            [base[0] - uy * half, base[1] + ux * half],
+            [base[0] + uy * half, base[1] - ux * half],
+        ],
+    })
+}
+
 /// One line of the cell card.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CardLine {
@@ -300,6 +375,8 @@ pub(crate) struct StormCellsVm {
     pub groups: Vec<Vec<[f32; 2]>>,
     pub cells: Vec<CellOutlineVm>,
     pub chips: Vec<ChipVm>,
+    /// Track trails and forecast arrows (Tracks on).
+    pub trails: Vec<TrailVm>,
     pub card: Option<CardVm>,
     /// Ids of the cells that draw, for hit tests ([`cell_at`]).
     pub shown: Vec<u32>,
@@ -314,6 +391,7 @@ impl StormCellsVm {
             groups: Vec::new(),
             cells: Vec::new(),
             chips: Vec::new(),
+            trails: Vec::new(),
             card: None,
             shown: Vec::new(),
             provisional: false,
@@ -393,7 +471,20 @@ pub(crate) fn build(
         if ring.len() < 3 {
             continue;
         }
-        if let Some(chip) = place_chip(cell, &ring, &style, &placed) {
+        let track = i.tracks.and_then(|t| t.for_cell(id));
+        if let Some(t) = track.filter(|t| t.trail.len() >= 2) {
+            let dots: Vec<[f32; 2]> = t.trail.iter().map(|&(a, b)| project(a, b)).collect();
+            let from = dots[dots.len() - 1];
+            vm.trails.push(TrailVm {
+                cell_id: id,
+                arrow: t
+                    .forecast
+                    .and_then(|(a, b)| arrow(from, project(a, b), style.arrow_head_px)),
+                dots,
+                highlighted: focus == Some(id),
+            });
+        }
+        if let Some(chip) = place_chip(cell, track, &ring, &style, &placed) {
             placed.push((chip.min, chip.size));
             vm.chips.push(ChipVm {
                 hollow: i.provisional,
@@ -466,9 +557,32 @@ pub(crate) fn stroke_ready(mut ring: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
     }
 }
 
-/// The chip text for a cell: its peak, whole dBZ.
-pub(crate) fn chip_text(cell: &StormCell) -> String {
-    format!("{:.0}", cell.peak_dbz)
+/// A peak change beyond this (dB, over the last three volumes) gets a
+/// trend mark on the chip.
+pub(crate) const TREND_MARK_DB: f32 = 3.0;
+
+/// The trend mark for a peak change: up, down, or none.
+pub(crate) fn trend_mark(trend_db: Option<f32>) -> Option<char> {
+    match trend_db {
+        Some(d) if d > TREND_MARK_DB => Some('\u{2191}'),
+        Some(d) if d < -TREND_MARK_DB => Some('\u{2193}'),
+        _ => None,
+    }
+}
+
+/// The chip text for a cell: its peak, whole dBZ, led by its track's letter
+/// and followed by a trend mark when tracked (`B 58\u{2191}`).
+pub(crate) fn chip_text(cell: &StormCell, track: Option<&TrackVm>) -> String {
+    let peak = format!("{:.0}", cell.peak_dbz);
+    match track {
+        Some(t) => {
+            let mark = trend_mark(t.peak_trend_db)
+                .map(String::from)
+                .unwrap_or_default();
+            format!("{} {peak}{mark}", t.label)
+        }
+        None => peak,
+    }
 }
 
 /// Size of a chip carrying `text` at the style's font.
@@ -485,6 +599,7 @@ fn chip_size(text: &str, style: &OverlayStyle) -> [f32; 2] {
 /// placed.
 fn place_chip(
     cell: &StormCell,
+    track: Option<&TrackVm>,
     ring: &[[f32; 2]],
     style: &OverlayStyle,
     placed: &[([f32; 2], [f32; 2])],
@@ -499,7 +614,7 @@ fn place_chip(
     if (max_x - min_x).max(max_y - min_y) < CHIP_MIN_OUTLINE_PX {
         return None;
     }
-    let text = chip_text(cell);
+    let text = chip_text(cell, track);
     let size = chip_size(&text, style);
     let min = [max_x + CHIP_GAP_X, min_y - size[1] * 0.4];
     let gap = style.chip_spacing_px;
@@ -531,6 +646,7 @@ fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> Ca
         cell.bearing_from_radar_deg.rem_euclid(360.0),
         i.site_id
     );
+    let track = i.tracks.and_then(|t| t.for_cell(cell.id));
     let line = |text: String, dim: bool| CardLine { text, dim };
     let mut lines = Vec::new();
     if i.phone {
@@ -541,7 +657,12 @@ fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> Ca
             ),
             false,
         ));
-        if let Some(m) = membership {
+        if let Some(t) = track {
+            lines.push(line(
+                format!("{} \u{00B7} {}", motion_text(t), age_text(t)),
+                false,
+            ));
+        } else if let Some(m) = membership {
             lines.push(line(m, false));
         }
         lines.push(line(place, true));
@@ -557,27 +678,123 @@ fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> Ca
         if let Some(m) = membership {
             lines.push(line(m, false));
         }
+        if let Some(t) = track {
+            lines.push(line(motion_text(t), false));
+            lines.push(line(age_text(t), false));
+        }
         lines.push(line(place, true));
+    }
+    if let Some(t) = track {
+        if let Some((bearing, km)) = t.from_reference {
+            lines.push(line(
+                format!("{km:.0} km at {bearing:03.0}\u{00B0} from you"),
+                true,
+            ));
+        }
+        if let Some(text) = approach_text(t) {
+            lines.push(line(text, false));
+        }
     }
     if i.provisional {
         lines.push(line("Provisional: sweep still arriving".to_string(), true));
     }
+    let title = match track {
+        Some(t) => {
+            let trend = trend_mark(t.peak_trend_db)
+                .zip(t.peak_trend_db)
+                .map(|(mark, d)| format!(" {mark} from {:.0}", cell.peak_dbz - d))
+                .unwrap_or_default();
+            format!("{} \u{00B7} {:.0} dBZ peak{trend}", t.label, cell.peak_dbz)
+        }
+        None => format!("Cell \u{00B7} {:.0} dBZ peak", cell.peak_dbz),
+    };
     CardVm {
         cell_id: cell.id,
-        title: format!("Cell \u{00B7} {:.0} dBZ peak", cell.peak_dbz),
+        title,
         lines,
         anchor,
     }
 }
 
+/// Eight-point compass name for a direction in degrees.
+fn compass(deg: f64) -> &'static str {
+    const NAMES: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+    NAMES[((deg.rem_euclid(360.0) + 22.5) / 45.0) as usize % 8]
+}
+
+/// Motion confidence in a word: high from 0.75, medium from the forecast
+/// threshold, low below it.
+fn confidence_word(confidence: f64) -> &'static str {
+    if confidence >= 0.75 {
+        "high"
+    } else if confidence >= crate::storm_cells::track::MIN_FORECAST_CONFIDENCE {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+/// `Moving NE 47 km/h, high confidence`, `Stationary`, or, for a track
+/// seen once, `Motion not known yet`.
+fn motion_text(t: &TrackVm) -> String {
+    if t.stationary {
+        "Stationary".to_string()
+    } else if t.confidence <= 0.0 {
+        "Motion not known yet".to_string()
+    } else {
+        format!(
+            "Moving {} {:.0} km/h, {} confidence",
+            compass(t.direction_deg),
+            t.speed_kmh,
+            confidence_word(t.confidence)
+        )
+    }
+}
+
+/// `Tracked 6 volumes · 25 min`, or `New this volume`.
+fn age_text(t: &TrackVm) -> String {
+    if t.age_volumes <= 1 {
+        "New this volume".to_string()
+    } else {
+        format!(
+            "Tracked {} volumes \u{00B7} {:.0} min",
+            t.age_volumes, t.age_minutes
+        )
+    }
+}
+
+/// Closest approach beyond this many minutes is withheld: extrapolation
+/// cannot see growth or decay that far out.
+pub(crate) const APPROACH_HORIZON_MIN: f64 = 60.0;
+
+/// The closest-approach line, when "My location" is on and the motion is
+/// confident: `Closest to you: 14 km in 22 min`.
+fn approach_text(t: &TrackVm) -> Option<String> {
+    let a = t.approach.filter(|_| !t.stationary)?;
+    Some(if a.minutes < 1.0 {
+        "Moving away from you".to_string()
+    } else if a.minutes > APPROACH_HORIZON_MIN {
+        "Closest to you: more than an hour out".to_string()
+    } else {
+        format!(
+            "Closest to you: {:.0} km in {:.0} min",
+            a.distance_km, a.minutes
+        )
+    })
+}
+
 /// The data probe's extra line when the pointer is over a cell that draws:
-/// `Cell 62 dBZ · 48 km²`.
+/// `Cell 62 dBZ · 48 km²` (`Cell B 62 dBZ · 48 km²` when tracked).
 pub(crate) fn probe_line(i: &StormCellViewInputs<'_>, lat: f64, lon: f64) -> Option<String> {
     let shown = shown_cells(i);
     let id = cell_at(i.result, &shown, lat, lon)?;
     let cell = i.result.cells.get(id as usize)?;
+    let name = match i.tracks.and_then(|t| t.for_cell(id)) {
+        Some(t) => format!("Cell {}", t.label),
+        None => "Cell".to_string(),
+    };
     Some(format!(
-        "Cell {:.0} dBZ \u{00B7} {:.0} km\u{00B2}",
+        "{name} {:.0} dBZ \u{00B7} {:.0} km\u{00B2}",
         cell.peak_dbz, cell.area_km2
     ))
 }
@@ -697,6 +914,7 @@ mod tests {
             phone: false,
             pointer: p,
             probe_on: false,
+            tracks: None,
         }
     }
 
@@ -713,6 +931,7 @@ mod tests {
         StormCellControls {
             visible: v,
             threshold_dbz: t,
+            tracks: Box::leak(Box::new(false)),
             pointer: p,
         }
     }
@@ -1040,5 +1259,245 @@ mod tests {
         );
         let at = place_card_at_bottom([300.0, 70.0], [0.0, 0.0, 390.0, 600.0], 40.0);
         assert_eq!(at, [45.0, 490.0]);
+    }
+
+    // ── Tracks ─────────────────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn the_tracks_checkbox_is_an_intent() {
+        let (mut v, mut t, mut tracks, mut p) = (true, 35.0, false, StormCellPointer::default());
+        for on in [true, false] {
+            reduce(
+                StormCellControls {
+                    visible: &mut v,
+                    threshold_dbz: &mut t,
+                    tracks: &mut tracks,
+                    pointer: &mut p,
+                },
+                StormCellIntent::SetTracks(on),
+            );
+            assert_eq!(tracks, on);
+        }
+    }
+
+    /// A track on cell `cell_id` with three trail points, the last at
+    /// `(lat, lon)`, moving NE at 47 km/h.
+    fn track(cell_id: u32, label: &str, lat: f64, lon: f64, confidence: f64) -> TrackVm {
+        TrackVm {
+            id: cell_id,
+            label: label.to_string(),
+            cell_id: Some(cell_id),
+            lat,
+            lon,
+            trail: vec![
+                (lat - 0.06, lon - 0.08),
+                (lat - 0.03, lon - 0.04),
+                (lat, lon),
+            ],
+            forecast: (confidence >= crate::storm_cells::track::MIN_FORECAST_CONFIDENCE)
+                .then_some((lat + 0.15, lon + 0.2)),
+            speed_kmh: 47.0,
+            direction_deg: 47.0,
+            confidence,
+            age_volumes: 6,
+            age_minutes: 25.0,
+            peak_trend_db: Some(4.0),
+            stationary: false,
+            coasting: false,
+            from_reference: None,
+            approach: None,
+        }
+    }
+
+    fn tracks_view() -> TracksView {
+        let mut b = track(1, "B", 42.2, -92.6, 0.25);
+        b.peak_trend_db = Some(1.0);
+        b.age_volumes = 2;
+        b.age_minutes = 5.0;
+        b.trail.drain(..1);
+        TracksView {
+            provisional: false,
+            tracks: vec![track(0, "D", 42.2, -93.2, 0.9), b],
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn chips_lead_with_the_track_letter_and_mark_the_trend() {
+        let (r, p) = (result(), StormCellPointer::default());
+        let tv = tracks_view();
+        let mut i = inputs(&r, &p);
+        assert_eq!(chip_text(&r.cells[0], None), "62");
+        i.tracks = Some(&tv);
+        let vm = build(&i, project);
+        let texts: Vec<&str> = vm.chips.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["D 62\u{2191}", "B 55"]);
+        // Wider text, wider chip.
+        let plain = build(&inputs(&r, &p), project);
+        assert!(vm.chips[0].size[0] > plain.chips[0].size[0]);
+        assert_eq!(trend_mark(Some(-3.5)), Some('\u{2193}'));
+        assert_eq!(trend_mark(Some(3.0)), None);
+        assert_eq!(trend_mark(None), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn trails_draw_with_an_arrow_only_when_motion_is_confident() {
+        let (r, p) = (result(), StormCellPointer::default());
+        let tv = tracks_view();
+        let mut i = inputs(&r, &p);
+        assert!(build(&i, project).trails.is_empty(), "tracks off");
+        i.tracks = Some(&tv);
+        let vm = build(&i, project);
+        assert_eq!(vm.trails.len(), 2);
+        let d = &vm.trails[0];
+        assert_eq!(d.cell_id, 0);
+        assert_eq!(d.dots.len(), 3);
+        assert_eq!(d.dots[2], project(42.2, -93.2));
+        let a = d.arrow.as_ref().expect("confident");
+        assert_eq!(a.from, d.dots[2]);
+        assert_eq!(a.to, project(42.35, -93.0));
+        assert_eq!(a.head[0], a.to);
+        // B's track is two volumes old: trail, no arrow.
+        assert_eq!(vm.trails[1].dots.len(), 2);
+        assert!(vm.trails[1].arrow.is_none());
+        // A one-point trail or a coasting track draws nothing.
+        let mut lone = tracks_view();
+        lone.tracks[1].trail.truncate(1);
+        lone.tracks[0].cell_id = None;
+        i.tracks = Some(&lone);
+        assert!(build(&i, project).trails.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn arrow_heads_point_along_the_arrow() {
+        let a = arrow([0.0, 0.0], [100.0, 0.0], 10.0).unwrap();
+        assert_eq!(a.head[0], [100.0, 0.0]);
+        assert_eq!(a.head[1], [90.0, 4.5]);
+        assert_eq!(a.head[2], [90.0, -4.5]);
+        // A short arrow keeps its head inside it; a dot has none.
+        let a = arrow([0.0, 0.0], [0.0, 4.0], 10.0).unwrap();
+        assert_eq!(a.head[1][1], 0.0);
+        assert!(arrow([5.0, 5.0], [5.4, 5.0], 10.0).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn rays_hides_trails_of_cells_ahead_of_the_sweep_line() {
+        let (r, p) = (result(), StormCellPointer::default());
+        let tv = tracks_view();
+        let mut i = inputs(&r, &p);
+        i.tracks = Some(&tv);
+        // Swept from north round to 60°: neither cell (both near 60-70°)
+        // is wholly behind the line.
+        i.sweep = Some((40.0, 0.0));
+        let vm = build(&i, project);
+        assert!(vm.trails.is_empty() && vm.chips.is_empty());
+        i.view_mode = ViewMode::Globe3D;
+        i.sweep = None;
+        assert!(build(&i, project).trails.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_card_tells_motion_age_trend_and_closest_approach() {
+        let r = result();
+        let p = StormCellPointer {
+            hover: Some((42.2, -93.2)),
+            selected: None,
+        };
+        let tv = tracks_view();
+        let mut i = inputs(&r, &p);
+        i.tracks = Some(&tv);
+        let card = build(&i, project).card.unwrap();
+        assert_eq!(card.title, "D \u{00B7} 62 dBZ peak \u{2191} from 58");
+        let texts: Vec<&str> = card.lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(
+            texts.contains(&"Moving NE 47 km/h, high confidence"),
+            "{texts:?}"
+        );
+        assert!(
+            texts.contains(&"Tracked 6 volumes \u{00B7} 25 min"),
+            "{texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("you")),
+            "no location: {texts:?}"
+        );
+
+        // My location on.
+        let mut tv2 = tracks_view();
+        tv2.tracks[0].from_reference = Some((262.4, 30.3));
+        tv2.tracks[0].approach = Some(crate::storm_cells::track::Approach {
+            minutes: 22.4,
+            distance_km: 14.2,
+        });
+        i.tracks = Some(&tv2);
+        let card = build(&i, project).card.unwrap();
+        let texts: Vec<&str> = card.lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(
+            texts.contains(&"30 km at 262\u{00B0} from you"),
+            "{texts:?}"
+        );
+        assert!(
+            texts.contains(&"Closest to you: 14 km in 22 min"),
+            "{texts:?}"
+        );
+        // Moving away, too far out, or stationary.
+        let mut t = tv2.tracks[0].clone();
+        t.approach = Some(crate::storm_cells::track::Approach {
+            minutes: 0.0,
+            distance_km: 30.0,
+        });
+        assert_eq!(approach_text(&t).as_deref(), Some("Moving away from you"));
+        t.approach = Some(crate::storm_cells::track::Approach {
+            minutes: 95.0,
+            distance_km: 3.0,
+        });
+        assert_eq!(
+            approach_text(&t).as_deref(),
+            Some("Closest to you: more than an hour out")
+        );
+        t.stationary = true;
+        assert_eq!(approach_text(&t), None);
+        assert_eq!(motion_text(&t), "Stationary");
+        t.stationary = false;
+        t.confidence = 0.0;
+        t.age_volumes = 1;
+        assert_eq!(motion_text(&t), "Motion not known yet");
+        assert_eq!(age_text(&t), "New this volume");
+        t.confidence = 0.25;
+        assert_eq!(motion_text(&t), "Moving NE 47 km/h, low confidence");
+        t.direction_deg = 350.0;
+        t.confidence = 0.5;
+        assert_eq!(motion_text(&t), "Moving N 47 km/h, medium confidence");
+    }
+
+    #[wasm_bindgen_test]
+    fn the_phone_card_folds_motion_into_one_line() {
+        let r = result();
+        let p = StormCellPointer {
+            hover: None,
+            selected: Some((42.2, -92.6)),
+        };
+        let tv = tracks_view();
+        let mut i = inputs(&r, &p);
+        i.phone = true;
+        i.tracks = Some(&tv);
+        let card = build(&i, project).card.unwrap();
+        assert_eq!(card.title, "B \u{00B7} 55 dBZ peak");
+        assert_eq!(
+            card.lines[1].text,
+            "Moving NE 47 km/h, low confidence \u{00B7} Tracked 2 volumes \u{00B7} 5 min"
+        );
+        assert_eq!(card.lines.len(), 3);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_probe_names_the_track() {
+        let (r, p) = (result(), StormCellPointer::default());
+        let tv = tracks_view();
+        let mut i = inputs(&r, &p);
+        i.tracks = Some(&tv);
+        assert_eq!(
+            probe_line(&i, 42.2, -93.2).as_deref(),
+            Some("Cell D 62 dBZ \u{00B7} 493 km\u{00B2}")
+        );
     }
 }

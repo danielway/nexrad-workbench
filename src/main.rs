@@ -267,6 +267,10 @@ fn apply_link(
         state.viz_state.storm_cells_visible = true;
         state.viz_state.storm_cell_threshold_dbz = core::storm_cells::clamp_threshold(dbz);
     }
+    // ...and `tracks=1` / `tracks=0` turns their tracks on or off.
+    if let Some(on) = link.tracks {
+        state.viz_state.storm_tracks_visible = on;
+    }
 
     match plan.site.as_deref().and_then(data::get_site) {
         Some(site) => {

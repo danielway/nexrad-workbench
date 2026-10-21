@@ -498,9 +498,14 @@ pub(super) fn render_rendering_section(
                         .color(theme::TEXT_DIM),
                 );
             }
-            let mut tracks = false;
-            ui.add_enabled(false, egui::Checkbox::new(&mut tracks, "Tracks"))
-                .on_disabled_hover_text("Trails and 30 min forecasts: coming with tracking");
+            let mut tracks = state.viz_state.storm_tracks_visible;
+            if ui
+                .checkbox(&mut tracks, "Tracks")
+                .on_hover_text("Track letters, trails of the last 3 volumes and 30 min forecasts")
+                .changed()
+            {
+                state.push_command(Intent::StormCells(StormCellIntent::SetTracks(tracks)));
+            }
         });
     }
 

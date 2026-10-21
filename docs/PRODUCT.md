@@ -677,16 +677,35 @@ Interactive measurement and analysis affordances on the 2D canvas:
   - **Chip.** The cell's peak dBZ sits in a small mono chip at the outline's
     top-right (11 px; 12 px on the phone). Chips are placed strongest first
     and skipped when they would crowd one already placed; an outline smaller
-    than about 14 px on screen carries none. There is no track letter or
-    trend mark yet: a cell's id lasts one volume until tracking lands.
+    than about 14 px on screen carries none. With Tracks on the chip leads
+    with the track's letter (`B 58`) and ends with ↑ or ↓ when the peak
+    moved more than 3 dB over the last three volumes.
   - **Card.** On the desktop, hovering inside a footprint opens a card beside
     the pointer: peak, area, mean dBZ, the outline's level, group membership
     ("1 of 5 in this group") and the bearing and range from the radar. On the
     phone a tap inside a cell selects it (its outline thickens) and a compact
     card sits above the bottom of the map; a tap anywhere else closes it.
     When footprints nest, the strongest cell wins. With the data probe on,
-    the probe names the cell instead (`Cell 62 dBZ · 48 km²`) and the hover
-    card stays away.
+    the probe names the cell instead (`Cell 62 dBZ · 48 km²`, `Cell B …`
+    when tracked) and the hover card stays away. With Tracks on the card
+    also gives the trend in its title (`D · 64 dBZ peak ↑ from 60`), motion
+    (`Moving NE 47 km/h, high confidence`, or `Stationary`), age (`Tracked
+    6 volumes · 25 min`) and, when My location is on, the cell's distance
+    and bearing from you and its closest approach (`Closest to you: 14 km
+    in 22 min`; withheld beyond an hour, "Moving away from you" when it
+    is). The phone's card folds motion and age into one line.
+  - **Tracks** (the checkbox under the slider). Cells are tracked across
+    volumes (SCIT-style: predicted from their recent motion, matched by
+    distance, area and peak, coasting two volumes before a track ends).
+    Each track has a letter (A–Z, then AA, AB…) that stays with the storm
+    and is never reused while the site is open. The last three centroids
+    draw as dots joined by a thin line, and a dashed arrow points to where
+    the cell will be in 30 minutes once its motion is confident (three
+    volumes on a steady course). Turning tracks on also detects the four
+    volumes before the one on screen, so a freshly opened time has history.
+    Scrubbing back over volumes already seen shows the same letters;
+    scrubbing further back than the first one seen starts over with new
+    letters.
   - **Rays and live.** Rays shows the previous sweep ahead of the sweep line
     and the current one behind it; cells belong to the current sweep, so a
     cell draws only once its whole footprint is behind the line and never
@@ -695,10 +714,10 @@ Interactive measurement and analysis affordances on the 2D canvas:
     so.
   - **Slider.** "Min dBZ" (20–60, default 35) is the envelope: the weakest
     echo that can belong to a cell. A cell needs a core 10 dB above it. The
-    slider is disabled off reflectivity. A "Tracks" checkbox is shown
-    disabled until tracking lands.
+    slider is disabled off reflectivity.
   - **3D** draws no cells, card or probe line.
-  - The link carries the overlay as `cells=<dbz>` (§13.4).
+  - The link carries the overlay as `cells=<dbz>` and tracks as `tracks=1`
+    (§13.4).
 
 ### 13.3 Responsive behavior
 
@@ -867,6 +886,7 @@ decision are `core::link`; preferences are `core::prefs`.
 | Map center | `lat`, `lon` | |
 | 2D/3D, camera, map and timeline zoom, volume rendering and cutoff | `v` | Base64 JSON blob; its old `rt` flag is read as `sel=now` |
 | Storm cells | `cells` | Present means on; the value is the envelope threshold in dBZ (`cells=35`). Absent leaves the preference |
+| Storm cell tracks | `tracks` | `tracks=1` on, `tracks=0` off; written only while cells and tracks are both on. Absent leaves the preference |
 | Developer flag | `dev=true` | Wins for that session without being saved |
 
 A link with a pinned selection opens pinned; one with a time (or a fixed

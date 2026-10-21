@@ -267,6 +267,18 @@ pub(crate) mod storm_cells {
     }
     /// The card's secondary lines (position, provisional note).
     pub(crate) const CARD_DIM: Color32 = super::TEXT_DIM;
+    /// A track's trail: the line joining its last centroids.
+    pub(crate) fn trail() -> Color32 {
+        alpha(OUTLINE, 170)
+    }
+    /// The trail's centroid dots.
+    pub(crate) fn trail_dot() -> Color32 {
+        alpha(OUTLINE, 230)
+    }
+    /// The dashed 30-minute forecast arrow.
+    pub(crate) fn forecast() -> Color32 {
+        alpha(OUTLINE, 215)
+    }
 }
 
 /// Radar sweep-position marks on the canvas (§7): white is what you see,

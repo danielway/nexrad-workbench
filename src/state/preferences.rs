@@ -61,6 +61,7 @@ impl Preferences {
                 distance: state.viz_state.distance_tool_active,
                 storm_cells: state.viz_state.storm_cells_visible,
                 storm_cell_dbz: state.viz_state.storm_cell_threshold_dbz,
+                storm_tracks: state.viz_state.storm_tracks_visible,
             },
             developer_mode: state.dev_mode_saved,
             mping_api_key,
@@ -109,6 +110,7 @@ impl Preferences {
         state.viz_state.storm_cells_visible = self.tools.storm_cells;
         state.viz_state.storm_cell_threshold_dbz =
             crate::core::storm_cells::clamp_threshold(self.tools.storm_cell_dbz);
+        state.viz_state.storm_tracks_visible = self.tools.storm_tracks;
         state.dev_mode = self.developer_mode;
         state.dev_mode_saved = self.developer_mode;
         self.mping_api_key.clone()
@@ -248,6 +250,7 @@ mod tests {
         src.viz_state.data_probe_enabled = true;
         src.viz_state.storm_cells_visible = true;
         src.viz_state.storm_cell_threshold_dbz = 45.0;
+        src.viz_state.storm_tracks_visible = true;
         src.dev_mode_saved = true;
 
         let prefs = snapshot(&src, &src_pb);
@@ -273,6 +276,7 @@ mod tests {
         assert!(dst.viz_state.data_probe_enabled);
         assert!(dst.viz_state.storm_cells_visible);
         assert!((dst.viz_state.storm_cell_threshold_dbz - 45.0).abs() < 1e-6);
+        assert!(dst.viz_state.storm_tracks_visible);
         assert!(dst.dev_mode && dst.dev_mode_saved);
     }
 

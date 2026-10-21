@@ -57,7 +57,6 @@ pub(crate) const HISTORY_VOLUMES: usize = 4;
 pub(crate) const MAX_FRAMES: usize = 96;
 
 /// The forecast arrow's lead time.
-#[allow(dead_code)] // Read by the storm cell overlay once it draws tracks.
 pub(crate) const FORECAST_MINUTES: f64 = 30.0;
 
 /// The stored cuts of up to [`HISTORY_VOLUMES`] volumes before `displayed`,
@@ -156,13 +155,12 @@ impl StormTracks {
     }
 
     /// The frame for the shown volume, if it is tracked.
-    #[allow(dead_code)] // Read by the storm cell overlay once it draws tracks.
     pub(crate) fn current(&self) -> Option<&Frame> {
         self.current.as_ref().map(|(_, f)| f)
     }
 
     /// Volume times with a stored frame, oldest first.
-    #[allow(dead_code)] // Read by the storm cell overlay once it draws tracks.
+    #[cfg(test)]
     pub(crate) fn observed_times(&self) -> Vec<i64> {
         self.frames.keys().copied().collect()
     }
@@ -278,7 +276,6 @@ impl StormTracks {
 
     /// The tracks on the shown volume. `reference` is a point (the user's
     /// location) to compute closest approach to.
-    #[allow(dead_code)] // Read by the storm cell overlay once it draws tracks.
     pub(crate) fn view(&self, reference: Option<(f64, f64)>) -> Option<TracksView> {
         let frame = self.current()?;
         let tracks = frame
@@ -317,7 +314,6 @@ impl StormTracks {
 }
 
 /// One track on the shown volume, ready to draw and describe.
-#[allow(dead_code)] // Read by the storm cell overlay once it draws tracks.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TrackVm {
     pub id: TrackId,
@@ -352,7 +348,6 @@ pub(crate) struct TrackVm {
 }
 
 /// The tracks on the shown volume.
-#[allow(dead_code)] // Read by the storm cell overlay once it draws tracks.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TracksView {
     /// From a provisional (live) result.
@@ -363,7 +358,6 @@ pub(crate) struct TracksView {
 
 impl TracksView {
     /// The track on cell `cell_id`.
-    #[allow(dead_code)] // Read by the storm cell overlay once it draws tracks.
     pub(crate) fn for_cell(&self, cell_id: u32) -> Option<&TrackVm> {
         self.tracks.iter().find(|t| t.cell_id == Some(cell_id))
     }

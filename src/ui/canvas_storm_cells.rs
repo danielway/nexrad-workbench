@@ -11,8 +11,8 @@ fn pos(p: [f32; 2]) -> Pos2 {
     Pos2::new(p[0], p[1])
 }
 
-/// Group outlines (dashed), cell footprints (light stroke over a dark halo)
-/// and the peak dBZ chips.
+/// Group outlines (dashed), cell footprints (light stroke over a dark halo),
+/// track trails and forecast arrows, and the chips.
 pub(crate) fn paint_storm_cells(painter: &Painter, vm: &StormCellsVm) {
     if vm.is_empty() {
         return;
@@ -42,6 +42,54 @@ pub(crate) fn paint_storm_cells(painter: &Painter, vm: &StormCellsVm) {
             path,
             Stroke::new(style.outline_px, stroke),
         ));
+    }
+
+    for trail in &vm.trails {
+        let pts: Vec<Pos2> = trail.dots.iter().copied().map(pos).collect();
+        let width = if trail.highlighted {
+            style.trail_px + 0.6
+        } else {
+            style.trail_px
+        };
+        let halo = Stroke::new(width + 2.5, tokens::halo());
+        painter.add(Shape::line(pts.clone(), halo));
+        painter.add(Shape::line(
+            pts.clone(),
+            Stroke::new(width, tokens::trail()),
+        ));
+        if let Some(arrow) = &trail.arrow {
+            let (a, b) = (pos(arrow.from), pos(arrow.to));
+            dashed_line(
+                painter,
+                a,
+                b,
+                Stroke::new(width + 2.5, tokens::halo()),
+                5.0,
+                4.0,
+            );
+            dashed_line(
+                painter,
+                a,
+                b,
+                Stroke::new(width, tokens::forecast()),
+                5.0,
+                4.0,
+            );
+            let head: Vec<Pos2> = arrow.head.iter().copied().map(pos).collect();
+            painter.add(Shape::convex_polygon(
+                head,
+                tokens::forecast(),
+                Stroke::new(1.0, tokens::halo()),
+            ));
+        }
+        for p in &pts {
+            painter.circle(
+                *p,
+                style.trail_dot_px,
+                tokens::trail_dot(),
+                Stroke::new(1.0, tokens::halo()),
+            );
+        }
     }
 
     let font = FontId::monospace(style.chip_font_px);
@@ -129,6 +177,21 @@ fn dashed_loop(painter: &Painter, pts: &[Pos2], stroke: Stroke, dash: f32, gap: 
             t += step;
             phase = (phase + step) % period;
         }
+    }
+}
+
+/// A dashed straight line from `a` to `b`, one segment per dash.
+fn dashed_line(painter: &Painter, a: Pos2, b: Pos2, stroke: Stroke, dash: f32, gap: f32) {
+    let len = a.distance(b);
+    if len <= f32::EPSILON {
+        return;
+    }
+    let dir = (b - a) / len;
+    let mut t = 0.0_f32;
+    while t < len {
+        let end = (t + dash).min(len);
+        painter.line_segment([a + dir * t, a + dir * end], stroke);
+        t += dash + gap;
     }
 }
 
