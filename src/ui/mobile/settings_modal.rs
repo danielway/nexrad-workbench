@@ -114,7 +114,12 @@ fn draw_sheet(ctx: &mut LayoutCtx) {
                     ),
                     RailTab::Settings => {
                         super::super::right_panel::settings_tab(ui, ctx.state, ctx.chrome);
-                        about_section(ui, ctx.state, &ctx.top_bar_vm.version);
+                        about_section(
+                            ui,
+                            ctx.state,
+                            &ctx.top_bar_vm.version,
+                            &ctx.activity_vm.readout,
+                        );
                     }
                 });
         });
@@ -196,14 +201,26 @@ fn section(ui: &mut egui::Ui, title: &str) {
 }
 
 /// The phone's About, the desktop ⋯ menu's About at the sheet's foot: the
-/// build's version and the changelog link.
-fn about_section(ui: &mut egui::Ui, state: &mut AppState, version: &str) {
+/// build's version, the frame rate and request count the desktop transport
+/// row shows beside the activity chip, and the changelog link.
+fn about_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    version: &str,
+    readout: &crate::core::activity::Readout,
+) {
     section(ui, "About");
     ui.label(
         RichText::new(version)
             .size(theme::CAPTION)
             .monospace()
             .color(theme::TEXT_DIM),
+    );
+    ui.label(
+        RichText::new(readout.text())
+            .size(theme::CAPTION)
+            .monospace()
+            .color(theme::TEXT_FAINT),
     );
     if ui
         .button(format!(

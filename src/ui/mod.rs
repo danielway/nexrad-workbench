@@ -26,6 +26,7 @@ mod canvas_overlays;
 mod data_colors;
 pub(crate) mod dialog;
 mod event_modal;
+mod go_to_day;
 mod ladder;
 mod layout;
 mod mobile;

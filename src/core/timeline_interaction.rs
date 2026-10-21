@@ -4,7 +4,8 @@
 //! decision with real precedence — and it was previously spread across a dozen
 //! interleaved boolean guards inside the painter, where it could not be tested.
 //! This module owns that decision as a pure function ([`resolve_gesture`]) plus
-//! the view-position clamp every pan path shares ([`clamp_view_start`]).
+//! the view-position clamp every pan path shares ([`clamp_view_start`]) and the
+//! cursor-anchored zoom both timeline lanes share ([`zoom_about`]).
 //!
 //! The egui layer's job shrinks to: collect raw pointer facts into
 //! [`StripInput`], ask which gesture won, and perform the corresponding
@@ -138,6 +139,17 @@ pub(crate) fn clamp_view_start(desired: f64, span: f64, era_start: f64, now: f64
     desired.clamp(lo, hi.max(lo))
 }
 
+/// Where a window starting at `start` and `old_span` wide must start once it
+/// is `new_span` wide, so the time `anchor` stays at the same place across
+/// it (under the pointer). The one zoom-anchoring rule for the strip and the
+/// overview lane above it.
+pub(crate) fn zoom_about(anchor: f64, start: f64, old_span: f64, new_span: f64) -> f64 {
+    if old_span.is_nan() || old_span <= 0.0 || !new_span.is_finite() {
+        return start;
+    }
+    anchor - (anchor - start) * new_span / old_span
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +280,19 @@ mod tests {
         assert!(approx(boot_zoom(Some(0.01), false), 0.01));
         assert!(approx(boot_zoom(Some(f64::NAN), false), ARCHIVE_ZOOM));
         assert!(approx(boot_zoom(Some(-1.0), true), LIVE_ZOOM));
+    }
+
+    // ---- zoom_about -------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn zoom_about_keeps_the_anchor_at_its_place() {
+        let (start, span, anchor) = (1000.0, 400.0, 1100.0);
+        for new_span in [100.0, 400.0, 1600.0] {
+            let s = zoom_about(anchor, start, span, new_span);
+            assert!(approx((anchor - s) / new_span, 0.25));
+        }
+        // A degenerate old span leaves the window where it was.
+        assert!(approx(zoom_about(anchor, start, 0.0, 100.0), start));
     }
 
     // ---- clamp_view_start -------------------------------------------------

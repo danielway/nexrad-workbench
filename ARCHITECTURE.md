@@ -400,7 +400,7 @@ takes the tap to the activity sheet). The row's press area reaches 12 px up
 into the map, which neither pans on that press nor zooms on the row's pinch.
 
 The phone's overview is the calendar sheet, "Go to a day"
-(`ui/mobile/go_to_day.rs` on the dialog component's `Sheet` and the Esc
+(`ui/go_to_day.rs` on the dialog component's `Sheet` and the Esc
 stack; its state, `Chrome::go_to_day`, changes only through
 `Intent::OpenGoToDay` / `Intent::Calendar`). Everything it shows is
 `core::calendar::calendar_vm`: the Monday-first month grid with each day's
@@ -422,6 +422,15 @@ known cuts (`phone_strip::volume_landing`, `Landing::volume`), and moves onto it
 once ingested, so a frame shows. The shell applies those re-seeks directly
 (a queued `Seek` would read as a touch); the landing is dropped by
 `landing_after` on any playhead intent or by a moved or playing playhead.
+
+The desktop draws the same calendar as a `Popover` above the transport
+clock's calendar button (also G and the chip menu's "Go to a day…"). A
+picked day also runs `calendar::frame_day`: the overview at its default 48 h
+around the day and the strip showing the whole day, cut at now, as a click
+on an overview bar does. Under the grid sits the clock's time field; a time
+typed there is `Intent::GoToTime`, which stops a stream in place, seeks as a
+typed seek, pauses and frames the overview around it
+(`calendar::frame_time`).
 
 Ranges on the phone are never drawn (`core::phone_range`). A long-press on
 the strip emits `Intent::OpenPressSheet` with the snapped time and the scan

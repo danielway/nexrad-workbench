@@ -180,8 +180,9 @@ pub(crate) enum Intent {
     /// the chrome, not in preferences or the link; decided by
     /// [`crate::core::phone_strip::strip_zoom_after`].
     SetPhoneStripZoom(crate::core::phone_strip::StripZoom),
-    /// Open the phone's calendar sheet, "Go to a day" (the chip menu's
-    /// entry, a tap on the date in the phone's top bar). It opens on the
+    /// Open the calendar, "Go to a day" (the chip menu's entry, G, the
+    /// transport's calendar button, a tap on the date in the phone's top
+    /// bar). It opens on the
     /// playhead's month ([`crate::core::calendar::calendar_vm`]).
     OpenGoToDay,
     /// Move the calendar sheet to a month, a year's months or the years
@@ -192,6 +193,10 @@ pub(crate) enum Intent {
     /// local midday until the day's listing arrives), and the sheet closes.
     /// Decided by [`crate::core::calendar::land_on_day`].
     GoToDay(crate::core::calendar::CalendarDay),
+    /// A time typed in the desktop calendar: like a picked day, a running
+    /// stream stops in place and the playhead pauses, here on the exact
+    /// time, with the overview framed around it and the calendar closed.
+    GoToTime(f64),
     /// A long-press on the phone strip: open the action sheet for the time
     /// and scan under the finger ([`crate::core::phone_range::press_sheet_vm`]).
     OpenPressSheet(crate::core::phone_range::PressSheet),
