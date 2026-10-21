@@ -296,7 +296,11 @@ impl Live {
         };
         self.radar_model = self.mode_state.compute_model(now, live_scan);
         // Last: the status snapshot reads the projection adopted above.
-        let active_filter = StreamingFilter::from(inputs.elevation_selection);
+        let active_filter = StreamingFilter::for_selection(
+            inputs.elevation_selection,
+            self.radar_model.vcp_pattern(),
+            StreamingFilter::All,
+        );
         let mut expected_sweep = self
             .frame_projection
             .as_ref()

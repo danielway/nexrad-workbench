@@ -110,7 +110,7 @@ sweep to all arrive in order. The init phase backfills as follows:
 | Filter | What gets backfilled |
 | --- | --- |
 | `All` (latest) | The current sweep's chunks (sequences earlier than the latest, same elevation as the latest). |
-| `Elevation(n)` | Every already-published chunk of elevation `n` in this volume, including completed earlier sweeps of `n` if any (rare). |
+| `Cuts(set)` | Every already-published chunk of the cuts in `set` in this volume: each visit of the held angle (the base cut and every SAILS/MRLE repeat), including completed earlier ones. |
 
 `filter_backfill_sequences` resolves the candidate set against the
 mapper. `cached_elevations_for_scan` then trims sweeps that are already
@@ -186,7 +186,7 @@ now facets of the one plan:
 | Case | How the plan handles it | When it applies |
 | --- | --- | --- |
 | Next sequential chunk | The next target is `current + 1` in the current volume. | `StreamingFilter::All` |
-| Filtered target (multi-hop) | The next target is the next sequence whose elevation matches the filter; the projection sums the same blended intervals across every skipped hop. | `StreamingFilter::Elevation(_)` |
+| Filtered target (multi-hop) | The next target is the next sequence whose elevation matches the filter; the projection sums the same blended intervals across every skipped hop. | `StreamingFilter::Cuts(_)` |
 | Cross-volume | When the filter excludes everything remaining, the projection extends into the **next volume** (`next_volume_chunks`, `next_target_in_next_volume()`): projected end-of-current-volume + 8.5 s inter-volume gap + intra-next-volume hops + lag. | Filter excludes the rest of the current volume. |
 | Timeline placeholders | The same plan's `ChunkProjectionInfo` list feeds the timeline placeholders and the forecast modal. | Always. |
 
@@ -400,7 +400,10 @@ on "Streaming…" for the entire inter-volume gap because
 
 `RealtimeChannel::sync_filter` is called once per egui frame from the
 update loop. It maps the user's `ElevationSelection` into a
-`StreamingFilter` and calls `set_filter`, which sends a
+`StreamingFilter` (`StreamingFilter::for_selection`: a held angle becomes
+the set of cuts at that angle in the live VCP, so a SAILS ×3 volume streams
+all four 0.5° visits; while the VCP is unknown between volumes the last
+resolved set is kept) and calls `set_filter`, which sends a
 `ControlMessage::SetFilter` down the control channel (cheap to send every
 frame). When `drain_control` applies it, it short-circuits on a value equal
 to the loop's current `active_filter`; on a real change it:

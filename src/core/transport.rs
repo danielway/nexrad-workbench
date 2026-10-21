@@ -303,31 +303,32 @@ pub(crate) trait FrameIndex {
     fn prev_before(&self, ts: f64) -> Option<f64>;
 }
 
-/// [`FrameIndex`] over the scan inventory: sweeps of one tilt (`tilt`), any
-/// tilt (`None`, the Latest selection), or whole volumes (`volumes`, for a
-/// Shift step or volumetric 3D, where a frame is a scan).
+/// [`FrameIndex`] over the scan inventory: sweeps at one tilt (`tilt`, every
+/// visit of a held angle, SAILS/MRLE repeats included), any tilt
+/// (`TiltFilter::Every`, the Latest selection), or whole volumes (`volumes`,
+/// for a Shift step or volumetric 3D, where a frame is a scan).
 pub(crate) struct ScanFrames<'a> {
     pub scans: &'a RadarTimeline,
-    pub tilt: Option<u8>,
+    pub tilt: crate::core::tilt::TiltFilter,
     pub volumes: bool,
 }
 
 impl FrameIndex for ScanFrames<'_> {
     fn next_after(&self, ts: f64) -> Option<f64> {
-        match (self.volumes, self.tilt) {
-            (true, Some(n)) => self.scans.next_scan_matching_sweep_end_by_number(ts, n),
-            (true, None) => self.scans.next_scan_any_sweep_end(ts),
-            (false, Some(n)) => self.scans.next_matching_sweep_end_by_number(ts, n),
-            (false, None) => self.scans.next_any_sweep_end(ts),
+        match (self.volumes, self.tilt.is_every()) {
+            (true, false) => self.scans.next_scan_matching_sweep_end(ts, self.tilt),
+            (true, true) => self.scans.next_scan_any_sweep_end(ts),
+            (false, false) => self.scans.next_matching_sweep_end(ts, self.tilt),
+            (false, true) => self.scans.next_any_sweep_end(ts),
         }
     }
 
     fn prev_before(&self, ts: f64) -> Option<f64> {
-        match (self.volumes, self.tilt) {
-            (true, Some(n)) => self.scans.prev_scan_matching_sweep_end_by_number(ts, n),
-            (true, None) => self.scans.prev_scan_any_sweep_end(ts),
-            (false, Some(n)) => self.scans.prev_matching_sweep_end_by_number(ts, n),
-            (false, None) => self.scans.prev_any_sweep_end(ts),
+        match (self.volumes, self.tilt.is_every()) {
+            (true, false) => self.scans.prev_scan_matching_sweep_end(ts, self.tilt),
+            (true, true) => self.scans.prev_scan_any_sweep_end(ts),
+            (false, false) => self.scans.prev_matching_sweep_end(ts, self.tilt),
+            (false, true) => self.scans.prev_any_sweep_end(ts),
         }
     }
 }

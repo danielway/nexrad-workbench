@@ -59,7 +59,7 @@ pub(crate) struct DecodedEnv<'a> {
     pub live_cut: Option<(u8, i64)>,
     /// `self.live_shows_whole_sweeps()` — Frames mode: never show a partial.
     pub whole_sweeps_only: bool,
-    /// `state.effective_sweep_animation(&playback.state, streaming, collecting)`.
+    /// `state.effective_sweep_animation(&playback.state, follows_live, live)`.
     pub sweep_animation: bool,
     /// `state.download_progress.in_flight_scans`, read BEFORE the shell
     /// executes the retain — the clear predicate is decided against it.

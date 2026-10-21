@@ -278,8 +278,8 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn set_filter_round_trips() {
         let mut p = Projector::new();
-        p.set_filter(StreamingFilter::Elevation(3));
-        assert_eq!(p.filter(), StreamingFilter::Elevation(3));
+        p.set_filter(StreamingFilter::elevation(3));
+        assert_eq!(p.filter(), StreamingFilter::elevation(3));
         p.set_filter(StreamingFilter::All);
         assert_eq!(p.filter(), StreamingFilter::All);
     }

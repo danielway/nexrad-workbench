@@ -356,6 +356,7 @@ fn apply_link(
         .product
         .as_deref()
         .and_then(crate::core::RadarProduct::from_short_code)
+        .filter(|p| p.is_offered())
     {
         state.viz_state.product = product;
     }
@@ -941,7 +942,7 @@ impl eframe::App for WorkbenchApp {
             &self.state,
             &self.playback,
             self.live.canvas_follows_live(&self.playback.state),
-            self.live.radar_model.collecting_elevation(),
+            &self.live.radar_model,
         );
         self.state.national_mosaic.poll_tick(
             ctx,
@@ -1087,7 +1088,7 @@ impl eframe::App for WorkbenchApp {
             &self.state,
             &self.playback,
             self.live.canvas_follows_live(&self.playback.state),
-            self.live.radar_model.collecting_elevation(),
+            &self.live.radar_model,
         );
 
         // 19. Resolve the phone chrome's auto-hide for this frame

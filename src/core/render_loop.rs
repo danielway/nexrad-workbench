@@ -159,13 +159,11 @@ pub(crate) fn reduce_advance_playback(
                 timeline.scan_end_frame_times(product, inputs.bounds)
             } else {
                 match &inputs.elevation {
-                    ElevationSelection::Fixed {
-                        elevation_number, ..
-                    } => timeline.matching_sweep_end_times_by_number(
-                        *elevation_number,
-                        product,
-                        inputs.bounds,
-                    ),
+                    // Every visit of the held angle is a frame (SAILS/MRLE
+                    // repeats included).
+                    sel @ ElevationSelection::Fixed { .. } => {
+                        timeline.matching_sweep_end_times(sel.into(), product, inputs.bounds)
+                    }
                     ElevationSelection::Latest => {
                         timeline.all_sweep_end_times(product, inputs.bounds)
                     }

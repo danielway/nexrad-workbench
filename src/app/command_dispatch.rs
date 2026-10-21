@@ -445,12 +445,7 @@ impl DispatchState<'_> {
     ) {
         let viz = &self.state.viz_state;
         let volumetric = viz.volume_3d_active();
-        let tilt = match viz.elevation_selection {
-            crate::core::ElevationSelection::Fixed {
-                elevation_number, ..
-            } => Some(elevation_number),
-            crate::core::ElevationSelection::Latest => None,
-        };
+        let tilt = crate::core::tilt::TiltFilter::from(&viz.elevation_selection);
         let timeline = self.timeline;
         let index = crate::core::transport::ScanFrames {
             scans: &timeline.scans,

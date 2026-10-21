@@ -142,7 +142,7 @@ fn draw_strip(
         in_flight: &in_flight,
         failed: &failed,
         product: state.viz_state.product.to_worker_string(),
-        tilt: state.viz_state.elevation_selection.elevation_number(),
+        tilt: (&state.viz_state.elevation_selection).into(),
         active,
         prev_active: None,
     };

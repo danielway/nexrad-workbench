@@ -197,11 +197,11 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn drain_control_filter_change_bumps_epoch_and_reports_change() {
         let (tx, mut rx) = futures_channel::mpsc::unbounded::<ControlMessage>();
-        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::Elevation(3)));
+        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::elevation(3)));
         let mut ls = LoopState::new();
         let changed = drain_control(&mut ls, &mut rx);
         assert!(changed);
-        assert!(ls.active_filter == StreamingFilter::Elevation(3));
+        assert!(ls.active_filter == StreamingFilter::elevation(3));
         // One real change → epoch 0 → 1.
         assert_eq!(ls.filter_epoch, 1);
         assert!(!ls.stop_requested);
@@ -225,12 +225,12 @@ mod coverage_tests {
         // Two distinct changes queued before a single drain → both applied,
         // epoch counts each real transition, final value is the last one.
         let (tx, mut rx) = futures_channel::mpsc::unbounded::<ControlMessage>();
-        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::Elevation(1)));
-        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::Elevation(2)));
+        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::elevation(1)));
+        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::elevation(2)));
         let mut ls = LoopState::new();
         let changed = drain_control(&mut ls, &mut rx);
         assert!(changed);
-        assert!(ls.active_filter == StreamingFilter::Elevation(2));
+        assert!(ls.active_filter == StreamingFilter::elevation(2));
         // 0 → 1 (to Elevation(1)) → 2 (to Elevation(2)).
         assert_eq!(ls.filter_epoch, 2);
     }
@@ -240,12 +240,12 @@ mod coverage_tests {
         // Same target sent twice: first transition counts, the second is a
         // no-op against the now-current value.
         let (tx, mut rx) = futures_channel::mpsc::unbounded::<ControlMessage>();
-        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::Elevation(5)));
-        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::Elevation(5)));
+        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::elevation(5)));
+        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::elevation(5)));
         let mut ls = LoopState::new();
         let changed = drain_control(&mut ls, &mut rx);
         assert!(changed);
-        assert!(ls.active_filter == StreamingFilter::Elevation(5));
+        assert!(ls.active_filter == StreamingFilter::elevation(5));
         assert_eq!(ls.filter_epoch, 1);
     }
 
@@ -255,7 +255,7 @@ mod coverage_tests {
         let (tx, mut rx) = futures_channel::mpsc::unbounded::<ControlMessage>();
         let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::All));
         let mut ls = LoopState::new();
-        ls.active_filter = StreamingFilter::Elevation(4);
+        ls.active_filter = StreamingFilter::elevation(4);
         // Pretend we'd already advanced the epoch once before this drain.
         ls.filter_epoch = 1;
         let changed = drain_control(&mut ls, &mut rx);
@@ -269,13 +269,13 @@ mod coverage_tests {
         // A filter change AND a stop queued in the same drain: both land. The
         // change is reported and the stop flag is set.
         let (tx, mut rx) = futures_channel::mpsc::unbounded::<ControlMessage>();
-        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::Elevation(7)));
+        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::elevation(7)));
         let _ = tx.unbounded_send(ControlMessage::Stop);
         let mut ls = LoopState::new();
         let changed = drain_control(&mut ls, &mut rx);
         assert!(changed);
         assert!(ls.stop_requested);
-        assert!(ls.active_filter == StreamingFilter::Elevation(7));
+        assert!(ls.active_filter == StreamingFilter::elevation(7));
         assert_eq!(ls.filter_epoch, 1);
     }
 }

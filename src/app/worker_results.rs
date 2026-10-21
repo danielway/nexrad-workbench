@@ -353,7 +353,7 @@ impl WorkbenchApp {
                 sweep_animation: self.state.effective_sweep_animation(
                     &self.playback.state,
                     self.live.canvas_follows_live(&self.playback.state),
-                    self.live.radar_model.collecting_elevation(),
+                    &self.live.radar_model,
                 ),
                 in_flight_scans: &self.state.download_progress.in_flight_scans,
                 pending_scans_empty: self.state.download_progress.pending_scans.is_empty(),

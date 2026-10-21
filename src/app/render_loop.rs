@@ -130,7 +130,7 @@ impl WorkbenchApp {
         if !self.state.effective_sweep_animation(
             &self.playback.state,
             self.live.canvas_follows_live(&self.playback.state),
-            self.live.radar_model.collecting_elevation(),
+            &self.live.radar_model,
         ) {
             self.state.viz_state.previous_displayed = None;
             self.state.viz_state.last_sweep_line_cache = None;
@@ -171,7 +171,7 @@ impl WorkbenchApp {
                 &self.timeline.scans,
                 playback_ts,
                 displayed_elev,
-                is_auto,
+                crate::core::tilt::TiltFilter::from(&self.state.viz_state.elevation_selection),
                 MAX_SCAN_AGE_SECS,
             );
             self.state.render_cache.prev_sweep_cache_key = Some(cache_key);

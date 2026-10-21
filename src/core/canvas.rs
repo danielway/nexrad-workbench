@@ -646,14 +646,24 @@ pub(crate) fn frame_step_secs(
             None => own,
         },
     };
-    // The fixed-tilt resolver shows one elevation number, so its frames are
-    // that number's cuts in the volume.
-    let visits = scan
+    // A held tilt's frames are its angle's visits in the volume (the base
+    // cut and each SAILS/MRLE repeat): as many as the plan makes, or as are
+    // cached when that is more (or the plan is unknown).
+    let shown = displayed.identity.elevation_number;
+    let tilt = crate::core::tilt::TiltFilter::Angle {
+        anchor: shown,
+        angle: scan
+            .target_elevation_angle(shown)
+            .unwrap_or(displayed.elevation_deg),
+    };
+    let cuts = tilt.cuts(scan.vcp_pattern.as_ref());
+    let cached = scan
         .sweeps
         .iter()
-        .filter(|s| s.elevation_number == displayed.identity.elevation_number)
-        .count()
-        .max(1);
+        .filter(|s| cuts.contains(s.elevation_number))
+        .count();
+    let planned = scan.vcp_pattern.as_ref().map_or(0, |_| cuts.len());
+    let visits = cached.max(planned).max(1);
     (volume_secs / visits as f64)
         .max(sweep_secs)
         .max(MIN_FRAME_STEP_SECS)

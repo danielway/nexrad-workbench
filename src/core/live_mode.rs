@@ -992,16 +992,16 @@ mod tests {
     fn expected_sweep_from_plan_uses_filter_and_availability() {
         use crate::core::StreamingFilter;
         let plan = StreamingPlan::with_projected_target_for_test(
-            StreamingFilter::Elevation(3),
+            StreamingFilter::elevation(3),
             Some(3),
             1500.0,
         );
-        let hit = ExpectedSweep::from_plan(&plan, StreamingFilter::Elevation(3)).unwrap();
+        let hit = ExpectedSweep::from_plan(&plan, StreamingFilter::elevation(3)).unwrap();
         assert_eq!(hit.elevation_number, Some(3));
         assert_eq!(hit.available_at_secs, 1500.0);
 
         assert!(
-            ExpectedSweep::from_plan(&plan, StreamingFilter::Elevation(1)).is_none(),
+            ExpectedSweep::from_plan(&plan, StreamingFilter::elevation(1)).is_none(),
             "stale plan after a filter change must not keep the old target"
         );
         assert!(ExpectedSweep::from_plan(&plan, StreamingFilter::All).is_none());
