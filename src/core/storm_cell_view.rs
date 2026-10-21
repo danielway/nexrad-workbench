@@ -357,7 +357,7 @@ pub(crate) fn build(
             Some((last, rest)) if !rest.is_empty() && Some(last) == rest.first() => rest,
             _ => ring,
         };
-        open.iter().map(|&(lat, lon)| project(lat, lon)).collect()
+        stroke_ready(open.iter().map(|&(lat, lon)| project(lat, lon)).collect())
     };
 
     // The cell the card is about: the phone's selection, or the desktop
@@ -418,6 +418,52 @@ pub(crate) fn build(
     });
     vm.shown = shown;
     vm
+}
+
+/// Screen points closer than this are merged before stroking.
+const RING_MIN_STEP_PX: f32 = 1.0;
+/// A vertex where the ring turns back by more than this (degrees) is cut.
+const RING_MAX_TURN_DEG: f32 = 150.0;
+
+/// Make a projected ring safe to stroke: merge points less than a pixel
+/// apart and cut vertices where the ring doubles back on itself. A stroke
+/// joins segments with a miter, and at a near-reversal (a one-gate spike, or
+/// a whole small outline collapsing at a low zoom) the miter runs off for
+/// hundreds of pixels. Returns fewer than three points when nothing
+/// drawable is left.
+pub(crate) fn stroke_ready(mut ring: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
+    let dist = |a: [f32; 2], b: [f32; 2]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
+    let cos_limit = (180.0 - RING_MAX_TURN_DEG).to_radians().cos();
+    loop {
+        let before = ring.len();
+        ring.dedup_by(|b, a| dist(*a, *b) < RING_MIN_STEP_PX);
+        while ring.len() > 1 && dist(ring[0], ring[ring.len() - 1]) < RING_MIN_STEP_PX {
+            ring.pop();
+        }
+        let n = ring.len();
+        if n < 3 {
+            return ring;
+        }
+        // Cut every vertex whose incoming and outgoing edges are nearly
+        // opposite (the angle at the vertex is under 30°).
+        let keep: Vec<bool> = (0..n)
+            .map(|i| {
+                let (p, c, q) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
+                let (ax, ay) = (p[0] - c[0], p[1] - c[1]);
+                let (bx, by) = (q[0] - c[0], q[1] - c[1]);
+                let cos = (ax * bx + ay * by) / ((ax.hypot(ay)) * (bx.hypot(by)));
+                cos < cos_limit
+            })
+            .collect();
+        let mut i = 0;
+        ring.retain(|_| {
+            i += 1;
+            keep[i - 1]
+        });
+        if ring.len() == before {
+            return ring;
+        }
+    }
 }
 
 /// The chip text for a cell: its peak, whole dBZ.
@@ -954,6 +1000,30 @@ mod tests {
         let vm = build(&i, project);
         assert_eq!(vm.cells.len(), 1);
         assert!(vm.groups.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn rings_lose_spikes_and_collapsed_points_before_stroking() {
+        // A square with a one-pixel-wide spike out of its top edge.
+        let spiky = vec![
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [5.0, -40.0],
+            [5.5, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+        ];
+        let clean = stroke_ready(spiky);
+        assert!(!clean.contains(&[5.0, -40.0]), "{clean:?}");
+        assert!(clean.iter().all(|p| p[1] >= 0.0));
+        assert!(clean.len() >= 4);
+        // A square's right angles stay.
+        let square = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        assert_eq!(stroke_ready(square.clone()), square);
+        // An outline that collapses under a pixel leaves nothing to draw.
+        let tiny = vec![[0.0, 0.0], [0.3, 0.0], [0.3, 0.4], [0.0, 0.4]];
+        assert!(stroke_ready(tiny).len() < 3);
     }
 
     #[wasm_bindgen_test]

@@ -19,22 +19,12 @@ pub(crate) fn paint_storm_cells(painter: &Painter, vm: &StormCellsVm) {
     }
     let style = vm.style;
     for ring in &vm.groups {
-        let mut path: Vec<Pos2> = ring.iter().copied().map(pos).collect();
-        if let Some(first) = path.first().copied() {
-            path.push(first);
+        let pts: Vec<Pos2> = ring.iter().copied().map(pos).collect();
+        let halo = Stroke::new(style.group_px + 2.0, tokens::group_halo());
+        let line = Stroke::new(style.group_px, tokens::group());
+        for stroke in [halo, line] {
+            dashed_loop(painter, &pts, stroke, 3.0, 4.0);
         }
-        painter.extend(Shape::dashed_line(
-            &path,
-            Stroke::new(style.group_px + 2.0, tokens::group_halo()),
-            3.0,
-            4.0,
-        ));
-        painter.extend(Shape::dashed_line(
-            &path,
-            Stroke::new(style.group_px, tokens::group()),
-            3.0,
-            4.0,
-        ));
     }
 
     let stroke = if vm.provisional {
@@ -101,6 +91,43 @@ pub(crate) fn paint_storm_cells(painter: &Painter, vm: &StormCellsVm) {
                 font.clone(),
                 tokens::CHIP_VALUE,
             );
+        }
+    }
+}
+
+/// A closed dashed outline drawn as separate straight dashes, one segment
+/// each. egui's dashed polyline joins a dash's pieces across a vertex with a
+/// miter, and a dash that ends a hair past a corner leaves a near-zero
+/// segment whose miter shoots off across the map.
+fn dashed_loop(painter: &Painter, pts: &[Pos2], stroke: Stroke, dash: f32, gap: f32) {
+    let n = pts.len();
+    if n < 2 {
+        return;
+    }
+    let period = dash + gap;
+    // Distance into the current period, carried across edges.
+    let mut phase = 0.0_f32;
+    for i in 0..n {
+        let (a, b) = (pts[i], pts[(i + 1) % n]);
+        let len = a.distance(b);
+        if len <= f32::EPSILON {
+            continue;
+        }
+        let dir = (b - a) / len;
+        let mut t = 0.0_f32;
+        while t < len {
+            let in_dash = phase < dash;
+            let step = if in_dash {
+                dash - phase
+            } else {
+                period - phase
+            }
+            .min(len - t);
+            if in_dash && step > 0.05 {
+                painter.line_segment([a + dir * t, a + dir * (t + step)], stroke);
+            }
+            t += step;
+            phase = (phase + step) % period;
         }
     }
 }
