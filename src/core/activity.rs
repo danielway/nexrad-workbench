@@ -370,6 +370,27 @@ impl ActivityVm {
         ))
     }
 
+    /// [`Self::build`], with the chip's word settled through `settle` so it
+    /// does not flicker ([`HeadlineSettle`]). The stage counts stay raw: the
+    /// sheet shows what is happening this frame.
+    pub(crate) fn build_settled(inputs: ActivityInputs<'_>, settle: &mut HeadlineSettle) -> Self {
+        let now_ms = inputs.now_ms;
+        let stream = inputs.stream;
+        let counts = stage_counts(&inputs);
+        let mut vm = Self::build(inputs);
+        let quiet = if stream.headline_word().is_some() {
+            ActivityState::Streaming
+        } else {
+            ActivityState::UpToDate
+        };
+        let shown = settle.step(vm.state, quiet, now_ms);
+        if shown != vm.state {
+            vm.state = shown;
+            vm.headline = headline_for(shown, &counts, stream);
+        }
+        vm
+    }
+
     pub(crate) fn build(inputs: ActivityInputs<'_>) -> Self {
         let counts = stage_counts(&inputs);
         let failed = failure_summary(inputs.operations);
@@ -454,6 +475,106 @@ impl ActivityVm {
                 unavailable: inputs.ledger.unavailable,
             }),
         }
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Settling the headline
+// ───────────────────────────────────────────────────────────────────────────
+
+/// How long the pipeline must stay busy before an idle chip says
+/// "Processing". Most decodes and GPU uploads finish well inside this, so they
+/// never reach the chip at all.
+pub(crate) const PROCESSING_ENTER_MS: f64 = 750.0;
+
+/// Once "Processing" is on the chip it stays at least this long.
+pub(crate) const PROCESSING_HOLD_MS: f64 = 1_500.0;
+
+/// A pause in the work shorter than this does not count as going idle: it
+/// neither restarts the [`PROCESSING_ENTER_MS`] wait nor lets a shown
+/// "Processing" drop. Back-to-back jobs leave gaps of a frame or two.
+pub(crate) const PROCESSING_QUIET_MS: f64 = 400.0;
+
+/// The memory that keeps the chip's word from flickering between "Up to
+/// date" (or the stream's word) and "Processing".
+///
+/// The raw [`ActivityState`] follows the worker pool frame by frame, and
+/// during an ingest burst or a live stream the pool is busy for 50-200 ms at
+/// a time with short gaps in between. The chip would follow that and flash.
+/// Settling delays the switch into Processing until the work has gone on for
+/// [`PROCESSING_ENTER_MS`], then keeps it for at least [`PROCESSING_HOLD_MS`]
+/// and until the work has been quiet for [`PROCESSING_QUIET_MS`].
+///
+/// Only the quiet ⇄ Processing edge is settled. Downloading and Paused always
+/// show at once, because they carry a count the user acted on, and a drained
+/// download queue hands straight on to Processing with no wait.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct HeadlineSettle {
+    /// When the current run of busy frames began, gaps under
+    /// [`PROCESSING_QUIET_MS`] included.
+    busy_since_ms: Option<f64>,
+    /// The last frame the raw state was Processing.
+    last_busy_ms: f64,
+    /// When the chip started showing Processing, if it is.
+    shown_since_ms: Option<f64>,
+    /// What the chip showed last frame.
+    shown: Option<ActivityState>,
+}
+
+impl HeadlineSettle {
+    /// The state to show this frame, given the raw one. `quiet` is the state
+    /// to show while Processing is held back: Streaming or UpToDate.
+    pub(crate) fn step(
+        &mut self,
+        raw: ActivityState,
+        quiet: ActivityState,
+        now_ms: f64,
+    ) -> ActivityState {
+        let busy = raw == ActivityState::Processing;
+        if busy {
+            self.last_busy_ms = now_ms;
+            self.busy_since_ms.get_or_insert(now_ms);
+        } else if now_ms - self.last_busy_ms >= PROCESSING_QUIET_MS {
+            self.busy_since_ms = None;
+        }
+
+        let showing = self.shown_since_ms.is_some();
+        let shown = match raw {
+            ActivityState::Downloading { .. } | ActivityState::Paused { .. } => raw,
+            ActivityState::Processing => {
+                let after_downloads = matches!(
+                    self.shown,
+                    Some(ActivityState::Downloading { .. } | ActivityState::Paused { .. })
+                );
+                let long_enough = self
+                    .busy_since_ms
+                    .is_some_and(|since| now_ms - since >= PROCESSING_ENTER_MS);
+                if showing || after_downloads || long_enough {
+                    ActivityState::Processing
+                } else {
+                    quiet
+                }
+            }
+            ActivityState::UpToDate | ActivityState::Streaming => {
+                let held = self.shown_since_ms.is_some_and(|since| {
+                    now_ms - since < PROCESSING_HOLD_MS
+                        || now_ms - self.last_busy_ms < PROCESSING_QUIET_MS
+                });
+                if held {
+                    ActivityState::Processing
+                } else {
+                    raw
+                }
+            }
+        };
+
+        if shown == ActivityState::Processing {
+            self.shown_since_ms.get_or_insert(now_ms);
+        } else {
+            self.shown_since_ms = None;
+        }
+        self.shown = Some(shown);
+        shown
     }
 }
 
@@ -761,7 +882,11 @@ mod coverage_tests {
         }
 
         fn vm(&self) -> ActivityVm {
-            ActivityVm::build(ActivityInputs {
+            ActivityVm::build(self.inputs())
+        }
+
+        fn inputs(&self) -> ActivityInputs<'_> {
+            ActivityInputs {
                 now_ms: self.now_ms,
                 operations: &self.operations,
                 queue_paused: self.queue_paused,
@@ -782,7 +907,7 @@ mod coverage_tests {
                 dev: self.dev,
                 errors: &self.errors,
                 errors_acked: self.errors_acked,
-            })
+            }
         }
     }
 
@@ -1465,5 +1590,117 @@ mod coverage_tests {
         assert_eq!(hover, "1 new error — click for details");
         f.errors_acked = 1;
         assert_eq!(f.vm().warning(), None);
+    }
+
+    // ── settling the headline ───────────────────────────────────────────────
+
+    const P: ActivityState = ActivityState::Processing;
+    const U: ActivityState = ActivityState::UpToDate;
+    const S: ActivityState = ActivityState::Streaming;
+
+    /// Steps `settle` through `(time ms, raw state)` frames and returns what
+    /// was shown at each.
+    fn run(settle: &mut HeadlineSettle, frames: &[(f64, ActivityState)]) -> Vec<ActivityState> {
+        frames
+            .iter()
+            .map(|&(t, raw)| settle.step(raw, U, t))
+            .collect()
+    }
+
+    /// Short decodes never reach the chip.
+    #[wasm_bindgen_test]
+    fn brief_processing_stays_up_to_date() {
+        let mut settle = HeadlineSettle::default();
+        let shown = run(
+            &mut settle,
+            &[(0.0, U), (16.0, P), (200.0, P), (400.0, U), (1_000.0, U)],
+        );
+        assert!(shown.iter().all(|&s| s == U), "{shown:?}");
+    }
+
+    /// Work that goes on past the enter delay shows, and then holds.
+    #[wasm_bindgen_test]
+    fn sustained_processing_shows_after_the_enter_delay() {
+        let mut settle = HeadlineSettle::default();
+        assert_eq!(settle.step(P, U, 0.0), U);
+        assert_eq!(settle.step(P, U, PROCESSING_ENTER_MS - 1.0), U);
+        assert_eq!(settle.step(P, U, PROCESSING_ENTER_MS), P);
+        // Idle right away: still held for the minimum.
+        let start = PROCESSING_ENTER_MS;
+        assert_eq!(settle.step(U, U, start + 100.0), P);
+        assert_eq!(settle.step(U, U, start + PROCESSING_HOLD_MS - 1.0), P);
+        assert_eq!(settle.step(U, U, start + PROCESSING_HOLD_MS), U);
+    }
+
+    /// Busy bursts separated by short gaps count as one run of work, so the
+    /// chip neither restarts its wait nor flashes back to idle.
+    #[wasm_bindgen_test]
+    fn short_gaps_do_not_flicker() {
+        let mut settle = HeadlineSettle::default();
+        let mut frames = Vec::new();
+        // 120 ms busy, 80 ms idle, for six seconds.
+        let mut t = 0.0;
+        while t < 6_000.0 {
+            frames.push((t, P));
+            frames.push((t + 120.0, U));
+            t += 200.0;
+        }
+        let shown = run(&mut settle, &frames);
+        let switches = shown.windows(2).filter(|w| w[0] != w[1]).count();
+        assert_eq!(switches, 1, "one switch into Processing: {shown:?}");
+        assert_eq!(*shown.last().unwrap(), P);
+    }
+
+    /// A held Processing drops only after the work has been quiet a while,
+    /// even when the minimum hold has long passed.
+    #[wasm_bindgen_test]
+    fn exit_waits_for_quiet() {
+        let mut settle = HeadlineSettle::default();
+        settle.step(P, U, 0.0);
+        assert_eq!(settle.step(P, U, 1_000.0), P);
+        assert_eq!(settle.step(P, U, 5_000.0), P);
+        assert_eq!(settle.step(U, U, 5_000.0 + PROCESSING_QUIET_MS - 1.0), P);
+        assert_eq!(settle.step(U, U, 5_000.0 + PROCESSING_QUIET_MS), U);
+    }
+
+    /// Downloading shows at once, and a drained queue hands straight on to
+    /// Processing without the enter delay.
+    #[wasm_bindgen_test]
+    fn downloads_are_never_delayed() {
+        let mut settle = HeadlineSettle::default();
+        let d = ActivityState::Downloading { scans: 2 };
+        assert_eq!(settle.step(U, U, 0.0), U);
+        assert_eq!(settle.step(d, U, 10.0), d);
+        assert_eq!(settle.step(P, U, 20.0), P);
+        // Downloading again interrupts a held Processing.
+        assert_eq!(settle.step(d, U, 30.0), d);
+    }
+
+    /// While a live stream runs, held-back Processing shows the stream's word.
+    #[wasm_bindgen_test]
+    fn streaming_is_the_quiet_word_while_live() {
+        let mut settle = HeadlineSettle::default();
+        assert_eq!(settle.step(S, S, 0.0), S);
+        assert_eq!(settle.step(P, S, 100.0), S);
+        assert_eq!(settle.step(S, S, 300.0), S);
+    }
+
+    /// The settled build swaps the headline along with the state, and leaves
+    /// the sheet's stage counts raw.
+    #[wasm_bindgen_test]
+    fn build_settled_rewrites_the_headline() {
+        let mut f = Fixture::new();
+        f.worker = ingesting(1);
+        f.stream = Stream::Receiving;
+        let mut settle = HeadlineSettle::default();
+        let vm = ActivityVm::build_settled(f.inputs(), &mut settle);
+        assert_eq!(vm.state, ActivityState::Streaming);
+        assert_eq!(vm.headline.label, "Receiving");
+        assert_eq!(vm.stages[2].count, 1);
+
+        f.now_ms += PROCESSING_ENTER_MS;
+        let vm = ActivityVm::build_settled(f.inputs(), &mut settle);
+        assert_eq!(vm.state, ActivityState::Processing);
+        assert_eq!(vm.headline.label, "Processing");
     }
 }
