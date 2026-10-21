@@ -243,9 +243,12 @@ fn apply_zoom(
         crate::core::TIMELINE_ZOOM_MAX,
     );
 
-    // Keep the timestamp under the anchor fixed while scaling.
-    let anchor_ts = frame.x_to_ts(anchor_x);
-    let new_view_start = anchor_ts - (anchor_x - frame.rects.scan.left()) as f64 / new_zoom;
-    playback.state.timeline_view_start = new_view_start;
+    // Keep the timestamp under the anchor fixed while scaling (spans per px).
+    playback.state.timeline_view_start = crate::core::zoom_about(
+        frame.x_to_ts(anchor_x),
+        frame.view_start,
+        1.0 / frame.zoom,
+        1.0 / new_zoom,
+    );
     playback.state.set_timeline_zoom(new_zoom, width);
 }

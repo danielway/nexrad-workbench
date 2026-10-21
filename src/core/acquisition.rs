@@ -316,10 +316,11 @@ fn timeline_satisfies(
             && match elevation_filter {
                 // Fixed cut: satisfied once that elevation is stored.
                 Some(elev) => s.sweeps.iter().any(|sw| sw.elevation_number == elev),
-                // Whole volume (Latest): treat any cached sweep as enough —
-                // Latest renders from whatever's present, and completing a
-                // partial volume is left to the on-demand download path.
-                None => !s.sweeps.is_empty(),
+                // Whole volume (Latest, or volume rendering in 3D): any
+                // cached sweep is enough unless the cache knows the volume
+                // is partial (say a fixed-tilt fetch kept only that cut),
+                // matching the download path's own cache check.
+                None => !s.sweeps.is_empty() && !s.is_partial(),
             }
     })
 }
@@ -986,6 +987,21 @@ pub(crate) enum ReactivePrefetchPlan {
     Window(WindowPlan),
 }
 
+/// The tilt scope archive fetches store. Volume rendering in 3D draws every
+/// tilt, so while it is on a fetch keeps the whole volume whatever tilt is
+/// picked; otherwise the picked selection decides (a Fixed cut scopes the
+/// fetch to that elevation, Latest keeps the whole volume).
+pub(crate) fn fetch_scope(
+    selection: &ElevationSelection,
+    volume_3d_active: bool,
+) -> ElevationSelection {
+    if volume_3d_active {
+        ElevationSelection::Latest
+    } else {
+        selection.clone()
+    }
+}
+
 /// Decide whether the settled view needs prefetching and, if so, plan the
 /// forward lookahead window around the playback cursor. Mutates only the
 /// settle state.
@@ -1362,6 +1378,19 @@ mod download_bytes_tests {
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn volume_rendering_fetches_whole_volumes() {
+        let fixed = ElevationSelection::Fixed {
+            elevation_number: 1,
+            angle: 0.5,
+        };
+        assert_eq!(fetch_scope(&fixed, false).elevation_number(), Some(1));
+        assert_eq!(fetch_scope(&fixed, true).elevation_number(), None);
+        let latest = ElevationSelection::Latest;
+        assert_eq!(fetch_scope(&latest, false).elevation_number(), None);
+        assert_eq!(fetch_scope(&latest, true).elevation_number(), None);
+    }
 
     // ── reactive_prefetch_allowed ──
 
@@ -2085,7 +2114,7 @@ mod reducer_tests {
     }
 
     #[wasm_bindgen_test]
-    fn satisfied_latest_treats_any_cached_sweep_as_enough() {
+    fn satisfied_latest_needs_a_volume_not_known_partial() {
         // Whole-volume intent (Latest): any sweep satisfies…
         let tl = RadarTimeline {
             scans: vec![cached_scan(1300.0, vec![sweep(3, 1300.0, 1310.0)])],
@@ -2098,7 +2127,22 @@ mod reducer_tests {
             &RequestLedger::default(),
             0.0
         ));
-        // …but a sweepless scan record does not.
+        // …unless the cache knows the volume is partial (a fixed-tilt
+        // fetch kept only that cut): then the whole volume is wanted.
+        let mut partial = cached_scan(1300.0, vec![sweep(1, 1300.0, 1310.0)]);
+        partial.completeness = Some(crate::data::ScanCompleteness::PartialWithVcp);
+        let tl = RadarTimeline {
+            scans: vec![partial],
+        };
+        assert!(!prefetch_already_satisfied(
+            &intent(1300, None),
+            &[],
+            &tl,
+            TOL,
+            &RequestLedger::default(),
+            0.0
+        ));
+        // …and a sweepless scan record does not.
         let tl = RadarTimeline {
             scans: vec![cached_scan(1300.0, Vec::new())],
         };

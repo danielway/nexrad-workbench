@@ -30,6 +30,11 @@
 //! dropped; the retired Basic/Advanced `advanced_mode` is read and discarded,
 //! so every control is visible; the single `layer_alerts` toggle becomes the
 //! warnings layer.
+//!
+//! Version 3 turns the national mosaic on by default. Every saved blob
+//! carries `layer_national_mosaic`, so an older blob cannot tell "never
+//! touched" from "turned off"; since it was off by default, a version 1 or
+//! 2 blob is migrated to mosaic on, once. Turning it off afterwards sticks.
 
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +49,7 @@ pub(crate) const STORAGE_KEY: &str = "nexrad_user_preferences";
 pub(crate) const STORAGE_SETTINGS_KEY: &str = "nexrad_storage_settings";
 
 /// The version [`Preferences`] are written at.
-pub(crate) const VERSION: u32 = 2;
+pub(crate) const VERSION: u32 = 3;
 
 /// The map toolbar's tools.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -96,7 +101,7 @@ pub(crate) struct Preferences {
     pub layer_nexrad_sites: bool,
     #[serde(default = "default_true")]
     pub layer_cities: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub layer_national_mosaic: bool,
     #[serde(default = "default_true")]
     pub layer_alerts_warnings: bool,
@@ -188,7 +193,7 @@ impl Default for Preferences {
             layer_labels: true,
             layer_nexrad_sites: false,
             layer_cities: true,
-            layer_national_mosaic: false,
+            layer_national_mosaic: true,
             layer_alerts_warnings: true,
             layer_alerts_other: false,
             layer_mping: false,
@@ -279,6 +284,13 @@ pub(crate) fn parse_stored(json: Option<&str>) -> (Preferences, Loaded) {
     }
 
     let from = prefs.version.max(1);
+    // The mosaic became a default in version 3; older blobs saved the old
+    // default, not a choice.
+    prefs.layer_national_mosaic = true;
+    if from >= 2 {
+        prefs.version = VERSION;
+        return (prefs, Loaded::Migrated { from });
+    }
     let v1: V1Extras = serde_json::from_value(raw.clone()).unwrap_or_default();
     // The speed was one field; file it under the mode it was saved in.
     if let Some(speed) = v1.speed {
@@ -378,7 +390,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn default_is_current_and_matches_serde_defaults() {
         assert_eq!(Preferences::default().version, VERSION);
-        let (from_empty, loaded) = parse_stored(Some(r#"{"version":2}"#));
+        let (from_empty, loaded) = parse_stored(Some(r#"{"version":3}"#));
         assert_eq!(loaded, Loaded::Current);
         assert_eq!(from_empty, Preferences::default());
     }
@@ -533,6 +545,44 @@ mod tests {
         let (p, loaded) = parse_stored(Some("{}"));
         assert_eq!(loaded, Loaded::Migrated { from: 1 });
         assert_eq!(p, Preferences::default());
+    }
+
+    // ── Migration from version 2 ───────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn v2_turns_the_mosaic_on_once_and_keeps_the_rest() {
+        let v2 = Preferences {
+            version: 2,
+            layer_national_mosaic: false,
+            layer_states: false,
+            developer_mode: true,
+            preferred_site: Some("KTLX".into()),
+            ..Preferences::default()
+        };
+        let (p, loaded) = parse_stored(Some(&serde_json::to_string(&v2).unwrap()));
+        assert_eq!(loaded, Loaded::Migrated { from: 2 });
+        assert_eq!(
+            p,
+            Preferences {
+                version: VERSION,
+                layer_national_mosaic: true,
+                ..v2
+            }
+        );
+
+        // Turned off after the migration, it stays off.
+        let off = Preferences {
+            layer_national_mosaic: false,
+            ..p
+        };
+        let (again, loaded) = parse_stored(Some(&serde_json::to_string(&off).unwrap()));
+        assert_eq!(loaded, Loaded::Current);
+        assert!(!again.layer_national_mosaic);
+    }
+
+    #[wasm_bindgen_test]
+    fn v1_turns_the_mosaic_on() {
+        assert!(parse_stored(Some(V1)).0.layer_national_mosaic);
     }
 
     // ── Speed per mode and the live lock ───────────────────────────────────

@@ -25,13 +25,19 @@ impl WorkbenchApp {
             // rather than a leaked entry from a dead worker.
             self.state.session_stats.last_worker_outcome_ms = self.state.frame_now.millis();
         }
+        // Several chunk acks can land in one drain (a backfill burst); post
+        // at most one live render for them, after the loop (see
+        // `LiveRenderCoalescer`).
+        let mut live_renders = crate::core::worker_ingest::LiveRenderCoalescer::default();
         for outcome in outcomes {
             match outcome {
                 nexrad::WorkerOutcome::Ingested(result) => {
                     self.handle_ingested_outcome(result);
                 }
                 nexrad::WorkerOutcome::ChunkIngested(result) => {
-                    self.handle_chunk_ingested_outcome(result);
+                    let completed = result.elevations_completed.clone();
+                    let render_live = self.handle_chunk_ingested_outcome(result);
+                    live_renders.observe(render_live, &completed);
                 }
                 nexrad::WorkerOutcome::Decoded(result) => {
                     self.handle_decoded_outcome(result);
@@ -51,6 +57,9 @@ impl WorkbenchApp {
                     self.handle_worker_error_outcome(id, kind, message, failed_scan_timestamp_secs);
                 }
             }
+        }
+        if let Some((elevation, product)) = live_renders.finish() {
+            self.render.coordinator.render_live(elevation, product);
         }
 
         // Byte progress first: a download's reports all precede its result.
@@ -244,7 +253,9 @@ impl WorkbenchApp {
         }
     }
 
-    fn handle_chunk_ingested_outcome(&mut self, result: ChunkIngestResult) {
+    /// Returns the live render this acknowledgement asks for, which the
+    /// caller coalesces over the drain instead of posting it here.
+    fn handle_chunk_ingested_outcome(&mut self, result: ChunkIngestResult) -> Option<(u8, String)> {
         use crate::core::worker_ingest::{
             reduce_chunk_ingested, ChunkIngestEnv, ChunkIngestSlices,
         };
@@ -292,9 +303,6 @@ impl WorkbenchApp {
         if let Some(lag) = actions.record_availability_lag_secs {
             self.live.channel.record_availability_lag_secs(lag);
         }
-        if let Some((elevation, product)) = actions.render_live {
-            self.render.coordinator.render_live(elevation, product);
-        }
         if actions.promote_prev_texture {
             if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
                 if let Ok(mut r) = renderer.lock() {
@@ -317,6 +325,7 @@ impl WorkbenchApp {
         if actions.request_volume_render {
             self.request_worker_render_volume();
         }
+        actions.render_live
     }
 
     fn handle_decoded_outcome(&mut self, result: DecodeResult) {

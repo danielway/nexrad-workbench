@@ -37,9 +37,12 @@ pub(crate) struct Chrome {
     /// desktop panels, or the phone's, with the sheet on the right in
     /// landscape. Decided by [`crate::core::phone::device_layout`].
     pub device_layout: crate::core::phone::DeviceLayout,
-    /// The browser reports a coarse primary pointer, read once at start-up
-    /// so a phone gets the phone layout before its first touch.
-    pub coarse_pointer: bool,
+    /// The browser reports a touch screen, read at start-up (so a phone gets
+    /// the phone layout before its first touch) and again whenever the
+    /// viewport changes size (a rotation, or an emulator's device toggle).
+    pub touch_screen: bool,
+    /// The viewport size `touch_screen` was last read at.
+    pub touch_screen_read_at: Option<(f32, f32)>,
     /// Whether the keyboard shortcut help overlay is open.
     pub shortcuts_help_visible: bool,
     /// Whether the site selection modal is open.

@@ -4,8 +4,10 @@
 //! session's chip and cap, the ladder, the rail's tabs); this module holds the
 //! few decisions that are the phone's own:
 //!
-//! - **Which layout** a viewport gets ([`device_layout`]). Landscape phones
-//!   keep the phone layout, with the sheet on the right.
+//! - **Which layout** a viewport gets ([`device_layout`]): a touch screen
+//!   whose short side is under 500 pt is a phone in either orientation, so
+//!   turning a phone on its side keeps the phone chrome (the sheet moves to
+//!   the right).
 //! - **Where the sheet sits** ([`sheet_rect`]): a bottom sheet in portrait,
 //!   on the right in landscape, inside the safe area.
 //! - **When the chrome hides** ([`ChromeAutoHide::step`]): after 5 s of
@@ -30,9 +32,9 @@
 pub(crate) const PHONE_MAX_NARROW_PX: f32 = 500.0;
 
 /// A touch viewport whose short side is under this gets the phone layout in
-/// either orientation (a phone's short side is 320–430 px; a tablet's is
-/// 744 px and up).
-pub(crate) const PHONE_MAX_SHORT_SIDE_PX: f32 = 600.0;
+/// either orientation (a phone's short side is 320–440 pt; the smallest
+/// tablet's is 744 pt).
+pub(crate) const PHONE_MAX_SHORT_SIDE_PX: f32 = 500.0;
 
 /// What the layout rule reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,9 +44,9 @@ pub(crate) struct LayoutInputs {
     pub height: f32,
     /// A touch has been seen this session.
     pub touch_seen: bool,
-    /// The browser reports a coarse primary pointer (a finger), known before
-    /// the first touch.
-    pub coarse_pointer: bool,
+    /// The browser reports a touch screen (a coarse pointer, or touch
+    /// points), known before the first touch.
+    pub touch_screen: bool,
     /// A forced layout (`Some(true)` phone, `Some(false)` desktop).
     pub forced: Option<bool>,
 }
@@ -68,15 +70,16 @@ impl DeviceLayout {
     }
 }
 
-/// The layout for a viewport. A finger on a viewport whose short side is a
-/// phone's gets the phone layout in either orientation, so turning a phone on
-/// its side keeps the phone chrome (the inventory's §14.1 defect was a 390 px
-/// tall desktop layout). A narrow window gets it without a touch. The coarse
-/// pointer is known at load, so a phone does not start on the desktop layout
-/// and flip on its first touch.
+/// The layout for a viewport. A touch screen whose short side is a phone's
+/// (under [`PHONE_MAX_SHORT_SIDE_PX`]) gets the phone layout whatever the
+/// orientation, so turning a phone on its side keeps the phone chrome rather
+/// than a 390 pt tall desktop. A narrow window gets it without a touch; a
+/// short, wide window with a mouse stays desktop. The touch screen is known
+/// at load, so a phone does not start on the desktop layout and flip on its
+/// first touch.
 pub(crate) fn device_layout(i: LayoutInputs) -> DeviceLayout {
     let short = i.width.min(i.height);
-    let touch = i.touch_seen || i.coarse_pointer;
+    let touch = i.touch_seen || i.touch_screen;
     let auto = i.width < PHONE_MAX_NARROW_PX || (touch && short < PHONE_MAX_SHORT_SIDE_PX);
     if i.forced.unwrap_or(auto) {
         DeviceLayout::Phone {
@@ -491,7 +494,7 @@ mod tests {
             width,
             height,
             touch_seen: touch,
-            coarse_pointer: false,
+            touch_screen: false,
             forced: None,
         }
     }
@@ -514,9 +517,50 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn a_coarse_pointer_decides_before_the_first_touch() {
+    fn the_big_phones_stay_phones_on_their_side() {
+        for (w, h) in [
+            (844.0, 390.0),
+            (926.0, 428.0),
+            (932.0, 430.0),
+            (667.0, 375.0),
+        ] {
+            assert_eq!(
+                device_layout(vp(w, h, true)),
+                DeviceLayout::Phone { landscape: true },
+                "{w}x{h}"
+            );
+            assert_eq!(
+                device_layout(vp(h, w, true)),
+                DeviceLayout::Phone { landscape: false },
+                "{h}x{w}"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn the_short_side_decides_at_500() {
+        assert!(device_layout(vp(900.0, 499.0, true)).is_phone());
+        assert_eq!(device_layout(vp(900.0, 500.0, true)), DeviceLayout::Desktop);
+        // A small touch tablet in portrait (short side 540) is not a phone.
+        assert_eq!(device_layout(vp(540.0, 720.0, true)), DeviceLayout::Desktop);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_short_wide_window_without_touch_stays_desktop() {
+        assert_eq!(
+            device_layout(vp(844.0, 390.0, false)),
+            DeviceLayout::Desktop
+        );
+        assert_eq!(
+            device_layout(vp(926.0, 428.0, false)),
+            DeviceLayout::Desktop
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_touch_screen_decides_before_the_first_touch() {
         let first_frame = LayoutInputs {
-            coarse_pointer: true,
+            touch_screen: true,
             ..vp(844.0, 390.0, false)
         };
         assert!(device_layout(first_frame).is_phone());
@@ -536,6 +580,11 @@ mod tests {
         assert_eq!(
             device_layout(vp(1440.0, 900.0, false)),
             DeviceLayout::Desktop
+        );
+        assert_eq!(
+            device_layout(vp(1600.0, 1000.0, true)),
+            DeviceLayout::Desktop,
+            "a touch laptop is a desktop"
         );
         // A 550 px desktop window without touch stays desktop.
         assert_eq!(

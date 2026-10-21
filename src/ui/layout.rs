@@ -47,9 +47,9 @@ use super::activity_sheet::ActivitySheetLayer;
 use super::alerts_modal::AlertsModalsLayer;
 use super::bottom_panel::BottomPanelLayer;
 use super::event_modal::EventModalLayer;
+use super::go_to_day::GoToDayLayer;
 use super::mobile::{
-    ChipSheetLayer, GoToDayLayer, MobileChromeLayer, MobileSettingsModalLayer, MobileTopBarLayer,
-    PressSheetLayer,
+    ChipSheetLayer, MobileChromeLayer, MobileSettingsModalLayer, MobileTopBarLayer, PressSheetLayer,
 };
 use super::mping_modal::MpingModalLayer;
 use super::range_download_modal::RangeDownloadModalLayer;

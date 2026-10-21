@@ -55,7 +55,8 @@ pub(crate) struct ChunkIngestActions {
     pub record_chunk_collection_end_secs: Option<f64>,
     /// `live.channel.record_availability_lag_secs(x)`.
     pub record_availability_lag_secs: Option<f64>,
-    /// `render.coordinator.render_live(elevation, product)`.
+    /// `render.coordinator.render_live(elevation, product)`, posted once per
+    /// drain after [`LiveRenderCoalescer`] folds the drain's acks.
     pub render_live: Option<(u8, String)>,
     /// GPU `promote_current_to_previous` under the renderer lock.
     pub promote_prev_texture: bool,
@@ -65,10 +66,114 @@ pub(crate) struct ChunkIngestActions {
     pub mark_processing_done: bool,
     /// `render.coordinator.force_fresh_render()`.
     pub force_fresh_render: bool,
-    /// Shell calls `request_worker_render()`.
+    /// Shell calls `request_worker_render()` (the unified display resolver,
+    /// which reads the stored sweep blob for a completed cut). Archive sets
+    /// it on the first elevation and at volume end; live sets it when the
+    /// acknowledgement says the elevation being collected just completed.
     pub request_render: bool,
     /// Shell calls `request_worker_render_volume()`.
     pub request_volume_render: bool,
+}
+
+/// The elevation a live partial-sweep render should draw after a chunk
+/// acknowledgement, or `None` when there is nothing in memory to draw.
+///
+/// The worker keeps radials in memory only until their elevation completes:
+/// the completing chunk flushes the sweep to IndexedDB and drops its radials,
+/// but `current_elevation` keeps naming it. A render request then would find
+/// no radials and come back as a worker error, although nothing is wrong (the
+/// sweep is stored). So the request needs both an elevation and a non-zero
+/// radial count for that elevation; the completing chunk instead asks for the
+/// stored sweep (see [`completed_current_elevation`] and [`live_cut`]).
+pub(crate) fn live_render_target(
+    current_elevation: Option<u8>,
+    current_elevation_radials: Option<u32>,
+) -> Option<u8> {
+    match (current_elevation, current_elevation_radials) {
+        (Some(elevation), Some(radials)) if radials > 0 => Some(elevation),
+        _ => None,
+    }
+}
+
+/// The cut the live partial owns on the canvas, as `(elevation, anchor_ms)`
+/// for [`crate::core::playback_manager::resolve_desired_display`] and the
+/// `Decoded` upload gate, or `None` when the accumulator holds nothing to
+/// draw for it.
+///
+/// Gated like [`live_render_target`]: once the completing chunk has flushed
+/// an elevation to IndexedDB, no partial of it will ever be drawn again, so
+/// the elevation must stop claiming the canvas. The resolver then falls
+/// through to the cache and paints the stored sweep. Without this, the
+/// completing chunk of the selected tilt never reached the canvas: the view
+/// kept the last partial (or stayed empty if none was drawn) until the next
+/// volume, because the resolver kept answering "live partial" for a cut no
+/// live render would fill.
+pub(crate) fn live_cut(
+    current_elevation: Option<u8>,
+    current_elevation_radials: Option<u32>,
+    anchor_ms: Option<i64>,
+) -> Option<(u8, i64)> {
+    live_render_target(current_elevation, current_elevation_radials).zip(anchor_ms)
+}
+
+/// The elevation this acknowledgement finished while it was the one being
+/// collected: the worker still names it, holds no radials for it, and lists
+/// it as completed (its sweep is stored). The live frame then comes from the
+/// stored sweep instead of the accumulator.
+pub(crate) fn completed_current_elevation(result: &ChunkIngestResult) -> Option<u8> {
+    let elevation = result.current_elevation?;
+    let flushed =
+        live_render_target(result.current_elevation, result.current_elevation_radials).is_none();
+    (flushed && result.elevations_completed.contains(&elevation)).then_some(elevation)
+}
+
+/// Folds the live render requests of one worker-result drain into at most one.
+///
+/// Chunk ingests are not serialized on their acknowledgements: when several
+/// chunks reach the worker together (the backfill burst on joining mid-sweep,
+/// or any catch-up), it ingests them back to back and the main thread drains
+/// several acknowledgements in one frame. By then the worker's accumulator
+/// reflects the last of them, so only the last live target is worth drawing,
+/// and none if a later acknowledgement in the drain completed (stored) that
+/// elevation: its radials are gone, and the completing acknowledgement
+/// already asked for the stored sweep.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct LiveRenderCoalescer {
+    pending: Option<(u8, String)>,
+}
+
+impl LiveRenderCoalescer {
+    /// Observe one acknowledgement, in drain order: the reducer's
+    /// `render_live` for it and the elevations it completed.
+    pub(crate) fn observe(
+        &mut self,
+        render_live: Option<(u8, String)>,
+        elevations_completed: &[u8],
+    ) {
+        if let Some((elevation, _)) = &self.pending {
+            if elevations_completed.contains(elevation) {
+                log::debug!(
+                    "render_live elev={} dropped: a later ack in this drain stored it",
+                    elevation
+                );
+                self.pending = None;
+            }
+        }
+        if render_live.is_some() {
+            if let Some((elevation, _)) = &self.pending {
+                log::debug!(
+                    "render_live elev={} replaced by a later ack in this drain",
+                    elevation
+                );
+            }
+            self.pending = render_live;
+        }
+    }
+
+    /// The one live render to post for the drain, if any.
+    pub(crate) fn finish(self) -> Option<(u8, String)> {
+        self.pending
+    }
 }
 
 /// Apply one worker chunk-ingest outcome to the core state and describe the
@@ -87,6 +192,7 @@ pub(crate) fn reduce_chunk_ingested(
     let mut actions = ChunkIngestActions::default();
     let is_live = env.is_live;
     let source = "Realtime";
+    let mut render_stored_sweep = false;
 
     // Build enriched log with projection-derived chunk positioning.
     let chunk_vol_index = result.context.chunk_index + 1; // 1-based for display
@@ -321,11 +427,15 @@ pub(crate) fn reduce_chunk_ingested(
         }
 
         // ── Log + dispatch: live partial-sweep render ─────────────
-        // Always render whatever elevation is currently being
-        // accumulated — the user expects to see live progress
-        // regardless of which elevation was previously displayed.
+        // Render whatever elevation is currently being accumulated — the
+        // user expects to see live progress regardless of which elevation
+        // was previously displayed — but only while the accumulator still
+        // holds radials for it (see `live_render_target`). The chunk that
+        // completes that elevation asks for the stored sweep instead.
         if !result.is_end {
-            if let Some(target_elev) = result.current_elevation {
+            if let Some(target_elev) =
+                live_render_target(result.current_elevation, result.current_elevation_radials)
+            {
                 let product = env.product_worker_string.to_string();
 
                 // Summarize what the accumulator holds for this elevation
@@ -364,6 +474,17 @@ pub(crate) fn reduce_chunk_ingested(
                 );
 
                 actions.render_live = Some((target_elev, product));
+            } else if let Some(stored_elev) = completed_current_elevation(result) {
+                // The chunk that finished the cut being collected: its
+                // radials are in IndexedDB now, not in the accumulator, so
+                // draw the stored sweep through the normal render path.
+                log::debug!(
+                    "{}: elev={} completed and stored, rendering stored sweep vol_chunk={}",
+                    source,
+                    stored_elev,
+                    chunk_vol_index,
+                );
+                render_stored_sweep = true;
             }
         }
     }
@@ -425,6 +546,11 @@ pub(crate) fn reduce_chunk_ingested(
                 actions.request_volume_render = true;
             }
         }
+    }
+
+    if render_stored_sweep {
+        actions.force_fresh_render = true;
+        actions.request_render = true;
     }
 
     actions
@@ -594,6 +720,297 @@ mod tests {
         assert_eq!(obs.current_in_progress_radials, Some(120));
         assert_eq!(obs.chunk_elev_spans, vec![(1, 1_000.0, 1_010.0, 120)]);
         assert_eq!(obs.current_elev_chunks, vec![(0.0, 120.0, 120)]);
+    }
+
+    /// Partial ack: the accumulator holds `radials` of `elev`.
+    fn partial(elev: u8, radials: u32) -> ChunkIngestResult {
+        let mut r = base_result(1_000.0);
+        r.current_elevation = Some(elev);
+        r.current_elevation_radials = Some(radials);
+        r.chunk_elev_spans = vec![(elev, 1_000.0, 1_010.0, 120)];
+        r
+    }
+
+    /// The ack for the chunk that completes `elev`: the worker still names
+    /// it, holds none of its radials, and lists it as completed and stored.
+    fn completing(elev: u8) -> ChunkIngestResult {
+        let mut r = base_result(1_000.0);
+        r.current_elevation = Some(elev);
+        r.current_elevation_radials = Some(0);
+        r.elevations_completed = vec![elev];
+        r.sweeps_stored = 4;
+        r.chunk_elev_spans = vec![(elev, 1_060.0, 1_071.0, 120)];
+        r
+    }
+
+    /// The live cut the shell's `live_render_sources` derives from the
+    /// engine observations after the reducer ran (anchor of the 1000 s scan).
+    fn observed_live_cut(fx: &Fx) -> Option<(u8, i64)> {
+        let obs = fx.engine.observations();
+        live_cut(
+            obs.current_in_progress_elevation,
+            obs.current_in_progress_radials,
+            Some(1_000_000),
+        )
+    }
+
+    /// The scan at 1000 s with elevation 1 stored (what the timeline holds
+    /// once the refresh after the completing chunk lands).
+    fn timeline_with_stored_elev1() -> crate::core::RadarTimeline {
+        crate::core::RadarTimeline {
+            scans: vec![crate::core::Scan {
+                start_time: 1_000.0,
+                end_time: 1_300.0,
+                key_timestamp: 1_000.0,
+                vcp: 35,
+                vcp_pattern: None,
+                sweeps: vec![crate::core::Sweep {
+                    start_time: 1_000.0,
+                    end_time: 1_071.0,
+                    elevation: 0.5,
+                    elevation_number: 1,
+                    start_azimuth: 0.0,
+                    radials: Vec::new(),
+                    cached_products: vec!["reflectivity".to_string()],
+                }],
+                completeness: None,
+                cached_sweep_count: None,
+                planned_sweep_count: None,
+            }],
+        }
+    }
+
+    /// What the canvas resolver answers in Rays mode (partials shown) for the
+    /// fixed 0.5° tilt at the live edge, given the observed live cut.
+    fn desired_at_live_edge(
+        fx: &Fx,
+        timeline: &crate::core::RadarTimeline,
+    ) -> crate::core::playback_manager::DesiredDisplay {
+        crate::core::playback_manager::resolve_desired_display(
+            "KDMX",
+            1_075.0,
+            &ElevationSelection::Fixed {
+                elevation_number: 1,
+                angle: 0.5,
+            },
+            crate::core::RadarProduct::Reflectivity,
+            timeline,
+            15.0 * 60.0,
+            observed_live_cut(fx),
+            false,
+        )
+    }
+
+    // Decision table for the cut being collected, chunk by chunk.
+    //
+    // | ack                                   | render_live | stored render |
+    // |---------------------------------------|-------------|---------------|
+    // | partial (radials of elev in memory)   | elev        | no            |
+    // | completing (elev flushed and stored)  | none        | yes           |
+    // | next elevation's first chunk          | next elev   | no            |
+    #[wasm_bindgen_test]
+    fn live_cut_decision_table_partial_completing_next() {
+        let mut fx = Fx::new();
+
+        let a = fx.run(env(true, false, &[]), &partial(1, 600));
+        assert_eq!(a.render_live, Some((1, "reflectivity".to_string())));
+        assert!(!a.request_render);
+        assert_eq!(observed_live_cut(&fx), Some((1, 1_000_000)));
+
+        let a = fx.run(env(true, false, &[1]), &completing(1));
+        assert_eq!(a.render_live, None);
+        assert!(a.request_render, "stored sweep goes through request_render");
+        assert!(a.force_fresh_render);
+        assert_eq!(observed_live_cut(&fx), None);
+
+        let a = fx.run(env(true, true, &[1]), &partial(2, 120));
+        assert_eq!(a.render_live, Some((2, "reflectivity".to_string())));
+        assert!(!a.request_render);
+        assert_eq!(observed_live_cut(&fx), Some((2, 1_000_000)));
+    }
+
+    // The completing chunk of an elevation flushes its radials to IndexedDB:
+    // the ack still names the elevation but holds none of its radials. No
+    // live render is requested (it would only come back as a worker error);
+    // the stored sweep is rendered instead, and the timeline refresh that
+    // makes it resolvable is pushed as usual.
+    #[wasm_bindgen_test]
+    fn live_elevation_completing_chunk_renders_stored_sweep_not_live() {
+        let mut fx = Fx::new();
+        let a = fx.run(env(true, false, &[1]), &completing(1));
+
+        assert_eq!(a.render_live, None);
+        assert!(a.request_render);
+        assert!(a.force_fresh_render);
+        assert!(!a.request_volume_render);
+        assert_eq!(
+            a.intents,
+            vec![Intent::RefreshTimeline {
+                auto_position: false
+            }]
+        );
+        // The engine still records which cut the stream is on; only the live
+        // cut (what owns the canvas) lets go of it.
+        assert_eq!(
+            fx.engine.observations().current_in_progress_elevation,
+            Some(1)
+        );
+        assert_eq!(completed_current_elevation(&completing(1)), Some(1));
+    }
+
+    // Joining live on the chunk that completes the selected tilt: with the
+    // sweep stored and in the timeline, the resolver paints it from cache
+    // instead of waiting on a live partial that will never come (the
+    // empty-view bug). While the cut is partial, the live partial wins.
+    #[wasm_bindgen_test]
+    fn completed_live_cut_resolves_to_stored_sweep() {
+        use crate::core::playback_manager::DesiredDisplay;
+        let tl = timeline_with_stored_elev1();
+
+        let mut fx = Fx::new();
+        fx.run(env(true, false, &[]), &partial(1, 600));
+        assert_eq!(
+            desired_at_live_edge(&fx, &tl),
+            DesiredDisplay::LivePartial {
+                elevation_number: 1
+            }
+        );
+
+        fx.run(env(true, false, &[1]), &completing(1));
+        match desired_at_live_edge(&fx, &tl) {
+            DesiredDisplay::Cached(identity) => {
+                assert_eq!(identity.scan_key, ScanKey::from_secs_f64("KDMX", 1_000.0));
+                assert_eq!(identity.elevation_number, 1);
+                assert_eq!(identity.product, "reflectivity");
+            }
+            other => panic!("expected the stored sweep, got {other:?}"),
+        }
+    }
+
+    // Only a flushed *and* completed current elevation counts: a partial
+    // ack, a completion of some other cut, or no elevation at all does not.
+    #[wasm_bindgen_test]
+    fn completed_current_elevation_needs_flushed_and_completed() {
+        assert_eq!(completed_current_elevation(&partial(1, 600)), None);
+        let mut other = completing(1);
+        other.current_elevation = Some(2);
+        other.current_elevation_radials = Some(120);
+        assert_eq!(completed_current_elevation(&other), None);
+        let mut not_listed = completing(1);
+        not_listed.elevations_completed.clear();
+        assert_eq!(completed_current_elevation(&not_listed), None);
+        assert_eq!(completed_current_elevation(&base_result(1_000.0)), None);
+        assert_eq!(live_cut(Some(1), Some(0), Some(1_000_000)), None);
+        assert_eq!(live_cut(Some(1), Some(120), None), None);
+        assert_eq!(live_cut(Some(1), Some(120), Some(7)), Some((1, 7)));
+    }
+
+    // The next elevation's first chunk resumes live rendering.
+    #[wasm_bindgen_test]
+    fn live_render_resumes_on_next_elevation_after_completion() {
+        let mut fx = Fx::new();
+        assert_eq!(
+            fx.run(env(true, false, &[1]), &completing(1)).render_live,
+            None
+        );
+        let a = fx.run(env(true, true, &[1]), &partial(2, 120));
+        assert_eq!(a.render_live, Some((2, "reflectivity".to_string())));
+    }
+
+    /// Run each ack through the reducer in drain order and coalesce the
+    /// live renders the way the shell does; also report whether any ack
+    /// asked for the stored sweep.
+    fn drain(fx: &mut Fx, acks: &[ChunkIngestResult]) -> (Option<(u8, String)>, bool) {
+        let mut coalescer = LiveRenderCoalescer::default();
+        let mut stored = false;
+        for ack in acks {
+            let a = fx.run(env(true, false, &[1]), ack);
+            stored |= a.request_render;
+            coalescer.observe(a.render_live, &ack.elevations_completed);
+        }
+        (coalescer.finish(), stored)
+    }
+
+    fn refl(elev: u8) -> Option<(u8, String)> {
+        Some((elev, "reflectivity".to_string()))
+    }
+
+    #[wasm_bindgen_test]
+    fn coalesce_single_partial_ack_keeps_its_render() {
+        let mut fx = Fx::new();
+        assert_eq!(drain(&mut fx, &[partial(1, 120)]), (refl(1), false));
+    }
+
+    #[wasm_bindgen_test]
+    fn coalesce_two_partials_of_one_elevation_render_once() {
+        let mut fx = Fx::new();
+        assert_eq!(
+            drain(&mut fx, &[partial(1, 120), partial(1, 240)]),
+            (refl(1), false)
+        );
+    }
+
+    // The burst that used to raise "No radials for elevation 1 in
+    // accumulator": by the time render_live(1) reached the worker, the
+    // completing chunk had already flushed elevation 1.
+    #[wasm_bindgen_test]
+    fn coalesce_partial_then_completing_drops_live_and_keeps_stored_render() {
+        let mut fx = Fx::new();
+        assert_eq!(
+            drain(&mut fx, &[partial(1, 600), partial(1, 680), completing(1)]),
+            (None, true)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn coalesce_partials_across_elevations_render_the_last() {
+        let mut fx = Fx::new();
+        assert_eq!(
+            drain(&mut fx, &[partial(1, 600), partial(2, 120)]),
+            (refl(2), false)
+        );
+        // Completing 1 then starting 2 in one drain: stored render for 1,
+        // live render for 2.
+        let mut fx = Fx::new();
+        assert_eq!(
+            drain(&mut fx, &[partial(1, 600), completing(1), partial(2, 120)]),
+            (refl(2), true)
+        );
+    }
+
+    type LiveTarget = Option<(u8, String)>;
+
+    fn coalesce(drain: &[(LiveTarget, &[u8])]) -> LiveTarget {
+        let mut coalescer = LiveRenderCoalescer::default();
+        for (render_live, completed) in drain {
+            coalescer.observe(render_live.clone(), completed);
+        }
+        coalescer.finish()
+    }
+
+    #[wasm_bindgen_test]
+    fn coalesce_folds_render_and_completion_pairs() {
+        assert_eq!(coalesce(&[]), None);
+        assert_eq!(coalesce(&[(refl(1), &[][..]), (None, &[1][..])]), None);
+        // A completion of some other elevation leaves the pending one.
+        assert_eq!(coalesce(&[(refl(2), &[][..]), (None, &[1][..])]), refl(2));
+        // A target set in the same ack that completes an older one survives.
+        assert_eq!(
+            coalesce(&[(refl(1), &[][..]), (refl(2), &[1][..])]),
+            refl(2)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn live_render_target_needs_an_elevation_with_radials_in_memory() {
+        assert_eq!(live_render_target(Some(3), Some(240)), Some(3));
+        assert_eq!(live_render_target(Some(3), Some(1)), Some(3));
+        // Flushed (completed) elevation, or nothing counted yet.
+        assert_eq!(live_render_target(Some(3), Some(0)), None);
+        assert_eq!(live_render_target(Some(3), None), None);
+        // Start chunk of a mid-volume join: no radials, no elevation.
+        assert_eq!(live_render_target(None, Some(0)), None);
+        assert_eq!(live_render_target(None, None), None);
     }
 
     // (3) Live volume end: promote, seal-before-reset, both

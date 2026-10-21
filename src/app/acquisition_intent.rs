@@ -81,10 +81,11 @@ impl WorkbenchApp {
             product_worker_string: self.state.viz_state.product.to_worker_string(),
             fallback_scan_duration_secs: crate::FALLBACK_SCAN_DURATION_SECS,
         };
+        let scope = self.state.viz_state.fetch_scope();
         let plan = match acquisition_core::plan_reactive_prefetch(
             &env,
             &self.playback.state,
-            &self.state.viz_state.elevation_selection,
+            &scope,
             &mut self.acquisition.prefetch_settle,
         ) {
             acquisition_core::ReactivePrefetchPlan::Skip => return,
@@ -140,7 +141,7 @@ impl WorkbenchApp {
                     .auto_fetch_cap_reached(),
                 playback_pos: pos,
                 date,
-                elevation_filter: self.state.viz_state.elevation_selection.elevation_number(),
+                elevation_filter: self.state.viz_state.fetch_scope().elevation_number(),
                 listing: listing.as_ref(),
                 queued_scan_starts: &queued_scan_starts,
                 cache_match_tolerance_secs: crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
@@ -418,7 +419,7 @@ impl WorkbenchApp {
                 .auto_fetch_cap_reached(),
             now_secs,
             deadline_secs: crate::SELECTION_FETCH_DEADLINE_SECS,
-            elevation_filter: self.state.viz_state.elevation_selection.elevation_number(),
+            elevation_filter: self.state.viz_state.fetch_scope().elevation_number(),
             today,
         };
         match acquisition_core::plan_selection_fetch(&env) {
@@ -483,7 +484,7 @@ impl WorkbenchApp {
         let plan = acquisition_core::plan_lookback_backfill(
             window_start,
             now,
-            self.state.viz_state.elevation_selection.elevation_number(),
+            self.state.viz_state.fetch_scope().elevation_number(),
         );
         let actions = self.reduce_window_plan(&plan);
         self.execute_window_actions(ctx, actions, QueueOrigin::Reactive);

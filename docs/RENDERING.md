@@ -293,7 +293,7 @@ shader has no `use_prev` branch and no sweep-line uniforms.
 
 ### Volumetric — `VolumeRayRenderer`
 
-When the user enables 3D volume rendering, the entire volume coverage
+When 3D volume rendering is on (the default in 3D), the entire volume coverage
 pattern (every elevation sweep) is rendered together as a
 semi-transparent shell using ray marching.
 

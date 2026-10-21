@@ -1,11 +1,11 @@
-//! The phone's calendar sheet, "Go to a day" (phone timeline §2): the
-//! phone's overview.
+//! The calendar, "Go to a day": a bottom sheet on the phone (phone timeline
+//! §2), where it stands in for the overview lane, and a popover on the
+//! transport clock on the desktop, where it jumps further than the lane's
+//! zoom comfortably reaches.
 //!
-//! The desktop overview lane shows where the weather was; a phone has no
-//! room for a second lane, so it gets a calendar: a month at a time, every
-//! day shaded by its storm activity from the nightly index, a thin underline
-//! under the days held on device, today outlined in the now color, and the
-//! days after today dimmed and inert. Tapping the month name opens a grid of
+//! It shows a month at a time, every day shaded by its storm activity from
+//! the nightly index, a thin underline under the days held on device, today
+//! outlined in the now color, and the days after today dimmed and inert. Tapping the month name opens a grid of
 //! years; a year opens its twelve months; a month opens its grid.
 //!
 //! **What it reads.** The grid costs no S3 request: day levels come from
@@ -27,7 +27,7 @@
 //! [`settle_landing`]).
 //!
 //! Everything here is pure. The zone is handed in as a [`Zone`] (a browser
-//! fact the shell reads); `ui::mobile::go_to_day` draws what [`calendar_vm`]
+//! fact the shell reads); `ui::go_to_day` draws what [`calendar_vm`]
 //! returns and emits the intents.
 
 use crate::core::phone::{sheet_rect, Insets, SheetRect};
@@ -773,6 +773,38 @@ pub(crate) fn landing_stops_stream(
     stream_active.then_some(crate::core::transport::LiveStopPlacement::InPlace)
 }
 
+/// The shortest span [`frame_day`] shows, so today just after midnight
+/// still opens on a readable strip.
+const MIN_FRAMED_SECS: f64 = 3_600.0;
+
+/// Frame a picked day on the desktop timeline, as a click on an overview
+/// bar does: the overview at its default 48 h around the day and the strip
+/// showing the day, cut at now. The phone's strip has its own zoom
+/// ([`crate::core::phone_strip::strip_zoom_after`]); with no strip laid out
+/// the strip is left alone.
+pub(crate) fn frame_day(
+    playback: &mut crate::core::PlaybackState,
+    day: CalendarDay,
+    now: f64,
+    era_start: f64,
+) {
+    playback.overview.frame_at(day.midday(), now, era_start);
+    let end = day.end.min(now).max(day.start + MIN_FRAMED_SECS);
+    playback.show_view(day.start, end, false, now);
+}
+
+/// Frame a typed time ([`Intent::GoToTime`]): the overview at its default
+/// 48 h around it. The strip keeps its zoom; the typed seek has already
+/// centered it there.
+pub(crate) fn frame_time(
+    playback: &mut crate::core::PlaybackState,
+    ts: f64,
+    now: f64,
+    era_start: f64,
+) {
+    playback.overview.frame_at(ts, now, era_start);
+}
+
 /// A pending landing after an intent: anything that moves the playhead or
 /// the selection (a seek, a step, play, going live, a range, another site,
 /// another day) means the user has taken over, so it is dropped.
@@ -793,7 +825,8 @@ pub(crate) fn landing_after(landing: Option<Landing>, intent: &Intent) -> Option
         | Intent::SetLoopPoint(_)
         | Intent::LoopFromScan(_)
         | Intent::SelectSite { .. }
-        | Intent::GoToDay(_) => None,
+        | Intent::GoToDay(_)
+        | Intent::GoToTime(_) => None,
         _ => landing,
     }
 }
@@ -1381,6 +1414,33 @@ mod tests {
         // 10:00 local: midday is still ahead.
         let (ts, _) = land_on_day(&s, day, None, &RadarTimeline::default(), now());
         assert_eq!(ts, now());
+    }
+
+    #[wasm_bindgen_test]
+    fn frame_day_shows_the_day_on_the_strip_and_the_overview() {
+        let era = crate::core::NEXRAD_ARCHIVE_START_SECS;
+        let mut ps = crate::core::PlaybackState::default();
+        ps.timeline_width_px = 1200.0;
+        let day = CalendarDay::of(date(2024, 10, 9), &CDT);
+        frame_day(&mut ps, day, now(), era);
+        assert!((ps.timeline_view_start - day.start).abs() < 1e-6);
+        assert!((ps.view_width_secs() - DAY_SECS as f64).abs() < 1.0);
+        assert!(!ps.view_follows_now);
+        let ov = &ps.overview;
+        assert!(ov.start <= day.start && ov.end() >= day.end);
+        assert!(ov.span < 3.0 * DAY_SECS as f64, "back to the 48 h overview");
+    }
+
+    #[wasm_bindgen_test]
+    fn frame_day_cuts_today_at_now() {
+        let era = crate::core::NEXRAD_ARCHIVE_START_SECS;
+        let mut ps = crate::core::PlaybackState::default();
+        ps.timeline_width_px = 1200.0;
+        let day = CalendarDay::of(date(2026, 10, 17), &CDT);
+        frame_day(&mut ps, day, now(), era);
+        assert!((ps.timeline_view_start - day.start).abs() < 1e-6);
+        assert!((ps.timeline_view_start + ps.view_width_secs() - now()).abs() < 1.0);
+        assert!(ps.view_follows_now);
     }
 
     #[wasm_bindgen_test]

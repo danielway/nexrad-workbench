@@ -1,10 +1,11 @@
 //! Map scale bar overlay for the Flat2D view.
 //!
-//! Stacked km (top) and miles (bottom) bars in the bottom-left corner, on a
-//! scrim so they never print over map labels (one-instrument §7). The bars'
+//! Stacked km (top) and miles (bottom) bars at the left end of the bottom
+//! tray (core::map_chrome), on a scrim so they never print over map labels (one-instrument §7). The bars'
 //! lengths and labels are the core's [`crate::core::canvas::scale_bar_vm`];
 //! this file only measures km-per-pixel from the projection and paints.
 
+use crate::core::map_chrome::{ChromeSize, TrayItem};
 use crate::geo::MapProjection;
 use crate::ui::theme;
 use eframe::egui::{self, Pos2, Rect, Stroke};
@@ -23,40 +24,55 @@ impl super::Overlay for ScaleBarOverlay {
         ctx.state.viz_state.view_mode() == crate::geo::ViewMode::Flat2D
     }
 
-    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) -> Option<Rect> {
-        let mut projection = MapProjection::new(
-            ctx.state.viz_state.center_lat,
-            ctx.state.viz_state.center_lon,
-        );
-        projection.update(
-            ctx.state.viz_state.zoom(),
-            ctx.state.viz_state.pan_offset(),
-            ctx.rect,
-        );
-        draw_scale_bar(ui, &ctx.rect, &projection)
+    fn measure(
+        &self,
+        _ui: &egui::Ui,
+        ctx: &super::OverlayContext,
+    ) -> Option<(super::Slot, ChromeSize)> {
+        let vm = scale_bar_vm(ctx)?;
+        Some((
+            super::Slot::Tray(TrayItem::ScaleBar),
+            ChromeSize {
+                w: vm.km_px.max(vm.mi_px) + PAD * 2.0,
+                h: ROW_HEIGHT * 2.0 + PAD * 2.0,
+            },
+        ))
+    }
+
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext, rect: Rect) {
+        if let Some(vm) = scale_bar_vm(ctx) {
+            draw_scale_bar(ui, rect, &vm);
+        }
     }
 }
 
-/// Returns the scrim's bounds.
-fn draw_scale_bar(ui: &mut egui::Ui, rect: &Rect, projection: &MapProjection) -> Option<Rect> {
-    let vm = compute_km_per_pixel(projection, rect).and_then(crate::core::canvas::scale_bar_vm)?;
+const PAD: f32 = 6.0;
+const ROW_HEIGHT: f32 = 16.0;
 
+/// The bars for the map as it stands: km-per-pixel from the projection.
+fn scale_bar_vm(ctx: &super::OverlayContext) -> Option<crate::core::canvas::ScaleBarVm> {
+    let mut projection = MapProjection::new(
+        ctx.state.viz_state.center_lat,
+        ctx.state.viz_state.center_lon,
+    );
+    projection.update(
+        ctx.state.viz_state.zoom(),
+        ctx.state.viz_state.pan_offset(),
+        ctx.rect,
+    );
+    compute_km_per_pixel(&projection, &ctx.rect).and_then(crate::core::canvas::scale_bar_vm)
+}
+
+/// Paint the bars on their scrim, `scrim` being the tray's slot for them.
+fn draw_scale_bar(ui: &mut egui::Ui, scrim: Rect, vm: &crate::core::canvas::ScaleBarVm) {
     let painter = ui.painter();
 
-    let margin = 10.0f32;
-    let pad = 6.0f32;
-    let row_height = 16.0f32;
+    let pad = PAD;
+    let row_height = ROW_HEIGHT;
     let bar_thickness = 1.5f32;
     let cap_height = 5.0f32;
     let label_pad = 3.0f32;
 
-    // The scrim: wide enough for the longer bar, two rows tall.
-    let width = vm.km_px.max(vm.mi_px) + pad * 2.0;
-    let height = row_height * 2.0 + pad * 2.0;
-    let scrim = Rect::from_min_size(
-        Pos2::new(rect.left() + margin, rect.bottom() - margin - height),
-        egui::vec2(width, height),
-    );
     painter.rect(
         scrim,
         4.0,
@@ -89,7 +105,6 @@ fn draw_scale_bar(ui: &mut egui::Ui, rect: &Rect, projection: &MapProjection) ->
         label_pad,
         &vm.mi_label,
     );
-    Some(scrim)
 }
 
 #[allow(clippy::too_many_arguments)]

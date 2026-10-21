@@ -80,6 +80,8 @@ pub(super) enum ResponseType {
     ChunkIngested,
     Decoded,
     LiveDecoded,
+    /// A `render_live` request whose elevation was stored before it ran.
+    LiveSuperseded,
     VolumeDecoded,
     Error,
 }
@@ -94,6 +96,7 @@ impl ResponseType {
         Self::ChunkIngested,
         Self::Decoded,
         Self::LiveDecoded,
+        Self::LiveSuperseded,
         Self::VolumeDecoded,
         Self::Error,
     ];
@@ -108,8 +111,9 @@ impl ResponseType {
             Self::ChunkIngested => 2,
             Self::Decoded => 3,
             Self::LiveDecoded => 4,
-            Self::VolumeDecoded => 5,
-            Self::Error => 6,
+            Self::LiveSuperseded => 5,
+            Self::VolumeDecoded => 6,
+            Self::Error => 7,
         }
     }
 
@@ -120,6 +124,7 @@ impl ResponseType {
             Self::ChunkIngested => "chunk_ingested",
             Self::Decoded => "decoded",
             Self::LiveDecoded => "live_decoded",
+            Self::LiveSuperseded => "live_superseded",
             Self::VolumeDecoded => "volume_decoded",
             Self::Error => "error",
         }
@@ -132,6 +137,7 @@ impl ResponseType {
             "chunk_ingested" => Self::ChunkIngested,
             "decoded" => Self::Decoded,
             "live_decoded" => Self::LiveDecoded,
+            "live_superseded" => Self::LiveSuperseded,
             "volume_decoded" => Self::VolumeDecoded,
             "error" => Self::Error,
             _ => return None,
@@ -473,6 +479,7 @@ mod tests {
             ResponseType::ChunkIngested,
             ResponseType::Decoded,
             ResponseType::LiveDecoded,
+            ResponseType::LiveSuperseded,
             ResponseType::VolumeDecoded,
             ResponseType::Error,
         ] {
@@ -523,6 +530,7 @@ mod coverage_tests {
         assert_eq!(ResponseType::ChunkIngested.as_str(), "chunk_ingested");
         assert_eq!(ResponseType::Decoded.as_str(), "decoded");
         assert_eq!(ResponseType::LiveDecoded.as_str(), "live_decoded");
+        assert_eq!(ResponseType::LiveSuperseded.as_str(), "live_superseded");
         assert_eq!(ResponseType::VolumeDecoded.as_str(), "volume_decoded");
         assert_eq!(ResponseType::Error.as_str(), "error");
     }
@@ -545,6 +553,10 @@ mod coverage_tests {
         assert_eq!(
             ResponseType::parse("live_decoded"),
             Some(ResponseType::LiveDecoded)
+        );
+        assert_eq!(
+            ResponseType::parse("live_superseded"),
+            Some(ResponseType::LiveSuperseded)
         );
         assert_eq!(
             ResponseType::parse("volume_decoded"),
@@ -661,6 +673,7 @@ mod coverage_tests {
             ResponseType::ChunkIngested.as_str(),
             ResponseType::Decoded.as_str(),
             ResponseType::LiveDecoded.as_str(),
+            ResponseType::LiveSuperseded.as_str(),
             ResponseType::VolumeDecoded.as_str(),
             ResponseType::Error.as_str(),
         ];
