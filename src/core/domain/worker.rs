@@ -139,7 +139,8 @@ pub(crate) struct ChunkIngestResult {
     pub total_ms: f64,
     /// Elevation number currently being accumulated (partial sweep in progress).
     pub current_elevation: Option<u8>,
-    /// Number of radials received so far for the current in-progress elevation.
+    /// Radials of `current_elevation` still held in the worker's memory. Zero
+    /// once that elevation's completing chunk has flushed it to IndexedDB.
     pub current_elevation_radials: Option<u32>,
     /// Last radial's azimuth angle in degrees (for sweep line extrapolation).
     pub last_radial_azimuth: Option<f32>,
