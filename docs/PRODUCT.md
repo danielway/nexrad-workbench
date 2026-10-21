@@ -666,8 +666,9 @@ Interactive measurement and analysis affordances on the 2D canvas:
   for the scan inspector in §4.)
 - **Distance Measure** — click two points to read the great-circle distance.
 - **Storm Cells** — detect connected components above a configurable reflectivity
-  threshold (reflectivity only, 2D only, once per displayed sweep); each cell
-  renders as an outline ellipse with a centroid marker and its max dBZ label.
+  threshold (over any product, 2D only, once per volume, always on the lowest
+  reflectivity cut); each cell renders as an outline ellipse with a centroid
+  marker and its max dBZ label.
 
 ### 13.3 Responsive behavior
 

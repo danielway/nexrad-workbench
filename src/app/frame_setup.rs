@@ -130,10 +130,9 @@ impl WorkbenchApp {
         use crate::core::storm_cells::{decide, LiveCutProgress, StormCellEnv};
 
         let viz = &self.state.viz_state;
-        let (visible, view_mode, product, threshold_dbz, radar_lat, radar_lon) = (
+        let (visible, view_mode, threshold_dbz, radar_lat, radar_lon) = (
             viz.storm_cells_visible,
             viz.view_mode(),
-            viz.product,
             viz.storm_cell_threshold_dbz,
             viz.center_lat,
             viz.center_lon,
@@ -182,7 +181,6 @@ impl WorkbenchApp {
         let env = StormCellEnv {
             visible,
             view_mode,
-            product,
             displayed,
             threshold_dbz,
             volume,
