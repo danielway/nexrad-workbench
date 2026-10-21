@@ -143,6 +143,16 @@ pub(crate) struct Scan {
 }
 
 impl Scan {
+    /// The cache holds only some of this volume's sweeps (a fetch scoped
+    /// to one tilt, or a live volume joined part way). Unknown counts as
+    /// not partial.
+    pub(crate) fn is_partial(&self) -> bool {
+        matches!(
+            self.completeness,
+            Some(ScanCompleteness::PartialNoVcp | ScanCompleteness::PartialWithVcp)
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn duration(&self) -> f64 {
         self.end_time - self.start_time

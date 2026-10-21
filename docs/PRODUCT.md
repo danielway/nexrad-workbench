@@ -1,14 +1,17 @@
 # NEXRAD Workbench — Product Specification
 
-**Consolidated as-built spec · June 2026**
-**Status:** Describes the shipped product on `simplify-user-interface`. This
-document supersedes and merges the earlier `PRODUCT.md` requirements draft and
-the `product_north_star.md` timeline/playback UX brief into one authoritative
-spec. The open decisions both predecessors carried are resolved here against the
-implementation; forward-looking experiments are collected in
+**Product spec and decision record · June 2026, revised through October 2026**
+
+**Status:** This is the reference for the product's model: the timeline,
+selection and playback, live tethering, acquisition and caching, and the
+honesty rules for what the canvas shows. It was written against the June 2026
+build and revised as later work changed it, including the October 2026
+"One Instrument" redesign. Where it describes how a surface *looks* and the
+running app differs, the app is right. Forward-looking ideas are in
 **§16 Deferred / future work**. The numbered **Alignment decisions** at the end
-are the decision record (rationale) for the timeline/playback/acquisition UX;
-code cites them as "alignment §N" / "#N".
+are the rationale for the timeline/playback/acquisition UX. Code comments cite
+this document by section ("PRODUCT.md §5.1", "alignment §N"), so keep section
+numbers stable when editing.
 
 ---
 
@@ -277,9 +280,12 @@ cached scans.
   (kept in IndexedDB, revalidated by ETag), so bars appear at any zoom for
   one request. Only the days the index lacks (the last day or two, gaps
   while it backfills) are listed live, a few at a time once the overview
-  stops moving, and, zoomed in to scans, the days in view, for their
-  per-volume sizes. Without an index (dev builds) every day is listed live
-  as before. Listed days are stored, so each is listed once. Days the
+  stops moving. Zoomed in to scans, the per-volume sizes for the newest
+  twelve months come from the index's month files (one per site-month,
+  ~50 KB gzipped for a busy month), one request for a month in view;
+  only days no month file holds (older months, the newest day or two) are
+  listed live, for their per-volume sizes. Without an index (dev builds)
+  every day is listed live as before. Listed days are stored, so each is listed once. Days the
   radar recorded nothing show as a red line.
 
 ### 5.6 Saved events (bookmarks)
@@ -458,10 +464,13 @@ the playback model are identical across them — only the projection differs.
   sticks to the cursor), right/middle/Ctrl-drag tilts and rotates, scroll zooms
   toward the cursor, and double-click flies the pivot to the clicked point with
   a smooth transition. Zoomed out it behaves like a planet camera; zoomed in it
-  orbits the site — no mode boundary. The globe additionally offers a
-  **volumetric ray-march** rendering that composites all elevations of the active
-  scan into a single 3D pass with a user-controlled density cutoff, instead of
-  rendering a single elevation as a surface.
+  orbits the site — no mode boundary. A fresh 3D view (and R) opens over the
+  site tilted 40° toward north, so it reads as 3D rather than as the flat map.
+  The globe draws a **volumetric ray-march** by default that composites all
+  elevations of the active scan into a single 3D pass with a user-controlled
+  density cutoff; turning it off (View tab, "Draw every tilt") renders the
+  selected elevation as a surface. While it is on, archive fetches keep whole
+  volumes whatever tilt is selected.
 
 ## 10. Acquisition & Cache
 
@@ -623,6 +632,25 @@ Independent rendering layers that can be toggled on/off:
 - **mPING storm reports** — crowdsourced surface observation markers.
 - **My Location** — a one-shot GPS dot for the user's current position.
 
+**Where the chrome sits.** Everything over the map that is not data has one
+place, decided by one layout rule (`core::map_chrome`) on every canvas from a
+390 px phone to a desktop: the map toolbar top left, the colour scale top
+right, and a **bottom tray** along the map's bottom edge for the scale bar (the
+compass in 3D) and the layer legends. The scale bar sits at the tray's left
+end; the legends pack in from its right end, the mosaic legend in the corner
+and the mPING legend next in. A legend that does not fit beside the others
+wraps to a row above, again from the right, and a row that reaches up beside
+the colour scale stops short of it. Nothing overlaps and nothing leaves the
+canvas; an item with no room at all is left out. The canvas caption rises over
+the tray where it would cover it.
+
+**Labels give way to chrome and to each other.** A map label (city, state,
+site) never prints under the toolbar, the colour scale or the tray, or half off
+the canvas: it is hidden, not nudged, so a label always marks its place. A
+radar site's ID label is hidden when a city label or another site's label sits
+within 12 px of it (KFSD beside Sioux Falls, KOAX beside Omaha); the site's
+dot stays, and the current site's label always prints.
+
 ### 13.2 Tools
 
 Interactive measurement and analysis affordances on the 2D canvas:
@@ -639,8 +667,8 @@ Interactive measurement and analysis affordances on the 2D canvas:
 | Breakpoint | Timeline | Notes |
 |---|---|---|
 | Desktop ≥1200px | Overview + full strip (~56px) + transport row + readouts | Inspector as popover or side panel; hover tooltips |
-| Touch ≥600px | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
-| Phone | A 120 px dock: a 66 px row of volumes at three zoom stops over a transport row (play · selection chip · NOW / 3 H / 24 H · LIVE when not live); the calendar sheet stands in for the overview | Canvas full-bleed; chrome auto-hides during playback, tap to reveal; ranges are never drawn (presets and the long-press sheet; a range shows as one amber bracket); 3D view is desktop-only |
+| Touch, short side ≥500 pt | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
+| Phone (a touch screen whose short side is under 500 pt, in either orientation; or any window under 500 px wide) | A 120 px dock: a 66 px row of volumes at three zoom stops over a transport row (play · selection chip · NOW / 3 H / 24 H · LIVE when not live); the calendar sheet stands in for the overview | Canvas full-bleed; turned on its side the phone keeps this layout (map full width, the top bar above, the dock along the bottom, its row's blocks spread across the width) and its sheets move to a full-height side sheet on the right that scrolls; a mouse on a short wide window stays desktop; chrome auto-hides during playback, tap to reveal; ranges are never drawn (presets and the long-press sheet; a range shows as one amber bracket); 3D view is desktop-only |
 
 **The phone timeline is a row of volumes you can touch.** Not a ruler with
 marks on it: each volume is one mark, and everything the row says is in how
@@ -735,6 +763,16 @@ in, as a scrub lands there, never on the listed time); when it is in,
 the playhead steps onto its first frame so the map shows it and its
 column fills.
 The sheet's month is not persisted or in the link.
+
+**The calendar on the desktop.** The desktop has the overview lane, but
+reaching a day years back by zooming it is slow, so the same calendar opens
+as a popover above the playhead clock: from the calendar button beside the
+clock, from **G**, or from the chip menu's "Go to a day… G". A picked day
+lands as on the phone (stream stopped, paused on the stormiest volume) and
+the strip shows that whole day with the overview at 48 h around it. Under
+the grid, "Or type a time" is the clock's own field: a date and time typed
+there (`2024-10-09 23:30Z`, `Oct 9 2024 7:30 PM`) lands exactly there, paused,
+with the stream stopped and the overview framed around it.
 
 **The chip sheet.** On the phone a tap on the selection chip opens a bottom
 sheet (the calendar's component, on the Esc stack) titled "Playing" in place
@@ -851,7 +889,7 @@ not unfinished work:
   beneath it on phones — more thumb-accurate, but inverts the shared mental model.
   Ship drag-anywhere-scrubs first; A/B the tape later.
 - **Tablet tier:** a layout distinct from desktop/phone. For now touch devices
-  ≥600px get the desktop layout.
+  whose short side is 500 pt or more get the desktop layout.
 - **Offline / stale ghosts:** today ghosts vanish when the stream dies; richer
   handling of stale projections is a post-v1 revisit.
 - **Wi-Fi-only acquisition toggle:** not implementable in a browser today; revisit
@@ -915,8 +953,8 @@ deleted in the June 2026 docs cleanup.)
   file sizes as the activity signal (no backend, no downloads).
 - **Manual download management:** stays demoted; the activity sheet shows what the
   system did, plus cancel/retry and policy toggles.
-- **Tablet tier:** out of scope this pass; touch devices ≥600px get the desktop
-  layout.
+- **Tablet tier:** out of scope this pass; touch devices whose short side is
+  500 pt or more get the desktop layout.
 - **Wi-Fi-only toggle:** not implementable in a browser (no reliable
   network-type API); the activity sheet ships "auto-fetch while scrubbing" and
   "pause live stream while reviewing".

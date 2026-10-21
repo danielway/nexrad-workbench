@@ -8,14 +8,12 @@
 mod action_sheet;
 mod chip_sheet;
 pub(crate) mod gestures;
-mod go_to_day;
 mod press_sheet;
 mod settings_modal;
 mod tabs;
 mod top_bar;
 
 pub(in crate::ui) use chip_sheet::ChipSheetLayer;
-pub(in crate::ui) use go_to_day::GoToDayLayer;
 pub(in crate::ui) use press_sheet::PressSheetLayer;
 pub(in crate::ui) use settings_modal::MobileSettingsModalLayer;
 pub(in crate::ui) use tabs::MobileChromeLayer;
@@ -57,25 +55,35 @@ pub(crate) fn resolve_mobile_auto_hide(
     }
 }
 
-/// Whether the browser's primary pointer is coarse (a finger), from
-/// `matchMedia("(pointer: coarse)")`. A browser fact, read once at start-up
-/// and handed to the core's layout rule.
-pub(crate) fn coarse_pointer() -> bool {
+/// Whether the browser reports a touch screen: any coarse pointer
+/// (`matchMedia("(any-pointer: coarse)")`, which a phone's finger is whether
+/// or not the browser calls it the primary pointer) or touch points
+/// (`navigator.maxTouchPoints > 0`). A browser fact handed to the core's
+/// layout rule.
+pub(crate) fn touch_screen() -> bool {
     use wasm_bindgen::{JsCast, JsValue};
     let global: JsValue = js_sys::global().into();
-    let Ok(f) = js_sys::Reflect::get(&global, &"matchMedia".into()) else {
-        return false;
+    let media = |query: &str| -> bool {
+        let Ok(f) = js_sys::Reflect::get(&global, &"matchMedia".into()) else {
+            return false;
+        };
+        let Some(f) = f.dyn_ref::<js_sys::Function>() else {
+            return false;
+        };
+        let Ok(list) = f.call1(&global, &query.into()) else {
+            return false;
+        };
+        js_sys::Reflect::get(&list, &"matches".into())
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     };
-    let Some(f) = f.dyn_ref::<js_sys::Function>() else {
-        return false;
-    };
-    let Ok(list) = f.call1(&global, &"(pointer: coarse)".into()) else {
-        return false;
-    };
-    js_sys::Reflect::get(&list, &"matches".into())
+    let touch_points = js_sys::Reflect::get(&global, &"navigator".into())
         .ok()
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+        .and_then(|n| js_sys::Reflect::get(&n, &"maxTouchPoints".into()).ok())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    media("(pointer: coarse)") || media("(any-pointer: coarse)") || touch_points > 0.0
 }
 
 /// iOS safe-area insets in CSS pixels: `(top, right, bottom, left)`.

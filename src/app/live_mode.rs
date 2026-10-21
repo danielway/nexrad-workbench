@@ -319,7 +319,9 @@ impl WorkbenchApp {
 
     /// The live cut feeding [`crate::core::playback_manager::resolve_desired_display`]:
     /// `Some((collecting_elevation, anchor_key_ms))` while streaming with a
-    /// fully-known volume AND the playhead attached to the live edge, else
+    /// fully-known volume, the playhead attached to the live edge AND radials
+    /// of that elevation still in the accumulator (see
+    /// [`crate::core::worker_ingest::live_cut`]), else
     /// `None` (which collapses the resolver to the cache path — a detached
     /// playhead resolves whatever's cached under the cursor, untouched by
     /// the background stream). Shared by `request_worker_render` and the
@@ -334,12 +336,13 @@ impl WorkbenchApp {
             .current_volume
             .as_ref()
             .map(|a| a.scan_key.scan_start.0);
-        self.live
-            .engine
-            .borrow()
-            .observations()
-            .current_in_progress_elevation
-            .zip(anchor_ms)
+        let engine = self.live.engine.borrow();
+        let obs = engine.observations();
+        crate::core::worker_ingest::live_cut(
+            obs.current_in_progress_elevation,
+            obs.current_in_progress_radials,
+            anchor_ms,
+        )
     }
 
     /// Frames mode: live shows only complete sweeps, never the partial the

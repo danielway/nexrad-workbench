@@ -488,10 +488,12 @@ pub(crate) enum DesiredDisplay {
 ///
 /// `live_cut` is `Some((elevation, anchor_key_ms))` only while streaming and
 /// only when the live volume is fully known — pass
-/// `LiveModeState::current_in_progress_elevation` zipped with the anchor's
-/// `scan_key.scan_start.0` (rounded millis, matching how `timeline_view`
-/// identifies the live volume). `None` collapses the resolver to the cache
-/// path.
+/// `worker_ingest::live_cut` over the in-progress elevation,
+/// its radial count and the anchor's `scan_key.scan_start.0` (rounded
+/// millis, matching how `timeline_view` identifies the live volume). It is
+/// `None` once that elevation is flushed to IndexedDB, so a just-completed
+/// cut resolves to its stored sweep. `None` collapses the resolver to the
+/// cache path.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_desired_display(
     site_id: &str,

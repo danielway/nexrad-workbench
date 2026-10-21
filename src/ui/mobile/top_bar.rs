@@ -5,8 +5,8 @@
 //! ([`crate::core::phone_dock::phone_age`]), and the bell carries the
 //! alerts with a dot when something failed
 //! ([`crate::core::phone_dock::phone_bell`]). No stacked date or zone, no
-//! mode badge and no version stamp (the version lives in the desktop bar's
-//! ⋯ › About).
+//! mode badge and no version stamp (the version lives in the sheet's
+//! Settings › About, as in the desktop bar's ⋯ › About).
 
 use super::super::layout::{Layer, LayerKind, LayoutCtx};
 use super::super::top_bar::emit;

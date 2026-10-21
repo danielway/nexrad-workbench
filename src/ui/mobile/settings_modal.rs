@@ -5,7 +5,8 @@
 //!
 //! View holds the product row and the tilt ladder at touch size, then the
 //! playback controls the transport row has no room for: the playhead's time
-//! field, Frames or Rays, and the speed. The open tab is the rail's own
+//! field, Frames or Rays, and the speed. Settings ends with About: the
+//! version and the changelog, which the desktop keeps under ⋯. The open tab is the rail's own
 //! (`chrome.rail_tab`), so the sheet and the desktop panel agree. The sheet
 //! is an entry on the dialog stack: Esc, its close mark and a tap outside all
 //! close it through [`DialogIntent::Close`].
@@ -112,7 +113,13 @@ fn draw_sheet(ctx: &mut LayoutCtx) {
                         ctx.chrome,
                     ),
                     RailTab::Settings => {
-                        super::super::right_panel::settings_tab(ui, ctx.state, ctx.chrome)
+                        super::super::right_panel::settings_tab(ui, ctx.state, ctx.chrome);
+                        about_section(
+                            ui,
+                            ctx.state,
+                            &ctx.top_bar_vm.version,
+                            &ctx.activity_vm.readout,
+                        );
                     }
                 });
         });
@@ -191,6 +198,42 @@ fn section(ui: &mut egui::Ui, title: &str) {
             .size(theme::CAPTION)
             .color(theme::TEXT_FAINT),
     );
+}
+
+/// The phone's About, the desktop ⋯ menu's About at the sheet's foot: the
+/// build's version, the frame rate and request count the desktop transport
+/// row shows beside the activity chip, and the changelog link.
+fn about_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    version: &str,
+    readout: &crate::core::activity::Readout,
+) {
+    section(ui, "About");
+    ui.label(
+        RichText::new(version)
+            .size(theme::CAPTION)
+            .monospace()
+            .color(theme::TEXT_DIM),
+    );
+    ui.label(
+        RichText::new(readout.text())
+            .size(theme::CAPTION)
+            .monospace()
+            .color(theme::TEXT_FAINT),
+    );
+    if ui
+        .button(format!(
+            "{}  Changelog",
+            egui_phosphor::regular::ARROW_SQUARE_OUT
+        ))
+        .clicked()
+    {
+        state.push_command(Intent::OpenExternalUrl(
+            super::super::top_bar::CHANGELOG_URL,
+        ));
+    }
+    ui.add_space(8.0);
 }
 
 /// What the transport row has no room for: the playhead's time field, Frames

@@ -42,6 +42,7 @@ pub(crate) mod live_coverage;
 pub(crate) mod live_mode;
 pub(crate) mod live_radar_model;
 pub(crate) mod live_status;
+pub(crate) mod map_chrome;
 pub(crate) mod overview;
 pub(crate) mod panels;
 pub(crate) mod persist;
@@ -133,7 +134,8 @@ pub(crate) use timeline_geometry::{
     block_extent, cell_gap_px, layout_block, should_draw_sweep_texture, MIN_BLOCK_W,
 };
 pub(crate) use timeline_interaction::{
-    clamp_view_start, resolve_gesture, StripGesture, StripInput, NEXRAD_ARCHIVE_START_SECS,
+    clamp_view_start, resolve_gesture, zoom_about, StripGesture, StripInput,
+    NEXRAD_ARCHIVE_START_SECS,
 };
 pub(crate) use timeline_view::{
     FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView,

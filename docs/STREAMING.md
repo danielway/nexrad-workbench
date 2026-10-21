@@ -119,6 +119,20 @@ the worker would treat re-flushes as no-ops, so the bandwidth would be
 wasted. Each survivor is downloaded in parallel via `join_all` on
 `download_chunk` and emitted in sequence order via `emit_backfill_chunks`.
 
+Backfill arrives as a burst: the main thread posts several `ingest_chunk`
+messages in one frame, and the worker ingests them back to back before the
+main thread reads their acknowledgements. When the burst includes the chunk
+that completes the sweep, that chunk flushes the elevation to IndexedDB and
+drops its radials before any `render_live` for an earlier acknowledgement can
+run. Two guards keep that from surfacing as an error. On the main thread,
+`core::worker_ingest::LiveRenderCoalescer` folds the acknowledgements of one
+drain into at most one `render_live` (the last target, and none if a later
+acknowledgement in the drain completed it; the completing one asks for the
+stored sweep instead). In the worker, a `render_live` for an elevation that is
+already stored (or behind the elevation being collected) is answered with
+`live_superseded`, which the main thread ignores; only an elevation the
+accumulator never held is still an error.
+
 The scan-start timestamp for the volume is parsed from the Start
 chunk's volume header (`volume_header_start_secs`; a chunk with no
 readable header is a fatal stream error) — see TIMING.md §3c.

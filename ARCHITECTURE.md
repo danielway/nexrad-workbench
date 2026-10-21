@@ -11,14 +11,9 @@ subsystem, follow the dedicated references: [RENDERING.md](docs/RENDERING.md)
 sequencing/timing), [TIMING.md](docs/TIMING.md) (the three time categories), and
 [INDEXEDDB.md](docs/INDEXEDDB.md) (cache layer + schema). Product/UX intent lives
 in [PRODUCT.md](docs/PRODUCT.md); the binding architecture standard + migration
-roadmap in [CORE_SHELL.md](docs/CORE_SHELL.md); the agent/build guide in
+status in [CORE_SHELL.md](docs/CORE_SHELL.md); building and running in
+[CONTRIBUTING.md](CONTRIBUTING.md); the agent/build guide in
 [CLAUDE.md](CLAUDE.md).
-
-How the current structure came to be: the 2026-07
-[architecture review](docs/arch-review-2026-07/README.md) diagnosed the accreted
-entropy, and the [architecture-health program](docs/arch-health-2026-07/README.md)
-records what was done about it — including the decisions taken *not* to migrate
-something, so they read as settled rather than unfinished.
 
 ## Module Structure
 
@@ -124,6 +119,9 @@ Start live mode
   → Each chunk → worker.ingest_chunk → decode + accumulate radials
   → Completed elevations → sweep blobs stored to IDB (upsert_scan)
   → Partial elevations → worker.render_live (reads in-memory accumulator)
+  → The chunk that completes the cut being collected → normal `render` of the
+    stored sweep blob (the accumulator no longer holds its radials, so the
+    live partial lets go of that cut: `core::worker_ingest::live_cut`)
   → Main thread: core::worker_ingest reducer applies the outcome, describes
     GPU/render/status actions the shell executes
   → GPU texture updated per chunk → sweep line extrapolated between chunks
@@ -226,7 +224,7 @@ Heavy computation (bzip2 decompression, NEXRAD decoding, sweep extraction, IDB I
 | `ingest_chunk` | Main → Worker | Real-time chunk: decode, accumulate, flush completed sweeps |
 | `render` | Main → Worker | Read pre-computed sweep from IDB, marshal for GPU upload |
 | `render_volume` | Main → Worker | Pack all elevations for 3D ray-marching |
-| `render_live` | Main → Worker | Read partial sweep from in-memory accumulator (synchronous) |
+| `render_live` | Main → Worker | Read partial sweep from in-memory accumulator (synchronous); answered with `live_decoded`, or `live_superseded` when the elevation was stored after the request was sent (a no-op on the main thread) |
 
 The Rust side of this protocol lives in `nexrad/decode/worker_api/` (the
 `#[wasm_bindgen]` exports worker.js calls) and `nexrad/decode/decode_worker/`
@@ -405,7 +403,7 @@ takes the tap to the activity sheet). The row's press area reaches 12 px up
 into the map, which neither pans on that press nor zooms on the row's pinch.
 
 The phone's overview is the calendar sheet, "Go to a day"
-(`ui/mobile/go_to_day.rs` on the dialog component's `Sheet` and the Esc
+(`ui/go_to_day.rs` on the dialog component's `Sheet` and the Esc
 stack; its state, `Chrome::go_to_day`, changes only through
 `Intent::OpenGoToDay` / `Intent::Calendar`). Everything it shows is
 `core::calendar::calendar_vm`: the Monday-first month grid with each day's
@@ -427,6 +425,15 @@ known cuts (`phone_strip::volume_landing`, `Landing::volume`), and moves onto it
 once ingested, so a frame shows. The shell applies those re-seeks directly
 (a queued `Seek` would read as a touch); the landing is dropped by
 `landing_after` on any playhead intent or by a moved or playing playhead.
+
+The desktop draws the same calendar as a `Popover` above the transport
+clock's calendar button (also G and the chip menu's "Go to a day…"). A
+picked day also runs `calendar::frame_day`: the overview at its default 48 h
+around the day and the strip showing the whole day, cut at now, as a click
+on an overview bar does. Under the grid sits the clock's time field; a time
+typed there is `Intent::GoToTime`, which stops a stream in place, seeks as a
+typed seek, pauses and frames the overview around it
+(`calendar::frame_time`).
 
 Ranges on the phone are never drawn (`core::phone_range`). A long-press on
 the strip emits `Intent::OpenPressSheet` with the snapped time and the scan

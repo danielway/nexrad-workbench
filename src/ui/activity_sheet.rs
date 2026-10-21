@@ -564,15 +564,6 @@ fn render_dev_rows(
             value_color,
         );
     }
-    if let Some(fps) = detail.fps {
-        detail_row(
-            ui,
-            "Frame rate",
-            format!("{fps:.0} fps"),
-            label_color,
-            value_color,
-        );
-    }
     detail_row(
         ui,
         "Cross-origin isolated",

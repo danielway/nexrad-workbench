@@ -123,7 +123,7 @@ impl Default for VizState {
             data_staleness_secs: None,
             data_staleness_start_secs: None,
             last_sweep_line_cache: None,
-            volume_3d_enabled: false,
+            volume_3d_enabled: true,
             volume_density_cutoff: 5.0,
             data_probe_enabled: false,
             distance_tool_active: false,
@@ -144,6 +144,18 @@ impl VizState {
     /// The active [`ViewMode`], derived from the camera variant.
     pub(crate) fn view_mode(&self) -> ViewMode {
         self.camera.view_mode()
+    }
+
+    /// Volume rendering is on and the camera is in 3D: the one predicate
+    /// every volume-render gate and the fetch scope share.
+    pub(crate) fn volume_3d_active(&self) -> bool {
+        self.volume_3d_enabled && self.view_mode() == ViewMode::Globe3D
+    }
+
+    /// The tilt scope archive fetches store: the whole volume while volume
+    /// rendering is active, else the picked tilt.
+    pub(crate) fn fetch_scope(&self) -> ElevationSelection {
+        crate::core::acquisition::fetch_scope(&self.elevation_selection, self.volume_3d_active())
     }
 
     /// Whether the flat 2D view is active.

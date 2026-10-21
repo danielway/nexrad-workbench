@@ -301,14 +301,14 @@ impl AppState {
     }
 
     /// Refresh the device layout for this frame from the pure rule
-    /// ([`crate::core::phone::device_layout`]): a phone's short side with a
-    /// finger (seen, or a coarse pointer) keeps the phone layout in either
-    /// orientation; a narrow window gets it without one. A user override in
+    /// ([`crate::core::phone::device_layout`]): a touch screen (a touch seen,
+    /// or the browser's touch-screen fact) whose short side is under 500 pt
+    /// keeps the phone layout in either orientation; a narrow window gets it without one. A user override in
     /// `mobile_override` takes precedence. Returns the layout.
     pub(crate) fn refresh_mobile_mode(
         &mut self,
         ctx: &eframe::egui::Context,
-        coarse_pointer: bool,
+        touch_screen: bool,
     ) -> crate::core::phone::DeviceLayout {
         let rect = ctx.content_rect();
         let width = rect.width();
@@ -320,7 +320,7 @@ impl AppState {
             width,
             height: rect.height(),
             touch_seen: self.touch_seen_ever,
-            coarse_pointer,
+            touch_screen,
             forced: self.mobile_override,
         });
         self.is_mobile = layout.is_phone();

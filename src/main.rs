@@ -465,7 +465,7 @@ impl WorkbenchApp {
             state: bootstrapped_playback,
         };
         let mut chrome = subsystem::Chrome::new();
-        chrome.coarse_pointer = ui::coarse_pointer();
+        chrome.touch_screen = ui::touch_screen();
         chrome.rail_tab = loaded_prefs.panel_tab;
         chrome.right_sidebar_visible = loaded_prefs.panel_open;
 
@@ -649,6 +649,7 @@ impl WorkbenchApp {
             session_requests: stats.session_request_count,
             session_bytes: stats.session_transferred_bytes,
             sw_aggregate: &self.state.network_aggregate,
+            fps: stats.avg_fps,
             recent_requests: &self.state.recent_network_requests,
             cache_size_bytes: stats.cache_size_bytes,
             stream: self.live.session.stream,
@@ -659,7 +660,6 @@ impl WorkbenchApp {
                 .state
                 .dev_mode
                 .then_some(core::activity::ActivityDevInputs {
-                    fps: stats.avg_fps,
                     cross_origin_isolated: self.state.cross_origin_isolated,
                     avg_fetch_ms: stats.median_chunk_latency_ms,
                     avg_processing_ms: stats.median_processing_time_ms,
@@ -1033,9 +1033,18 @@ impl eframe::App for WorkbenchApp {
             displayed: self.state.viz_state.displayed.as_ref(),
             caption_context: self.state.viz_state.caption_context,
         });
+        // The touch-screen fact is re-read when the viewport changes size, so
+        // an emulator's device toggle (or a rotation) sees the current one.
+        let size = ctx.content_rect().size();
+        if self.chrome.touch_screen_read_at != Some((size.x, size.y)) {
+            if self.chrome.touch_screen_read_at.is_some() {
+                self.chrome.touch_screen = ui::touch_screen();
+            }
+            self.chrome.touch_screen_read_at = Some((size.x, size.y));
+        }
         self.chrome.device_layout = self
             .state
-            .refresh_mobile_mode(ctx, self.chrome.coarse_pointer);
+            .refresh_mobile_mode(ctx, self.chrome.touch_screen);
 
         // Drain GPS-overlay async results before panels render so the
         // "My Location" checkbox sees coords/error on the same frame the

@@ -25,11 +25,9 @@ impl WorkbenchApp {
             self.state.pointer_scrub_active = false;
         }
 
-        // Record frame time for FPS meter (dev mode only)
-        if self.state.dev_mode {
-            let dt = ctx.input(|i| i.stable_dt);
-            self.state.session_stats.record_frame_time(dt);
-        }
+        // Frame time for the transport row's fps readout.
+        let dt = ctx.input(|i| i.stable_dt);
+        self.state.session_stats.record_frame_time(dt);
 
         // Resolve theme and apply egui visuals. The `Visuals` struct is
         // cloned into the egui context on each `set_visuals` call, so guard
