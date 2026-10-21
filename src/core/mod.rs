@@ -62,6 +62,7 @@ pub(crate) mod selection_strip;
 pub(crate) mod session;
 pub(crate) mod site_picker;
 pub(crate) mod storm_activity;
+pub(crate) mod storm_cell_view;
 pub(crate) mod storm_cells;
 pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;

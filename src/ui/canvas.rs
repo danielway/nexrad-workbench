@@ -1,8 +1,6 @@
 //! Central canvas UI: radar visualization area.
 
-use super::canvas_data_probe::{
-    render_data_probe, render_distance_measurement, render_storm_cells,
-};
+use super::canvas_data_probe::{render_data_probe, render_distance_measurement};
 use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interaction};
 use super::canvas_overlays::{
     draw_globe, draw_national_mosaic, layout_chrome, render_alerts, render_chrome_overlays,
@@ -224,7 +222,7 @@ pub(crate) fn render_canvas_with_geo(
                 }
 
                 let sweep_info = compute_sweep_line_azimuth(state, timeline, playback);
-                let (gpu_sweep, between_sweeps) =
+                let (gpu_sweep, between_sweeps, live_partial) =
                     compute_gpu_sweep_state(state, timeline, live, playback, derived, sweep_info);
 
                 // Age desaturation needs the estimated antenna azimuth; only
@@ -398,16 +396,24 @@ pub(crate) fn render_canvas_with_geo(
                     }),
                 );
 
-                if state.viz_state.storm_cells_visible
-                    && !state.viz_state.storm_cells.result.cells.is_empty()
-                {
-                    render_storm_cells(
-                        &painter,
-                        &projection,
-                        &state.viz_state.storm_cells.result.cells,
-                        dark,
-                    );
-                }
+                // Storm cells: what draws is the core's view-model (on, 2D,
+                // behind the Rays sweep line; provisional on a live partial).
+                let storm_cells_vm = crate::core::storm_cell_view::build(
+                    &crate::core::storm_cell_view::StormCellViewInputs {
+                        result: &state.viz_state.storm_cells.result,
+                        visible: state.viz_state.storm_cells_visible,
+                        view_mode: ViewMode::Flat2D,
+                        radar: (state.viz_state.center_lat, state.viz_state.center_lon),
+                        sweep: gpu_sweep,
+                        provisional: live_partial,
+                        phone: state.is_mobile,
+                    },
+                    |lat, lon| {
+                        let p = projection.geo_to_screen(Coord { x: lon, y: lat });
+                        [p.x, p.y]
+                    },
+                );
+                super::canvas_storm_cells::paint_storm_cells(&painter, &storm_cells_vm);
 
                 if state.layer_state.geo.gps_location {
                     if let Some(coords) = diagnostics.gps.coords {
@@ -723,7 +729,7 @@ fn compute_gpu_sweep_state(
     playback: &crate::subsystem::Playback,
     derived: &crate::subsystem::Derived,
     sweep_info: Option<(f32, f32)>,
-) -> (Option<(f32, f32)>, bool) {
+) -> (Option<(f32, f32)>, bool, bool) {
     // Live partial compositing only when the in-progress elevation matches
     // the user's filter (Latest accepts any cut). Otherwise other tilts would
     // keep driving the GPU sweep boundary and age desaturation between visits
@@ -787,7 +793,9 @@ fn compute_gpu_sweep_state(
         new_cache,
     );
 
-    (gpu_sweep, between_sweeps)
+    // A live partial composites only while `live_range` is set: the sweep on
+    // the GPU is still arriving.
+    (gpu_sweep, between_sweeps, live_range.is_some())
 }
 
 fn compute_sweep_line_azimuth(

@@ -23,6 +23,7 @@ mod canvas;
 mod canvas_data_probe;
 mod canvas_interaction;
 mod canvas_overlays;
+mod canvas_storm_cells;
 mod data_colors;
 pub(crate) mod dialog;
 mod event_modal;

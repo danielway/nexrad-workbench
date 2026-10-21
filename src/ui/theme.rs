@@ -19,8 +19,9 @@
 //! the base tokens live in the submodules ([`timeline`], [`canvas`]), and the
 //! map marks in [`map`]. Hues in use today that the grammar retires are kept,
 //! folded and named, in [`legacy`] until the PR that removes their use lands.
-//! Data colors (mPING categories, storm-cell intensity,
-//! the radar color tables) are not chrome and live in
+//! Storm cell marks (footprint outline, chip, card) live in [`storm_cells`].
+//! Data colors (mPING categories, the radar color tables) are not chrome and
+//! live in
 //! [`crate::ui::data_colors`] / `crate::nexrad::render::color_table`.
 //!
 //! **Type.** IBM Plex Sans for prose and labels, IBM Plex Mono for every time,
@@ -207,6 +208,31 @@ pub(crate) mod map {
     /// The scrim's hairline edge.
     pub(crate) fn scrim_edge() -> Color32 {
         alpha(LINE, 200)
+    }
+}
+
+/// Storm cell marks over the radar (PRODUCT.md §13.2). One light stroke over
+/// a dark halo reads on every part of the reflectivity palette; intensity is
+/// carried by the chip's number, never by the stroke's color. The app has one
+/// (dark) theme, so these are constants like every other token.
+pub(crate) mod storm_cells {
+    use super::{alpha, Color32};
+
+    /// The footprint stroke and the chip/card text.
+    pub(crate) const OUTLINE: Color32 = Color32::from_rgb(232, 244, 255);
+    /// The dark surface under storm cell marks: halo, chip, card.
+    const INK: Color32 = Color32::from_rgb(10, 15, 24);
+    /// The halo under the footprint stroke.
+    pub(crate) fn halo() -> Color32 {
+        alpha(INK, 178)
+    }
+    /// A provisional cell's stroke (live sweep still arriving): muted.
+    pub(crate) fn outline_provisional() -> Color32 {
+        alpha(OUTLINE, 150)
+    }
+    /// The dashed group outline: fainter than a cell's.
+    pub(crate) fn group() -> Color32 {
+        alpha(OUTLINE, 110)
     }
 }
 
