@@ -499,9 +499,22 @@ pub(crate) fn decide_prefetch_and_caption(
         },
         fetchable_scan_start,
         volume_waiting: env.volume_3d_active && env.live_active && playback.is_pinned(),
+        // The volume on screen is the coordinator's scan (a partial one can
+        // end before the playhead); the scan at the playhead before there is
+        // one.
         volume_cuts: env
             .volume_3d_active
-            .then(|| timeline.find_scan_at_timestamp(pos))
+            .then(|| {
+                env.coordinator_scan_key
+                    .and_then(|k| {
+                        let start = k.scan_start.as_secs_f64();
+                        timeline
+                            .scans
+                            .iter()
+                            .find(|s| (s.key_timestamp - start).abs() < 0.5)
+                    })
+                    .or_else(|| timeline.find_scan_at_timestamp(pos))
+            })
             .flatten()
             .and_then(partial_volume_cuts),
     };
@@ -1274,6 +1287,23 @@ mod tests {
         env.volume_3d_active = true;
         assert_eq!(
             fx.followup(env, &tl).caption_context.volume_cuts,
+            Some((1, 3))
+        );
+        // A partial volume ends before the playhead: the coordinator's scan
+        // is the one on screen.
+        let fx_later = Fx::at(2400.0, PlaybackMode::Macro);
+        let mut env = base_followup_env();
+        env.volume_3d_active = true;
+        assert_eq!(
+            fx_later.followup(env, &tl).caption_context.volume_cuts,
+            None
+        );
+        let key = ScanKey::from_secs_f64("KDMX", 2000.0);
+        let mut env = base_followup_env();
+        env.volume_3d_active = true;
+        env.coordinator_scan_key = Some(&key);
+        assert_eq!(
+            fx_later.followup(env, &tl).caption_context.volume_cuts,
             Some((1, 3))
         );
         // Not while a sweep is drawn.
