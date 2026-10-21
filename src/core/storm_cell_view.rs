@@ -1510,6 +1510,34 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    fn with_tracks_the_chip_sits_on_the_core_and_the_path_on_the_centroid() {
+        let p = StormCellPointer::default();
+        let tv = tracks_view();
+        // Cell 0's core sits off-centre in its footprint (north-east).
+        let mut r = result();
+        r.cells[0].core_outline = square(42.22, -93.18, 0.07);
+        let mut i = inputs(&r, &p);
+        i.tracks = Some(&tv);
+        let vm = build(&i, project);
+        let chip = vm.chips.iter().find(|c| c.cell_id == 0).expect("chip");
+        let core_ne = project(42.29, -93.11);
+        assert!(chip.min[0] > core_ne[0] && chip.min[0] < core_ne[0] + 6.0);
+        assert!(chip.min[1] < core_ne[1] && chip.min[1] + chip.size[1] > core_ne[1]);
+        // The path, its join and the arrow start from the centroid, not
+        // from the core.
+        let d = vm.trails.iter().find(|t| t.cell_id == 0).expect("trail");
+        let centroid = project(r.cells[0].lat, r.cells[0].lon);
+        assert_eq!(d.dots.last(), Some(&centroid));
+        assert_eq!(d.arrow.as_ref().map(|a| a.from), Some(centroid));
+        // And they do not depend on which outline is drawn.
+        let mut bare = result();
+        bare.cells[0].core_outline.clear();
+        let mut j = inputs(&bare, &p);
+        j.tracks = Some(&tv);
+        assert_eq!(build(&j, project).trails, vm.trails);
+    }
+
+    #[wasm_bindgen_test]
     fn the_path_fades_with_age_newest_strongest() {
         assert_eq!(path_fade(1), vec![1.0]);
         let f = path_fade(5);
