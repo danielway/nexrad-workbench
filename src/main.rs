@@ -939,7 +939,7 @@ impl eframe::App for WorkbenchApp {
         let early_derived = subsystem::Derived::for_frame(
             &self.state,
             &self.playback,
-            self.live.mode_state.is_active(),
+            self.live.canvas_follows_live(&self.playback.state),
             self.live.radar_model.collecting_elevation(),
         );
         self.state.national_mosaic.poll_tick(
@@ -1085,7 +1085,7 @@ impl eframe::App for WorkbenchApp {
         let derived = subsystem::Derived::for_frame(
             &self.state,
             &self.playback,
-            self.live.mode_state.is_active(),
+            self.live.canvas_follows_live(&self.playback.state),
             self.live.radar_model.collecting_elevation(),
         );
 

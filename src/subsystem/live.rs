@@ -226,10 +226,29 @@ impl Live {
         selected
     }
 
-    /// Whether the stream is running but the playhead has detached from the
-    /// live edge (the user is browsing while ingestion continues).
-    pub(crate) fn is_detached(&self, playback: &PlaybackState) -> bool {
-        self.mode_state.is_active() && !playback.is_pinned() && !playback.is_live_range()
+    /// Whether the canvas follows the live stream rather than the playhead
+    /// (see [`crate::core::canvas::canvas_follows_live`]). False while the
+    /// user browses with ingestion continuing in the background: a scrubbed
+    /// playhead, or a live range's playhead on a sweep that is already stored.
+    pub(crate) fn canvas_follows_live(&self, playback: &PlaybackState) -> bool {
+        crate::core::canvas::canvas_follows_live(
+            self.mode_state.is_active(),
+            playback.is_pinned(),
+            playback.is_live_range(),
+            playback.playback_position(),
+            self.live_cut_start(),
+        )
+    }
+
+    /// When the cut being collected started: its first chunk's start time.
+    fn live_cut_start(&self) -> Option<f64> {
+        self.radar_model
+            .active_sweep
+            .as_ref()?
+            .chunk_time_spans
+            .iter()
+            .map(|&(start, _, _)| start)
+            .reduce(f64::min)
     }
 
     /// Seconds until the next chunk is expected to be available in S3 — drives
@@ -396,40 +415,55 @@ mod coverage_tests {
         );
     }
 
-    // ---- Live::is_detached --------------------------------------------
+    // ---- Live::canvas_follows_live ------------------------------------
+
+    /// A streaming `Live` whose active cut's first chunk started at `start`.
+    fn streaming_with_cut(start: Option<f64>) -> Live {
+        let mut l = live();
+        l.mode_state.phase = LivePhase::Streaming;
+        l.radar_model.active_sweep = start.map(|s| crate::core::live_radar_model::LiveSweepModel {
+            elevation_number: 3,
+            data_azimuth_range: Some((10.0, 40.0)),
+            chunks: Vec::new(),
+            chunks_expected: None,
+            chunk_time_spans: vec![(s + 6.0, s + 12.0, 60), (s, s + 6.0, 60)],
+        });
+        l
+    }
 
     #[wasm_bindgen_test]
-    fn is_detached_false_when_stream_inactive() {
+    fn no_stream_does_not_follow_live() {
         let l = live(); // mode_state Idle => not active
-        let pb = PlaybackState::default(); // mode defaults to Free
-        assert!(!l.is_detached(&pb));
-    }
-
-    #[wasm_bindgen_test]
-    fn is_detached_true_when_active_and_playhead_free() {
-        let mut l = live();
-        l.mode_state.phase = LivePhase::Streaming;
-        let pb = PlaybackState::default(); // Free
-        assert!(l.is_detached(&pb));
-    }
-
-    #[wasm_bindgen_test]
-    fn is_detached_false_when_pinned() {
-        let mut l = live();
-        l.mode_state.phase = LivePhase::Streaming;
         let mut pinned = PlaybackState::default();
         pinned.enter_pinned_live(1000.0);
-        assert!(!l.is_detached(&pinned));
+        assert!(!l.canvas_follows_live(&pinned));
     }
 
     #[wasm_bindgen_test]
-    fn is_detached_false_when_lookback() {
-        let mut l = live();
-        l.mode_state.phase = LivePhase::Streaming;
+    fn a_free_playhead_does_not_follow_live() {
+        let l = streaming_with_cut(Some(990.0));
+        let pb = PlaybackState::default(); // Free
+        assert!(!l.canvas_follows_live(&pb));
+    }
+
+    #[wasm_bindgen_test]
+    fn pinned_follows_live() {
+        let l = streaming_with_cut(None);
+        let mut pinned = PlaybackState::default();
+        pinned.enter_pinned_live(1000.0);
+        assert!(l.canvas_follows_live(&pinned));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_live_range_follows_live_from_the_cut_start() {
         let mut lookback = PlaybackState::default();
         lookback.enter_pinned_live(1000.0);
         lookback.enter_live_range(None, LoopBasis::default());
-        assert!(!l.is_detached(&lookback));
+        let pos = lookback.playback_position();
+        // The earliest chunk span counts, whatever order they arrive in.
+        assert!(streaming_with_cut(Some(pos)).canvas_follows_live(&lookback));
+        assert!(!streaming_with_cut(Some(pos + 1.0)).canvas_follows_live(&lookback));
+        assert!(!streaming_with_cut(None).canvas_follows_live(&lookback));
     }
 
     // ---- Live::countdown_remaining_secs -------------------------------

@@ -230,8 +230,8 @@ pub(crate) fn render_canvas_with_geo(
                 // Age desaturation needs the estimated antenna azimuth; only
                 // supply it while the view's sweep animation is active so a
                 // fixed elevation filter doesn't keep fading between visits.
-                let chunk_boundary = derived
-                    .effective_sweep_animation
+                let chunk_boundary = (derived.effective_sweep_animation
+                    && derived.canvas_follows_live)
                     .then_some(live.radar_model.estimated_azimuth)
                     .flatten();
 
@@ -419,7 +419,7 @@ pub(crate) fn render_canvas_with_geo(
                 // chunks and the now line from the estimated antenna
                 // position; archive: the reveal follows the playhead, and
                 // between sweeps the last position is held, faint.
-                let (sweep_line_info, sweep_stale) = if live.radar_model.active {
+                let (sweep_line_info, sweep_stale) = if derived.canvas_follows_live {
                     (gpu_sweep, false)
                 } else {
                     match gpu_sweep {
@@ -441,7 +441,7 @@ pub(crate) fn render_canvas_with_geo(
                         sweep: sweep_line_info,
                         stale: sweep_stale,
                         show_lines: derived.effective_sweep_animation,
-                        live: live.radar_model.active,
+                        live: derived.canvas_follows_live,
                         antenna_az: live.radar_model.estimated_azimuth,
                         chunk_last_az: &chunk_last_az,
                         live_edge_time: active_sweep
@@ -731,6 +731,7 @@ fn compute_gpu_sweep_state(
     // Archive animation still uses effective_sweep_animation.
     let selected_elev = state.viz_state.elevation_selection.elevation_number();
     let live_range = crate::core::canvas::live_compositing_azimuth_range(
+        derived.canvas_follows_live,
         playback.state.playback_mode() == crate::core::PlaybackMode::Macro,
         selected_elev,
         live.radar_model.collecting_elevation(),
