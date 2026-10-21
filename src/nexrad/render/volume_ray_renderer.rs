@@ -213,6 +213,30 @@ bool sample_sweep(int si, float az_deg, float range_km, out float physical) {
     return true;
 }
 
+// ── Height matching between cuts ───────────────────────────────────
+//
+// Transcriptions of core::volume_plan::slant_range_at_height_km and
+// height_matched_range_km, which are tested there. Each bracketing cut is
+// sampled where it reaches the point's height (within a cap) rather than at
+// the point's own slant range, so a thin layer such as the melting-layer
+// bright band stays a flat sheet instead of showing as rings around the radar
+// wherever a cut's cone happens to cross it.
+
+// Must match core::volume_plan::HEIGHT_MATCH_MAX_SHIFT_KM.
+const float HEIGHT_MATCH_MAX_SHIFT_KM = 2.0;
+
+float slant_range_at_height(float el_deg, float h_km) {
+    float b = EFFECTIVE_EARTH_RADIUS * sin(radians(el_deg));
+    float c = h_km * (2.0 * EFFECTIVE_EARTH_RADIUS + h_km);
+    return c / (sqrt(b * b + c) + b);
+}
+
+float height_matched_range(float el_deg, float h_km, float range_km) {
+    return clamp(slant_range_at_height(el_deg, h_km),
+                 range_km - HEIGHT_MATCH_MAX_SHIFT_KM,
+                 range_km + HEIGHT_MATCH_MAX_SHIFT_KM);
+}
+
 // ── Linear search for elevation bracket (faster than binary for ≤25) ─
 
 int find_sweep_bracket(float el_deg) {
@@ -341,10 +365,11 @@ void main() {
         float az_deg = degrees(atan(dot(d, east), dot(d, north)));
         if (az_deg < 0.0) az_deg += 360.0;
 
-        // Sample the two bracketing sweeps, each already in physical units.
+        // Sample the two bracketing sweeps, each already in physical units and
+        // each where it passes this point's height.
         float p_lo, p_hi;
-        bool ok_lo = sample_sweep(si, az_deg, range_km, p_lo);
-        bool ok_hi = sample_sweep(si + 1, az_deg, range_km, p_hi);
+        bool ok_lo = sample_sweep(si, az_deg, height_matched_range(u_elevation[si], h_km, range_km), p_lo);
+        bool ok_hi = sample_sweep(si + 1, az_deg, height_matched_range(u_elevation[si + 1], h_km, range_km), p_hi);
 
         // Elevation interpolation
         float physical;

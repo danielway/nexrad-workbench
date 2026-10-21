@@ -351,7 +351,12 @@ explicitly in the shader.
    line-by-line transcription. Find the bracketing elevation pair
    (linear scan over ≤25 sweeps), bilinearly sample each in azimuth
    and range, convert to physical units with **that sweep's own**
-   scale/offset, then blend across elevation.
+   scale/offset, then blend across elevation. Each cut is sampled
+   where it reaches the sample's height, up to 2 km along its radial
+   (`core::volume_plan::height_matched_range_km`), not at the sample's
+   own slant range. Blending at equal range mixes two heights, so a
+   thin layer like the melting-layer bright band only showed where a
+   cut's cone crossed it, as rings around the radar.
 5. Front-to-back Beer–Lambert compositing:
    `alpha = 1 - exp(-sigma * ds_km)` with extinction derived from a
    gamma curve over the value range. `ALPHA_CUTOFF = 0.99` early-
