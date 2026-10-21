@@ -48,6 +48,19 @@ impl WorkbenchApp {
                 nexrad::WorkerOutcome::VolumeDecoded(volume_data) => {
                     self.handle_volume_decoded_outcome(volume_data);
                 }
+                nexrad::WorkerOutcome::Detected(reply) => {
+                    let disposition = self.state.viz_state.storm_cells.accept(reply);
+                    log::debug!("storm cells: reply {:?}", disposition);
+                    self.sync_storm_cells();
+                }
+                nexrad::WorkerOutcome::DetectFailed {
+                    request_id,
+                    message,
+                } => {
+                    log::warn!("storm cells: detection failed: {message}");
+                    self.state.viz_state.storm_cells.fail(request_id);
+                    self.sync_storm_cells();
+                }
                 nexrad::WorkerOutcome::WorkerError {
                     id,
                     kind,

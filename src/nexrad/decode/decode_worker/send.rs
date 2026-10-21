@@ -145,6 +145,19 @@ impl DecodeWorker {
         }
     }
 
+    /// Submit a storm cell detection on one cut.
+    pub(crate) fn detect(&mut self, request: crate::core::storm_cells::DetectRequest) {
+        let id = self.next_request_id();
+        self.pending_detect
+            .borrow_mut()
+            .insert(id, request.request_id);
+        if *self.ready.borrow() {
+            send_detect_request(&self.worker, id, &request);
+        } else {
+            self.queue.push(super::QueuedRequest::Detect(id, request));
+        }
+    }
+
     /// Submit a single real-time chunk for incremental ingest.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn ingest_chunk(
@@ -386,5 +399,39 @@ pub(super) fn send_render_volume_request(
 
     if let Err(e) = worker.post_message(&msg) {
         log::error!("Failed to send render_volume request {}: {:?}", id, e);
+    }
+}
+
+/// Send a storm cell detection request to the worker.
+pub(super) fn send_detect_request(
+    worker: &Worker,
+    id: u64,
+    request: &crate::core::storm_cells::DetectRequest,
+) {
+    use crate::core::storm_cells::CutInput;
+    let key = &request.key;
+    let scan_key = key.scan_key.to_storage_key();
+    let msg = DetectRequestMsg {
+        msg_type: RequestType::Detect.as_str(),
+        id: id as f64,
+        scan_key: &scan_key,
+        elevation_number: key.elevation_number,
+        input: match key.input {
+            CutInput::Stored => "stored",
+            CutInput::Live { .. } => "live",
+        },
+        params: &request.params,
+        radar_lat: request.radar_lat,
+        radar_lon: request.radar_lon,
+    };
+    let msg = match serde_wasm_bindgen::to_value(&msg) {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("Failed to serialize detect request {}: {}", id, e);
+            return;
+        }
+    };
+    if let Err(e) = worker.post_message(&msg) {
+        log::error!("Failed to send detect request {}: {:?}", id, e);
     }
 }

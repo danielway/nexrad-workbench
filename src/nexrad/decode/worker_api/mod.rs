@@ -1,8 +1,9 @@
 //! WASM exports for the Web Worker.
 //!
 //! These functions are called from worker.js to perform heavy data operations
-//! (ingest, render) in a background thread, keeping the main UI responsive.
+//! (ingest, render, storm cell detection) in a background thread, keeping the main UI responsive.
 
+mod detect;
 mod ingest;
 mod render;
 mod render_live;
