@@ -257,7 +257,7 @@ pub(crate) fn reduce_decoded(
 
 /// Read-only frame context for one live decode outcome, shell-assembled.
 pub(crate) struct LiveDecodedEnv<'a> {
-    /// `!self.live.is_detached(&self.playback.state)`.
+    /// `self.live.canvas_follows_live(&self.playback.state)`.
     pub playhead_attached: bool,
     /// `self.live_shows_whole_sweeps()` — Frames mode keeps the last complete
     /// sweep on the canvas, so the partial is decoded but not shown.

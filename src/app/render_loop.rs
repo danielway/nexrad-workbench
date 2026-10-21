@@ -124,7 +124,7 @@ impl WorkbenchApp {
 
         if !self.state.effective_sweep_animation(
             &self.playback.state,
-            self.live.mode_state.is_active(),
+            self.live.canvas_follows_live(&self.playback.state),
             self.live.radar_model.collecting_elevation(),
         ) {
             self.state.viz_state.previous_displayed = None;
