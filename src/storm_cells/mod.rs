@@ -7,13 +7,12 @@
 //!
 //! Pipeline, all in polar (azimuth × gate) index space:
 //!
-//! 1. Decode raw gate codes to dBZ (`build_physical_grid`).
-//! 2. 3×3 median filter (`median`), so single-gate spikes cannot set a
-//!    cell's peak. The peak of a cell is the maximum of the filtered field.
-//! 3. Label 8-connected components (with azimuth wrap) at a ladder of
+//! 1. Decode raw gate codes to dBZ and apply a 3×3 median filter
+//!    (`median`), so single-gate spikes cannot set a cell's peak. The peak of a cell is the maximum of the filtered field.
+//! 2. Label 8-connected components (with azimuth wrap) at a ladder of
 //!    levels from the user's envelope threshold up in 5 dB steps, build the
 //!    containment tree and resolve it into cells and groups (`segment`).
-//! 4. Summarize each cell's and group's footprint (`features`) and trace
+//! 3. Summarize each cell's and group's footprint (`features`) and trace
 //!    its outline (`outline`).
 //!
 //! The envelope threshold (the user's slider, default 35 dBZ) is the weakest
@@ -116,14 +115,23 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
     }
 
     let az_adjacent = components::precompute_az_adjacency(input.azimuths, input.azimuth_count);
-    let physical = build_physical_grid(input);
+    let decoder = median::Decoder {
+        scale: input.data_scale,
+        offset: input.data_offset,
+    };
+    // Rows with a negative azimuth are padding from partial sweeps.
+    let row_valid: Vec<bool> = input.azimuths[..input.azimuth_count]
+        .iter()
+        .map(|a| *a >= 0.0)
+        .collect();
     let filtered = median::median3x3(
-        &physical,
+        input.gate_values,
+        &decoder,
+        &row_valid,
         &az_adjacent,
         input.gate_count,
         params.threshold_dbz,
     );
-    drop(physical);
 
     let az_spacing_rad = (360.0_f64 / input.azimuth_count as f64).to_radians();
     let gate_area_km2: Vec<f64> = (0..input.gate_count)
@@ -223,37 +231,6 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
     result.cells = cells.into_iter().map(|(c, _)| c).collect();
     result.groups = groups;
     result
-}
-
-/// Decode raw gate values into physical dBZ, writing NaN for gates that
-/// carry no echo (sentinel 0/1, padded azimuth row).
-fn build_physical_grid(input: &DetectionInput) -> Vec<f32> {
-    let n = input.azimuth_count * input.gate_count;
-    let mut grid = vec![f32::NAN; n];
-
-    let use_raw = input.data_scale == 0.0;
-
-    for az_idx in 0..input.azimuth_count {
-        let az_value = input.azimuths.get(az_idx).copied().unwrap_or(-1.0);
-        if az_value < 0.0 {
-            // Padded row from a partial sweep — leave as NaN.
-            continue;
-        }
-        let row_start = az_idx * input.gate_count;
-        for g in 0..input.gate_count {
-            let raw = input.gate_values[row_start + g];
-            if raw <= 1.0 {
-                continue; // sentinel (no echo / range folded)
-            }
-            grid[row_start + g] = if use_raw {
-                raw
-            } else {
-                (raw - input.data_offset) / input.data_scale
-            };
-        }
-    }
-
-    grid
 }
 
 #[cfg(test)]
@@ -489,27 +466,20 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn sentinel_values_are_background() {
-        let grid = build_physical_grid(&mk_input(&even_az(1), &[0.0, 1.0, 45.0, 0.9], 4));
-        assert!(grid[0].is_nan());
-        assert!(grid[1].is_nan());
-        assert_eq!(grid[2], 45.0);
-        assert!(grid[3].is_nan());
-    }
-
-    #[wasm_bindgen_test]
-    fn build_physical_grid_applies_scale_and_offset() {
-        // physical = (raw - offset) / scale. raw 146, offset 66, scale 2 → 40 dBZ.
-        let az = even_az(1);
-        let gates = vec![146.0_f32, 100.0];
+    fn sentinel_and_scaled_codes_decode_before_detection() {
+        // Raw codes with scale 2 / offset 66: 166 → 50 dBZ, sentinels 0/1.
+        let row = vec![0.0, 166.0, 166.0, 1.0];
+        let (gates, gc) = flatten(vec![row.clone(), row.clone(), row]);
+        let az = vec![0.0_f32, 1.0, 2.0];
         let input = DetectionInput {
             data_scale: 2.0,
             data_offset: 66.0,
-            ..mk_input(&az, &gates, 2)
+            ..mk_input(&az, &gates, gc)
         };
-        let grid = build_physical_grid(&input);
-        assert!((grid[0] - 40.0).abs() < 1e-3);
-        assert!((grid[1] - 17.0).abs() < 1e-3);
+        let cells = detect_cells(&input, &permissive()).cells;
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].gate_count, 6);
+        assert!((cells[0].peak_dbz - 50.0).abs() < 1e-3);
     }
 
     #[wasm_bindgen_test]
