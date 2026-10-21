@@ -262,6 +262,11 @@ fn apply_link(
     if let Some(dev) = link.dev {
         state.dev_mode = dev;
     }
+    // A link that carries storm cells turns them on at its threshold.
+    if let Some(dbz) = link.cells {
+        state.viz_state.storm_cells_visible = true;
+        state.viz_state.storm_cell_threshold_dbz = core::storm_cells::clamp_threshold(dbz);
+    }
 
     match plan.site.as_deref().and_then(data::get_site) {
         Some(site) => {

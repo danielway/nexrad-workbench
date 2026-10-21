@@ -76,6 +76,10 @@ pub(crate) fn build_link(
         lat: Some(state.viz_state.center_lat),
         lon: Some(state.viz_state.center_lon),
         view: ViewState::from_state(state, playback),
+        cells: state
+            .viz_state
+            .storm_cells_visible
+            .then_some(state.viz_state.storm_cell_threshold_dbz),
         dev: Some(state.dev_mode),
     }
 }
@@ -102,6 +106,17 @@ mod tests {
     use super::*;
     use crate::core::{LoopBasis, PlaybackMode};
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn storm_cells_join_the_link_only_when_on() {
+        let mut state = crate::state::AppState::default();
+        let playback = crate::core::PlaybackState::default();
+        assert_eq!(build_link(&state, &playback).cells, None);
+        state.viz_state.storm_cells_visible = true;
+        state.viz_state.storm_cell_threshold_dbz = 45.0;
+        let q = crate::core::link::to_query(&build_link(&state, &playback));
+        assert!(q.contains("cells=45"), "{q}");
+    }
 
     #[wasm_bindgen_test]
     fn a_pinned_point_travels_as_sel_now_not_rt() {

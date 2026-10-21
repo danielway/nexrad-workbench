@@ -19,6 +19,7 @@
 //! | tilt (an angle, or Latest) | `tilt` |
 //! | map center | `lat`, `lon` |
 //! | 2D/3D, camera, map and timeline zoom, volume rendering and cutoff | `v` |
+//! | storm cells on, at this envelope threshold (dBZ) | `cells` |
 //! | developer flag | `dev` |
 //!
 //! `sel` is `now` (pinned to now), `last6f` / `last1800s` (a range ending now
@@ -79,6 +80,9 @@ pub(crate) struct LinkState {
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub view: ViewState,
+    /// `cells=<dbz>`: storm cells on at this envelope threshold. Absent says
+    /// nothing (the preference stands); a bare `cells` means the default.
+    pub cells: Option<f32>,
     /// `Some(true)` for `dev=true`; wins over the saved preference for the
     /// session without being saved.
     pub dev: Option<bool>,
@@ -129,6 +133,13 @@ pub(crate) fn parse(query: &str) -> LinkState {
             "v" => {
                 if let Some(view) = decode_view(value) {
                     link.view = view;
+                }
+            }
+            "cells" => {
+                link.cells = if value.is_empty() {
+                    Some(crate::core::storm_cells::THRESHOLD_DEFAULT_DBZ)
+                } else {
+                    value.parse::<f32>().ok().filter(|v| v.is_finite())
                 }
             }
             "dev" => {
@@ -189,6 +200,9 @@ pub(crate) fn to_query(link: &LinkState) -> String {
     if link.view != ViewState::default() {
         parts.push(format!("v={}", encode_view(&link.view)));
     }
+    if let Some(dbz) = link.cells {
+        parts.push(format!("cells={}", format_angle(dbz)));
+    }
     if link.dev == Some(true) {
         parts.push("dev=true".to_string());
     }
@@ -244,7 +258,8 @@ fn parse_tilt(value: &str) -> Option<LinkTilt> {
         .map(LinkTilt::Angle)
 }
 
-/// `0.5`, `19.5`, `1` — at most two decimals, no trailing zeros.
+/// `0.5`, `19.5`, `1` — at most two decimals, no trailing zeros (tilt
+/// angles and storm cell thresholds).
 fn format_angle(a: f32) -> String {
     let s = format!("{a:.2}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
@@ -374,8 +389,31 @@ mod tests {
                 vdc: Some(12.5),
                 ..Default::default()
             },
+            cells: Some(40.0),
             dev: Some(true),
         }
+    }
+
+    #[wasm_bindgen_test]
+    fn storm_cells_travel_as_their_threshold() {
+        let link = LinkState {
+            cells: Some(35.0),
+            ..Default::default()
+        };
+        let q = to_query(&link);
+        assert_eq!(q, "?cells=35");
+        assert_eq!(parse(&q).cells, Some(35.0));
+        assert_eq!(parse("?cells=42.5").cells, Some(42.5));
+        // Off is the absence of the key.
+        assert!(!to_query(&LinkState::default()).contains("cells"));
+        assert_eq!(parse("?site=KDMX").cells, None);
+        // A bare key means on at the default; junk is dropped.
+        assert_eq!(
+            parse("?cells").cells,
+            Some(crate::core::storm_cells::THRESHOLD_DEFAULT_DBZ)
+        );
+        assert_eq!(parse("?cells=lots").cells, None);
+        assert_eq!(parse("?cells=NaN").cells, None);
     }
 
     // ── Codec ──────────────────────────────────────────────────────────────
