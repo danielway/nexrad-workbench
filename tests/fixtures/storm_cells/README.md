@@ -17,6 +17,8 @@ enough to check in:
 | `KDMX20240521_201727_V06_el1.bin` | [KDMX 2024-05-21 20:17:27Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/05/21/KDMX/KDMX20240521_201727_V06) | Greenfield, Iowa supercell line | 95 KB |
 | `KFWS20240528_102649_V06_el1.bin` | [KFWS 2024-05-28 10:26:49Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/05/28/KFWS/KFWS20240528_102649_V06) | MCS with trailing stratiform rain | 102 KB |
 | `KTBW20241009_195926_V06_el1.bin` | [KTBW 2024-10-09 19:59:26Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/10/09/KTBW/KTBW20241009_195926_V06) | Hurricane Milton rain shield | 139 KB |
+| `KDMX20240521_200338_V06_el1.bin` | [KDMX 2024-05-21 20:03:38Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/05/21/KDMX/KDMX20240521_200338_V06) | Greenfield, two volumes before (tracking history) | 95 KB |
+| `KDMX20240521_201032_V06_el1.bin` | [KDMX 2024-05-21 20:10:32Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/05/21/KDMX/KDMX20240521_201032_V06) | Greenfield, the volume before (tracking history) | 95 KB |
 | `KDMX20240521_202422_V06_el1.bin` | [KDMX 2024-05-21 20:24:22Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/05/21/KDMX/KDMX20240521_202422_V06) | Greenfield, the next volume (tracking) | 95 KB |
 | `KDMX20240715_115714_V06_el1.bin` | [KDMX 2024-07-15 11:57:14Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/07/15/KDMX/KDMX20240715_115714_V06) | Clear-air control (wind-farm clutter, Minnesota storms at range) | 89 KB |
 
@@ -30,6 +32,8 @@ filter's input.
 SHA-256 of the source volumes the fixtures were built from:
 
 ```
+9f728bbd3d8e40cf60855c99843d469787f6e6a2573fd261a7abd7c3378fdc85  KDMX20240521_200338_V06
+906d27f26aabae6c391e087734f36fc65ce5b83212518cb5e4ef27755639f814  KDMX20240521_201032_V06
 d947278e0dc475e702f3dd1a11444bfb3d4c41bc64cfcb01fc03cb9a798450fc  KDMX20240521_201727_V06
 a81a8f0e38ec983f6b91e85d4ac6809f2565e38fea341a429e3a4e06f9b84ba3  KDMX20240521_202422_V06
 2a9c31a4d85490cdadae3eeb10f23956d61a0d2b9a5f448280c5cd29187f4e7f  KFWS20240528_102649_V06

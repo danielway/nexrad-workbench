@@ -453,3 +453,55 @@ fn greenfield_storms_keep_their_tracks_into_the_next_volume() {
         assert_eq!(track.age_volumes, 2);
     }
 }
+
+const GREENFIELD_2003: &[u8] =
+    include_bytes!("../../tests/fixtures/storm_cells/KDMX20240521_200338_V06_el1.bin");
+const GREENFIELD_2010: &[u8] =
+    include_bytes!("../../tests/fixtures/storm_cells/KDMX20240521_201032_V06_el1.bin");
+const T_2003: i64 = 1_716_321_818_000;
+const T_2010: i64 = 1_716_322_232_000;
+
+/// With 20:03 and 20:10 as history (so the tracks have a motion), each of
+/// the five
+/// named storms keeps its letter from 20:17 to 20:24, matched to the piece
+/// that holds most of it. Audubon is the hard one: at 20:24 the
+/// segmentation leaves a small fragment 3 km from its old centroid while
+/// the storm itself has moved 16 km north-east; nearest-centroid matching
+/// alone takes the fragment.
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn greenfield_named_storms_keep_their_letters_through_fragmenting() {
+    use super::track::{bearing_distance, Tracker};
+    let mut tr = Tracker::default();
+    for (bytes, t) in [(GREENFIELD_2003, T_2003), (GREENFIELD_2010, T_2010)] {
+        tr.observe(t, &detect(bytes, 35.0).0, false).unwrap();
+    }
+    let (a, _) = detect(GREENFIELD, 35.0);
+    let (b, _) = detect(GREENFIELD_NEXT, 35.0);
+    let f0 = tr.observe(T_2017, &a, false).unwrap();
+    let f1 = tr.observe(T_2024, &b, false).unwrap();
+    for (name, pos) in [
+        ("Calhoun", (42.32, -94.67)),
+        ("Carroll", (42.01, -94.82)),
+        ("Audubon", (41.64, -94.89)),
+        ("Cass/Adair (Greenfield)", (41.28, -94.73)),
+        ("Adams", (40.87, -94.71)),
+    ] {
+        let before = a
+            .cells
+            .iter()
+            .find(|c| km((c.lat, c.lon), pos) < 12.0 && c.peak_dbz >= 50.0)
+            .unwrap_or_else(|| panic!("{name} at 20:17"));
+        let id = f0.cell_tracks[before.id as usize].unwrap();
+        let now = f1
+            .track(id)
+            .and_then(|t| t.cell_id)
+            .unwrap_or_else(|| panic!("{name} keeps its letter"));
+        let now = &b.cells[now as usize];
+        let (bearing, dist) = bearing_distance((before.lat, before.lon), (now.lat, now.lon));
+        assert!(
+            (0.0..=120.0).contains(&bearing) && dist <= 20.0,
+            "{name}: {dist:.1} km toward {bearing:.0}"
+        );
+        assert!(now.area_km2 >= 0.5 * before.area_km2, "{name}: {now:?}");
+    }
+}

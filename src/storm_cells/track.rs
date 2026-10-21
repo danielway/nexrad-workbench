@@ -6,14 +6,22 @@
 //! 1. **Predict.** Each live track predicts where its cell is now from its
 //!    last centroid and its motion (a weighted linear fit over its last
 //!    [`TrackParams::fit_points`] centroids, recent ones weighted more). A
-//!    track seen once borrows the mean motion of the others.
+//!    track seen once borrows the motion of the tracks around it, and a
+//!    track whose own fit is weak is blended toward it in proportion to
+//!    the missing confidence (fragment hops make young fits unreliable).
 //! 2. **Match.** Every (track, cell) pair whose distance from the
 //!    prediction is within the search radius
 //!    (`base_radius_km + max_speed_kmh × gap`) is a candidate, with a cost
 //!    that adds the distance (as a fraction of the radius), the change in
-//!    area (log ratio) and the change in peak. Pairs are taken greedily,
-//!    cheapest first; ties go to the older track, then the stronger cell, so
-//!    the outcome is deterministic.
+//!    area (log ratio) and the change in peak, less a bonus in proportion
+//!    to the footprints' overlap: the share of the track's last footprint
+//!    that falls inside the cell's, once moved along the motion (scaled by
+//!    the motion's confidence, so a weak fit does not carry it off the
+//!    storm). Overlap is what keeps a storm's letter when the segmentation
+//!    breaks its core into fragments: the piece that holds most of the
+//!    storm wins over a nearer, smaller one.
+//!    Pairs are taken greedily, cheapest first; ties go to the older track,
+//!    then the stronger cell, so the outcome is deterministic.
 //! 3. **Coast and end.** A track with no match coasts (its position is
 //!    advected along its motion) for [`TrackParams::coast_volumes`] volumes;
 //!    one more miss ends it. A gap between volumes longer than
@@ -23,8 +31,10 @@
 //!    IDs ([`track_label`]: A..Z, AA, AB, ...) are allocated once per
 //!    tracker and never reused, so a label names one storm for the whole
 //!    session.
-//! 5. **Lineage.** A new track that starts within the search radius of a
-//!    track matched in the same volume records `split_from`; a track whose
+//! 5. **Lineage.** A new track that starts inside the moved footprint of a
+//!    track matched in the same volume (a fragment of that storm), or
+//!    failing that within its search radius, records `split_from`; a track
+//!    whose
 //!    nearest candidate cell was taken by another track records that track
 //!    and, if it then ends, `merged_into`. Groups are compared by the set of
 //!    tracks they contain (a lone cell counts as a group of one): one earlier
@@ -102,6 +112,9 @@ pub(crate) struct TrackParams {
     /// hopped between fragments of a storm: its motion gets no confidence,
     /// so no forecast arrow or closest approach is drawn from it.
     pub max_plausible_kmh: f64,
+    /// Taken off the matching cost times the share of the track's moved
+    /// footprint that falls inside the cell's footprint.
+    pub overlap_bonus: f64,
 }
 
 impl Default for TrackParams {
@@ -118,6 +131,7 @@ impl Default for TrackParams {
             stationary_kmh: 10.0,
             stationary_confidence: MIN_FORECAST_CONFIDENCE,
             max_plausible_kmh: 130.0,
+            overlap_bonus: 0.5,
         }
     }
 }
@@ -194,6 +208,10 @@ pub(crate) struct Track {
     /// The parent's centroid in the volume of the split.
     #[serde(default)]
     pub split_origin: Option<(f64, f64)>,
+    /// The footprint of the cell last matched (its `outline`), for the
+    /// overlap test in the next volume.
+    #[serde(default)]
+    pub footprint: Vec<(f64, f64)>,
     /// While coasting: the track that took the cell this one would have
     /// matched.
     pub merging_into: Option<TrackId>,
@@ -210,13 +228,41 @@ impl Track {
     /// the motion. A one-volume track has no motion of its own and uses
     /// `field` (the mean motion of the other tracks) when there is one.
     fn predict(&self, time_ms: i64, field: Option<&Motion>) -> (f64, f64) {
+        self.advect_by(time_ms, field, 1.0)
+    }
+
+    /// Where the track's footprint is moved to for the overlap test: the
+    /// prediction's shift scaled by the motion's confidence, so a motion
+    /// fitted on two fragments of a storm does not carry the footprint
+    /// off the storm.
+    fn overlap_anchor(&self, time_ms: i64, field: Option<&Motion>) -> (f64, f64) {
+        let confidence = self.motion_for(field).confidence.clamp(0.0, 1.0);
+        self.advect_by(time_ms, field, confidence)
+    }
+
+    /// The motion to predict with: the track's own, blended toward the
+    /// motion of the tracks around it (`field`) as its own confidence
+    /// falls; a track seen once has no motion of its own and takes the
+    /// field's.
+    fn motion_for(&self, field: Option<&Motion>) -> Motion {
+        match field {
+            Some(field) if self.points.len() < 2 => *field,
+            Some(field) => {
+                let c = self.motion.confidence.clamp(0.0, 1.0);
+                Motion {
+                    east_kmh: c * self.motion.east_kmh + (1.0 - c) * field.east_kmh,
+                    north_kmh: c * self.motion.north_kmh + (1.0 - c) * field.north_kmh,
+                    confidence: c + (1.0 - c) * field.confidence,
+                }
+            }
+            None => self.motion,
+        }
+    }
+
+    fn advect_by(&self, time_ms: i64, field: Option<&Motion>, scale: f64) -> (f64, f64) {
         let last = self.last();
         let minutes = (time_ms - last.time_ms) as f64 / 60_000.0;
-        let motion = match field {
-            Some(field) if self.points.len() < 2 => field,
-            _ => &self.motion,
-        };
-        advect(last.pos(), motion, minutes)
+        advect(last.pos(), &self.motion_for(field), minutes * scale)
     }
 
     fn radius_km(&self, time_ms: i64, params: &TrackParams) -> f64 {
@@ -458,29 +504,41 @@ impl Tracker {
         }
 
         // Candidate pairs within each track's search radius.
-        let field = motion_field(&self.tracks);
+        let fields: Vec<Option<Motion>> = (0..self.tracks.len())
+            .map(|ti| motion_field(&self.tracks, ti))
+            .collect();
         let predictions: Vec<((f64, f64), f64)> = self
             .tracks
             .iter()
-            .map(|t| {
+            .zip(&fields)
+            .map(|(t, field)| {
                 (
                     t.predict(time_ms, field.as_ref()),
                     t.radius_km(time_ms, &params),
                 )
             })
             .collect();
+        let anchors: Vec<(f64, f64)> = self
+            .tracks
+            .iter()
+            .zip(&fields)
+            .map(|(t, field)| t.overlap_anchor(time_ms, field.as_ref()))
+            .collect();
         let mut candidates: Vec<(f64, usize, usize, f64)> = Vec::new();
         for (ti, (track, &(pred, radius))) in self.tracks.iter().zip(&predictions).enumerate() {
             let last = track.last();
+            let anchor = anchors[ti];
             for (ci, cell) in result.cells.iter().enumerate() {
                 let d = distance_km(pred, (cell.lat, cell.lon));
                 if d > radius {
                     continue;
                 }
                 let area_ratio = (cell.area_km2.max(0.1) / last.area_km2.max(0.1)) as f64;
+                let overlap = overlap_share(track, anchor, &cell.outline);
                 let cost = d / radius
                     + params.area_weight * area_ratio.ln().abs()
-                    + params.peak_weight * ((cell.peak_dbz - last.peak_dbz).abs() as f64 / 10.0);
+                    + params.peak_weight * ((cell.peak_dbz - last.peak_dbz).abs() as f64 / 10.0)
+                    - params.overlap_bonus * overlap;
                 candidates.push((cost, ti, ci, d));
             }
         }
@@ -513,6 +571,27 @@ impl Tracker {
                 .map(|(_, id)| id);
         }
 
+        // An unmatched cell inside a matched track's moved footprint is a
+        // fragment of that storm (the oldest such track, if several).
+        let fragment_of: Vec<Option<TrackId>> = result
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(ci, cell)| {
+                if cell_track[ci].is_some() {
+                    return None;
+                }
+                self.tracks
+                    .iter()
+                    .zip(&anchors)
+                    .zip(&track_cell)
+                    .filter(|(_, matched)| matched.is_some())
+                    .filter(|((t, &anchor), _)| in_moved_footprint(t, anchor, (cell.lat, cell.lon)))
+                    .map(|((t, _), _)| t.id)
+                    .min()
+            })
+            .collect();
+
         // Update matched tracks; coast or end the rest.
         let old_ids: Vec<TrackId> = self.tracks.iter().map(|t| t.id).collect();
         let mut kept: Vec<Track> = Vec::with_capacity(self.tracks.len());
@@ -531,6 +610,7 @@ impl Tracker {
                     if track.points.len() > params.history_len.max(3) {
                         track.points.remove(0);
                     }
+                    track.footprint.clone_from(&cell.outline);
                     track.volumes += 1;
                     track.missed = 0;
                     track.merging_into = None;
@@ -572,15 +652,18 @@ impl Tracker {
                     continue;
                 }
                 let pos = (cell.lat, cell.lon);
-                // Next to a track matched in this volume: a split.
-                let split_from = predictions
-                    .iter()
-                    .enumerate()
-                    .filter(|(ti, _)| track_cell[*ti].is_some())
-                    .map(|(ti, &(pred, radius))| (distance_km(pred, pos), radius, ti))
-                    .filter(|&(d, radius, _)| d <= radius)
-                    .min_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)))
-                    .map(|(_, _, ti)| old_ids[ti]);
+                // A fragment of, or else next to, a track matched in this
+                // volume: a split.
+                let split_from = fragment_of[ci].or_else(|| {
+                    predictions
+                        .iter()
+                        .enumerate()
+                        .filter(|(ti, _)| track_cell[*ti].is_some())
+                        .map(|(ti, &(pred, radius))| (distance_km(pred, pos), radius, ti))
+                        .filter(|&(d, radius, _)| d <= radius)
+                        .min_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)))
+                        .map(|(_, _, ti)| old_ids[ti])
+                });
                 let split_origin = split_from
                     .and_then(|pid| kept.iter().find(|t| t.id == pid))
                     .map(|t| t.last().pos());
@@ -601,6 +684,7 @@ impl Tracker {
                     motion: Motion::default(),
                     split_from,
                     split_origin,
+                    footprint: cell.outline.clone(),
                     merging_into: None,
                 });
                 kept_cell.push(Some(ci as u32));
@@ -630,15 +714,24 @@ impl Tracker {
     }
 }
 
-/// The confidence-weighted mean motion of the tracks that have one: the
-/// first guess for a track seen only once (SCIT's default motion).
-fn motion_field(tracks: &[Track]) -> Option<Motion> {
+/// The motion of the tracks around track `of`: the mean of the others'
+/// fitted motions, each weighted by its confidence and by closeness
+/// (half weight at [`FIELD_SCALE_KM`]). The first guess for a track seen
+/// only once (SCIT's default motion), and what a track with a weak fit of
+/// its own leans on.
+fn motion_field(tracks: &[Track], of: usize) -> Option<Motion> {
+    let at = tracks[of].last().pos();
     let (mut e, mut n, mut w) = (0.0, 0.0, 0.0);
-    for t in tracks.iter().filter(|t| t.points.len() >= 2) {
+    for (i, t) in tracks.iter().enumerate() {
+        if i == of || t.points.len() < 2 {
+            continue;
+        }
+        let d = distance_km(at, t.last().pos()) / FIELD_SCALE_KM;
         let c = t.motion.confidence;
-        e += c * t.motion.east_kmh;
-        n += c * t.motion.north_kmh;
-        w += c;
+        let wt = c / (1.0 + d * d);
+        e += wt * t.motion.east_kmh;
+        n += wt * t.motion.north_kmh;
+        w += wt;
     }
     (w > 0.0).then(|| Motion {
         east_kmh: e / w,
@@ -646,6 +739,9 @@ fn motion_field(tracks: &[Track]) -> Option<Motion> {
         confidence: 0.0,
     })
 }
+
+/// Distance at which a neighbour's motion counts half in the motion field.
+const FIELD_SCALE_KM: f64 = 50.0;
 
 /// The sets of tracks sharing a group (or a lone cell), ascending.
 fn units_of(result: &StormCellsResult, cell_tracks: &[Option<TrackId>]) -> Vec<Vec<TrackId>> {
@@ -760,6 +856,77 @@ const FIT_SCALE_KM: f64 = 3.0;
 
 // --- Geometry -------------------------------------------------------------
 
+/// Whether `point` (lat, lon) is inside the closed `ring` (even-odd rule;
+/// a ring of fewer than three points contains nothing).
+fn ring_contains(ring: &[(f64, f64)], point: (f64, f64)) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let (y, x) = point;
+    let mut inside = false;
+    let mut j = ring.len() - 1;
+    for i in 0..ring.len() {
+        let (yi, xi) = ring[i];
+        let (yj, xj) = ring[j];
+        if (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// The share of the track's last footprint, moved from its last centroid
+/// to `anchor`, that falls inside `ring` (0..1; 0 without footprints).
+fn overlap_share(track: &Track, anchor: (f64, f64), ring: &[(f64, f64)]) -> f64 {
+    let fp = &track.footprint;
+    if fp.len() < 3 || ring.len() < 3 {
+        return 0.0;
+    }
+    let (east, north) = offset_km(track.last().pos(), anchor);
+    // Sample the footprint where it was on a grid of OVERLAP_STEP_KM and
+    // count the samples whose moved position is inside `ring`.
+    let (mut s, mut n, mut w, mut e) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for &(lat, lon) in fp {
+        s = s.min(lat);
+        n = n.max(lat);
+        w = w.min(lon);
+        e = e.max(lon);
+    }
+    let dlat = OVERLAP_STEP_KM / KM_PER_DEG;
+    let dlon = dlat / ((s + n) * 0.5).to_radians().cos().max(1e-6);
+    let (mut inside, mut shared) = (0u32, 0u32);
+    let mut lat = s + dlat * 0.5;
+    while lat < n {
+        let mut lon = w + dlon * 0.5;
+        while lon < e {
+            if ring_contains(fp, (lat, lon)) {
+                inside += 1;
+                if ring_contains(ring, displace((lat, lon), east, north)) {
+                    shared += 1;
+                }
+            }
+            lon += dlon;
+        }
+        lat += dlat;
+    }
+    if inside == 0 {
+        return 0.0;
+    }
+    shared as f64 / inside as f64
+}
+
+/// Grid step for [`overlap_share`], km.
+const OVERLAP_STEP_KM: f64 = 2.0;
+
+/// Whether `pos` falls inside the track's last footprint moved from its
+/// last centroid to `anchor`: `pos` moved back by that shift, tested
+/// against the footprint where it was.
+fn in_moved_footprint(track: &Track, anchor: (f64, f64), pos: (f64, f64)) -> bool {
+    let (east, north) = offset_km(track.last().pos(), anchor);
+    ring_contains(&track.footprint, displace(pos, -east, -north))
+}
+
 /// East and north offset (km) of `to` from `from`, both (lat, lon).
 pub(crate) fn offset_km(from: (f64, f64), to: (f64, f64)) -> (f64, f64) {
     let lat_mid = ((from.0 + to.0) * 0.5).to_radians();
@@ -841,6 +1008,9 @@ mod tests {
         peak: f32,
         area: f32,
         group: Option<u32>,
+        /// Footprint as a box: west, east, south, north edges in km from
+        /// [`ORIGIN`].
+        rect: Option<(f64, f64, f64, f64)>,
     }
 
     fn c(east: f64, north: f64) -> C {
@@ -850,7 +1020,25 @@ mod tests {
             peak: 55.0,
             area: 100.0,
             group: None,
+            rect: None,
         }
+    }
+
+    /// A cell filling the box `west..east` × `south..north` (km from
+    /// [`ORIGIN`]): centroid in the middle, area to match, box footprint.
+    fn boxed(west: f64, east: f64, south: f64, north: f64) -> C {
+        C {
+            area: ((east - west) * (north - south)) as f32,
+            rect: Some((west, east, south, north)),
+            ..c((west + east) * 0.5, (south + north) * 0.5)
+        }
+    }
+
+    fn box_ring((w, e, s, n): (f64, f64, f64, f64)) -> Vec<(f64, f64)> {
+        [(w, s), (e, s), (e, n), (w, n), (w, s)]
+            .iter()
+            .map(|&(x, y)| displace(ORIGIN, x, y))
+            .collect()
     }
 
     impl C {
@@ -885,7 +1073,7 @@ mod tests {
                 range_from_radar_km: 50.0,
                 orientation_deg: 0.0,
                 elongation: 1.0,
-                outline: Vec::new(),
+                outline: cell.rect.map(box_ring).unwrap_or_default(),
                 core_outline: Vec::new(),
             });
             if let Some(g) = cell.group {
@@ -1073,6 +1261,118 @@ mod tests {
                 after: vec![vec![0], vec![1]],
             }]
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_fragmenting_storm_keeps_its_letter_on_the_piece_that_holds_most_of_it() {
+        // A storm 14 × 10 km breaks into two pieces along x = -3: the
+        // larger holds 10/14 of the old footprint but its peak dropped
+        // 3 dB; the smaller kept the peak. On distance, area and peak alone
+        // the smaller piece is the better match.
+        let before = || result(vec![boxed(-7.0, 7.0, -5.0, 5.0).peak(60.0)]);
+        let after = result(vec![
+            boxed(-3.0, 7.0, -5.0, 5.0).peak(57.0),
+            boxed(-7.0, -3.0, -5.0, 5.0).peak(60.0),
+        ]);
+        let mut tr = Tracker::default();
+        tr.observe(t(0), &before(), false);
+        let f = tr.observe(t(1), &after, false).unwrap();
+        // The larger piece keeps A; the other is a new track split off A.
+        assert_eq!(ids(&f), vec![Some(0), Some(1)]);
+        assert_eq!(f.track(1).unwrap().split_from, Some(0));
+
+        // Without footprints the smaller piece would have taken the letter.
+        let bare = |r: &StormCellsResult| {
+            let mut r = r.clone();
+            r.cells.iter_mut().for_each(|c| c.outline.clear());
+            r
+        };
+        let mut tr = Tracker::default();
+        tr.observe(t(0), &bare(&before()), false);
+        let f = tr.observe(t(1), &bare(&after), false).unwrap();
+        assert_eq!(ids(&f), vec![Some(1), Some(0)]);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_new_cell_inside_a_moved_footprint_splits_from_that_storm() {
+        // Two storms moving east 6 km a volume. In volume 3, B's old
+        // footprint (moved along) holds a new piece that is nearer A's
+        // prediction (8 km) than B's (10.5 km): it is still B's fragment.
+        let mut tr = Tracker::default();
+        for v in 0..3 {
+            let x = 6.0 * v as f64;
+            tr.observe(
+                t(v),
+                &result(vec![
+                    boxed(x - 3.0, x + 3.0, 0.0, 12.0),
+                    boxed(x - 3.0, x + 3.0, -24.0, -1.0),
+                ]),
+                false,
+            );
+        }
+        let f = tr
+            .observe(
+                t(3),
+                &result(vec![
+                    boxed(15.0, 21.0, 0.0, 12.0),
+                    boxed(15.0, 21.0, -24.0, -4.0),
+                    boxed(16.0, 20.0, -2.5, -1.5),
+                ]),
+                false,
+            )
+            .unwrap();
+        assert_eq!(ids(&f)[..2], [Some(0), Some(1)]);
+        assert_eq!(f.track(2).unwrap().split_from, Some(1));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_weak_fit_leans_on_the_motion_around_it() {
+        let point = |time_ms| TrackPoint {
+            time_ms,
+            lat: ORIGIN.0,
+            lon: ORIGIN.1,
+            peak_dbz: 55.0,
+            area_km2: 100.0,
+        };
+        let mut track = Track {
+            id: 0,
+            points: vec![point(t(0)), point(t(1))],
+            start_ms: t(0),
+            volumes: 2,
+            missed: 0,
+            motion: Motion {
+                east_kmh: 0.0,
+                north_kmh: 40.0,
+                confidence: 0.25,
+            },
+            split_from: None,
+            split_origin: None,
+            footprint: Vec::new(),
+            merging_into: None,
+        };
+        let field = Motion {
+            east_kmh: 80.0,
+            north_kmh: 0.0,
+            confidence: 0.0,
+        };
+        let m = track.motion_for(Some(&field));
+        assert!((m.east_kmh - 60.0).abs() < 1e-9 && (m.north_kmh - 10.0).abs() < 1e-9);
+        // A confident fit keeps its own motion; one point takes the field.
+        track.motion.confidence = 1.0;
+        assert_eq!(track.motion_for(Some(&field)).east_kmh, 0.0);
+        track.points.truncate(1);
+        assert_eq!(track.motion_for(Some(&field)), field);
+        // The overlap test moves the footprint by the prediction scaled by
+        // the confidence: none for a field-only guess.
+        assert_eq!(track.overlap_anchor(t(2), Some(&field)), ORIGIN);
+    }
+
+    #[wasm_bindgen_test]
+    fn ring_containment_follows_the_even_odd_rule() {
+        let ring = box_ring((-1.0, 1.0, -1.0, 1.0));
+        assert!(ring_contains(&ring, ORIGIN));
+        assert!(!ring_contains(&ring, displace(ORIGIN, 2.0, 0.0)));
+        assert!(!ring_contains(&[], ORIGIN));
     }
 
     #[wasm_bindgen_test]
