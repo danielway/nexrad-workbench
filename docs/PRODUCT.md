@@ -466,7 +466,13 @@ the playback model are identical across them — only the projection differs.
   elevations of the active scan into a single 3D pass with a user-controlled
   density cutoff; turning it off (View tab, "Draw every tilt") renders the
   selected elevation as a surface. While it is on, archive fetches keep whole
-  volumes whatever tilt is selected.
+  volumes whatever tilt is selected, and the sweep-level controls stand down
+  (the session's tilt role, `DrawsAll`): the ladder keeps its bars and caret
+  but highlights no row and takes no clicks, every cut on the device wears the
+  on-screen outline, the top-bar tilt chip reads "All tilts", and Rays is
+  disabled with Frames playing (a Rays choice is held and comes back when the
+  volume stops drawing every tilt). A volume the device holds only part of
+  says so in the caption ("drawing 5 of 23 cuts · fetching the rest").
 
 ## 10. Acquisition & Cache
 

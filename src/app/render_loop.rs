@@ -22,6 +22,11 @@ impl WorkbenchApp {
     /// blank `viz_state.displayed` and the active-scan sync moves the
     /// coordinator key, and the follow-up decision must see both.
     pub(crate) fn advance_playback(&mut self) {
+        // Rays stands down while the volume draws every tilt (and comes
+        // back when it stops).
+        self.playback
+            .state
+            .apply_tilt_role(self.state.viz_state.tilt_role().draws_all());
         let actions = reduce_advance_playback(
             AdvancePlaybackEnv {
                 live_active: self.live.mode_state.is_active(),

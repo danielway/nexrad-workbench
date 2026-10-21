@@ -772,6 +772,8 @@ impl WorkbenchApp {
                     elevation_number: d.identity.elevation_number,
                     start_secs: d.start_time,
                 }),
+                role: viz.tilt_role(),
+                fetching: viz.caption_context.fetch_covers_playhead,
             },
             &ui::time_format::ZoneClock {
                 use_local: self.state.use_local_time,
@@ -1035,6 +1037,7 @@ impl eframe::App for WorkbenchApp {
             elevation_selection: &self.state.viz_state.elevation_selection,
             displayed: self.state.viz_state.displayed.as_ref(),
             caption_context: self.state.viz_state.caption_context,
+            volume_3d_active: self.state.viz_state.volume_3d_active(),
         });
         // The touch-screen fact is re-read when the viewport changes size, so
         // an emulator's device toggle (or a rotation) sees the current one.

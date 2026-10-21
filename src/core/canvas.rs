@@ -441,6 +441,10 @@ pub(crate) struct CaptionContext {
     /// 3D volume rendering is on while the playhead is pinned to now: the
     /// volume renders only once every tilt is in.
     pub volume_waiting: bool,
+    /// 3D volume rendering draws a volume the device holds only part of:
+    /// `(cuts on device, cuts in the volume)`. `None` when the volume is
+    /// whole, or no volume renders.
+    pub volume_cuts: Option<(usize, usize)>,
 }
 
 impl Default for CaptionContext {
@@ -452,6 +456,7 @@ impl Default for CaptionContext {
             wanted_tilt_deg: None,
             fetchable_scan_start: None,
             volume_waiting: false,
+            volume_cuts: None,
         }
     }
 }
@@ -490,6 +495,13 @@ pub(crate) enum CanvasCaption {
     },
     /// 3D volume rendering while pinned: waiting for the volume to complete.
     VolumeWaiting,
+    /// 3D volume rendering draws a volume the device holds only part of;
+    /// `fetching` when a download or ingest is bringing the rest.
+    VolumePartial {
+        on_device: usize,
+        total: usize,
+        fetching: bool,
+    },
 }
 
 /// The one caption rule (§7): caption whenever the frame on screen and the
@@ -514,6 +526,13 @@ pub(crate) fn decide_canvas_caption(
     }
     if ctx.render_pending {
         return CanvasCaption::None;
+    }
+    if let (Some((on_device, total)), Some(_)) = (ctx.volume_cuts, frame) {
+        return CanvasCaption::VolumePartial {
+            on_device,
+            total,
+            fetching: ctx.fetch_covers_playhead,
+        };
     }
     let (target, pinned) = match playhead {
         Playhead::PinnedToNow => (now, true),
@@ -673,6 +692,19 @@ pub(crate) fn caption_line(
                 "waiting for the volume to complete · volume rendering needs every tilt"
                     .to_string(),
             ));
+        }
+        CanvasCaption::VolumePartial {
+            on_device,
+            total,
+            fetching,
+        } => {
+            segs.push((
+                format!("drawing {on_device} of {total} cuts"),
+                CaptionRole::Frame,
+            ));
+            if fetching {
+                segs.push(words(" · fetching the rest".to_string()));
+            }
         }
         CanvasCaption::NoFrame {
             playhead,
