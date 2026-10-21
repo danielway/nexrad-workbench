@@ -225,7 +225,7 @@ flowchart TB
         state["state/**<br/>AppState · playback · viz · live_mode · radar_data · …"]
     end
     subgraph L5["Domain services"]
-        nexrad["nexrad/**<br/>download · worker · decode · gpu_renderer · realtime · projection · timing · detection"]
+        nexrad["nexrad/**<br/>download · worker · decode · gpu_renderer · realtime · projection · timing"]
         geo["geo/**<br/>camera · projection · renderers · layers"]
         alerts["alerts/**"]
         mpingm["mping/**"]
@@ -233,6 +233,7 @@ flowchart TB
     subgraph L6["Foundation — leaves"]
         data["data/**<br/>indexeddb · facade · keys · quota · sites · vcp"]
         net["net/**<br/>retry policy"]
+        stormcells["storm_cells/**<br/>cell detection"]
     end
 
     main --> appm --> ui
@@ -775,8 +776,8 @@ flowchart TB
 Both paths share the same GPU textures (data / lut / azimuth) and the same GLSL
 snippet blocks, so 2D and 3D radar can't drift. Geographic layers (states,
 counties, cities) are **embedded shapefiles** loaded at compile time; storm-cell
-detection (`nexrad::detection`) runs connected-component analysis on reflectivity
-and is pure/testable (core), with only the box-drawing in the shell.
+detection (the `storm_cells` leaf module) runs connected-component analysis on
+reflectivity and is pure/testable, with only the drawing in the shell.
 
 ---
 

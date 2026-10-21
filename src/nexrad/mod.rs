@@ -18,7 +18,6 @@
 
 pub(crate) mod acquisition;
 pub(crate) mod decode;
-pub(crate) mod detection;
 pub(crate) mod live;
 pub(crate) mod render;
 

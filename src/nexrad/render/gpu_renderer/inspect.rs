@@ -93,7 +93,7 @@ impl RadarGpuRenderer {
 
     /// Detect storm cells from the current CPU-side data.
     ///
-    /// Thin adapter over `crate::nexrad::detection` — packages the shadow
+    /// Thin adapter over `crate::storm_cells` — packages the shadow
     /// copies of the rendered sweep into a `DetectionInput` and runs the
     /// in-tree threshold + connected-component detector.
     pub fn detect_storm_cells(
@@ -101,7 +101,7 @@ impl RadarGpuRenderer {
         radar_lat: f64,
         radar_lon: f64,
         threshold_dbz: f32,
-    ) -> Vec<crate::core::StormCellInfo> {
+    ) -> Vec<crate::storm_cells::StormCellInfo> {
         if !self.has_data || self.cpu.azimuths.is_empty() {
             return Vec::new();
         }
@@ -111,7 +111,7 @@ impl RadarGpuRenderer {
         let az_count = self.current.azimuth_count as usize;
         let gate_count = self.current.gate_count as usize;
 
-        let input = crate::nexrad::detection::DetectionInput {
+        let input = crate::storm_cells::DetectionInput {
             azimuths: &self.cpu.azimuths,
             gate_values: &self.cpu.gate_values,
             azimuth_count: az_count,
@@ -123,12 +123,12 @@ impl RadarGpuRenderer {
             radar_lat,
             radar_lon,
         };
-        let params = crate::nexrad::detection::DetectionParams {
+        let params = crate::storm_cells::DetectionParams {
             threshold_dbz,
             ..Default::default()
         };
 
-        let result = crate::nexrad::detection::detect_cells(&input, &params);
+        let result = crate::storm_cells::detect_cells(&input, &params);
 
         log::debug!(
             "detect_storm_cells: {}x{} grid, {} cells (>= {:.0} dBZ), {:.1}ms",

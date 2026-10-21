@@ -8,7 +8,7 @@
 
 use super::components::Pixel;
 use super::DetectionInput;
-use crate::core::StormCellInfo;
+use super::StormCellInfo;
 
 /// Approximate kilometers per degree of latitude. Matches the
 /// equirectangular approximation used in `canvas_data_probe.rs`.

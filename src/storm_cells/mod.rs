@@ -1,5 +1,10 @@
 //! Storm cell detection.
 //!
+//! A dependency-free leaf module: it imports nothing from the rest of the
+//! crate (only `std`), so it can move upstream into the nexrad crates. The
+//! renderer adapter (`nexrad::render::gpu_renderer::inspect`) feeds it a
+//! borrowed sweep, and `core` re-exports its result types.
+//!
 //! Threshold + connected-component analysis on reflectivity gates in polar
 //! space, followed by per-cell feature extraction (area, centroid, bounds,
 //! bearing/range from radar, major-axis orientation, elongation).
@@ -13,7 +18,34 @@
 mod components;
 mod features;
 
-use crate::core::StormCellInfo;
+/// Lightweight storm cell info for rendering on the canvas.
+#[derive(Clone, Debug)]
+pub struct StormCellInfo {
+    /// Reflectivity-weighted centroid latitude.
+    pub lat: f64,
+    /// Reflectivity-weighted centroid longitude.
+    pub lon: f64,
+    /// Maximum reflectivity (dBZ) anywhere in the cell.
+    pub max_dbz: f32,
+    /// Mean reflectivity (dBZ) across the cell's gates.
+    pub mean_dbz: f32,
+    /// Cell footprint area in km².
+    pub area_km2: f32,
+    /// Bounding box (min_lat, min_lon, max_lat, max_lon).
+    pub bounds: (f64, f64, f64, f64),
+    /// Compass bearing (0° = N, clockwise) from radar to centroid.
+    pub bearing_from_radar_deg: f32,
+    /// Great-circle-approximate distance from radar to centroid, km.
+    pub range_from_radar_km: f32,
+    /// Orientation of the cell's major axis in compass degrees, folded
+    /// into [0, 180) since an axis is undirected.
+    pub orientation_deg: f32,
+    /// √(λ_major / λ_minor) from the pixel-weighted covariance. 1.0 = round.
+    pub elongation: f32,
+    /// Number of gates comprising the cell. Useful for debugging / further
+    /// filtering.
+    pub gate_count: u32,
+}
 
 /// Borrowed view of the sweep data needed to run detection.
 pub(crate) struct DetectionInput<'a> {
