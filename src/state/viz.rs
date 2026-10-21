@@ -152,6 +152,12 @@ impl VizState {
         self.volume_3d_enabled && self.view_mode() == ViewMode::Globe3D
     }
 
+    /// What the tilt controls do: every cut while volume rendering is
+    /// active, else the one you pick.
+    pub(crate) fn tilt_role(&self) -> crate::core::session::TiltRole {
+        crate::core::session::TiltRole::from_volume_3d(self.volume_3d_active())
+    }
+
     /// The tilt scope archive fetches store: the whole volume while volume
     /// rendering is active, else the picked tilt.
     pub(crate) fn fetch_scope(&self) -> ElevationSelection {

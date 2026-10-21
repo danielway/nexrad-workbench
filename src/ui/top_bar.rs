@@ -195,6 +195,12 @@ fn product_picker(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
 }
 
 fn tilt_picker(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
+    if !vm.tilt.picks {
+        // The volume draws every tilt: a dimmed label that says so.
+        ui.label(RichText::new(&vm.tilt.label).color(theme::TEXT_DIM))
+            .on_hover_text(vm.tilt.hover);
+        return;
+    }
     let resp = ui.menu_button(picker_label(&vm.tilt.label), |ui| {
         ui.set_min_width(120.0);
         egui::ScrollArea::vertical()
@@ -230,7 +236,7 @@ fn tilt_picker(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState) {
                 }
             });
     });
-    resp.response.on_hover_text("Tilt");
+    resp.response.on_hover_text(vm.tilt.hover);
 }
 
 /// The frame time in the one clock, the zone shown once after it. Clicking

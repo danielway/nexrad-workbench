@@ -13,7 +13,7 @@
 //! only draws the view-model and emits the intents it carries.
 
 use crate::core::diagnostics::{DiagnosticsIntent, VisibleAlert};
-use crate::core::session::{AgeMarker, Clock, SessionVm};
+use crate::core::session::{AgeMarker, Clock, SessionVm, TiltRole};
 use crate::core::{AlertsState, ElevationListEntry, ElevationSelection, Intent, RadarProduct};
 use crate::geo::ViewMode;
 
@@ -103,10 +103,19 @@ pub(crate) struct ProductPicker {
 
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct TiltPicker {
-    /// The mode and the cut it resolved to: "Latest 2.4°", or "0.5°".
+    /// The mode and the cut it resolved to: "Latest 2.4°", or "0.5°"; "All
+    /// tilts" while the volume draws every tilt.
     pub label: String,
+    /// The chip opens the rows (false while the volume draws every tilt:
+    /// the chip is a dimmed label with `hover`).
+    pub picks: bool,
+    pub hover: &'static str,
     pub rows: Vec<TiltRow>,
 }
+
+/// The tilt chip's hover while the volume draws every tilt.
+pub(crate) const ALL_TILTS_HOVER: &str = "Volume rendering draws every tilt \
+     \u{00B7} pick one under View \u{203A} Volume rendering";
 
 /// The primary readout: the frame on screen, in the one clock (§4).
 #[derive(Clone, PartialEq, Debug)]
@@ -226,6 +235,7 @@ impl TopBarVm {
             inputs.elevations,
             inputs.product,
             frame.map(|f| f.elevation_deg),
+            session.tilt_role,
         );
 
         let readout = match frame {
@@ -317,7 +327,17 @@ fn tilt_picker(
     entries: &[ElevationListEntry],
     product: RadarProduct,
     frame_deg: Option<f32>,
+    role: TiltRole,
 ) -> TiltPicker {
+    let rows = tilt_rows(selection, entries, product);
+    if role.draws_all() {
+        return TiltPicker {
+            label: "All tilts".to_string(),
+            picks: false,
+            hover: ALL_TILTS_HOVER,
+            rows,
+        };
+    }
     let label = match selection {
         ElevationSelection::Latest => match frame_deg {
             Some(d) => format!("Latest {}", angle_label(d)),
@@ -325,9 +345,12 @@ fn tilt_picker(
         },
         ElevationSelection::Fixed { angle, .. } => angle_label(*angle),
     };
-
-    let rows = tilt_rows(selection, entries, product);
-    TiltPicker { label, rows }
+    TiltPicker {
+        label,
+        picks: true,
+        hover: "Tilt",
+        rows,
+    }
 }
 
 fn alerts_chip(alerts: &AlertsState, visible: &[VisibleAlert], bounds_known: bool) -> AlertsChip {
@@ -548,6 +571,7 @@ mod tests {
             live_cut: None,
             caption_context: crate::core::canvas::CaptionContext::default(),
             loop_mode: crate::core::LoopMode::Loop,
+            volume_3d_active: false,
         })
     }
 
@@ -753,6 +777,24 @@ mod tests {
         assert_eq!(vm.tilt.label, "Latest 2.4°");
         assert!(vm.tilt.rows[0].selected);
         assert_eq!(vm.tilt.rows[0].pick, TiltPick::Latest);
+    }
+
+    #[wasm_bindgen_test]
+    fn tilt_chip_reads_all_tilts_while_the_volume_draws_every_tilt() {
+        let now = t(12, 0, 0);
+        let f = displayed(now, 2.4);
+        let mut fx = pinned(now, &f);
+        fx.session.tilt_role = TiltRole::DrawsAll;
+        let vm = fx.build();
+        assert_eq!(vm.tilt.label, "All tilts");
+        assert!(!vm.tilt.picks);
+        assert_eq!(vm.tilt.hover, ALL_TILTS_HOVER);
+        // The rows stay for the E key, which still cycles the stored tilt.
+        assert!(!vm.tilt.rows.is_empty());
+        fx.session.tilt_role = TiltRole::Picks;
+        let vm = fx.build();
+        assert_eq!(vm.tilt.label, "0.5°");
+        assert!(vm.tilt.picks);
     }
 
     #[wasm_bindgen_test]
