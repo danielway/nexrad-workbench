@@ -76,10 +76,6 @@ pub(crate) enum AppError {
     Alerts { message: String },
     /// Failure from the mPING storm-report fetch.
     Mping { message: String },
-    /// Not a failure: something the app did differently from what was
-    /// asked, said once in the activity sheet's list (no toast, no dot on
-    /// the bell). A link naming a product that is not offered is one.
-    Note { message: String },
     /// Catch-all for anything that doesn't fit a more specific variant.
     #[allow(dead_code)] // Module docs: reserved for reporters not yet migrated.
     Other { message: String },
@@ -93,7 +89,6 @@ impl AppError {
             | AppError::Download { message, .. }
             | AppError::Alerts { message }
             | AppError::Mping { message }
-            | AppError::Note { message }
             | AppError::Other { message } => message,
         }
     }

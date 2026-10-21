@@ -351,15 +351,13 @@ fn apply_link(
         state.viz_state.volume_density_cutoff = vdc;
     }
 
-    if let Some((product, note)) = link
+    if let Some(product) = link
         .product
         .as_deref()
-        .and_then(crate::core::RadarProduct::from_link_code)
+        .and_then(crate::core::RadarProduct::from_short_code)
+        .filter(|p| p.is_offered())
     {
         state.viz_state.product = product;
-        if let Some(message) = note {
-            state.errors.push(crate::core::AppError::Note { message });
-        }
     }
     match link.tilt {
         Some(LinkTilt::Latest) => {

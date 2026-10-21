@@ -208,18 +208,13 @@ fn render_errors(ui: &mut egui::Ui, vm: &ActivityVm) {
     ui.add_space(6.0);
     ui.separator();
     ui.label(
-        RichText::new(vm.errors.heading)
+        RichText::new("Recent errors")
             .size(11.0)
             .color(theme::TEXT_FAINT),
     );
     for line in &vm.errors.recent {
-        let mark = if line.note {
-            icons::INFO
-        } else {
-            icons::WARNING
-        };
         ui.label(
-            RichText::new(format!("{mark} {}", line.text))
+            RichText::new(format!("{} {line}", icons::WARNING))
                 .size(12.0)
                 .color(theme::TEXT_DIM),
         );

@@ -90,24 +90,6 @@ impl RadarProduct {
         Self::all().contains(&self)
     }
 
-    /// A link's `product=` code: the product it names when that is offered,
-    /// else reflectivity with a note saying why (once, in the activity
-    /// sheet). `None` for a code that names no product.
-    pub(crate) fn from_link_code(code: &str) -> Option<(Self, Option<String>)> {
-        let p = Self::from_short_code(code)?;
-        if p.is_offered() {
-            return Some((p, None));
-        }
-        Some((
-            RadarProduct::Reflectivity,
-            Some(format!(
-                "{} ({}) isn\u{2019}t available yet; showing reflectivity",
-                p.label(),
-                p.short_code()
-            )),
-        ))
-    }
-
     /// String identifier used by the worker protocol.
     pub(crate) fn to_worker_string(self) -> &'static str {
         match self {
@@ -486,19 +468,6 @@ mod coverage_tests {
         assert!(!RadarProduct::ClutterFilterPower.is_offered());
         // The decoder's moment stays: the code still names it.
         assert!(RadarProduct::from_short_code("CFP") == Some(RadarProduct::ClutterFilterPower));
-    }
-
-    #[wasm_bindgen_test]
-    fn a_cfp_link_opens_reflectivity_with_a_note() {
-        let (p, note) = RadarProduct::from_link_code("CFP").unwrap();
-        assert!(p == RadarProduct::Reflectivity);
-        assert_eq!(
-            note.as_deref(),
-            Some("Clutter Filter Power (CFP) isn\u{2019}t available yet; showing reflectivity")
-        );
-        let (p, note) = RadarProduct::from_link_code("VEL").unwrap();
-        assert!(p == RadarProduct::Velocity && note.is_none());
-        assert!(RadarProduct::from_link_code("XYZ").is_none());
     }
 
     #[wasm_bindgen_test]
