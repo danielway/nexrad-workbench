@@ -20,18 +20,20 @@
 //!
 //! Most days come from the published index (`core::activity_index`): one
 //! file per site, built nightly, with every finished day's count and mean
-//! size but no per-volume sizes. The fetch plan only lists the days it
-//! doesn't cover, and, zoomed in to volumes, the days it has no per-volume
-//! sizes for ([`needs_scans`]).
+//! size but no per-volume sizes, and for recent months one file per month
+//! with every volume's size. The fetch plan only lists the days it doesn't
+//! cover, and, zoomed in to volumes ([`needs_scans`]), fetches the month
+//! files for the days they hold and lists only the days they don't.
 //!
 //! Everything here is pure: parsing the listing, summarizing a day, the
 //! [`ActivityBook`] of known days and its heights, and the fetch plan
 //! ([`ActivityFetcher`]). The shell (`app::storm_activity`) runs the
 //! requests and the IndexedDB reads and writes.
 
+use crate::core::activity_index::MonthKey;
 use crate::core::overview::{detail_for, OverviewDetail};
 use crate::data::{DayActivity, SiteId};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 const DAY_SECS: i64 = 86_400;
 
@@ -476,6 +478,8 @@ pub(crate) struct ActivityBook {
     baselines: HashMap<(SiteId, String), f64>,
     /// Each site's first and last day in its published index, as read.
     index_range: HashMap<SiteId, (i64, i64)>,
+    /// Each site's index days whose volumes a month file holds.
+    month_days: HashMap<SiteId, BTreeSet<i64>>,
 }
 
 impl ActivityBook {
@@ -520,6 +524,41 @@ impl ActivityBook {
         let taken = fresh.len();
         self.insert_many(fresh);
         taken
+    }
+
+    /// Record which of `site`'s index days have their volumes in a month
+    /// file ([`crate::core::activity_index::SiteIndex::month_days`]).
+    pub(crate) fn set_month_days(&mut self, site: &SiteId, days: impl IntoIterator<Item = i64>) {
+        let days: BTreeSet<i64> = days.into_iter().collect();
+        if days.is_empty() {
+            self.month_days.remove(site);
+        } else {
+            self.month_days.insert(site.clone(), days);
+        }
+    }
+
+    /// Whether a month file holds the volumes of `site`'s day starting at
+    /// `day_start`.
+    pub(crate) fn in_month_file(&self, site: &SiteId, day_start: i64) -> bool {
+        self.month_days
+            .get(site)
+            .is_some_and(|days| days.contains(&day_start))
+    }
+
+    /// Add a month file's days
+    /// ([`crate::core::activity_index::parse_month`]), keeping any final
+    /// live listing (which knows the same). Returns the days taken, for the
+    /// shell to store like listed days.
+    pub(crate) fn insert_month(
+        &mut self,
+        days: impl IntoIterator<Item = DayActivity>,
+    ) -> Vec<DayActivity> {
+        let fresh: Vec<DayActivity> = days
+            .into_iter()
+            .filter(|d| index_replaces(self.day(&d.site, d.day_start)))
+            .collect();
+        self.insert_many(fresh.clone());
+        fresh
     }
 
     /// The first and last day (UTC midnights) of `site`'s published index,
@@ -690,14 +729,28 @@ pub(crate) fn day_start_of(ts: f64) -> i64 {
     (ts.floor() as i64).div_euclid(DAY_SECS) * DAY_SECS
 }
 
-/// In-flight and failed listings, and which sites' stored days have been
-/// read back.
+/// What to fetch next ([`ActivityFetcher::plan`]).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct ActivityPlan {
+    /// Days to list from the archive, nearest the middle first.
+    pub list: Vec<i64>,
+    /// Month files to fetch from the index, for the days they hold.
+    pub months: Vec<MonthKey>,
+}
+
+/// In-flight and failed listings and month fetches, and which sites' stored
+/// days have been read back.
 #[derive(Debug, Default)]
 pub(crate) struct ActivityFetcher {
     pending: HashSet<(SiteId, i64)>,
     backoff_until_ms: HashMap<(SiteId, i64), f64>,
     loaded_sites: HashSet<SiteId>,
     loading_sites: HashSet<SiteId>,
+    months_pending: HashSet<(SiteId, MonthKey)>,
+    month_backoff_until_ms: HashMap<(SiteId, MonthKey), f64>,
+    /// Month files fetched this session: a day they were meant to hold but
+    /// didn't (a file older than the site's index) is listed instead.
+    months_done: HashSet<(SiteId, MonthKey)>,
 }
 
 impl ActivityFetcher {
@@ -740,31 +793,55 @@ impl ActivityFetcher {
         }
     }
 
-    /// The days to list next for `site` across `[start, end)`, nearest the
-    /// middle first: days that aren't known (or are stale, or lack the
-    /// per-volume sizes a zoomed-in view needs), aren't in flight
-    /// and aren't backing off, within the in-flight limit. Nothing until the
-    /// site's stored days are read. A window wider than
-    /// [`MAX_AUTO_FETCH_DAYS`] (years) keeps listing in the background on a
-    /// sample of its days ([`sample_stride_days`]), so the bars fill in
-    /// instead of the lane staying empty.
+    /// Record that a month file fetch was sent.
+    pub(crate) fn start_month(&mut self, site: &SiteId, month: MonthKey) {
+        self.months_pending.insert((site.clone(), month));
+    }
+
+    /// Record a month file fetch's outcome: done for the session (its days
+    /// are in the book, and any it lacked get listed), or failed and backing
+    /// off.
+    pub(crate) fn finish_month(&mut self, site: &SiteId, month: MonthKey, ok: bool, now_ms: f64) {
+        let key = (site.clone(), month);
+        self.months_pending.remove(&key);
+        if ok {
+            self.month_backoff_until_ms.remove(&key);
+            self.months_done.insert(key);
+        } else {
+            self.month_backoff_until_ms
+                .insert(key, now_ms + FAILURE_BACKOFF_MS);
+        }
+    }
+
+    /// What to fetch next for `site` across `[start, end)`, nearest the
+    /// middle first, within the in-flight limit: the days that aren't known
+    /// (or are stale, or lack the per-volume sizes a zoomed-in view needs),
+    /// aren't in flight and aren't backing off. Zoomed in, a day a month
+    /// file holds ([`ActivityBook::in_month_file`]) is fetched with its
+    /// month instead of listed, once per session; only the days no month
+    /// file holds are listed. Nothing until the site's stored days are
+    /// read. A window wider than [`MAX_AUTO_FETCH_DAYS`] (years) keeps
+    /// listing in the background on a sample of its days
+    /// ([`sample_stride_days`]), so the bars fill in instead of the lane
+    /// staying empty.
     pub(crate) fn plan(
         &self,
         book: &ActivityBook,
         site: &SiteId,
         window: &ActivityWindow,
         now_ms: f64,
-    ) -> Vec<i64> {
+    ) -> ActivityPlan {
+        let mut plan = ActivityPlan::default();
         if !self.is_loaded(site) {
-            return Vec::new();
+            return plan;
         }
-        let free = MAX_IN_FLIGHT.saturating_sub(self.pending.len());
+        let free = MAX_IN_FLIGHT.saturating_sub(self.pending.len() + self.months_pending.len());
         if free == 0 {
-            return Vec::new();
+            return plan;
         }
         let (first, count) = window.days();
         if count == 0 {
-            return Vec::new();
+            return plan;
         }
         let stride = sample_stride_days(count);
         let middle = (window.start + window.end) / 2.0;
@@ -790,8 +867,28 @@ impl ActivityFetcher {
             let db = ((*b + DAY_SECS / 2) as f64 - middle).abs();
             da.total_cmp(&db)
         });
-        wanted.truncate(free);
-        wanted
+        for day in wanted {
+            if plan.list.len() + plan.months.len() >= free {
+                break;
+            }
+            let month = MonthKey::of_day(day)
+                .filter(|_| window.need_scans && book.in_month_file(site, day));
+            match month {
+                Some(month) if !self.months_done.contains(&(site.clone(), month)) => {
+                    let key = (site.clone(), month);
+                    let waiting = self.months_pending.contains(&key)
+                        || self
+                            .month_backoff_until_ms
+                            .get(&key)
+                            .is_some_and(|until| now_ms < *until);
+                    if !waiting && !plan.months.contains(&month) {
+                        plan.months.push(month);
+                    }
+                }
+                _ => plan.list.push(day),
+            }
+        }
+        plan
     }
 }
 
@@ -990,12 +1087,15 @@ mod tests {
         let now = 2e9;
         assert!(fetcher
             .plan(&book, &site(), &window(start, end, 0.0, now), now * 1000.0)
+            .list
             .is_empty());
 
         assert!(fetcher.begin_load(&site()));
         assert!(!fetcher.begin_load(&site()));
         fetcher.finish_load(&site());
-        let plan = fetcher.plan(&book, &site(), &window(start, end, 0.0, now), now * 1000.0);
+        let plan = fetcher
+            .plan(&book, &site(), &window(start, end, 0.0, now), now * 1000.0)
+            .list;
         assert_eq!(plan.len(), MAX_IN_FLIGHT);
         assert_eq!(plan[0], OCT_9_2024 + 4 * DAY_SECS);
         assert!(plan.iter().all(|d| (d - OCT_9_2024).abs() <= 6 * DAY_SECS));
@@ -1013,22 +1113,26 @@ mod tests {
         fetcher.start(&site(), OCT_9_2024 + 2 * DAY_SECS);
         fetcher.finish(&site(), OCT_9_2024 + 2 * DAY_SECS, false, now_ms);
         let end = (OCT_9_2024 + 4 * DAY_SECS) as f64;
-        let plan = fetcher.plan(
-            &book,
-            &site(),
-            &window(OCT_9_2024 as f64, end, 0.0, 2e9),
-            now_ms,
-        );
+        let plan = fetcher
+            .plan(
+                &book,
+                &site(),
+                &window(OCT_9_2024 as f64, end, 0.0, 2e9),
+                now_ms,
+            )
+            .list;
         assert_eq!(plan, vec![OCT_9_2024 + 3 * DAY_SECS]);
 
         // The failed day comes back after its backoff.
         let later = now_ms + FAILURE_BACKOFF_MS;
-        let plan = fetcher.plan(
-            &book,
-            &site(),
-            &window(OCT_9_2024 as f64, end, 0.0, 2e9),
-            later,
-        );
+        let plan = fetcher
+            .plan(
+                &book,
+                &site(),
+                &window(OCT_9_2024 as f64, end, 0.0, 2e9),
+                later,
+            )
+            .list;
         assert!(plan.contains(&(OCT_9_2024 + 2 * DAY_SECS)));
     }
 
@@ -1045,14 +1149,14 @@ mod tests {
             OCT_9_2024 as f64,
             now,
         );
-        let plan = fetcher.plan(&book, &site(), &w, now * 1000.0);
+        let plan = fetcher.plan(&book, &site(), &w, now * 1000.0).list;
         assert_eq!(plan, vec![OCT_9_2024]);
 
         // Years across: still listing, on a stable sample of the days.
         let w = window(0.0, 4e8, 0.0, 2e9);
         let stride = sample_stride_days(w.days().1);
         assert!(stride > 1);
-        let years = fetcher.plan(&book, &site(), &w, 2e12);
+        let years = fetcher.plan(&book, &site(), &w, 2e12).list;
         assert_eq!(years.len(), MAX_IN_FLIGHT);
         assert!(years.iter().all(|d| (d / DAY_SECS) % stride == 0));
         // The days nearest the middle come first.
@@ -1199,7 +1303,10 @@ mod tests {
         assert_eq!(book.insert_index(days), 30 * 365 + 1);
         let now = (OCT_9_2024 + 2 * DAY_SECS) as f64;
         let w = window(first as f64, (OCT_9_2024 + DAY_SECS) as f64, 0.0, now);
-        assert!(fetcher.plan(&book, &site(), &w, now * 1000.0).is_empty());
+        assert!(fetcher
+            .plan(&book, &site(), &w, now * 1000.0)
+            .list
+            .is_empty());
         // A week of it, still drawn as day bars: nothing either.
         let w = window(
             (OCT_9_2024 - 6 * DAY_SECS) as f64,
@@ -1207,7 +1314,10 @@ mod tests {
             0.0,
             now,
         );
-        assert!(fetcher.plan(&book, &site(), &w, now * 1000.0).is_empty());
+        assert!(fetcher
+            .plan(&book, &site(), &w, now * 1000.0)
+            .list
+            .is_empty());
     }
 
     #[wasm_bindgen_test]
@@ -1222,7 +1332,7 @@ mod tests {
         );
         let now = (OCT_9_2024 + DAY_SECS + DAY_SECS / 2) as f64;
         let w = window((OCT_9_2024 - 9 * DAY_SECS) as f64, now + 3600.0, 0.0, now);
-        let mut plan = fetcher.plan(&book, &site(), &w, now * 1000.0);
+        let mut plan = fetcher.plan(&book, &site(), &w, now * 1000.0).list;
         plan.sort_unstable();
         assert_eq!(plan, vec![OCT_9_2024 - 2 * DAY_SECS, OCT_9_2024 + DAY_SECS]);
     }
@@ -1242,9 +1352,12 @@ mod tests {
             0.0,
             now,
         );
-        assert!(fetcher.plan(&book, &site(), &w, now * 1000.0).is_empty());
+        assert!(fetcher
+            .plan(&book, &site(), &w, now * 1000.0)
+            .list
+            .is_empty());
         w.need_scans = true;
-        let mut plan = fetcher.plan(&book, &site(), &w, now * 1000.0);
+        let mut plan = fetcher.plan(&book, &site(), &w, now * 1000.0).list;
         plan.sort_unstable();
         assert_eq!(plan, vec![OCT_9_2024, OCT_9_2024 + DAY_SECS]);
 
@@ -1255,8 +1368,135 @@ mod tests {
         book.insert_many([listed.clone()]);
         assert_eq!(book.insert_index([index_day(OCT_9_2024, 21_000_000)]), 0);
         assert_eq!(book.day(&site(), OCT_9_2024), Some(&listed));
-        let plan = fetcher.plan(&book, &site(), &w, now * 1000.0);
+        let plan = fetcher.plan(&book, &site(), &w, now * 1000.0).list;
         assert_eq!(plan, vec![OCT_9_2024 + DAY_SECS]);
+    }
+
+    fn month(year: i32, month: u32) -> MonthKey {
+        MonthKey { year, month }
+    }
+
+    /// A month file's day for `day_start`, as `parse_month` makes it.
+    fn month_day(day_start: i64) -> DayActivity {
+        DayActivity {
+            has_scans: true,
+            scan_secs: vec![193, 600],
+            scan_bytes: vec![20_000_000, 22_000_000],
+            ..index_day(day_start, 21_000_000)
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn zoomed_in_days_a_month_file_holds_fetch_the_month_not_listings() {
+        let mut fetcher = loaded_fetcher();
+        let mut book = ActivityBook::default();
+        // Sep 29 .. Oct 10 2024 indexed; the month files hold Sep 30 and
+        // Oct 1..9, not Sep 29 (not backfilled) or Oct 10 (built before it).
+        let sep_29 = OCT_9_2024 - 10 * DAY_SECS;
+        book.insert_index((0..12).map(|i| index_day(sep_29 + i * DAY_SECS, 4_000_000)));
+        book.set_month_days(&site(), (1..11).map(|i| sep_29 + i * DAY_SECS));
+        assert!(book.in_month_file(&site(), OCT_9_2024));
+        assert!(!book.in_month_file(&site(), sep_29));
+        assert!(!book.in_month_file(&SiteId::new("KMLB"), OCT_9_2024));
+
+        let now = 2e9;
+        let now_ms = now * 1000.0;
+        let mut w = window(
+            (OCT_9_2024 - 3 * DAY_SECS) as f64,
+            (OCT_9_2024 + DAY_SECS) as f64,
+            0.0,
+            now,
+        );
+        // Day bars: the index alone, nothing to fetch.
+        assert_eq!(
+            fetcher.plan(&book, &site(), &w, now_ms),
+            ActivityPlan::default()
+        );
+        // Zoomed in to four days of October: one month file, no listings.
+        w.need_scans = true;
+        let plan = fetcher.plan(&book, &site(), &w, now_ms);
+        assert_eq!(plan.months, vec![month(2024, 10)]);
+        assert!(plan.list.is_empty());
+
+        // While it's in flight nothing else goes out for those days.
+        fetcher.start_month(&site(), month(2024, 10));
+        assert_eq!(
+            fetcher.plan(&book, &site(), &w, now_ms),
+            ActivityPlan::default()
+        );
+
+        // Across the turn of the month: both months, and only the day no
+        // month file holds is listed.
+        let wide = window(sep_29 as f64, (OCT_9_2024 + 2 * DAY_SECS) as f64, 0.0, now);
+        let wide = ActivityWindow {
+            need_scans: true,
+            ..wide
+        };
+        fetcher.finish_month(&site(), month(2024, 10), false, now_ms);
+        let plan = fetcher.plan(&book, &site(), &wide, now_ms);
+        // October is backing off after its failure; September goes out.
+        assert_eq!(plan.months, vec![month(2024, 9)]);
+        assert!(plan
+            .list
+            .iter()
+            .all(|d| *d == sep_29 || *d == OCT_9_2024 + DAY_SECS));
+        let later = now_ms + FAILURE_BACKOFF_MS;
+        let plan = fetcher.plan(&book, &site(), &wide, later);
+        assert_eq!(plan.months.len(), 2);
+        assert!(plan.months.contains(&month(2024, 10)));
+        assert!(plan.months.contains(&month(2024, 9)));
+        let mut listed = plan.list.clone();
+        listed.sort_unstable();
+        assert_eq!(listed, vec![sep_29, OCT_9_2024 + DAY_SECS]);
+
+        // The month arrives: its days have volumes and nothing is left.
+        let days: Vec<DayActivity> = (0..9)
+            .map(|i| month_day(OCT_9_2024 - (8 - i) * DAY_SECS))
+            .collect();
+        assert_eq!(book.insert_month(days).len(), 9);
+        fetcher.finish_month(&site(), month(2024, 10), true, later);
+        assert!(fetcher.plan(&book, &site(), &w, later).list.is_empty());
+        let scans = book.scans(&site(), OCT_9_2024 as f64, (OCT_9_2024 + DAY_SECS) as f64);
+        assert_eq!(scans.scans.len(), 2);
+        assert_eq!(scans.scans[0].bytes, 20_000_000);
+        assert!(book
+            .listing(&site(), OCT_9_2024 as f64, (OCT_9_2024 + DAY_SECS) as f64)
+            .is_some());
+    }
+
+    #[wasm_bindgen_test]
+    fn a_day_its_fetched_month_file_lacks_is_listed() {
+        let mut fetcher = loaded_fetcher();
+        let mut book = ActivityBook::default();
+        book.insert_index([index_day(OCT_9_2024, 4_000_000)]);
+        book.set_month_days(&site(), [OCT_9_2024]);
+        let now = 2e9;
+        let w = ActivityWindow {
+            need_scans: true,
+            ..window(OCT_9_2024 as f64, (OCT_9_2024 + DAY_SECS) as f64, 0.0, now)
+        };
+        // A stale month file (or a 404, or one that didn't parse) came
+        // back without the day: it's listed, and the month isn't asked for
+        // again this session.
+        fetcher.start_month(&site(), month(2024, 10));
+        assert!(book.insert_month(Vec::new()).is_empty());
+        fetcher.finish_month(&site(), month(2024, 10), true, now * 1000.0);
+        let plan = fetcher.plan(&book, &site(), &w, now * 1000.0);
+        assert_eq!(plan.list, vec![OCT_9_2024]);
+        assert!(plan.months.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn month_days_keep_final_listings_and_clear_with_the_index() {
+        let mut book = ActivityBook::default();
+        let listed = day(OCT_9_2024, 21_500_000, "V06");
+        book.insert_many([listed.clone()]);
+        let taken = book.insert_month([month_day(OCT_9_2024), month_day(OCT_9_2024 + DAY_SECS)]);
+        assert_eq!(taken.len(), 1);
+        assert_eq!(book.day(&site(), OCT_9_2024), Some(&listed));
+        book.set_month_days(&site(), [OCT_9_2024]);
+        book.set_month_days(&site(), []);
+        assert!(!book.in_month_file(&site(), OCT_9_2024));
     }
 
     #[wasm_bindgen_test]

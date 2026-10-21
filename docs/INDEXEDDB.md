@@ -158,6 +158,14 @@ size as two parallel arrays (`scan_secs`, `scan_bytes`, flagged by
 `has_scans`; a final record without them is listed again only when the
 overview zooms in far enough to draw volumes).
 `core::storm_activity` turns it into bar and per-volume heights.
+Days read from the activity index's month files
+(`activity-index/<SITE>/<YYYY-MM>.json`, see
+[`tools/activity_index/README.md`](../tools/activity_index/README.md))
+are stored here too, exactly as a final listing of that day would be, so
+a month file is fetched again only for days this store doesn't have; the
+month file itself isn't cached (nor revalidated by hand: its days are
+final and never change, and a repeat fetch goes through the browser's HTTP
+cache).
 
 Only the main thread reads and writes it (`MainThreadStore::
 day_activity_for_site` / `put_day_activity`). No transaction touches it
@@ -175,7 +183,8 @@ replaces it and a 404 deletes it (`core::activity_index::resolve_index`
 decides which). Each read and write is its own transaction, read first, so
 nothing awaits inside a readwrite transaction. One record per site visited,
 ~150 KB each; `clear_all` empties it, eviction ignores it. The days it holds
-are not copied into `day_activity`.
+are not copied into `day_activity`. Its `scans` runs say which days have
+a month file; the shell keeps that in the `ActivityBook`, not here.
 
 ## 3. Why three stores
 
