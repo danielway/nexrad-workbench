@@ -14,6 +14,7 @@
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::ladder::VolumeLadder;
 use crate::core::panels::{self, MpingRow, RailTab};
+use crate::core::storm_cells;
 use crate::core::top_bar::{TopBarIntent, TopBarVm};
 use crate::core::{Intent, InterpolationMode};
 use crate::state::{format_bytes, AppState, StorageSettings};
@@ -463,20 +464,31 @@ pub(super) fn render_rendering_section(
     ui.checkbox(&mut state.viz_state.storm_cells_visible, "Storm cells")
         .on_hover_text("Detect and outline storm cells on the radar");
     if state.viz_state.storm_cells_visible {
+        let slider = storm_cells::threshold_slider(state.viz_state.product);
         ui.indent("storm_cell_indent", |ui| {
             // two-way binding: the egui widget owns this value while the user edits it.
+            // A new threshold re-runs detection (the result is keyed on it).
             let mut threshold = state.viz_state.storm_cell_threshold_dbz;
             if ui
-                .add(
-                    egui::Slider::new(&mut threshold, 20.0..=60.0)
-                        .text("Min dBZ")
-                        .step_by(1.0),
+                .add_enabled(
+                    slider.enabled,
+                    egui::Slider::new(
+                        &mut threshold,
+                        storm_cells::THRESHOLD_MIN_DBZ..=storm_cells::THRESHOLD_MAX_DBZ,
+                    )
+                    .text("Min dBZ")
+                    .step_by(1.0),
                 )
                 .changed()
             {
                 state.viz_state.storm_cell_threshold_dbz = threshold;
-                // Clear cached results so detection re-runs with new threshold
-                state.viz_state.detected_storm_cells.clear();
+            }
+            if let Some(hint) = slider.hint {
+                ui.label(
+                    RichText::new(hint)
+                        .size(theme::CAPTION)
+                        .color(theme::TEXT_DIM),
+                );
             }
         });
     }

@@ -107,7 +107,8 @@ impl Preferences {
         state.viz_state.data_probe_enabled = self.tools.probe;
         state.viz_state.distance_tool_active = self.tools.distance;
         state.viz_state.storm_cells_visible = self.tools.storm_cells;
-        state.viz_state.storm_cell_threshold_dbz = self.tools.storm_cell_dbz;
+        state.viz_state.storm_cell_threshold_dbz =
+            crate::core::storm_cells::clamp_threshold(self.tools.storm_cell_dbz);
         state.dev_mode = self.developer_mode;
         state.dev_mode_saved = self.developer_mode;
         self.mping_api_key.clone()
@@ -273,6 +274,17 @@ mod tests {
         assert!(dst.viz_state.storm_cells_visible);
         assert!((dst.viz_state.storm_cell_threshold_dbz - 45.0).abs() < 1e-6);
         assert!(dst.dev_mode && dst.dev_mode_saved);
+    }
+
+    #[wasm_bindgen_test]
+    fn stored_storm_cell_threshold_is_clamped_to_slider_range() {
+        for (stored, applied) in [(5.0, 20.0), (99.0, 60.0), (42.0, 42.0)] {
+            let mut prefs = Preferences::default();
+            prefs.tools.storm_cell_dbz = stored;
+            let (mut state, mut playback) = states();
+            prefs.apply_to(&mut state, &mut playback);
+            assert_eq!(state.viz_state.storm_cell_threshold_dbz, applied);
+        }
     }
 
     #[wasm_bindgen_test]
