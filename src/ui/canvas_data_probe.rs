@@ -6,7 +6,7 @@
 //! distinguishes this map-space hover tool from the scan inspector (the
 //! per-scan volume breakdown), which is a separate surface.
 
-use crate::core::StormCellInfo;
+use crate::core::StormCell;
 use crate::geo::MapProjection;
 use crate::nexrad::RadarGpuRenderer;
 use crate::ui::theme;
@@ -185,7 +185,7 @@ const ELLIPSE_SEGMENTS: usize = 32;
 pub(crate) fn render_storm_cells(
     painter: &Painter,
     projection: &MapProjection,
-    cells: &[StormCellInfo],
+    cells: &[StormCell],
     _dark: bool,
 ) {
     for cell in cells {
@@ -194,7 +194,7 @@ pub(crate) fn render_storm_cells(
             y: cell.lat,
         });
 
-        let color = crate::ui::data_colors::storm_cell(cell.max_dbz);
+        let color = crate::ui::data_colors::storm_cell(cell.peak_dbz);
 
         // Derive ellipse semi-axes from area + elongation: an ellipse of
         // area A and ratio e has semi-minor b = √(A / (π·e)) and semi-major
@@ -225,14 +225,14 @@ pub(crate) fn render_storm_cells(
         }
         painter.add(Shape::closed_line(points, Stroke::new(1.5_f32, color)));
 
-        // Small centroid marker + max-dBZ label. Bearing/range stay
+        // Small centroid marker + peak-dBZ label. Bearing/range stay
         // available in the state struct for future tooltip / side-panel
         // consumers; surfacing them inline on the map was too noisy.
         painter.circle_stroke(center, 3.0, Stroke::new(1.5_f32, color));
         painter.text(
             center + Vec2::new(6.0, -6.0),
             egui::Align2::LEFT_BOTTOM,
-            format!("{:.0}", cell.max_dbz),
+            format!("{:.0}", cell.peak_dbz),
             egui::FontId::proportional(10.0),
             color,
         );

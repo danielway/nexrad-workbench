@@ -221,7 +221,7 @@ so the renderer doesn't need to. It does explicitly:
 - `collection_time_at_polar(azimuth_deg, sweep_params)` — Unix seconds
   for the radial that produced this azimuth.
 - `detect_storm_cells(radar_lat, radar_lon, threshold_dbz)` — adapter
-  over [`detection`](../src/nexrad/detection/) that wraps the CPU
+  over [`storm_cells`](../src/storm_cells/) that wraps the CPU
   shadow data into a `DetectionInput`.
 
 The inspector path uses `find_nearest_azimuth_index` (the CPU twin of

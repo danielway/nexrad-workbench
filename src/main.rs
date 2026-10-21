@@ -26,6 +26,7 @@ mod mping;
 mod net;
 mod nexrad;
 mod state;
+mod storm_cells;
 mod subsystem;
 mod ui;
 

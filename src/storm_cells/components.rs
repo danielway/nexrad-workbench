@@ -7,14 +7,15 @@
 //! large gaps where the "first" and "last" indices are nowhere near each
 //! other, and falsely connecting them would glue unrelated cells together.
 //!
-//! Iterative flood-fill (explicit `Vec` stack) — no recursion, no
-//! allocation per pixel after the initial capacity is reserved.
+//! Iterative flood-fill (explicit `Vec` stack) — no recursion. One
+//! [`Labeler`] serves every level of the threshold ladder.
 
 /// One pixel belonging to a component: (azimuth index, gate index).
 pub(super) type Pixel = (u16, u16);
 
 /// Label connected components over a grid of above-threshold physical
 /// values. Gates with `NaN` are considered background.
+#[cfg(test)]
 pub(super) fn label(
     grid: &[f32],
     azimuths: &[f32],
@@ -24,79 +25,109 @@ pub(super) fn label(
     if azimuth_count == 0 || gate_count == 0 {
         return Vec::new();
     }
-
-    let n = azimuth_count * gate_count;
-    debug_assert_eq!(grid.len(), n);
-
-    // Pre-compute which azimuth-index pairs are spatially adjacent. Without
-    // this, a partial sweep where `azimuths[0] = 5°` and
-    // `azimuths[az_count - 1] = 50°` would still let the flood-fill jump
-    // across the index wrap and glue unrelated cells together.
+    debug_assert_eq!(grid.len(), azimuth_count * gate_count);
     let az_adjacent = precompute_az_adjacency(azimuths, azimuth_count);
+    let mut labeler = Labeler::new(grid, &az_adjacent, gate_count);
+    let mut components = Vec::new();
+    for seed in 0..grid.len() {
+        if let Some(c) = labeler.fill(seed, f32::NEG_INFINITY, 1) {
+            components.push(c);
+        }
+    }
+    components
+}
 
-    let mut visited = vec![false; n];
-    let mut components: Vec<Vec<Pixel>> = Vec::new();
-    let mut stack: Vec<usize> = Vec::new();
+/// Flood-fill labeler shared by every threshold level.
+///
+/// Levels are nested (a gate at or above level k+1 is also at or above level
+/// k), so one byte per gate is enough to remember visits across all levels:
+/// `stamp[i]` is the highest level (1-based) whose fill has visited gate
+/// `i`. A gate is open at level `k` while `stamp[i] < k`. This keeps the
+/// whole ladder at one visited allocation instead of one per level.
+pub(super) struct Labeler<'a> {
+    grid: &'a [f32],
+    az_adjacent: &'a [bool],
+    gate_count: usize,
+    azimuth_count: usize,
+    stamp: Vec<u8>,
+    stack: Vec<usize>,
+}
 
-    for start_az in 0..azimuth_count {
-        for start_g in 0..gate_count {
-            let start_idx = start_az * gate_count + start_g;
-            if visited[start_idx] || grid[start_idx].is_nan() {
-                continue;
-            }
-
-            let mut pixels: Vec<Pixel> = Vec::new();
-            stack.clear();
-            stack.push(start_idx);
-            visited[start_idx] = true;
-
-            while let Some(idx) = stack.pop() {
-                let az = idx / gate_count;
-                let g = idx % gate_count;
-                pixels.push((az as u16, g as u16));
-
-                for daz in [-1i32, 0, 1] {
-                    let naz = wrap_az(az, daz, azimuth_count);
-                    // `az_adjacent[i]` says whether index `i` is spatially
-                    // adjacent to `i + 1 (mod)`. Going forward checks the
-                    // edge at `az`; going backward checks the edge at
-                    // `naz` (which is `az - 1 mod`).
-                    if daz > 0 && !az_adjacent[az] {
-                        continue;
-                    }
-                    if daz < 0 && !az_adjacent[naz] {
-                        continue;
-                    }
-                    for dg in [-1i32, 0, 1] {
-                        if daz == 0 && dg == 0 {
-                            continue;
-                        }
-                        let ng_signed = g as i32 + dg;
-                        if ng_signed < 0 || ng_signed >= gate_count as i32 {
-                            continue;
-                        }
-                        let ng = ng_signed as usize;
-                        let nidx = naz * gate_count + ng;
-                        if visited[nidx] || grid[nidx].is_nan() {
-                            continue;
-                        }
-                        visited[nidx] = true;
-                        stack.push(nidx);
-                    }
-                }
-            }
-
-            components.push(pixels);
+impl<'a> Labeler<'a> {
+    pub(super) fn new(grid: &'a [f32], az_adjacent: &'a [bool], gate_count: usize) -> Self {
+        let azimuth_count = az_adjacent.len();
+        debug_assert_eq!(grid.len(), azimuth_count * gate_count);
+        Self {
+            grid,
+            az_adjacent,
+            gate_count,
+            azimuth_count,
+            stamp: vec![0; grid.len()],
+            stack: Vec::new(),
         }
     }
 
-    components
+    /// Flood-fill the component containing `seed` over gates `>= level`
+    /// (8-neighbourhood, azimuth wrap where radials are adjacent), marking
+    /// them with `stamp_val`. Returns `None` if `seed` is below `level` or
+    /// was already filled at this stamp.
+    pub(super) fn fill(&mut self, seed: usize, level: f32, stamp_val: u8) -> Option<Vec<Pixel>> {
+        if !self.open(seed, level, stamp_val) {
+            return None;
+        }
+        let gate_count = self.gate_count;
+        let mut pixels: Vec<Pixel> = Vec::new();
+        self.stack.clear();
+        self.stack.push(seed);
+        self.stamp[seed] = stamp_val;
+
+        while let Some(idx) = self.stack.pop() {
+            let az = idx / gate_count;
+            let g = idx % gate_count;
+            pixels.push((az as u16, g as u16));
+
+            for daz in [-1i32, 0, 1] {
+                let naz = wrap_az(az, daz, self.azimuth_count);
+                // `az_adjacent[i]` says whether index `i` is spatially
+                // adjacent to `i + 1 (mod)`. Going forward checks the
+                // edge at `az`; going backward checks the edge at
+                // `naz` (which is `az - 1 mod`).
+                if daz > 0 && !self.az_adjacent[az] {
+                    continue;
+                }
+                if daz < 0 && !self.az_adjacent[naz] {
+                    continue;
+                }
+                for dg in [-1i32, 0, 1] {
+                    if daz == 0 && dg == 0 {
+                        continue;
+                    }
+                    let ng_signed = g as i32 + dg;
+                    if ng_signed < 0 || ng_signed >= gate_count as i32 {
+                        continue;
+                    }
+                    let nidx = naz * gate_count + ng_signed as usize;
+                    if !self.open(nidx, level, stamp_val) {
+                        continue;
+                    }
+                    self.stamp[nidx] = stamp_val;
+                    self.stack.push(nidx);
+                }
+            }
+        }
+        Some(pixels)
+    }
+
+    fn open(&self, idx: usize, level: f32, stamp_val: u8) -> bool {
+        // NaN compares false, so background never opens.
+        self.stamp[idx] < stamp_val && self.grid[idx] >= level
+    }
 }
 
 /// `result[i] == true` iff azimuth index `i` is spatially adjacent to
 /// index `(i + 1) % az_count` — i.e. the angular gap between those two
 /// sorted radials is within `MAX_GAP_FACTOR × median_spacing`.
-fn precompute_az_adjacency(azimuths: &[f32], azimuth_count: usize) -> Vec<bool> {
+pub(super) fn precompute_az_adjacency(azimuths: &[f32], azimuth_count: usize) -> Vec<bool> {
     const MAX_GAP_FACTOR: f32 = 2.0;
 
     if azimuth_count <= 1 {
@@ -132,7 +163,25 @@ fn precompute_az_adjacency(azimuths: &[f32], azimuth_count: usize) -> Vec<bool> 
         .collect()
 }
 
-fn wrap_az(az: usize, delta: i32, az_count: usize) -> usize {
+/// Median angular spacing between consecutive sorted radials, in degrees
+/// (1.0 when it cannot be determined).
+pub(super) fn median_spacing_deg(azimuths: &[f32], azimuth_count: usize) -> f64 {
+    let mut gaps: Vec<f32> = (0..azimuth_count)
+        .filter_map(|i| {
+            let a = *azimuths.get(i)?;
+            let b = *azimuths.get((i + 1) % azimuth_count)?;
+            (a >= 0.0 && b >= 0.0 && azimuth_count > 1).then(|| (b - a).rem_euclid(360.0))
+        })
+        .filter(|g| *g > 0.0)
+        .collect();
+    if gaps.is_empty() {
+        return 1.0;
+    }
+    gaps.sort_by(f32::total_cmp);
+    gaps[gaps.len() / 2] as f64
+}
+
+pub(super) fn wrap_az(az: usize, delta: i32, az_count: usize) -> usize {
     let n = az_count as i32;
     let v = az as i32 + delta;
     (((v % n) + n) % n) as usize

@@ -146,12 +146,12 @@ impl WorkbenchApp {
                 let Ok(r) = renderer.lock() else {
                     return;
                 };
-                let cells = r.detect_storm_cells(
+                let result = r.detect_storm_cells(
                     self.state.viz_state.center_lat,
                     self.state.viz_state.center_lon,
                     key.threshold_dbz,
                 );
-                self.state.viz_state.storm_cells.store(key, cells);
+                self.state.viz_state.storm_cells.store(key, result);
             }
         }
     }

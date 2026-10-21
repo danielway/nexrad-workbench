@@ -7,19 +7,30 @@
 //! orientation + elongation.
 
 use super::components::Pixel;
-use super::DetectionInput;
-use crate::core::StormCellInfo;
+use super::{DetectionInput, KM_PER_DEG};
 
-/// Approximate kilometers per degree of latitude. Matches the
-/// equirectangular approximation used in `canvas_data_probe.rs`.
-const KM_PER_DEG: f64 = 111.0;
+/// Summary of one component's gates.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Footprint {
+    pub lat: f64,
+    pub lon: f64,
+    pub max_dbz: f32,
+    pub mean_dbz: f32,
+    pub area_km2: f32,
+    pub bounds: (f64, f64, f64, f64),
+    pub bearing_from_radar_deg: f32,
+    pub range_from_radar_km: f32,
+    pub orientation_deg: f32,
+    pub elongation: f32,
+    pub gate_count: u32,
+}
 
 pub(super) fn summarize(
     pixels: &[Pixel],
     grid: &[f32],
     input: &DetectionInput,
     edge_threshold_dbz: f32,
-) -> StormCellInfo {
+) -> Footprint {
     let cos_lat = input.radar_lat.to_radians().cos().max(1e-6);
     let az_spacing_rad = (radial_width_deg(input) as f64).to_radians();
 
@@ -121,7 +132,7 @@ pub(super) fn summarize(
         (0.0, 1.0)
     };
 
-    StormCellInfo {
+    Footprint {
         lat: centroid_lat,
         lon: centroid_lon,
         max_dbz,
@@ -140,7 +151,7 @@ pub(super) fn summarize(
 /// else the median gap between the supplied azimuths, else `360 / count`.
 /// Using the real spacing keeps a partial sweep (only the radials received
 /// so far) from counting each radial as wider than it is.
-fn radial_width_deg(input: &DetectionInput) -> f32 {
+pub(super) fn radial_width_deg(input: &DetectionInput) -> f32 {
     if let Some(spacing) = input.azimuth_spacing_deg.filter(|s| *s > 0.0) {
         return spacing;
     }
@@ -151,12 +162,27 @@ fn radial_width_deg(input: &DetectionInput) -> f32 {
         .copied()
         .filter(|a| *a >= 0.0)
         .collect();
-    let median = crate::core::volume_plan::median_azimuth_spacing_deg(&received);
+    let median = median_gap_deg(&received);
     if median > 0.0 {
         median
     } else {
         360.0 / input.azimuth_count.max(1) as f32
     }
+}
+
+/// Median forward gap between consecutive azimuths, wrap-aware and
+/// including the closing gap from the last back to the first, so a full
+/// rotation reports its true spacing. 0 when there is nothing to measure.
+fn median_gap_deg(azimuths: &[f32]) -> f32 {
+    let n = azimuths.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let mut gaps: Vec<f32> = (0..n)
+        .map(|i| (azimuths[(i + 1) % n] - azimuths[i]).rem_euclid(360.0))
+        .collect();
+    gaps.sort_by(f32::total_cmp);
+    gaps[n / 2]
 }
 
 /// Principal-axis orientation (compass degrees in [0, 180)) and elongation

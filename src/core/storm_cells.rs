@@ -1,14 +1,14 @@
 //! Storm cell detection: when it runs, what result is kept, and what the
 //! Layers panel shows for it.
 //!
-//! The detector itself (`crate::nexrad::detection`) is a pure function of
-//! one sweep. Running it is an effect the shell executes against the GPU
+//! The detector itself (the `crate::storm_cells` leaf module) is a pure
+//! function of one sweep. Running it is an effect the shell executes against the GPU
 //! renderer's CPU shadow of that sweep; this module decides *whether* to run
 //! it. A result is valid for exactly the sweep and threshold it was computed
 //! for ([`StormCellKey`]), so an empty result is as final as a non-empty one
 //! and nothing re-runs on a repaint, a drag, or a 3D frame.
 
-use crate::core::{DisplayedSweep, RadarProduct, StormCellInfo};
+use crate::core::{DisplayedSweep, RadarProduct, StormCellsResult};
 use crate::geo::ViewMode;
 
 /// Lowest threshold the Layers slider offers, in dBZ.
@@ -40,9 +40,9 @@ pub(crate) struct StormCellKey {
 /// The current detection result and what it was computed for.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct StormCells {
-    /// Cells from the last run. Empty is a valid result.
-    pub cells: Vec<StormCellInfo>,
-    /// The sweep and threshold `cells` belongs to; `None` when nothing has
+    /// The last run's cells and groups. Empty is a valid result.
+    pub result: StormCellsResult,
+    /// The sweep and threshold `result` belongs to; `None` when nothing has
     /// been computed (or the result was cleared).
     pub computed_for: Option<StormCellKey>,
 }
@@ -50,18 +50,18 @@ pub(crate) struct StormCells {
 impl StormCells {
     /// Drop the result and its key.
     pub(crate) fn clear(&mut self) {
-        self.cells.clear();
+        self.result.clear();
         self.computed_for = None;
     }
 
     /// Record a finished run.
-    pub(crate) fn store(&mut self, key: StormCellKey, cells: Vec<StormCellInfo>) {
-        self.cells = cells;
+    pub(crate) fn store(&mut self, key: StormCellKey, result: StormCellsResult) {
+        self.result = result;
         self.computed_for = Some(key);
     }
 
     fn is_clear(&self) -> bool {
-        self.cells.is_empty() && self.computed_for.is_none()
+        self.result.is_empty() && self.computed_for.is_none()
     }
 }
 
@@ -158,6 +158,7 @@ pub(crate) fn threshold_slider(product: RadarProduct) -> ThresholdSliderVm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::StormCell;
     use crate::core::SweepIdentity;
     use crate::data::keys::UnixMillis;
     use crate::data::ScanKey;
@@ -186,29 +187,36 @@ mod tests {
         }
     }
 
-    fn cell() -> StormCellInfo {
-        StormCellInfo {
-            lat: 32.0,
-            lon: -97.0,
-            max_dbz: 50.0,
-            mean_dbz: 42.0,
-            area_km2: 30.0,
-            bounds: (31.9, -97.1, 32.1, -96.9),
-            bearing_from_radar_deg: 0.0,
-            range_from_radar_km: 10.0,
-            orientation_deg: 0.0,
-            elongation: 1.0,
-            gate_count: 20,
+    fn one_cell() -> StormCellsResult {
+        StormCellsResult {
+            cells: vec![StormCell {
+                id: 0,
+                group_id: None,
+                level_dbz: 35.0,
+                peak_dbz: 50.0,
+                mean_dbz: 42.0,
+                area_km2: 30.0,
+                gate_count: 20,
+                lat: 32.0,
+                lon: -97.0,
+                bounds: (31.9, -97.1, 32.1, -96.9),
+                bearing_from_radar_deg: 0.0,
+                range_from_radar_km: 10.0,
+                orientation_deg: 0.0,
+                elongation: 1.0,
+                outline: Vec::new(),
+            }],
+            ..StormCellsResult::default()
         }
     }
 
-    /// Apply an action the way the shell does, with `cells` as the
+    /// Apply an action the way the shell does, with `result` as the
     /// detector's output.
-    fn execute(state: &mut StormCells, action: StormCellAction, cells: Vec<StormCellInfo>) {
+    fn execute(state: &mut StormCells, action: StormCellAction, result: StormCellsResult) {
         match action {
             StormCellAction::Keep => {}
             StormCellAction::Clear => state.clear(),
-            StormCellAction::Run(key) => state.store(key, cells),
+            StormCellAction::Run(key) => state.store(key, result),
         }
     }
 
@@ -226,7 +234,7 @@ mod tests {
 
         let first = decide(&env(Some(&s)), &state);
         assert!(matches!(first, StormCellAction::Run(_)));
-        execute(&mut state, first, Vec::new());
+        execute(&mut state, first, StormCellsResult::default());
 
         // Every later frame (repaint, drag) over the same sweep keeps it.
         for _ in 0..300 {
@@ -239,7 +247,7 @@ mod tests {
         let s = sweep(1, "reflectivity", 1_716_883_220.0);
         let mut state = StormCells::default();
         let a = decide(&env(Some(&s)), &state);
-        execute(&mut state, a, vec![cell()]);
+        execute(&mut state, a, one_cell());
 
         // Different elevation.
         let s2 = sweep(2, "reflectivity", 1_716_883_220.0);
@@ -269,14 +277,18 @@ mod tests {
         let vel = sweep(1, "velocity", 1_716_883_220.0);
         let mut state = StormCells::default();
         let a = decide(&env(Some(&refl)), &state);
-        execute(&mut state, a, vec![cell()]);
+        execute(&mut state, a, one_cell());
 
         // Selected velocity, reflectivity still on the GPU: clear.
         let mut e = env(Some(&refl));
         e.product = RadarProduct::Velocity;
         assert_eq!(decide(&e, &state), StormCellAction::Clear);
-        execute(&mut state, StormCellAction::Clear, Vec::new());
-        assert!(state.cells.is_empty() && state.computed_for.is_none());
+        execute(
+            &mut state,
+            StormCellAction::Clear,
+            StormCellsResult::default(),
+        );
+        assert!(state.result.is_empty() && state.computed_for.is_none());
 
         // Velocity on the GPU: nothing to do, and no run.
         e.displayed = Some(&vel);
@@ -306,7 +318,7 @@ mod tests {
         let s2 = sweep(1, "reflectivity", 1_716_883_520.0);
         let mut state = StormCells::default();
         let a = decide(&env(Some(&s1)), &state);
-        execute(&mut state, a, vec![cell()]);
+        execute(&mut state, a, one_cell());
 
         let mut e = env(Some(&s2));
         e.view_mode = ViewMode::Globe3D;
@@ -329,7 +341,7 @@ mod tests {
         let s = sweep(1, "reflectivity", 1_716_883_220.0);
         let mut state = StormCells::default();
         let a = decide(&env(Some(&s)), &state);
-        execute(&mut state, a, vec![cell()]);
+        execute(&mut state, a, one_cell());
 
         let mut off = env(Some(&s));
         off.visible = false;

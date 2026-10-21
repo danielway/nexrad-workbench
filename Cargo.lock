@@ -2247,6 +2247,7 @@ dependencies = [
  "eframe",
  "egui-phosphor",
  "egui_glow",
+ "flate2",
  "futures-channel",
  "futures-util",
  "geo",
