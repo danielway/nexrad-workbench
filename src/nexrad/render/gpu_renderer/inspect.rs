@@ -122,6 +122,7 @@ impl RadarGpuRenderer {
             data_offset: self.current.data_offset,
             radar_lat,
             radar_lon,
+            azimuth_spacing_deg: Some(self.current.azimuth_spacing_deg),
         };
         let params = crate::nexrad::detection::DetectionParams {
             threshold_dbz,

@@ -45,18 +45,21 @@ pub(crate) struct Derived {
     /// and — while attached to live with a fixed elevation filter — the
     /// antenna is on that cut.
     pub effective_sweep_animation: bool,
+    /// Whether the canvas follows the live stream rather than the playhead.
+    /// See [`crate::subsystem::Live::canvas_follows_live`].
+    pub canvas_follows_live: bool,
 }
 
 impl Derived {
     /// Populate the snapshot. Called once near the top of `update()`,
     /// before any subsystem tick or panel render, so every consumer
-    /// downstream reads the same values. `streaming` is the live
-    /// subsystem's `mode_state.is_active()` — an active stream session.
+    /// downstream reads the same values. `follows_live` is
+    /// [`crate::subsystem::Live::canvas_follows_live`].
     /// `collecting_elevation` is the live in-progress cut when known.
     pub(crate) fn for_frame(
         state: &AppState,
         playback: &Playback,
-        streaming: bool,
+        follows_live: bool,
         collecting_elevation: Option<u8>,
     ) -> Self {
         Self {
@@ -65,9 +68,10 @@ impl Derived {
             data_is_live: crate::state::recency::data_is_live(&playback.state),
             effective_sweep_animation: state.effective_sweep_animation(
                 &playback.state,
-                streaming,
+                follows_live,
                 collecting_elevation,
             ),
+            canvas_follows_live: follows_live,
         }
     }
 }

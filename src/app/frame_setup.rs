@@ -65,28 +65,9 @@ impl WorkbenchApp {
         // sufficient for these indicators while being easy on the CPU.
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
 
-        // Run storm cell detection on demand when toggled on with existing data
-        if self.state.viz_state.storm_cells_visible
-            && self.state.viz_state.detected_storm_cells.is_empty()
-        {
-            if let Some(ref renderer) = self.gpu.gpu {
-                if let Ok(r) = renderer.lock() {
-                    if r.has_data() {
-                        self.state.viz_state.detected_storm_cells = r.detect_storm_cells(
-                            self.state.viz_state.center_lat,
-                            self.state.viz_state.center_lon,
-                            self.state.viz_state.storm_cell_threshold_dbz,
-                        );
-                    }
-                }
-            }
-        }
-        // Clear cached cells when toggle is off
-        if !self.state.viz_state.storm_cells_visible
-            && !self.state.viz_state.detected_storm_cells.is_empty()
-        {
-            self.state.viz_state.detected_storm_cells.clear();
-        }
+        // Storm cells: run once per displayed sweep and threshold, never per
+        // frame (an empty result is a result too).
+        self.sync_storm_cells();
 
         // Detect site changes and clear volume ring
         self.sync_to_active_site();
@@ -134,5 +115,44 @@ impl WorkbenchApp {
         self.state.viz_state.displayed = None;
         self.state.viz_state.previous_displayed = None;
         self.timeline.shadow_scan_boundaries.clear();
+        self.state.viz_state.storm_cells.clear();
+    }
+
+    /// Bring the storm cell result in line with what is displayed. The
+    /// decision (run, keep, clear) is [`crate::core::storm_cells::decide`];
+    /// this only executes it. Called every frame and right after each GPU
+    /// upload, so a new sweep gets its cells in the same frame.
+    pub(crate) fn sync_storm_cells(&mut self) {
+        use crate::core::storm_cells::{decide, StormCellAction, StormCellEnv};
+
+        let viz = &self.state.viz_state;
+        let action = decide(
+            &StormCellEnv {
+                visible: viz.storm_cells_visible,
+                view_mode: viz.view_mode(),
+                product: viz.product,
+                displayed: viz.displayed.as_ref(),
+                threshold_dbz: viz.storm_cell_threshold_dbz,
+            },
+            &viz.storm_cells,
+        );
+        match action {
+            StormCellAction::Keep => {}
+            StormCellAction::Clear => self.state.viz_state.storm_cells.clear(),
+            StormCellAction::Run(key) => {
+                let Some(ref renderer) = self.gpu.gpu else {
+                    return;
+                };
+                let Ok(r) = renderer.lock() else {
+                    return;
+                };
+                let cells = r.detect_storm_cells(
+                    self.state.viz_state.center_lat,
+                    self.state.viz_state.center_lon,
+                    key.threshold_dbz,
+                );
+                self.state.viz_state.storm_cells.store(key, cells);
+            }
+        }
     }
 }

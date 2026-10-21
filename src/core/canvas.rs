@@ -40,6 +40,33 @@ pub(crate) fn sweep_animation_effective(
             || displayed_elevation_is_collecting(selected_elevation, collecting_elevation))
 }
 
+/// Whether the canvas follows the live stream this frame (the in-progress
+/// cut, its live beam marks and age fade) rather than the playhead.
+///
+/// The stream keeps ingesting while the user browses, so a running stream
+/// alone does not decide it. The canvas follows live only while the
+/// selection is attached to the live edge *and* the playhead is on the cut
+/// being collected:
+///
+/// - Pinned to now: the playhead is the live edge, so it follows live.
+/// - A range pinned to now (the "last N frames" loop): only once the
+///   playhead reaches the start of the live cut. Before that it is showing
+///   sweeps that are already stored, which play like the archive.
+/// - Scrubbed off the live edge (a point at a past time): never.
+///
+/// When it does not follow live, the canvas behaves exactly as in archive
+/// playback: Rays reveals each stored sweep up to the playhead's radial.
+pub(crate) fn canvas_follows_live(
+    stream_active: bool,
+    pinned_to_now: bool,
+    live_range: bool,
+    playhead: f64,
+    live_cut_start: Option<f64>,
+) -> bool {
+    stream_active
+        && (pinned_to_now || (live_range && live_cut_start.is_some_and(|s| playhead >= s)))
+}
+
 /// Whether the beam is currently collecting the elevation the user is viewing.
 ///
 /// - `selected_elevation = None` (Latest / all tilts): any collecting cut counts.
@@ -67,16 +94,22 @@ pub(crate) fn data_age_desaturation_effective(pref: bool, effective_sweep_animat
     pref && effective_sweep_animation
 }
 
-/// Live partial azimuth range for GPU compositing, or `None` when the in-progress
-/// elevation is not the one on screen (fixed elevation filter between visits)
-/// or Frames mode is holding the last complete sweep instead of the partial.
+/// Live partial azimuth range for GPU compositing, or `None` when the canvas
+/// follows the playhead instead of the stream ([`canvas_follows_live`]: the
+/// stored sweep under a scrubbed playhead is revealed up to the playhead, not
+/// up to the live data edge), when the in-progress elevation is not the one
+/// on screen (fixed elevation filter between visits), or when Frames mode is
+/// holding the last complete sweep instead of the partial.
 pub(crate) fn live_compositing_azimuth_range(
+    follows_live: bool,
     whole_sweeps_only: bool,
     selected_elevation: Option<u8>,
     active_elevation: Option<u8>,
     data_azimuth_range: Option<(f32, f32)>,
 ) -> Option<(f32, f32)> {
-    if whole_sweeps_only || !displayed_elevation_is_collecting(selected_elevation, active_elevation)
+    if !follows_live
+        || whole_sweeps_only
+        || !displayed_elevation_is_collecting(selected_elevation, active_elevation)
     {
         return None;
     }
@@ -441,6 +474,10 @@ pub(crate) struct CaptionContext {
     /// 3D volume rendering is on while the playhead is pinned to now: the
     /// volume renders only once every tilt is in.
     pub volume_waiting: bool,
+    /// 3D volume rendering draws a volume the device holds only part of:
+    /// `(cuts on device, cuts in the volume)`. `None` when the volume is
+    /// whole, or no volume renders.
+    pub volume_cuts: Option<(usize, usize)>,
 }
 
 impl Default for CaptionContext {
@@ -452,6 +489,7 @@ impl Default for CaptionContext {
             wanted_tilt_deg: None,
             fetchable_scan_start: None,
             volume_waiting: false,
+            volume_cuts: None,
         }
     }
 }
@@ -490,6 +528,13 @@ pub(crate) enum CanvasCaption {
     },
     /// 3D volume rendering while pinned: waiting for the volume to complete.
     VolumeWaiting,
+    /// 3D volume rendering draws a volume the device holds only part of;
+    /// `fetching` when a download or ingest is bringing the rest.
+    VolumePartial {
+        on_device: usize,
+        total: usize,
+        fetching: bool,
+    },
 }
 
 /// The one caption rule (§7): caption whenever the frame on screen and the
@@ -514,6 +559,13 @@ pub(crate) fn decide_canvas_caption(
     }
     if ctx.render_pending {
         return CanvasCaption::None;
+    }
+    if let (Some((on_device, total)), Some(_)) = (ctx.volume_cuts, frame) {
+        return CanvasCaption::VolumePartial {
+            on_device,
+            total,
+            fetching: ctx.fetch_covers_playhead,
+        };
     }
     let (target, pinned) = match playhead {
         Playhead::PinnedToNow => (now, true),
@@ -673,6 +725,19 @@ pub(crate) fn caption_line(
                 "waiting for the volume to complete · volume rendering needs every tilt"
                     .to_string(),
             ));
+        }
+        CanvasCaption::VolumePartial {
+            on_device,
+            total,
+            fetching,
+        } => {
+            segs.push((
+                format!("drawing {on_device} of {total} cuts"),
+                CaptionRole::Frame,
+            ));
+            if fetching {
+                segs.push(words(" · fetching the rest".to_string()));
+            }
         }
         CanvasCaption::NoFrame {
             playhead,
@@ -1746,6 +1811,52 @@ mod coverage_tests {
         assert!(!sweep_animation_effective(Macro, false, None, None));
     }
 
+    // --- canvas_follows_live: the stream feeds the canvas only at the edge ---
+
+    #[wasm_bindgen_test]
+    fn pinned_to_now_follows_the_live_stream() {
+        assert!(canvas_follows_live(true, true, false, 1_000.0, Some(990.0)));
+        // Between cuts there is no live cut start; pinned still follows.
+        assert!(canvas_follows_live(true, true, false, 1_000.0, None));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_scrubbed_playhead_follows_itself_while_the_stream_runs() {
+        // Scrubbing off the live edge leaves a point at a past time: the
+        // canvas reveals the stored sweep under the playhead.
+        assert!(!canvas_follows_live(true, false, false, 900.0, Some(990.0)));
+        // Even scrubbed into the live cut's span, a detached point is archive.
+        assert!(!canvas_follows_live(true, false, false, 995.0, Some(990.0)));
+        assert!(!canvas_follows_live(true, false, false, 900.0, None));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_live_range_follows_live_only_on_the_live_cut() {
+        assert!(!canvas_follows_live(true, false, true, 900.0, Some(990.0)));
+        assert!(canvas_follows_live(true, false, true, 990.0, Some(990.0)));
+        assert!(canvas_follows_live(true, false, true, 995.0, Some(990.0)));
+        // No cut being collected: the loop's frames are all stored.
+        assert!(!canvas_follows_live(true, false, true, 995.0, None));
+    }
+
+    #[wasm_bindgen_test]
+    fn no_stream_never_follows_live() {
+        assert!(!canvas_follows_live(
+            false,
+            true,
+            false,
+            1_000.0,
+            Some(990.0)
+        ));
+        assert!(!canvas_follows_live(
+            false,
+            false,
+            true,
+            1_000.0,
+            Some(990.0)
+        ));
+    }
+
     #[wasm_bindgen_test]
     fn live_fixed_filter_goes_still_between_visits() {
         use crate::core::PlaybackMode::Micro;
@@ -1778,21 +1889,35 @@ mod coverage_tests {
         // Live compositing range suppressed off-elevation so other tilts
         // don't drive the GPU sweep boundary for the filtered product.
         assert_eq!(
-            live_compositing_azimuth_range(false, Some(1), Some(1), Some((10.0, 40.0))),
+            live_compositing_azimuth_range(true, false, Some(1), Some(1), Some((10.0, 40.0))),
             Some((10.0, 40.0))
         );
         assert_eq!(
-            live_compositing_azimuth_range(false, Some(1), Some(2), Some((10.0, 40.0))),
+            live_compositing_azimuth_range(true, false, Some(1), Some(2), Some((10.0, 40.0))),
             None
         );
         assert_eq!(
-            live_compositing_azimuth_range(false, None, Some(2), Some((10.0, 40.0))),
+            live_compositing_azimuth_range(true, false, None, Some(2), Some((10.0, 40.0))),
             Some((10.0, 40.0))
         );
         // Frames mode holds the last complete sweep: no partial compositing.
         assert_eq!(
-            live_compositing_azimuth_range(true, Some(1), Some(1), Some((10.0, 40.0))),
+            live_compositing_azimuth_range(true, true, Some(1), Some(1), Some((10.0, 40.0))),
             None
+        );
+    }
+
+    // The reported bug: scrubbing back while the stream runs kept the GPU
+    // sweep boundary on the live cut's data range, so the stored sweep under
+    // the playhead was never revealed to the playhead's radial. Off the live
+    // edge the live range drops out and the archive reveal answers.
+    #[wasm_bindgen_test]
+    fn a_scrubbed_playhead_reveals_to_the_playhead_not_the_live_edge() {
+        let live = live_compositing_azimuth_range(false, false, None, Some(2), Some((10.0, 40.0)));
+        assert_eq!(live, None);
+        assert_eq!(
+            select_gpu_sweep(live, true, Some((100.0, 120.0)), 110.0, Some((200.0, 15.0))),
+            Some((200.0, 15.0))
         );
     }
 

@@ -11,9 +11,10 @@
 //! is a [`COLUMN_W_PX`] column as tall as the weather it held (a floor of
 //! [`COLUMN_MIN_H`] so a quiet day reads as a row of short even columns),
 //! filled on the device, white under the playhead, with hour labels. At
-//! 24 H ([`StripZoom::Day`]) the storm hill keeps its half-hour steps, the
-//! stretch on the device drawn in slate over it, and a 2 px white line at
-//! the playhead; labels at 06, 12, 18 and 00.
+//! 24 H ([`StripZoom::Day`]) the storm hill is a smooth area through its
+//! half-hour samples (a monotone cubic, so it never overshoots a sample or
+//! dips below the floor), the stretch on the device drawn in slate, and a
+//! 2 px white line at the playhead; labels at 06, 12, 18 and 00.
 //!
 //! At every stop: a red now line with a small `NOW` cap above it when now
 //! is in the window, and one amber bracket over a selected range (its end
@@ -24,15 +25,18 @@
 //!
 //! While the frame under the playhead is not on the device yet, the row
 //! says so on its block (a progress arc, [`Arc`]) and the map says so
-//! with a dim and a pill ([`LoadingVm`]). The progress is the download's
-//! stage (queued, downloading, decoding), the only progress acquisition
-//! knows; with none known the arc spins.
+//! with a dim and a pill ([`LoadingVm`]). While it downloads the arc is the
+//! bytes received over the bytes expected (the response's size, else the
+//! listing's), from the queued share to the decoding one; without a size
+//! it is the stage (queued, downloading, decoding); with none known the
+//! arc spins.
 //!
 //! All pure, in the row's own points (x along the lane, y from the row's
 //! top): the shell paints rectangles, lines and text where this says.
 
+use crate::core::acquisition::DownloadProgress;
 use crate::core::phone::MiniWindow;
-use crate::core::phone_strip::{activity_bars, StripZoom};
+use crate::core::phone_strip::{activity_bars, StripZoom, DAY_BUCKET_SECS};
 use crate::core::storm_activity::{ScanSizes, ViewScale, MIN_BAR_FRAC};
 use crate::core::timeline_view::{FrameCellState, ScanContainer};
 
@@ -61,6 +65,9 @@ pub(crate) const COLUMN_RANGE_H: f32 = 26.0;
 /// The hill at 24 H: the line it stands on and its tallest.
 pub(crate) const HILL_BOTTOM: f32 = 48.0;
 pub(crate) const HILL_H: f32 = 36.0;
+
+/// How far apart (points) the 24 H hill's curve is sampled.
+pub(crate) const HILL_STEP_PX: f32 = 2.0;
 
 /// The top of the hour labels at 3 H and 24 H.
 pub(crate) const HOUR_LABEL_TOP: f32 = 50.0;
@@ -94,7 +101,8 @@ pub(crate) const DECODING_SHARE: f32 = 0.8;
 /// How far the frame under the playhead has come.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Arc {
-    /// A share of the circle, from the download's stage.
+    /// A share of the circle, from the bytes received or the download's
+    /// stage.
     Share(f32),
     /// Nothing known yet: the arc spins.
     Spinning,
@@ -143,12 +151,16 @@ pub(crate) struct ColumnVm {
     pub selected: bool,
 }
 
-/// One step of the 24 H hill.
+/// One sliver of the 24 H hill: a quad from `x0` to `x1` standing on the
+/// hill's line, `h0` tall at its left and `h1` at its right. Slivers are at
+/// most [`HILL_STEP_PX`] wide and never overlap, so the shell fills each as
+/// a convex quad and the row of them is the smooth area.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct HillPiece {
     pub x0: f32,
     pub x1: f32,
-    pub height: f32,
+    pub h0: f32,
+    pub h1: f32,
     /// Slate (on the device) rather than the storm blue.
     pub on_device: bool,
 }
@@ -198,6 +210,8 @@ pub(crate) struct Downloads<'a> {
     pub downloading: &'a [(i64, i64)],
     /// Downloaded, being decoded and stored.
     pub decoding: &'a [(i64, i64)],
+    /// The bytes each download in flight has received, by its scan start.
+    pub bytes: &'a [(i64, DownloadProgress)],
 }
 
 /// Everything the row reads.
@@ -341,8 +355,22 @@ fn live_fill(v: &Vol<'_>, now: f64) -> f32 {
     share.clamp(0.0, 1.0)
 }
 
-/// How far the volume's download has come, from the acquisition's spans.
-fn download_arc(v: &Vol<'_>, d: &Downloads<'_>) -> Arc {
+/// The arc's share while a download is under way: the bytes received over
+/// the bytes expected, from [`DOWNLOADING_SHARE`] (nothing yet) to
+/// [`DECODING_SHARE`] (all of it, decoding next), or the stage's
+/// [`DOWNLOADING_SHARE`] when the size isn't known, so the arc only ever
+/// moves forward (queued, then downloading, then decoding).
+pub(crate) fn downloading_share(progress: Option<DownloadProgress>, listed: Option<u64>) -> f32 {
+    match progress.and_then(|p| p.fraction(listed)) {
+        Some(f) => DOWNLOADING_SHARE + (DECODING_SHARE - DOWNLOADING_SHARE) * f,
+        None => DOWNLOADING_SHARE,
+    }
+}
+
+/// How far the volume's download has come, from the acquisition's spans and
+/// the bytes received (over the response's size, else the listing's).
+fn download_arc(v: &Vol<'_>, d: &Downloads<'_>, sizes: &ScanSizes) -> Arc {
+    let mine = |s: f64| s >= v.start - KEY_SLACK_SECS && s < v.end.max(v.start + 1.0);
     let hits = |spans: &[(i64, i64)]| {
         spans.iter().any(|&(s, e)| {
             let (s, e) = (s as f64, e as f64);
@@ -352,7 +380,17 @@ fn download_arc(v: &Vol<'_>, d: &Downloads<'_>) -> Arc {
     if hits(d.decoding) {
         Arc::Share(DECODING_SHARE)
     } else if hits(d.downloading) {
-        Arc::Share(DOWNLOADING_SHARE)
+        let progress = d
+            .bytes
+            .iter()
+            .find(|(k, _)| mine(*k as f64))
+            .map(|(_, p)| *p);
+        let listed = sizes
+            .scans
+            .iter()
+            .find(|s| (s.start - v.start).abs() <= KEY_SLACK_SECS)
+            .map(|s| u64::from(s.bytes));
+        Arc::Share(downloading_share(progress, listed))
     } else if hits(d.queued) {
         Arc::Share(QUEUED_SHARE)
     } else {
@@ -383,7 +421,7 @@ fn loading_vm(i: &RowInputs<'_>, vols: &[Vol<'_>], selected: Option<usize>) -> O
         start: v.start,
         label: format!("Loading {time}"),
         time,
-        arc: download_arc(v, &i.downloads),
+        arc: download_arc(v, &i.downloads, i.sizes),
     })
 }
 
@@ -447,6 +485,11 @@ pub(crate) fn row_vm(i: &RowInputs<'_>) -> RowVm {
                     cuts,
                     arc: loading.as_ref().filter(|_| is_sel).map(|l| l.arc),
                 });
+                if x0 < left {
+                    // Cut by the lane's edge: its label would name a block
+                    // mostly out of view and crowd the next one's.
+                    continue;
+                }
                 let text = if v.live {
                     "live".to_string()
                 } else {
@@ -614,18 +657,106 @@ fn place_labels(
     placed.into_iter().map(|(_, _, l)| l).collect()
 }
 
-/// The 24 H hill: the half-hour steps in the storm blue, split where the
-/// device holds volumes so that stretch draws in slate over its steps;
-/// stretches the listing has no sizes for (and held stretches with no step
-/// under them) draw at the floor.
+/// A monotone cubic through `knots` (x ascending, at least one), evaluated
+/// at `x`: Fritsch–Carlson tangents (PCHIP), so between two knots it stays
+/// between their values and never overshoots. Flat past either end.
+pub(crate) fn monotone_cubic(knots: &[(f32, f32)], x: f32) -> f32 {
+    let n = knots.len();
+    if n == 0 {
+        return 0.0;
+    }
+    if n == 1 || x <= knots[0].0 {
+        return knots[0].1;
+    }
+    if x >= knots[n - 1].0 {
+        return knots[n - 1].1;
+    }
+    let k = knots.partition_point(|p| p.0 <= x).clamp(1, n - 1) - 1;
+    let h = |j: usize| knots[j + 1].0 - knots[j].0;
+    let d = |j: usize| (knots[j + 1].1 - knots[j].1) / h(j);
+    let tangent = |j: usize| -> f32 {
+        if j == 0 {
+            return d(0);
+        }
+        if j == n - 1 {
+            return d(n - 2);
+        }
+        let (d0, d1) = (d(j - 1), d(j));
+        if d0 * d1 <= 0.0 {
+            return 0.0;
+        }
+        let (h0, h1) = (h(j - 1), h(j));
+        let (w1, w2) = (2.0 * h1 + h0, h1 + 2.0 * h0);
+        (w1 + w2) / (w1 / d0 + w2 / d1)
+    };
+    let (x0, y0) = knots[k];
+    let (x1, y1) = knots[k + 1];
+    let hk = x1 - x0;
+    // End tangents are clamped like the interior ones: never against the
+    // secant, never more than three times it.
+    let clamp = |m: f32, dk: f32| {
+        if m * dk <= 0.0 {
+            0.0
+        } else if m.abs() > 3.0 * dk.abs() {
+            3.0 * dk
+        } else {
+            m
+        }
+    };
+    let dk = d(k);
+    let (m0, m1) = (clamp(tangent(k), dk), clamp(tangent(k + 1), dk));
+    let t = (x - x0) / hk;
+    let (t2, t3) = (t * t, t * t * t);
+    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    let h10 = t3 - 2.0 * t2 + t;
+    let h01 = -2.0 * t3 + 3.0 * t2;
+    let h11 = t3 - t2;
+    h00 * y0 + h10 * hk * m0 + h01 * y1 + h11 * hk * m1
+}
+
+/// Consecutive half-hours of the 24 H hill: its x extent and a knot at each
+/// bucket's middle.
+struct HillRun {
+    x0: f32,
+    x1: f32,
+    knots: Vec<(f32, f32)>,
+}
+
+/// The 24 H hill: a smooth area through the half-hour samples in the storm
+/// blue, the stretch the device holds in slate. Consecutive half-hours make
+/// one run, a monotone cubic through each bucket's middle (flat at the
+/// run's ends); stretches the listing has no sizes for draw at the floor
+/// where a volume is; elsewhere nothing. Sampled every [`HILL_STEP_PX`]
+/// across the lane and at every edge (a run's, a held stretch's, a
+/// volume's), as slivers left to right.
 fn hill(i: &RowInputs<'_>, vols: &[Vol<'_>], to_x: &dyn Fn(f64) -> f32) -> Vec<HillPiece> {
     let floor = HILL_H * MIN_BAR_FRAC;
     let (left, right) = i.lane;
-    let bars: Vec<(f32, f32, f32)> = activity_bars(StripZoom::Day, i.window, i.sizes)
-        .into_iter()
-        .map(|b| (to_x(b.start), to_x(b.end), HILL_H * b.frac))
-        .filter(|(a, b, _)| *b >= left && *a <= right)
-        .collect();
+    if right <= left {
+        return Vec::new();
+    }
+    // Runs of consecutive half-hours.
+    let mut runs: Vec<HillRun> = Vec::new();
+    let mut last_start: Option<f64> = None;
+    for b in activity_bars(StripZoom::Day, i.window, i.sizes) {
+        let (a, e) = (to_x(b.start), to_x(b.end.max(b.start)));
+        let knot = ((a + e) / 2.0, HILL_H * b.frac);
+        let joined = last_start.is_some_and(|s| b.start - s <= 1.5 * DAY_BUCKET_SECS);
+        last_start = Some(b.start);
+        match runs.last_mut() {
+            Some(run) if joined => {
+                run.x1 = run.x1.max(e);
+                if knot.0 > run.knots.last().map_or(f32::MIN, |k| k.0) + 1e-3 {
+                    run.knots.push(knot);
+                }
+            }
+            _ => runs.push(HillRun {
+                x0: a,
+                x1: e,
+                knots: vec![knot],
+            }),
+        }
+    }
     // The held stretches, merged when closer than two points.
     let mut held: Vec<(f32, f32)> = Vec::new();
     for v in vols.iter().filter(|v| v.on_device) {
@@ -638,66 +769,47 @@ fn hill(i: &RowInputs<'_>, vols: &[Vol<'_>], to_x: &dyn Fn(f64) -> f32) -> Vec<H
             _ => held.push((a, b)),
         }
     }
+    let spans: Vec<(f32, f32)> = vols
+        .iter()
+        .map(|v| (to_x(v.start), to_x(v.shown_end(i.now))))
+        .collect();
+    // Where to sample: every step and every edge, inside the lane.
+    let mut xs: Vec<f32> = Vec::new();
+    let mut x = left;
+    while x < right {
+        xs.push(x);
+        x += HILL_STEP_PX;
+    }
+    xs.push(right);
+    for r in &runs {
+        xs.extend([r.x0, r.x1]);
+    }
+    for &(a, b) in held.iter().chain(&spans) {
+        xs.extend([a, b]);
+    }
+    xs.retain(|x| *x >= left && *x <= right);
+    xs.sort_by(f32::total_cmp);
+    xs.dedup_by(|b, a| *b - *a < 0.05);
     let mut out = Vec::new();
-    for &(a, b, h) in &bars {
-        let mut cuts = vec![a, b];
-        for &(ha, hb) in &held {
-            for x in [ha, hb] {
-                if x > a && x < b {
-                    cuts.push(x);
-                }
-            }
-        }
-        cuts.sort_by(f32::total_cmp);
-        for p in cuts.windows(2) {
-            if p[1] - p[0] <= 0.0 {
-                continue;
-            }
-            let mid = (p[0] + p[1]) / 2.0;
-            out.push(HillPiece {
-                x0: p[0],
-                x1: p[1],
-                height: h,
-                on_device: held.iter().any(|&(ha, hb)| mid >= ha && mid <= hb),
-            });
-        }
-    }
-    // Volumes with no step under them: at the floor.
-    let uncovered = |a: f32, b: f32| {
-        let mut pieces = vec![(a, b)];
-        for &(ba, bb, _) in &bars {
-            pieces = pieces
-                .into_iter()
-                .flat_map(|(pa, pb)| {
-                    let mut keep = Vec::new();
-                    if ba > pa {
-                        keep.push((pa, pb.min(ba)));
-                    }
-                    if bb < pb {
-                        keep.push((pa.max(bb), pb));
-                    }
-                    keep.into_iter().filter(|(x, y)| y - x > 0.5)
-                })
-                .collect();
-        }
-        pieces
-    };
-    for v in vols {
-        let (a, b) = (to_x(v.start), to_x(v.shown_end(i.now)));
-        if b < left || a > right {
+    for w in xs.windows(2) {
+        let (x0, x1) = (w[0], w[1]);
+        let mid = (x0 + x1) / 2.0;
+        let (h0, h1) = if let Some(run) = runs.iter().find(|r| mid >= r.x0 && mid <= r.x1) {
+            let at = |x: f32| monotone_cubic(&run.knots, x).max(floor);
+            (at(x0), at(x1))
+        } else if spans.iter().any(|&(a, b)| mid >= a && mid <= b) {
+            (floor, floor)
+        } else {
             continue;
-        }
-        for (x0, x1) in uncovered(a, b) {
-            out.push(HillPiece {
-                x0,
-                x1,
-                height: floor,
-                on_device: v.on_device,
-            });
-        }
+        };
+        out.push(HillPiece {
+            x0,
+            x1,
+            h0,
+            h1,
+            on_device: held.iter().any(|&(a, b)| mid >= a && mid <= b),
+        });
     }
-    // Slate over blue: the held pieces last.
-    out.sort_by_key(|p| p.on_device);
     out
 }
 
@@ -850,6 +962,13 @@ mod tests {
         assert_eq!(words, vec!["00:00", "00:07", "00:14", "live"]);
         assert!(row.labels[3].bright && !row.labels[0].bright);
         assert_eq!(row.labels[0].x, x(0.0) + 2.0);
+        // A block cut by the lane's left edge draws, unlabelled.
+        let mut i = inputs(StripZoom::Cuts, &cs, &sz, NOW, true);
+        i.window.start = 100.0;
+        let row = row_vm(&i);
+        assert!(row.blocks[0].x0 < i.lane.0);
+        let words: Vec<_> = row.labels.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(words, vec!["00:07", "00:14", "live"]);
         // Crowded, the selected one's label stays and the others give way.
         let crowd = |s: &str| 40.0 * s.len() as f32;
         let mut i = inputs(StripZoom::Cuts, &cs, &sz, 500.0, false);
@@ -918,6 +1037,77 @@ mod tests {
             ..Downloads::default()
         };
         assert_eq!(row_vm(&i).loading.unwrap().arc, Arc::Spinning);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_downloading_share_runs_from_downloading_to_decoding_by_bytes() {
+        let at = |received, total| Some(DownloadProgress { received, total });
+        assert_eq!(downloading_share(at(0, Some(100)), None), DOWNLOADING_SHARE);
+        assert_eq!(downloading_share(at(100, Some(100)), None), DECODING_SHARE);
+        let half = downloading_share(at(50, Some(100)), None);
+        assert!((half - (DOWNLOADING_SHARE + DECODING_SHARE) / 2.0).abs() < 1e-6);
+        // No response size: the listing's.
+        assert_eq!(downloading_share(at(25, None), Some(25)), DECODING_SHARE);
+        // No size anywhere, or no bytes yet: the stage.
+        assert_eq!(downloading_share(at(25, None), None), DOWNLOADING_SHARE);
+        assert_eq!(downloading_share(None, Some(100)), DOWNLOADING_SHARE);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_arc_follows_the_bytes_received() {
+        let cs = strip();
+        let span = [(420_i64, 840_i64)];
+        // The listing says 4 MB; the response has said nothing of its size.
+        let sz = ScanSizes {
+            scans: vec![ScanActivity {
+                start: 420.0,
+                end: 840.0,
+                bytes: 4_000_000,
+                level: 0.5,
+            }],
+            known_days: vec![0],
+        };
+        let mut last = 0.0;
+        for received in [0_u64, 1_000_000, 2_000_000, 4_000_000] {
+            let bytes = [(
+                425_i64,
+                DownloadProgress {
+                    received,
+                    total: None,
+                },
+            )];
+            let mut i = inputs(StripZoom::Cuts, &cs, &sz, 430.0, false);
+            i.downloads = Downloads {
+                downloading: &span,
+                bytes: &bytes,
+                ..Downloads::default()
+            };
+            let Arc::Share(share) = row_vm(&i).loading.unwrap().arc else {
+                panic!("a share while downloading");
+            };
+            assert!(share >= last, "the arc only advances");
+            last = share;
+        }
+        assert_eq!(last, DECODING_SHARE, "all of it: decoding next");
+        // Another download's bytes are not this one's.
+        let bytes = [(
+            900_i64,
+            DownloadProgress {
+                received: 4_000_000,
+                total: Some(4_000_000),
+            },
+        )];
+        let mut i = inputs(StripZoom::Cuts, &cs, &sz, 430.0, false);
+        i.downloads = Downloads {
+            downloading: &span,
+            bytes: &bytes,
+            ..Downloads::default()
+        };
+        assert_eq!(
+            row_vm(&i).loading.unwrap().arc,
+            Arc::Share(DOWNLOADING_SHARE),
+            "no bytes reported: the stage"
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1052,11 +1242,89 @@ mod tests {
             slate.iter().map(|p| p.x1).fold(f32::MIN, f32::max),
         );
         assert_eq!((a, b), (180.0, 264.0));
-        assert!(row.hill.iter().all(|p| p.height > 0.0));
+        assert!(row.hill.iter().all(|p| p.h0 > 0.0 && p.h1 > 0.0));
         assert_eq!(row.playhead_x, Some(200.0));
-        // Slate draws over the blue.
-        let first_slate = row.hill.iter().position(|p| p.on_device).unwrap();
-        assert!(row.hill[first_slate..].iter().all(|p| p.on_device));
+        // Slivers, left to right, touching and never overlapping.
+        for w in row.hill.windows(2) {
+            assert!(w[0].x1 <= w[1].x0 + 1e-4);
+        }
+        assert!(row.hill.iter().all(|p| p.x1 - p.x0 <= HILL_STEP_PX + 1e-4));
+    }
+
+    #[wasm_bindgen_test]
+    fn the_day_hill_is_a_smooth_curve_through_its_half_hours() {
+        let cs = Vec::new();
+        // A storm rising and falling over six half-hours.
+        let levels = [0.1_f32, 0.3, 0.9, 0.5, 0.2, 0.1];
+        let sz = ScanSizes {
+            scans: (0..36)
+                .map(|k| scan(k as f64 * 300.0, levels[k / 6]))
+                .collect(),
+            known_days: vec![0],
+        };
+        let mut i = inputs(StripZoom::Day, &cs, &sz, 10_000.0, false);
+        i.window = MiniWindow {
+            start: 0.0,
+            end: 10_800.0,
+        };
+        i.lane = (0.0, 360.0);
+        i.now = 20_000.0;
+        let row = row_vm(&i);
+        assert!(row.hill.len() >= 170, "dense: {}", row.hill.len());
+        // Continuous: each sliver starts where the last ended.
+        for w in row.hill.windows(2) {
+            assert!((w[0].x1 - w[1].x0).abs() < 1e-4);
+            assert!((w[0].h1 - w[1].h0).abs() < 1e-3, "{:?}", w);
+        }
+        // Never below the floor, never above the tallest sample.
+        let floor = HILL_H * MIN_BAR_FRAC;
+        for p in &row.hill {
+            for h in [p.h0, p.h1] {
+                assert!(h >= floor - 1e-4 && h <= HILL_H + 1e-4, "{h}");
+            }
+        }
+        // No step: neighbours differ by a little, not a bucket's jump.
+        let max_jump = row
+            .hill
+            .iter()
+            .map(|p| (p.h1 - p.h0).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(max_jump < 4.0, "{max_jump}");
+        // Peaks at the stormiest half-hour's middle (4_500 s, x = 150).
+        let peak = row
+            .hill
+            .iter()
+            .max_by(|a, b| a.h0.total_cmp(&b.h0))
+            .unwrap();
+        assert!((peak.x0 - 150.0).abs() <= HILL_STEP_PX, "{}", peak.x0);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_monotone_cubic_never_overshoots_its_knots() {
+        let knots = [
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (20.0, 10.0),
+            (30.0, 0.0),
+            (40.0, 5.0),
+        ];
+        for k in &knots {
+            assert!((monotone_cubic(&knots, k.0) - k.1).abs() < 1e-4);
+        }
+        let mut x = 0.0;
+        while x <= 40.0 {
+            let y = monotone_cubic(&knots, x);
+            let seg = knots
+                .windows(2)
+                .find(|w| x >= w[0].0 && x <= w[1].0)
+                .unwrap();
+            let (lo, hi) = (seg[0].1.min(seg[1].1), seg[0].1.max(seg[1].1));
+            assert!(y >= lo - 1e-4 && y <= hi + 1e-4, "{x}: {y}");
+            x += 0.25;
+        }
+        assert_eq!(monotone_cubic(&knots, -5.0), 0.0);
+        assert_eq!(monotone_cubic(&knots, 50.0), 5.0);
+        assert_eq!(monotone_cubic(&[(3.0, 2.0)], 9.0), 2.0);
     }
 
     #[wasm_bindgen_test]

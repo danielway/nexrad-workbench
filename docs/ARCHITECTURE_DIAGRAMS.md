@@ -776,7 +776,9 @@ Both paths share the same GPU textures (data / lut / azimuth) and the same GLSL
 snippet blocks, so 2D and 3D radar can't drift. Geographic layers (states,
 counties, cities) are **embedded shapefiles** loaded at compile time; storm-cell
 detection (`nexrad::detection`) runs connected-component analysis on reflectivity
-and is pure/testable (core), with only the box-drawing in the shell.
+and is pure/testable, as is the decision of when it runs (`core::storm_cells`);
+only running it and drawing the cells (an ellipse, a centroid marker and a max
+dBZ label each) are in the shell.
 
 ---
 

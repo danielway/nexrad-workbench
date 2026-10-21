@@ -18,7 +18,7 @@ pub(super) fn render_playback_controls(
     playback: &crate::subsystem::Playback,
     activity_vm: &crate::core::activity::ActivityVm,
 ) {
-    let vm = crate::core::transport::transport_vm(&playback.state);
+    let vm = crate::core::transport::transport_vm(&playback.state, state.viz_state.tilt_role());
     let now = state.frame_now.secs();
 
     // The playhead clock, in the playhead's white: click it, type or paste a
@@ -120,9 +120,16 @@ pub(super) fn render_playback_controls(
              data as the radar collected it",
         ),
     ] {
+        let disabled = (choice == PlaybackMode::Micro)
+            .then_some(vm.rays_disabled)
+            .flatten();
         let resp = ui
-            .add(egui::Button::selectable(vm.mode == choice, choice.label()))
-            .on_hover_text(hint);
+            .add_enabled(
+                disabled.is_none(),
+                egui::Button::selectable(vm.mode == choice, choice.label()),
+            )
+            .on_hover_text(hint)
+            .on_disabled_hover_text(disabled.unwrap_or_default());
         if resp.clicked() && vm.mode != choice {
             state.push_command(Intent::SetPlayMode(choice));
         }

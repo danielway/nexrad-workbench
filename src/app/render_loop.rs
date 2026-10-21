@@ -22,6 +22,11 @@ impl WorkbenchApp {
     /// blank `viz_state.displayed` and the active-scan sync moves the
     /// coordinator key, and the follow-up decision must see both.
     pub(crate) fn advance_playback(&mut self) {
+        // Rays stands down while the volume draws every tilt (and comes
+        // back when it stops).
+        self.playback
+            .state
+            .apply_tilt_role(self.state.viz_state.tilt_role().draws_all());
         let actions = reduce_advance_playback(
             AdvancePlaybackEnv {
                 live_active: self.live.mode_state.is_active(),
@@ -124,7 +129,7 @@ impl WorkbenchApp {
 
         if !self.state.effective_sweep_animation(
             &self.playback.state,
-            self.live.mode_state.is_active(),
+            self.live.canvas_follows_live(&self.playback.state),
             self.live.radar_model.collecting_elevation(),
         ) {
             self.state.viz_state.previous_displayed = None;
@@ -296,6 +301,7 @@ impl WorkbenchApp {
         self.state.viz_state.displayed = None;
         self.state.viz_state.previous_displayed = None;
         self.render.scrub_cache.last_active_scan_ts = None;
+        self.state.viz_state.storm_cells.clear();
     }
 
     /// Clear the on-canvas sweep when the selected (elevation, product) isn't
@@ -315,6 +321,7 @@ impl WorkbenchApp {
         // also keeps the prev slot from drifting until a new sweep lands.
         self.state.viz_state.displayed = None;
         self.state.viz_state.previous_displayed = None;
+        self.state.viz_state.storm_cells.clear();
         // Keep `last_render` set to the failed identity. A "no pre-computed
         // sweep" answer is permanent for that exact (scan, elev, product), so
         // the dedup must suppress the next frame's identical request — clearing

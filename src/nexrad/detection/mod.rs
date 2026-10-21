@@ -33,6 +33,11 @@ pub(crate) struct DetectionInput<'a> {
     pub data_offset: f32,
     pub radar_lat: f64,
     pub radar_lon: f64,
+    /// Angular width of one radial in degrees. The renderer knows the
+    /// sweep's real spacing; a partial live sweep holds only the radials
+    /// received so far, so `360 / azimuth_count` would overstate it. When
+    /// `None`, the median gap between the supplied azimuths is used.
+    pub azimuth_spacing_deg: Option<f32>,
 }
 
 /// Tuning knobs for the detector.
@@ -103,6 +108,8 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
             if !has_core {
                 return None;
             }
+            // The centroid weight is measured from the edge threshold (the
+            // lowest dBZ a member gate can have), not the core threshold.
             let cell = features::summarize(&pixels, &grid, input, edge_threshold);
             if cell.area_km2 < params.min_area_km2 {
                 None
@@ -172,6 +179,7 @@ mod coverage_tests {
             data_offset: 0.0,
             radar_lat: 35.0,
             radar_lon: -97.0,
+            azimuth_spacing_deg: None,
         }
     }
 
@@ -368,11 +376,52 @@ mod coverage_tests {
             data_offset: 66.0,
             radar_lat: 35.0,
             radar_lon: -97.0,
+            azimuth_spacing_deg: None,
         };
         let grid = build_physical_grid(&input, 30.0);
         assert!((grid[0] - 40.0).abs() < 1e-3);
         // (100 - 66) / 2 = 17 dBZ, below the 30 edge → masked.
         assert!(grid[1].is_nan());
+    }
+
+    /// A 4-radial × 4-gate core starting at azimuth 10°, in a sweep of
+    /// `n_radials` radials spaced 0.5° apart from 0°.
+    fn half_degree_sweep(n_radials: usize) -> (Vec<f32>, Vec<f32>, usize) {
+        let gate_count = 20;
+        let az: Vec<f32> = (0..n_radials).map(|i| i as f32 * 0.5).collect();
+        let mut gates = vec![0.0_f32; n_radials * gate_count];
+        for a in 20..24 {
+            for g in 10..14 {
+                gates[a * gate_count + g] = 45.0;
+            }
+        }
+        (az, gates, gate_count)
+    }
+
+    #[wasm_bindgen_test]
+    fn quarter_sweep_area_matches_full_sweep() {
+        // A live partial holding a quarter of a 0.5° sweep must give each
+        // gate the same 0.5° width as the full sweep, not 360/180 = 2°.
+        let (full_az, full_gates, gc) = half_degree_sweep(720);
+        let (q_az, q_gates, _) = half_degree_sweep(180);
+
+        let mut full = mk_input(&full_az, &full_gates, gc);
+        full.azimuth_spacing_deg = Some(0.5);
+        let full_area = detect_cells(&full, &permissive())[0].area_km2;
+
+        // Spacing supplied by the renderer.
+        let mut quarter = mk_input(&q_az, &q_gates, gc);
+        quarter.azimuth_spacing_deg = Some(0.5);
+        let q_area = detect_cells(&quarter, &permissive())[0].area_km2;
+        assert!((q_area - full_area).abs() < 1e-4, "{q_area} vs {full_area}");
+
+        // Spacing not supplied: the median gap of the azimuths is used.
+        let quarter = mk_input(&q_az, &q_gates, gc);
+        let q_area = detect_cells(&quarter, &permissive())[0].area_km2;
+        assert!((q_area - full_area).abs() < 1e-4, "{q_area} vs {full_area}");
+        let full = mk_input(&full_az, &full_gates, gc);
+        let f_area = detect_cells(&full, &permissive())[0].area_km2;
+        assert!((f_area - full_area).abs() < 1e-4, "{f_area} vs {full_area}");
     }
 
     #[wasm_bindgen_test]
