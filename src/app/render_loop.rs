@@ -347,7 +347,6 @@ impl WorkbenchApp {
     /// the ingest-driven volume refresh can never disagree about what "3D
     /// mode" is.
     pub(crate) fn volume_3d_active(&self) -> bool {
-        self.state.viz_state.volume_3d_enabled
-            && self.state.viz_state.view_mode() == crate::geo::ViewMode::Globe3D
+        self.state.viz_state.volume_3d_active()
     }
 }
