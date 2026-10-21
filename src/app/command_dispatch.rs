@@ -221,6 +221,17 @@ pub(crate) fn dispatch_state_only(
             }
         }
         Intent::SetGeoLayer(layer, on) => layer.set(&mut s.state.layer_state.geo, on),
+        Intent::StormCells(intent) => {
+            let viz = &mut s.state.viz_state;
+            crate::core::storm_cell_view::reduce(
+                crate::core::storm_cell_view::StormCellControls {
+                    visible: &mut viz.storm_cells_visible,
+                    threshold_dbz: &mut viz.storm_cell_threshold_dbz,
+                    pointer: &mut viz.storm_cell_pointer,
+                },
+                intent,
+            );
+        }
 
         // ---- Top bar ------------------------------------------------
         Intent::TopBar(intent) => s.top_bar(intent),
@@ -740,6 +751,7 @@ impl WorkbenchApp {
             | Intent::PlaceDistancePoint { .. }
             | Intent::ToggleMapTool(_)
             | Intent::SetGeoLayer(..)
+            | Intent::StormCells(_)
             | Intent::TopBar(_)
             | Intent::ClearCache
             | Intent::ResetSettings
@@ -1159,6 +1171,9 @@ mod dispatch_tests {
             },
             Intent::ToggleMapTool(crate::core::panels::MapTool::Probe),
             Intent::SetGeoLayer(GeoLayer::Cities, false),
+            Intent::StormCells(crate::core::storm_cell_view::StormCellIntent::SetVisible(
+                true,
+            )),
             Intent::TopBar(TopBarIntent::ToggleTimeZone),
             Intent::ClearCache,
             Intent::ResetSettings,
@@ -1189,7 +1204,7 @@ mod dispatch_tests {
             },
             Intent::InspectScan(1_000.0),
         ];
-        assert_eq!(state_only.len(), 42);
+        assert_eq!(state_only.len(), 43);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -1915,6 +1930,27 @@ mod dispatch_tests {
         assert!(!GeoLayer::Cities.get(&f.state.layer_state.geo));
         f.apply(Intent::SetGeoLayer(GeoLayer::Cities, true));
         assert!(GeoLayer::Cities.get(&f.state.layer_state.geo));
+    }
+
+    /// The storm cell intents reach the viz state: the checkbox, the
+    /// clamped slider, and the pointer, which turning the overlay off drops.
+    #[wasm_bindgen_test]
+    fn storm_cell_intents_write_the_viz_state() {
+        use crate::core::storm_cell_view::StormCellIntent as S;
+        let mut f = Fixture::new();
+        f.apply(Intent::StormCells(S::SetVisible(true)));
+        f.apply(Intent::StormCells(S::SetThreshold(99.0)));
+        f.apply(Intent::StormCells(S::Hover(Some((41.0, -93.0)))));
+        let viz = &f.state.viz_state;
+        assert!(viz.storm_cells_visible);
+        assert_eq!(
+            viz.storm_cell_threshold_dbz,
+            crate::core::storm_cells::THRESHOLD_MAX_DBZ
+        );
+        assert_eq!(viz.storm_cell_pointer.hover, Some((41.0, -93.0)));
+        f.apply(Intent::StormCells(S::SetVisible(false)));
+        assert!(!f.state.viz_state.storm_cells_visible);
+        assert_eq!(f.state.viz_state.storm_cell_pointer.hover, None);
     }
 
     /// Choosing a mode sticks through any zoom, and the speed always stays
