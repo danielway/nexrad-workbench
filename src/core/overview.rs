@@ -159,8 +159,14 @@ impl Overview {
     /// Frame a day (a click on a day, week, month or quarter bar): the
     /// default 48 h centered on it. The caller shows the day on the strip.
     pub(crate) fn go_to_day(&mut self, day_start: f64, now: f64, era_start: f64) {
+        self.frame_at(day_start + DAY_SECS / 2.0, now, era_start);
+    }
+
+    /// The default 48 h centered on `ts` (a day or a time picked in the
+    /// calendar).
+    pub(crate) fn frame_at(&mut self, ts: f64, now: f64, era_start: f64) {
         self.span = OVERVIEW_DEFAULT_SPAN_SECS;
-        self.center_on(day_start + DAY_SECS / 2.0, now, era_start);
+        self.center_on(ts, now, era_start);
     }
 
     /// Center the overview on `ts` (the edge chip that brings an

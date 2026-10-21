@@ -263,6 +263,7 @@ pub(crate) fn dispatch_state_only(
             }
         }
         intent @ Intent::GoToDay(day) => s.go_to_day(day, &intent),
+        Intent::GoToTime(ts) => s.go_to_time(ts),
 
         // ---- The phone strip's long-press sheet -------------------
         Intent::OpenPressSheet(press) => {
@@ -755,6 +756,7 @@ impl WorkbenchApp {
             | Intent::OpenGoToDay
             | Intent::Calendar(_)
             | Intent::GoToDay(_)
+            | Intent::GoToTime(_)
             | Intent::OpenPressSheet(_)
             | Intent::PressSheetRow(_)
             | Intent::OpenChipSheet
@@ -1176,6 +1178,7 @@ mod dispatch_tests {
                 chrono::NaiveDate::from_ymd_opt(2024, 5, 6).unwrap(),
                 &crate::core::calendar::FixedZone(0),
             )),
+            Intent::GoToTime(1_000.0),
             Intent::OpenPressSheet(crate::core::phone_range::PressSheet {
                 ts: 1_000.0,
                 scan_start: None,
@@ -1191,7 +1194,7 @@ mod dispatch_tests {
             },
             Intent::InspectScan(1_000.0),
         ];
-        assert_eq!(state_only.len(), 41);
+        assert_eq!(state_only.len(), 42);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -2152,6 +2155,49 @@ mod dispatch_tests {
             gesture: crate::core::transport::SeekGesture::Press,
         });
         assert_eq!(f.chrome.go_to_day_landing, None, "the user took over");
+    }
+
+    /// On the desktop the picked day fills the strip and the overview frames
+    /// it, as a click on an overview bar does.
+    #[wasm_bindgen_test]
+    fn go_to_day_shows_the_day_on_the_desktop_strip() {
+        use crate::core::calendar::{CalendarDay, FixedZone};
+        let mut f = Fixture::new();
+        f.state.frame_now = FrameNow(1_792_238_400.0);
+        f.state.viz_state.site_id = "KTLX".to_string();
+        f.playback.state.timeline_width_px = 1200.0;
+        f.apply(Intent::OpenGoToDay);
+        let day = CalendarDay::of(
+            chrono::NaiveDate::from_ymd_opt(2024, 5, 6).unwrap(),
+            &FixedZone(-5 * 3600),
+        );
+        f.apply(Intent::GoToDay(day));
+        let ps = &f.playback.state;
+        assert!((ps.timeline_view_start - day.start).abs() < 1e-6);
+        assert!((ps.view_width_secs() - 86_400.0).abs() < 1.0);
+        assert!(ps.overview.start <= day.start && ps.overview.end() >= day.end);
+    }
+
+    /// A time typed in the calendar: the playhead pauses on it, the overview
+    /// frames it at 48 h, the calendar closes, and a pending landing is
+    /// dropped.
+    #[wasm_bindgen_test]
+    fn go_to_time_pauses_on_the_time_and_frames_the_overview() {
+        let mut f = Fixture::new();
+        f.state.frame_now = FrameNow(1_792_238_400.0);
+        f.state.viz_state.site_id = "KTLX".to_string();
+        f.playback.state.timeline_width_px = 1200.0;
+        f.playback.state.playing = true;
+        f.apply(Intent::OpenGoToDay);
+        let ts = 1_728_516_600.0; // 2024-10-09 23:30 UTC
+        f.apply(Intent::GoToTime(ts));
+        let ps = &f.playback.state;
+        assert_eq!(ps.playback_position(), ts);
+        assert!(!ps.playing);
+        let start = ps.timeline_view_start;
+        assert!(start <= ts && ts <= start + ps.view_width_secs());
+        assert!((ps.overview.start + ps.overview.span / 2.0 - ts).abs() < 1.0);
+        assert_eq!(f.chrome.go_to_day, None);
     }
 
     /// A day picked while streaming stops the stream: the archive day offers

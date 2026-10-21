@@ -757,6 +757,16 @@ the playhead steps onto its first frame so the map shows it and its
 column fills.
 The sheet's month is not persisted or in the link.
 
+**The calendar on the desktop.** The desktop has the overview lane, but
+reaching a day years back by zooming it is slow, so the same calendar opens
+as a popover above the playhead clock: from the calendar button beside the
+clock, from **G**, or from the chip menu's "Go to a day… G". A picked day
+lands as on the phone (stream stopped, paused on the stormiest volume) and
+the strip shows that whole day with the overview at 48 h around it. Under
+the grid, "Or type a time" is the clock's own field: a date and time typed
+there (`2024-10-09 23:30Z`, `Oct 9 2024 7:30 PM`) lands exactly there, paused,
+with the stream stopped and the overview framed around it.
+
 **The chip sheet.** On the phone a tap on the selection chip opens a bottom
 sheet (the calendar's component, on the Esc stack) titled "Playing" in place
 of the desktop's chip menu, with the verbs first: **Live** · the newest frame
