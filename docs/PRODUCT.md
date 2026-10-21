@@ -661,9 +661,40 @@ Interactive measurement and analysis affordances on the 2D canvas:
   and the radial's collection timestamp. (Named "Data probe" to free "inspector"
   for the scan inspector in §4.)
 - **Distance Measure** — click two points to read the great-circle distance.
-- **Storm Cells** — detect connected components above a configurable reflectivity
-  threshold (reflectivity only, 2D only, once per displayed sweep); each cell
-  renders as an outline ellipse with a centroid marker and its max dBZ label.
+- **Storm Cells** (Layers › Analysis; reflectivity only, 2D only). The
+  detector segments the sweep at nested thresholds 5 dB apart and reports
+  *cells* (the finest distinct storms) and *groups* (one envelope holding two
+  or more cells: a supercell line, an MCS, a hurricane's shield).
+  - **Footprint.** Each cell draws its actual boundary, the outline at the
+    level where it became distinct, in one light stroke over a thin dark halo
+    (1.6 px; 2 px on the phone) so it reads on every part of the palette.
+    Intensity is never the stroke's color. A group draws a fainter dashed
+    outline around its envelope.
+  - **Chip.** The cell's peak dBZ sits in a small mono chip at the outline's
+    top-right (11 px; 12 px on the phone). Chips are placed strongest first
+    and skipped when they would crowd one already placed; an outline smaller
+    than about 14 px on screen carries none. There is no track letter or
+    trend mark yet: a cell's id lasts one volume until tracking lands.
+  - **Card.** On the desktop, hovering inside a footprint opens a card beside
+    the pointer: peak, area, mean dBZ, the outline's level, group membership
+    ("1 of 5 in this group") and the bearing and range from the radar. On the
+    phone a tap inside a cell selects it (its outline thickens) and a compact
+    card sits above the bottom of the map; a tap anywhere else closes it.
+    When footprints nest, the strongest cell wins. With the data probe on,
+    the probe names the cell instead (`Cell 62 dBZ · 48 km²`) and the hover
+    card stays away.
+  - **Rays and live.** Rays shows the previous sweep ahead of the sweep line
+    and the current one behind it; cells belong to the current sweep, so a
+    cell draws only once its whole footprint is behind the line and never
+    sits on another sweep's pixels. Cells on a live sweep that is still
+    arriving are provisional: muted outline, hollow chip, and the card says
+    so.
+  - **Slider.** "Min dBZ" (20–60, default 35) is the envelope: the weakest
+    echo that can belong to a cell. A cell needs a core 10 dB above it. The
+    slider is disabled off reflectivity. A "Tracks" checkbox is shown
+    disabled until tracking lands.
+  - **3D** draws no cells, card or probe line.
+  - The link carries the overlay as `cells=<dbz>` (§13.4).
 
 ### 13.3 Responsive behavior
 
@@ -831,6 +862,7 @@ decision are `core::link`; preferences are `core::prefs`.
 | Tilt | `tilt` | An angle (`0.5`) or `latest` |
 | Map center | `lat`, `lon` | |
 | 2D/3D, camera, map and timeline zoom, volume rendering and cutoff | `v` | Base64 JSON blob; its old `rt` flag is read as `sel=now` |
+| Storm cells | `cells` | Present means on; the value is the envelope threshold in dBZ (`cells=35`). Absent leaves the preference |
 | Developer flag | `dev=true` | Wins for that session without being saved |
 
 A link with a pinned selection opens pinned; one with a time (or a fixed
