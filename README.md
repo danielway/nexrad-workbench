@@ -32,8 +32,8 @@ no account, no server: everything runs on your own device.
   counties and cities. Probe any point for its value, or measure a distance.
 - **Share exactly what you see.** The page URL carries the site, time, product,
   tilt and view, so a copied link opens the same picture for someone else.
-- **Use it on your phone.** It works on phones too, and you can add it to
-  your home screen.
+- **Use it on your phone.** It works on phones too, and you can
+  [install it](#install-it-as-an-app) to your home screen.
 
 ## A closer look
 
@@ -63,6 +63,21 @@ no account, no server: everything runs on your own device.
 ![Choosing a radar site from the site picker](docs/media/site-picker.jpg)
 
 <sub>Search for a radar by ID, city, state or zip, use your location, or pick one on the map.</sub>
+
+## Install it as an app
+
+You can install NEXRAD Workbench so it opens in its own window, without the
+browser's address bar, from an icon on your home screen, dock or start menu.
+
+| On | Do this |
+|----|---------|
+| iPhone or iPad | Open the site in Safari, tap the Share button, then **Add to Home Screen** |
+| Android | Open the site in Chrome, open the ⋮ menu, then **Add to home screen** or **Install app** |
+| Mac | In Safari, choose **File › Add to Dock**. In Chrome or Edge, use the install icon at the right of the address bar |
+| Windows, Linux, ChromeOS | In Chrome or Edge, use the install icon at the right of the address bar, or find **Install** in the browser menu |
+
+The installed app is the same site and updates itself when a new version is
+published. To remove it, delete it like any other app.
 
 ## Getting around
 

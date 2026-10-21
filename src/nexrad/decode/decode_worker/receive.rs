@@ -103,6 +103,11 @@ pub(super) fn setup_onmessage(
                     ctx_c.request_repaint();
                 }
             }
+            ResponseType::LiveSuperseded => {
+                if let Some(id) = require_id(&header, kind_str) {
+                    handle_live_superseded_message(id, &data, &pending_render_live_c);
+                }
+            }
             ResponseType::VolumeDecoded => {
                 if let Some(id) = require_id(&header, kind_str) {
                     handle_volume_decoded_message(id, &data, &pending_volume_c, &results_c);
@@ -468,6 +473,28 @@ fn handle_live_decoded_message(
             gate_values,
             radial_times,
         )));
+}
+
+/// A `render_live` whose elevation the worker stored before the request ran
+/// (a chunk burst ingested the completing chunk first). Not an error and
+/// nothing to draw: the completing chunk's acknowledgement already asked for
+/// the stored sweep. Retire the pending entry and log; no outcome.
+fn handle_live_superseded_message(
+    id: RequestId,
+    data: &JsValue,
+    pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+) {
+    let Some(context) = take_pending_context(id, "live_superseded", pending) else {
+        return;
+    };
+    let current = js_sys::Reflect::get(data, &"currentElevation".into())
+        .ok()
+        .and_then(|v| v.as_f64());
+    log::debug!(
+        "Worker live_superseded: elev={} already stored (accumulator current={:?}), nothing to draw",
+        context.elevation_number,
+        current,
+    );
 }
 
 fn handle_volume_decoded_message(

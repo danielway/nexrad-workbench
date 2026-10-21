@@ -612,8 +612,18 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         // Current in-progress elevation info
         let current_elevation = with_chunk_accum(|accum| accum.and_then(|a| a.current_elevation));
+        // Count only the current elevation's radials: after its completing
+        // chunk flushes them they are gone, and a backfilled earlier
+        // elevation may share memory with a later partial one.
         let current_elevation_radials = with_chunk_accum(|accum| {
-            accum.and_then(|a| a.current_elevation.map(|_| a.current_radials.len() as u32))
+            accum.and_then(|a| {
+                a.current_elevation.map(|elev| {
+                    a.current_radials
+                        .iter()
+                        .filter(|r| r.elevation_number() == elev)
+                        .count() as u32
+                })
+            })
         });
 
         // Keep incomplete End state retryable. A following Start replaces it;
