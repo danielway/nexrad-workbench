@@ -13,7 +13,12 @@
 //! 2. Label 8-connected components (with azimuth wrap) at a ladder of
 //!    levels from the user's envelope threshold up in 5 dB steps, build the
 //!    containment tree and resolve it into cells and groups (`segment`).
-//! 3. Summarize each cell's and group's footprint (`features`) and trace
+//! 3. Share each envelope among its cells (`watershed`): every cell's core
+//!    (its component at the level where it became distinct) floods outward
+//!    over the envelope, strongest echo first, so a cell's footprint is its
+//!    storm's share of the envelope and the cells of a group tile it. A lone
+//!    cell's footprint is its whole envelope.
+//! 4. Summarize each cell's and group's footprint (`features`) and trace
 //!    its outline (`outline`).
 //!
 //! The envelope threshold (the user's slider, default 35 dBZ) is the weakest
@@ -27,6 +32,7 @@ mod median;
 mod model;
 mod outline;
 mod segment;
+mod watershed;
 
 pub(crate) use model::{DetectionSource, StormCell, StormCellsResult, StormGroup};
 
@@ -155,6 +161,7 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
         params,
     );
     let half_spacing = components::median_spacing_deg(input.azimuths, input.azimuth_count) * 0.5;
+    let mut shed = watershed::Watershed::new(&filtered, &az_adjacent, input.gate_count);
 
     // Cells, tagged with the index of their envelope while it is a group.
     let mut cells: Vec<(StormCell, Option<usize>)> = Vec::new();
@@ -177,17 +184,25 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
             });
             groups.len() - 1
         });
-        for &c in members {
-            let comp = &seg.components[c];
-            let level = seg.levels[comp.level_idx];
-            // A cell's gates all sit at or above its own level, so that is
-            // its edge threshold for the centroid weight.
-            let fp = features::summarize(&comp.pixels, &filtered, input, level);
+        let cores: Vec<&[components::Pixel]> = members
+            .iter()
+            .map(|&c| seg.components[c].pixels.as_slice())
+            .collect();
+        let footprints = shed.partition(
+            &seg.components[*envelope].pixels,
+            &cores,
+            params.threshold_dbz,
+        );
+        for (&c, pixels) in members.iter().zip(&footprints) {
+            let level = seg.levels[seg.components[c].level_idx];
+            // Weights are measured from the envelope level, the weakest
+            // value a footprint gate can have, as for groups.
+            let fp = features::summarize(pixels, &filtered, input, params.threshold_dbz);
             let cell = StormCell {
                 id: 0,
                 group_id: None,
                 level_dbz: level,
-                peak_dbz: comp.peak,
+                peak_dbz: fp.max_dbz,
                 mean_dbz: fp.mean_dbz,
                 area_km2: fp.area_km2,
                 gate_count: fp.gate_count,
@@ -198,7 +213,7 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
                 range_from_radar_km: fp.range_from_radar_km,
                 orientation_deg: fp.orientation_deg,
                 elongation: fp.elongation,
-                outline: outline::outline(&comp.pixels, input, half_spacing),
+                outline: outline::outline(pixels, input, half_spacing),
             };
             cells.push((cell, group_idx));
         }
@@ -407,6 +422,10 @@ mod coverage_tests {
         // The lone cell keeps its envelope; grouped cells their split level.
         assert_eq!(r.cells[2].level_dbz, 35.0);
         assert!(r.cells[0].level_dbz > 35.0);
+        // The two grouped cells tile their envelope (12 gates on each of 3
+        // radials); the lone cell has its 9.
+        assert_eq!(r.cells[0].gate_count + r.cells[1].gate_count, 36);
+        assert_eq!(r.cells[2].gate_count, 9);
         assert_eq!(r.source.params, permissive());
     }
 

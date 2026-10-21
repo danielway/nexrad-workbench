@@ -112,6 +112,17 @@ fn km(a: (f64, f64), b: (f64, f64)) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
+/// Longest edge of a closed (lat, lon) ring, in km.
+fn longest_edge_km(ring: &[(f64, f64)]) -> f64 {
+    ring.windows(2).map(|w| km(w[0], w[1])).fold(0.0, f64::max)
+}
+
+/// Share of its group's envelope that a grouped cell's footprint covers.
+fn group_share(r: &StormCellsResult, c: &StormCell) -> f32 {
+    c.group_id
+        .map_or(1.0, |g| c.area_km2 / r.groups[g as usize].area_km2)
+}
+
 /// Structural invariants every result must hold.
 fn check_invariants(r: &StormCellsResult) {
     for (i, c) in r.cells.iter().enumerate() {
@@ -122,6 +133,9 @@ fn check_invariants(r: &StormCellsResult) {
         assert!(c.outline.len() >= 5, "cell {i} outline {:?}", c.outline);
         assert!(c.outline.len() <= super::model::MAX_OUTLINE_VERTICES + 1);
         assert_eq!(c.outline.first(), c.outline.last());
+        // Simplification never cuts a long chord across the footprint
+        // (10 km in the outline's projection; this one differs slightly).
+        assert!(longest_edge_km(&c.outline) < 10.5, "cell {i}");
         assert!(c.peak_dbz >= c.level_dbz);
         if let Some(g) = c.group_id {
             assert!(r.groups[g as usize].cell_ids.contains(&c.id));
@@ -131,9 +145,17 @@ fn check_invariants(r: &StormCellsResult) {
         assert_eq!(g.id as usize, i);
         assert!(g.cell_ids.len() >= 2);
         assert!(g.outline.len() >= 5 && g.outline.len() <= super::model::MAX_OUTLINE_VERTICES + 1);
+        assert!(longest_edge_km(&g.outline) < 10.5, "group {i}");
         for &c in &g.cell_ids {
             assert_eq!(r.cells[c as usize].group_id, Some(g.id));
         }
+        // The cells' footprints tile their envelope.
+        let sum: f32 = g
+            .cell_ids
+            .iter()
+            .map(|&c| r.cells[c as usize].area_km2)
+            .sum();
+        assert!((sum - g.area_km2).abs() <= 1e-3 * g.area_km2, "group {i}");
     }
 }
 
@@ -154,11 +176,14 @@ fn greenfield_line_resolves_into_its_storms_inside_one_group() {
 
     // At one 35 dBZ threshold this line was a single 270 km cell. Now it is
     // its storms: 5-8 cells (with a small extra core between Audubon and
-    // Cass), four of them reaching 55 dBZ after the median filter.
+    // Cass), four of them reaching 55 dBZ after the median filter. Each
+    // holds its own stretch of the line's envelope, none the whole line:
+    // the largest (Cass/Adair) about a fifth of it.
     assert!((5..=8).contains(&line.len()), "{line:#?}");
     assert!(line.iter().filter(|c| c.peak_dbz >= 55.0).count() >= 4);
     assert!(
-        line.iter().all(|c| c.area_km2 < 600.0),
+        line.iter()
+            .all(|c| c.area_km2 < 1500.0 && group_share(&r, c) < 0.25),
         "no line-sized cell"
     );
 
@@ -218,43 +243,43 @@ fn greenfield_snapshot() {
 }
 
 const GREENFIELD_SNAPSHOT: &str = "
-    0 g1 L45 peak 58.5 area 439 at 39.35,-94.71
-    1 g0 L55 peak 58.5 area 17 at 42.32,-94.67
-    2 g0 L50 peak 58.0 area 464 at 41.27,-94.73
-    3 g2 L45 peak 58.0 area 48 at 40.50,-94.67
-    4 g0 L55 peak 58.0 area 23 at 42.01,-94.82
+    0 g1 L45 peak 58.5 area 845 at 39.35,-94.70
+    1 g0 L55 peak 58.5 area 629 at 42.34,-94.65
+    2 g0 L50 peak 58.0 area 1297 at 41.27,-94.72
+    3 g0 L55 peak 58.0 area 1235 at 41.98,-94.80
+    4 g2 L45 peak 58.0 area 123 at 40.50,-94.67
     5 g- L35 peak 57.5 area 376 at 42.42,-91.01
     6 g- L35 peak 56.0 area 491 at 43.60,-94.75
-    7 g- L35 peak 55.5 area 208 at 43.02,-94.26
-    8 g0 L50 peak 55.5 area 121 at 41.64,-94.89
-    9 g0 L50 peak 55.0 area 15 at 43.24,-94.31
-    10 g0 L40 peak 54.0 area 217 at 42.96,-94.66
-    11 g0 L45 peak 53.5 area 174 at 42.67,-94.70
-    12 g0 L45 peak 53.5 area 80 at 43.38,-94.88
-    13 g0 L40 peak 53.0 area 135 at 43.11,-94.66
-    14 g0 L45 peak 53.0 area 76 at 40.87,-94.71
-    15 g3 L50 peak 53.0 area 41 at 39.97,-94.66
-    16 g3 L50 peak 53.0 area 20 at 40.02,-94.62
-    17 g0 L50 peak 53.0 area 18 at 43.28,-94.51
-    18 g0 L50 peak 53.0 area 11 at 41.51,-94.82
+    7 g0 L50 peak 55.5 area 583 at 41.61,-94.90
+    8 g- L35 peak 55.5 area 208 at 43.02,-94.26
+    9 g0 L50 peak 55.0 area 394 at 43.21,-94.39
+    10 g0 L40 peak 54.0 area 351 at 42.96,-94.67
+    11 g0 L45 peak 53.5 area 474 at 42.65,-94.70
+    12 g0 L45 peak 53.5 area 278 at 43.38,-94.88
+    13 g3 L50 peak 53.0 area 739 at 39.88,-94.63
+    14 g3 L50 peak 53.0 area 367 at 40.06,-94.61
+    15 g0 L40 peak 53.0 area 282 at 43.12,-94.67
+    16 g0 L50 peak 53.0 area 242 at 41.55,-94.77
+    17 g0 L50 peak 53.0 area 241 at 43.28,-94.58
+    18 g0 L45 peak 53.0 area 193 at 40.87,-94.72
     19 g- L35 peak 50.5 area 228 at 43.92,-92.91
     20 g- L35 peak 50.5 area 119 at 42.85,-94.12
-    21 g3 L40 peak 50.0 area 164 at 39.67,-94.69
-    22 g- L35 peak 49.5 area 24 at 42.64,-94.40
-    23 g2 L45 peak 49.5 area 15 at 40.55,-94.63
-    24 g1 L45 peak 48.8 area 18 at 39.19,-94.82
-    25 g0 L45 peak 48.5 area 24 at 43.34,-94.74
-    26 g4 L40 peak 48.0 area 273 at 43.85,-94.29
+    21 g3 L40 peak 50.0 area 302 at 39.66,-94.68
+    22 g2 L45 peak 49.5 area 67 at 40.55,-94.63
+    23 g- L35 peak 49.5 area 24 at 42.64,-94.40
+    24 g1 L45 peak 48.8 area 105 at 39.19,-94.80
+    25 g0 L45 peak 48.5 area 126 at 43.33,-94.75
+    26 g4 L40 peak 48.0 area 687 at 43.85,-94.31
     27 g- L35 peak 48.0 area 112 at 43.36,-94.11
     28 g- L35 peak 47.0 area 248 at 43.19,-95.18
     29 g- L35 peak 46.5 area 120 at 43.73,-92.96
     30 g- L35 peak 46.0 area 73 at 43.49,-94.28
-    31 g4 L40 peak 45.0 area 105 at 44.02,-93.76
-    32 g4 L40 peak 45.0 area 72 at 44.17,-93.35
-    group 0 peak 58.5 area 6325 cells [1, 2, 4, 8, 9, 10, 11, 12, 13, 14, 17, 18, 25]
+    31 g4 L40 peak 45.0 area 287 at 44.02,-93.80
+    32 g4 L40 peak 45.0 area 193 at 44.16,-93.39
+    group 0 peak 58.5 area 6325 cells [1, 2, 3, 7, 9, 10, 11, 12, 15, 16, 17, 18, 25]
     group 1 peak 58.5 area 949 cells [0, 24]
-    group 2 peak 58.0 area 190 cells [3, 23]
-    group 3 peak 53.0 area 1407 cells [15, 16, 21]
+    group 2 peak 58.0 area 190 cells [4, 22]
+    group 3 peak 53.0 area 1407 cells [13, 14, 21]
     group 4 peak 48.0 area 1168 cells [26, 31, 32]
 ";
 
@@ -284,12 +309,19 @@ fn mcs_stratiform_maxima_are_not_cells() {
 fn mcs_leading_edge_is_a_group_of_cores() {
     let (r, _) = detect(MCS, 35.0);
     let edge: Vec<&StormCell> = r.cells.iter().filter(|c| inside(c, LEADING_EDGE)).collect();
-    // Not one 250 km ellipse over Fort Worth: several cores, one group.
+    // Not one 250 km ellipse over Fort Worth: several cores, one group,
+    // none holding most of it. The strongest core's footprint includes the
+    // stratiform rain behind it (no cell of its own), so it is big, but
+    // still under half the group.
     assert!(
         edge.iter().filter(|c| c.peak_dbz >= 55.0).count() >= 3,
         "{edge:#?}"
     );
-    assert!(edge.iter().all(|c| c.area_km2 < 500.0), "{edge:#?}");
+    assert!(
+        edge.iter()
+            .all(|c| c.area_km2 < 4000.0 && group_share(&r, c) < 0.5),
+        "{edge:#?}"
+    );
     let group = edge[0].group_id.expect("edge cells are grouped");
     assert!(edge.iter().all(|c| c.group_id == Some(group)));
 }
@@ -301,14 +333,24 @@ fn milton_shield_is_groups_of_bands_not_one_cell() {
     let (r, radar) = detect(MILTON, 35.0);
     check_invariants(&r);
     // The shield around Tampa Bay is carried by groups with many cells each,
-    // and no cell near the radar is shield-sized (the study's 330 km cell).
+    // and no cell near the radar is shield-sized (the study's 330 km cell):
+    // each band holds its share of a 13-15 000 km² envelope, at most about
+    // a third of it.
     let near: Vec<&StormCell> = r
         .cells
         .iter()
         .filter(|c| km((c.lat, c.lon), radar) < 120.0)
         .collect();
     assert!(near.len() >= 10, "{}", near.len());
-    assert!(near.iter().all(|c| c.area_km2 < 1500.0), "{near:#?}");
+    assert!(near.iter().all(|c| c.area_km2 < 5000.0), "{near:#?}");
+    assert!(
+        near.iter()
+            .filter(|c| c
+                .group_id
+                .is_some_and(|g| r.groups[g as usize].area_km2 > 5000.0))
+            .all(|c| group_share(&r, c) < 0.4),
+        "{near:#?}"
+    );
     assert!(near.iter().filter(|c| c.group_id.is_some()).count() >= near.len() - 1);
     let big_groups = r
         .groups
