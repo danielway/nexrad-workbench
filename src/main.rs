@@ -650,6 +650,7 @@ impl WorkbenchApp {
                 session_requests: stats.session_request_count,
                 session_bytes: stats.session_transferred_bytes,
                 sw_aggregate: &self.state.network_aggregate,
+                fps: stats.avg_fps,
                 recent_requests: &self.state.recent_network_requests,
                 cache_size_bytes: stats.cache_size_bytes,
                 stream: self.live.session.stream,
@@ -660,7 +661,6 @@ impl WorkbenchApp {
                     .state
                     .dev_mode
                     .then_some(core::activity::ActivityDevInputs {
-                        fps: stats.avg_fps,
                         cross_origin_isolated: self.state.cross_origin_isolated,
                         avg_fetch_ms: stats.median_chunk_latency_ms,
                         avg_processing_ms: stats.median_processing_time_ms,

@@ -457,10 +457,13 @@ the playback model are identical across them — only the projection differs.
   sticks to the cursor), right/middle/Ctrl-drag tilts and rotates, scroll zooms
   toward the cursor, and double-click flies the pivot to the clicked point with
   a smooth transition. Zoomed out it behaves like a planet camera; zoomed in it
-  orbits the site — no mode boundary. The globe additionally offers a
-  **volumetric ray-march** rendering that composites all elevations of the active
-  scan into a single 3D pass with a user-controlled density cutoff, instead of
-  rendering a single elevation as a surface.
+  orbits the site — no mode boundary. A fresh 3D view (and R) opens over the
+  site tilted 40° toward north, so it reads as 3D rather than as the flat map.
+  The globe draws a **volumetric ray-march** by default that composites all
+  elevations of the active scan into a single 3D pass with a user-controlled
+  density cutoff; turning it off (View tab, "Draw every tilt") renders the
+  selected elevation as a surface. While it is on, archive fetches keep whole
+  volumes whatever tilt is selected.
 
 ## 10. Acquisition & Cache
 
