@@ -10,16 +10,21 @@
 //!   sweep ahead of the sweep line and the current one behind it, and the
 //!   cells belong to the current sweep, so a cell draws only once its whole
 //!   footprint is behind the line ([`footprint_behind_sweep_line`]).
-//! - **Grammar.** The outline is the footprint (the cell's share of its
-//!   envelope, see `crate::storm_cells`): one light stroke over a dark
-//!   halo, intensity left out of the color. Groups get a fainter dashed
-//!   outline. The peak dBZ sits in a chip at the outline's top-right; chips
+//! - **Grammar.** A group draws its envelope as one faint, thin solid ring;
+//!   inside it each member cell draws its core (`StormCell::core_outline`),
+//!   so the strongest part of each storm stands out and no borders run
+//!   between the footprints that tile the envelope. A lone cell draws its
+//!   footprint, its whole envelope ([`drawn_outline`]). Cell rings are one
+//!   light stroke over a dark halo, intensity left out of the color. The
+//!   peak dBZ sits in a chip at the drawn outline's top-right; chips
 //!   are placed strongest first and skipped when they would crowd one
 //!   already placed or when the outline is too small on screen to carry one.
 //!   Cells from a live sweep that is still arriving are provisional: drawn
 //!   muted, with a hollow chip.
-//! - **Hit test.** Point in polygon on the outline rings in lat/lon; when two
-//!   footprints contain the point the strongest cell wins ([`cell_at`]). It
+//! - **Hit test.** Point in polygon on the footprint rings in lat/lon (the
+//!   whole share of the envelope, not just the drawn core, so a tap anywhere
+//!   in a group lands on a cell); when two footprints contain the point the
+//!   strongest cell wins ([`cell_at`]). It
 //!   drives the desktop hover card, the phone's tap-to-select card and the
 //!   data probe's cell line.
 //!
@@ -126,6 +131,17 @@ pub(crate) fn point_in_ring(ring: &[(f64, f64)], lat: f64, lon: f64) -> bool {
     inside
 }
 
+/// The ring the overlay draws for a cell: its core when it belongs to a
+/// group (the group's ring stands for the rest of its footprint), else its
+/// footprint.
+pub(crate) fn drawn_outline(cell: &StormCell) -> &[(f64, f64)] {
+    if cell.group_id.is_some() && cell.core_outline.len() >= 4 {
+        &cell.core_outline
+    } else {
+        &cell.outline
+    }
+}
+
 /// The cell whose footprint contains `(lat, lon)`, among the `shown` ids.
 /// When footprints nest or overlap, the strongest (highest peak, then
 /// largest) wins.
@@ -203,8 +219,10 @@ pub(crate) struct OverlayStyle {
     pub outline_px: f32,
     /// The dark halo under it.
     pub halo_px: f32,
-    /// The dashed group outline.
+    /// The group ring: solid, thinner and fainter than a cell's.
     pub group_px: f32,
+    /// The thin halo under the group ring.
+    pub group_halo_px: f32,
     /// Chip font size (monospace).
     pub chip_font_px: f32,
     /// Minimum gap between two chips.
@@ -218,7 +236,8 @@ pub(crate) fn overlay_style(phone: bool) -> OverlayStyle {
         OverlayStyle {
             outline_px: 2.0,
             halo_px: 4.5,
-            group_px: 1.2,
+            group_px: 1.5,
+            group_halo_px: 2.5,
             chip_font_px: 12.0,
             chip_spacing_px: 6.0,
         }
@@ -227,6 +246,7 @@ pub(crate) fn overlay_style(phone: bool) -> OverlayStyle {
             outline_px: 1.6,
             halo_px: 4.0,
             group_px: 1.0,
+            group_halo_px: 2.0,
             chip_font_px: 11.0,
             chip_spacing_px: 2.0,
         }
@@ -297,7 +317,7 @@ pub(crate) struct CardVm {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StormCellsVm {
     pub style: OverlayStyle,
-    /// Group outlines (dashed), closed rings in screen px.
+    /// Group rings (faint, solid), closed rings in screen px.
     pub groups: Vec<Vec<[f32; 2]>>,
     pub cells: Vec<CellOutlineVm>,
     pub chips: Vec<ChipVm>,
@@ -390,7 +410,7 @@ pub(crate) fn build(
         let Some(cell) = i.result.cells.get(id as usize) else {
             continue;
         };
-        let ring = ring_px(&cell.outline);
+        let ring = ring_px(drawn_outline(cell));
         if ring.len() < 3 {
             continue;
         }
@@ -663,6 +683,7 @@ mod tests {
             orientation_deg: 0.0,
             elongation: 1.0,
             outline: square(lat, lon, h),
+            core_outline: Vec::new(),
         }
     }
 
@@ -991,6 +1012,61 @@ mod tests {
         assert!(line.starts_with("Cell 62 dBZ \u{00B7} "), "{line}");
         assert!(line.ends_with("km\u{00B2}"), "{line}");
         assert_eq!(probe_line(&i, 41.0, -95.0), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn grouped_cells_draw_their_core_and_lone_cells_their_footprint() {
+        let mut r = result();
+        // Cell 0's core: most of its footprint, big enough for a chip.
+        r.cells[0].core_outline = square(42.2, -93.2, 0.08);
+        // A lone cell (no group): a stray core ring is not drawn.
+        let mut lone = cell(2, 42.8, -92.0, 0.1, 50.0);
+        lone.core_outline = square(42.8, -92.0, 0.02);
+        r.cells.push(lone);
+        let p = StormCellPointer::default();
+        let vm = build(&inputs(&r, &p), project);
+        assert_eq!(vm.cells.len(), 3);
+        let open = |ring: Vec<(f64, f64)>| -> Vec<[f32; 2]> {
+            ring[..4].iter().map(|&(la, lo)| project(la, lo)).collect()
+        };
+        assert_eq!(vm.cells[0].ring, open(square(42.2, -93.2, 0.08)));
+        assert_eq!(vm.cells[2].ring, open(square(42.8, -92.0, 0.1)));
+        // A grouped cell without a core ring falls back to its footprint.
+        assert_eq!(vm.cells[1].ring, open(square(42.2, -92.6, 0.1)));
+        // The chip sits at the drawn core's top-right, inside the footprint.
+        let core_east = project(42.28, -93.12);
+        let chip = &vm.chips[0];
+        assert_eq!(chip.cell_id, 0);
+        assert!(chip.min[0] > core_east[0] && chip.min[0] < core_east[0] + 6.0);
+        assert!(chip.min[1] < core_east[1] && chip.min[1] + chip.size[1] > core_east[1]);
+
+        // The hit test still takes the whole footprint: a point outside the
+        // core but inside cell 0's share of the envelope opens its card.
+        let p = StormCellPointer {
+            hover: Some((42.2, -93.105)),
+            selected: None,
+        };
+        let vm = build(&inputs(&r, &p), project);
+        assert_eq!(vm.card.map(|c| c.cell_id), Some(0));
+    }
+
+    #[wasm_bindgen_test]
+    fn group_ring_is_solid_thinner_and_lighter_than_a_cell() {
+        for phone in [false, true] {
+            let s = overlay_style(phone);
+            assert!(s.group_px < s.outline_px, "{s:?}");
+            assert!(s.group_halo_px < s.halo_px, "{s:?}");
+            assert!(s.group_halo_px > s.group_px, "{s:?}");
+        }
+        assert_eq!(overlay_style(false).group_px, 1.0);
+        assert_eq!(overlay_style(true).group_px, 1.5);
+        // The group ring is the envelope itself, not dashed pieces: one
+        // closed ring per group.
+        let r = result();
+        let p = StormCellPointer::default();
+        let vm = build(&inputs(&r, &p), project);
+        assert_eq!(vm.groups.len(), 1);
+        assert_eq!(vm.groups[0].len(), 4);
     }
 
     #[wasm_bindgen_test]

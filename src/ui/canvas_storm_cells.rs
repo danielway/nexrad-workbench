@@ -11,8 +11,9 @@ fn pos(p: [f32; 2]) -> Pos2 {
     Pos2::new(p[0], p[1])
 }
 
-/// Group outlines (dashed), cell footprints (light stroke over a dark halo)
-/// and the peak dBZ chips.
+/// Group rings (faint, thin, solid), cell outlines (light stroke over a dark
+/// halo: a grouped cell's core, a lone cell's footprint) and the peak dBZ
+/// chips.
 pub(crate) fn paint_storm_cells(painter: &Painter, vm: &StormCellsVm) {
     if vm.is_empty() {
         return;
@@ -20,11 +21,14 @@ pub(crate) fn paint_storm_cells(painter: &Painter, vm: &StormCellsVm) {
     let style = vm.style;
     for ring in &vm.groups {
         let pts: Vec<Pos2> = ring.iter().copied().map(pos).collect();
-        let halo = Stroke::new(style.group_px + 2.0, tokens::group_halo());
-        let line = Stroke::new(style.group_px, tokens::group());
-        for stroke in [halo, line] {
-            dashed_loop(painter, &pts, stroke, 3.0, 4.0);
-        }
+        painter.add(Shape::closed_line(
+            pts.clone(),
+            Stroke::new(style.group_halo_px, tokens::group_halo()),
+        ));
+        painter.add(Shape::closed_line(
+            pts,
+            Stroke::new(style.group_px, tokens::group()),
+        ));
     }
 
     let stroke = if vm.provisional {
@@ -91,43 +95,6 @@ pub(crate) fn paint_storm_cells(painter: &Painter, vm: &StormCellsVm) {
                 font.clone(),
                 tokens::CHIP_VALUE,
             );
-        }
-    }
-}
-
-/// A closed dashed outline drawn as separate straight dashes, one segment
-/// each. egui's dashed polyline joins a dash's pieces across a vertex with a
-/// miter, and a dash that ends a hair past a corner leaves a near-zero
-/// segment whose miter shoots off across the map.
-fn dashed_loop(painter: &Painter, pts: &[Pos2], stroke: Stroke, dash: f32, gap: f32) {
-    let n = pts.len();
-    if n < 2 {
-        return;
-    }
-    let period = dash + gap;
-    // Distance into the current period, carried across edges.
-    let mut phase = 0.0_f32;
-    for i in 0..n {
-        let (a, b) = (pts[i], pts[(i + 1) % n]);
-        let len = a.distance(b);
-        if len <= f32::EPSILON {
-            continue;
-        }
-        let dir = (b - a) / len;
-        let mut t = 0.0_f32;
-        while t < len {
-            let in_dash = phase < dash;
-            let step = if in_dash {
-                dash - phase
-            } else {
-                period - phase
-            }
-            .min(len - t);
-            if in_dash && step > 0.05 {
-                painter.line_segment([a + dir * t, a + dir * (t + step)], stroke);
-            }
-            t += step;
-            phase = (phase + step) % period;
         }
     }
 }

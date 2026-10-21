@@ -180,7 +180,12 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
                 cell_ids: Vec::new(),
                 lat: fp.lat,
                 lon: fp.lon,
-                outline: outline::outline(&comp.pixels, input, half_spacing),
+                outline: outline::outline(
+                    &comp.pixels,
+                    input,
+                    half_spacing,
+                    outline::GROUP_TOLERANCE_KM,
+                ),
             });
             groups.len() - 1
         });
@@ -213,7 +218,19 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
                 range_from_radar_km: fp.range_from_radar_km,
                 orientation_deg: fp.orientation_deg,
                 elongation: fp.elongation,
-                outline: outline::outline(pixels, input, half_spacing),
+                outline: outline::outline(pixels, input, half_spacing, outline::TOLERANCE_KM),
+                // A grouped cell's core: what the overlay draws inside the
+                // group's ring. A lone cell draws its footprint instead.
+                core_outline: if group_idx.is_some() {
+                    outline::outline(
+                        &seg.components[c].pixels,
+                        input,
+                        half_spacing,
+                        outline::TOLERANCE_KM,
+                    )
+                } else {
+                    Vec::new()
+                },
             };
             cells.push((cell, group_idx));
         }
@@ -426,6 +443,9 @@ mod coverage_tests {
         // radials); the lone cell has its 9.
         assert_eq!(r.cells[0].gate_count + r.cells[1].gate_count, 36);
         assert_eq!(r.cells[2].gate_count, 9);
+        // Grouped cells carry their core ring, inside their footprint.
+        assert!(r.cells[0].core_outline.len() >= 4 && r.cells[1].core_outline.len() >= 4);
+        assert!(r.cells[2].core_outline.is_empty());
         assert_eq!(r.source.params, permissive());
     }
 

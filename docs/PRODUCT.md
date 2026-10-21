@@ -672,14 +672,20 @@ Interactive measurement and analysis affordances on the 2D canvas:
   apart and reports *cells* (the finest distinct storms) and *groups* (one
   envelope holding two or more cells: a supercell line, an MCS, a
   hurricane's shield).
-  - **Footprint.** Each cell draws its share of the envelope: its core (the
-    echo at the level where it became distinct) grown outward over the
+  - **Footprint.** A cell's footprint is its share of the envelope: its core
+    (the echo at the level where it became distinct) grown outward over the
     envelope, strongest echo first, so the cells of a group tile it and two
     storms split along the weakest echo between them. A lone cell's footprint
-    is its whole envelope. It is drawn in one light stroke over a thin dark
-    halo (1.6 px; 2 px on the phone) so it reads on every part of the palette.
-    Intensity is never the stroke's color. A group draws a fainter dashed
-    outline around its envelope.
+    is its whole envelope. Area, mean dBZ, centroid and the hit test refer to
+    the footprint.
+  - **Outline.** What is drawn picks out the storms without interior
+    borders. A group draws its envelope as one faint, thin solid ring (1 px;
+    1.5 px on the phone, at about half the cell stroke's opacity, simplified
+    to about 2.5 km so a rainband reads as a smooth ring). Inside it each
+    cell draws its core. A lone cell draws its footprint. Cell outlines are
+    one light stroke over a thin dark halo (1.6 px; 2 px on the phone) so
+    they read on every part of the palette. Intensity is never the stroke's
+    color.
   - **Chip.** The cell's peak dBZ sits in a small mono chip at the outline's
     top-right (11 px; 12 px on the phone). Chips are placed strongest first
     and skipped when they would crowd one already placed; an outline smaller

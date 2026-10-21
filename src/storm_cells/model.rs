@@ -58,8 +58,17 @@ pub(crate) struct StormCell {
     /// Footprint boundary as a closed ring of (lat, lon) points (first point
     /// repeated at the end), simplified to about 1 km with no edge longer
     /// than 10 km and at most [`MAX_OUTLINE_VERTICES`] distinct vertices.
-    /// Outer boundary only.
+    /// Outer boundary only. This is the footprint the area, centroid and
+    /// hit test refer to; for a grouped cell the overlay draws
+    /// `core_outline` instead.
     pub outline: Vec<(f64, f64)>,
+    /// For a cell in a group: the boundary of its core, the component at
+    /// `level_dbz` that seeded the footprint (same conventions as
+    /// `outline`). This is what the overlay draws for a grouped cell, inside
+    /// the group's ring, so the strongest part of each storm stands out
+    /// without interior borders between footprints. Empty for a lone cell,
+    /// whose drawn outline is `outline` (its whole envelope).
+    pub core_outline: Vec<(f64, f64)>,
 }
 
 /// A group: one envelope component that resolved into two or more cells
@@ -80,7 +89,8 @@ pub(crate) struct StormGroup {
     pub lat: f64,
     /// Reflectivity-weighted centroid longitude of the envelope.
     pub lon: f64,
-    /// Envelope boundary, same conventions as [`StormCell::outline`].
+    /// Envelope boundary, same conventions as [`StormCell::outline`] but
+    /// simplified more loosely (about 2.5 km): drawn as a faint ring.
     pub outline: Vec<(f64, f64)>,
 }
 

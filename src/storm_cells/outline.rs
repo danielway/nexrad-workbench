@@ -17,8 +17,13 @@ use super::components::Pixel;
 use super::model::MAX_OUTLINE_VERTICES;
 use super::{DetectionInput, KM_PER_DEG};
 
-/// Simplification tolerance in km.
+/// Simplification tolerance for cell outlines, in km.
 pub(super) const TOLERANCE_KM: f64 = 1.0;
+
+/// Simplification tolerance for group (envelope) rings, in km. The ring is
+/// drawn faint around its cells, so it reads better smooth than ragged
+/// (a hurricane rainband's envelope is hundreds of km of jagged edge).
+pub(super) const GROUP_TOLERANCE_KM: f64 = 2.5;
 
 /// Longest edge simplification may create, in km. Tolerance alone would
 /// let a long, gently curving or ragged side collapse into one chord far
@@ -26,11 +31,13 @@ pub(super) const TOLERANCE_KM: f64 = 1.0;
 pub(super) const MAX_EDGE_KM: f64 = 10.0;
 
 /// Outline of `pixels` as a closed (lat, lon) ring: first point repeated at
-/// the end, at most `MAX_OUTLINE_VERTICES` distinct vertices.
+/// the end, simplified to `tolerance_km` with no edge longer than
+/// [`MAX_EDGE_KM`] and at most `MAX_OUTLINE_VERTICES` distinct vertices.
 pub(super) fn outline(
     pixels: &[Pixel],
     input: &DetectionInput,
     half_spacing_deg: f64,
+    tolerance_km: f64,
 ) -> Vec<(f64, f64)> {
     if pixels.is_empty() {
         return Vec::new();
@@ -83,7 +90,7 @@ pub(super) fn outline(
         })
         .collect();
 
-    let simplified = simplify_ring(&km, TOLERANCE_KM, MAX_EDGE_KM, MAX_OUTLINE_VERTICES);
+    let simplified = simplify_ring(&km, tolerance_km, MAX_EDGE_KM, MAX_OUTLINE_VERTICES);
     let cos_lat = input.radar_lat.to_radians().cos().max(1e-6);
     let mut out: Vec<(f64, f64)> = simplified
         .iter()
@@ -473,7 +480,7 @@ mod coverage_tests {
         let px: Vec<Pixel> = (0..90u16)
             .flat_map(|a| (95..100u16).map(move |g| (a, g)))
             .collect();
-        let ring = outline(&px, &input(&az), 0.5);
+        let ring = outline(&px, &input(&az), 0.5, TOLERANCE_KM);
         // Shoelace area in km² against the annular sector's 765.8 km²
         // (a chord in place of the 100 km arc would lose most of it).
         let cos_lat = 35f64.to_radians().cos();
@@ -505,7 +512,7 @@ mod coverage_tests {
                 px.push((a, g));
             }
         }
-        let ring = outline(&px, &input(&az), 0.5);
+        let ring = outline(&px, &input(&az), 0.5, TOLERANCE_KM);
         assert_eq!(ring.first(), ring.last());
         // Four corners of the annular sector (straight in 1 km tolerance).
         assert_eq!(ring.len(), 5, "{ring:?}");
@@ -520,7 +527,7 @@ mod coverage_tests {
         let px: Vec<Pixel> = (0..36u16)
             .flat_map(|a| (0..20u16).map(move |g| (a, g)))
             .collect();
-        let ring = outline(&px, &input(&az), 5.0);
+        let ring = outline(&px, &input(&az), 5.0, TOLERANCE_KM);
         assert!(ring.len() >= 4 && ring.len() <= MAX_OUTLINE_VERTICES + 1);
         // Reaches out to about 20 km in every direction.
         let max_lat = ring.iter().map(|p| p.0).fold(f64::MIN, f64::max);
