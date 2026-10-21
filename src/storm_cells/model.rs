@@ -44,8 +44,9 @@ pub(crate) struct StormCell {
     /// √(λ_major / λ_minor) of the weighted covariance. 1.0 = round.
     pub elongation: f32,
     /// Footprint boundary as a closed ring of (lat, lon) points (first point
-    /// repeated at the end), simplified to about 1 km and at most
-    /// [`MAX_OUTLINE_VERTICES`] distinct vertices. Outer boundary only.
+    /// repeated at the end), simplified to about 1 km with no edge longer
+    /// than 10 km and at most [`MAX_OUTLINE_VERTICES`] distinct vertices.
+    /// Outer boundary only.
     pub outline: Vec<(f64, f64)>,
 }
 
@@ -106,5 +107,7 @@ impl StormCellsResult {
     }
 }
 
-/// Upper bound on distinct vertices in an outline ring.
-pub(crate) const MAX_OUTLINE_VERTICES: usize = 64;
+/// Upper bound on distinct vertices in an outline ring. Generous: the
+/// ~1 km tolerance and the 10 km edge bound decide the count; this only
+/// keeps a pathological ring from growing without limit.
+pub(crate) const MAX_OUTLINE_VERTICES: usize = 512;

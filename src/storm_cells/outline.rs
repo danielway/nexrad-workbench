@@ -20,6 +20,11 @@ use super::{DetectionInput, KM_PER_DEG};
 /// Simplification tolerance in km.
 pub(super) const TOLERANCE_KM: f64 = 1.0;
 
+/// Longest edge simplification may create, in km. Tolerance alone would
+/// let a long, gently curving or ragged side collapse into one chord far
+/// longer than the storm features beside it.
+pub(super) const MAX_EDGE_KM: f64 = 10.0;
+
 /// Outline of `pixels` as a closed (lat, lon) ring: first point repeated at
 /// the end, at most `MAX_OUTLINE_VERTICES` distinct vertices.
 pub(super) fn outline(
@@ -78,7 +83,7 @@ pub(super) fn outline(
         })
         .collect();
 
-    let simplified = simplify_ring(&km, TOLERANCE_KM, MAX_OUTLINE_VERTICES);
+    let simplified = simplify_ring(&km, TOLERANCE_KM, MAX_EDGE_KM, MAX_OUTLINE_VERTICES);
     let cos_lat = input.radar_lat.to_radians().cos().max(1e-6);
     let mut out: Vec<(f64, f64)> = simplified
         .iter()
@@ -169,12 +174,15 @@ pub(super) fn trace(
     verts
 }
 
-/// Douglas-Peucker on a closed ring (no repeated closing point), loosening
-/// the tolerance until at most `max_vertices` remain and tightening it
-/// until at least four do.
+/// Douglas-Peucker on a closed ring (no repeated closing point), with every
+/// kept edge at most `max_edge` long: a span that is within tolerance but
+/// longer than that is split at its middle point. The tolerance is loosened
+/// until at most `max_vertices` remain (the edge bound still holds, so a
+/// ring too long for both keeps more) and tightened until at least four do.
 pub(super) fn simplify_ring(
     ring: &[(f64, f64)],
     tolerance: f64,
+    max_edge: f64,
     max_vertices: usize,
 ) -> Vec<(f64, f64)> {
     if ring.len() <= 3 {
@@ -184,16 +192,17 @@ pub(super) fn simplify_ring(
     let far = (1..ring.len())
         .max_by(|&a, &b| dist2(ring[0], ring[a]).total_cmp(&dist2(ring[0], ring[b])))
         .unwrap_or(1);
+    // Second half wraps back to index 0, appended as index `len`.
+    let mut closed: Vec<(f64, f64)> = ring.to_vec();
+    closed.push(ring[0]);
+    let max_edge2 = max_edge * max_edge;
     let run = |tol: f64| {
         let mut keep = vec![false; ring.len() + 1];
         keep[0] = true;
         keep[far] = true;
         keep[ring.len()] = true;
-        // Second half wraps back to index 0, appended as index `len`.
-        let mut closed: Vec<(f64, f64)> = ring.to_vec();
-        closed.push(ring[0]);
-        dp(&closed, 0, far, tol, &mut keep);
-        dp(&closed, far, ring.len(), tol, &mut keep);
+        dp(&closed, 0, far, tol, max_edge2, &mut keep);
+        dp(&closed, far, ring.len(), tol, max_edge2, &mut keep);
         ring.iter()
             .zip(&keep)
             .filter(|(_, k)| **k)
@@ -208,14 +217,23 @@ pub(super) fn simplify_ring(
         tol *= 0.5;
         out = run(tol);
     }
-    while out.len() > max_vertices.max(4) {
+    // Past a tolerance of `max_edge` only the edge bound keeps vertices, so
+    // loosening further changes nothing.
+    while out.len() > max_vertices.max(4) && tol < max_edge {
         tol *= 1.5;
         out = run(tol);
     }
     out
 }
 
-fn dp(points: &[(f64, f64)], first: usize, last: usize, tol: f64, keep: &mut [bool]) {
+fn dp(
+    points: &[(f64, f64)],
+    first: usize,
+    last: usize,
+    tol: f64,
+    max_edge2: f64,
+    keep: &mut [bool],
+) {
     if last <= first + 1 {
         return;
     }
@@ -228,11 +246,18 @@ fn dp(points: &[(f64, f64)], first: usize, last: usize, tol: f64, keep: &mut [bo
             worst_d = d;
         }
     }
-    if worst_d > tol {
-        keep[worst] = true;
-        dp(points, first, worst, tol, keep);
-        dp(points, worst, last, tol, keep);
-    }
+    let split = if worst_d > tol {
+        worst
+    } else if dist2(a, b) > max_edge2 {
+        // Within tolerance but too long: halve by index, which keeps the
+        // recursion shallow on long straight runs.
+        (first + last) / 2
+    } else {
+        return;
+    };
+    keep[split] = true;
+    dp(points, first, split, tol, max_edge2, keep);
+    dp(points, split, last, tol, max_edge2, keep);
 }
 
 fn dist2(a: (f64, f64), b: (f64, f64)) -> f64 {
@@ -339,7 +364,7 @@ mod coverage_tests {
             (0.0, 10.0),
             (0.0, 5.0),
         ];
-        let s = simplify_ring(&square, 0.5, 64);
+        let s = simplify_ring(&square, 0.5, 100.0, 64);
         assert_eq!(s, vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
     }
 
@@ -355,7 +380,7 @@ mod coverage_tests {
             (3.0, 0.2),
             (0.0, 0.2),
         ];
-        assert_eq!(simplify_ring(&thin, 1.0, 64).len(), 4);
+        assert_eq!(simplify_ring(&thin, 1.0, 100.0, 64).len(), 4);
     }
 
     #[wasm_bindgen_test]
@@ -367,8 +392,55 @@ mod coverage_tests {
                 (50.0 * t.cos(), 50.0 * t.sin())
             })
             .collect();
-        let s = simplify_ring(&circle, 0.01, 64);
+        let s = simplify_ring(&circle, 0.01, 100.0, 64);
         assert!(s.len() <= 64 && s.len() >= 16, "{}", s.len());
+    }
+
+    fn longest_edge(ring: &[(f64, f64)]) -> f64 {
+        (0..ring.len())
+            .map(|i| dist2(ring[i], ring[(i + 1) % ring.len()]).sqrt())
+            .fold(0.0, f64::max)
+    }
+
+    #[wasm_bindgen_test]
+    fn simplify_never_leaves_a_long_edge() {
+        // A 300 km × 40 km band with a ragged long side (±0.4 km, under the
+        // tolerance) sampled every 0.25 km, like a traced squall line.
+        let mut ring: Vec<(f64, f64)> = (0..1200)
+            .map(|i| {
+                let x = i as f64 * 0.25;
+                (x, if i % 2 == 0 { 0.4 } else { -0.4 })
+            })
+            .collect();
+        ring.extend((0..160).map(|i| (300.0, i as f64 * 0.25)));
+        ring.extend((0..1200).map(|i| (300.0 - i as f64 * 0.25, 40.0)));
+        ring.extend((0..160).map(|i| (0.0, 40.0 - i as f64 * 0.25)));
+        let s = simplify_ring(&ring, TOLERANCE_KM, MAX_EDGE_KM, MAX_OUTLINE_VERTICES);
+        assert!(
+            longest_edge(&s) <= MAX_EDGE_KM + 1e-9,
+            "{}",
+            longest_edge(&s)
+        );
+        assert!(s.len() <= MAX_OUTLINE_VERTICES, "{}", s.len());
+        // About 680 km of perimeter at ≤ 10 km per edge, not hundreds more.
+        assert!((68..=140).contains(&s.len()), "{}", s.len());
+        // The old rule (tolerance alone) left 300 km edges here.
+        let loose = simplify_ring(&ring, TOLERANCE_KM, f64::INFINITY, 64);
+        assert!(longest_edge(&loose) > 250.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn simplify_keeps_the_edge_bound_over_the_vertex_cap() {
+        // A 2000 km circle needs over 600 edges of 10 km: the vertex cap
+        // gives way rather than the edge bound.
+        let circle: Vec<(f64, f64)> = (0..4000)
+            .map(|i| {
+                let t = i as f64 / 4000.0 * std::f64::consts::TAU;
+                (1000.0 * t.cos(), 1000.0 * t.sin())
+            })
+            .collect();
+        let s = simplify_ring(&circle, TOLERANCE_KM, MAX_EDGE_KM, 64);
+        assert!(longest_edge(&s) <= MAX_EDGE_KM + 1e-9);
     }
 
     fn input<'a>(az: &'a [f32]) -> DetectionInput<'a> {
@@ -425,11 +497,11 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn outline_is_a_closed_ring_around_the_gates() {
-        // 360 one-degree radials; a block on radials 359, 0, 1 at 50-59 km.
+        // 360 one-degree radials; a block on radials 359, 0, 1 at 50-57 km.
         let az: Vec<f32> = (0..360).map(|i| i as f32).collect();
         let mut px = Vec::new();
         for a in [359u16, 0, 1] {
-            for g in 50..60u16 {
+            for g in 50..58u16 {
                 px.push((a, g));
             }
         }
