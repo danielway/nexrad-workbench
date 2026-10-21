@@ -44,6 +44,11 @@ const MAX_SURFACE_DIST: f32 = 19.0;
 /// comparable to the 2D flat view's ~500 km radius.
 const DEFAULT_SITE_SURFACE_DIST: f32 = 0.10;
 
+/// Default tilt over the site, degrees off vertical. A slight lean so the
+/// 3D view opens reading as 3D (the volume has height, the horizon curves)
+/// instead of looking like the flat map.
+const DEFAULT_SITE_TILT_DEG: f32 = 40.0;
+
 /// Tilt clamp, degrees off the surface normal. 0 = straight down; the cap
 /// keeps the pivot in front of the camera (no zenith crossing possible).
 const MAX_TILT_DEG: f32 = 85.0;
@@ -175,13 +180,14 @@ pub struct OrbitState {
 }
 
 impl OrbitState {
-    /// A default orbit camera hovering straight above the given site.
+    /// A default orbit camera above the given site, leaning north at
+    /// [`DEFAULT_SITE_TILT_DEG`].
     fn over_site(common: Globe3DCommon) -> Self {
         Self {
             pivot_lat: common.site_lat,
             pivot_lon: common.site_lon,
             distance: DEFAULT_SITE_SURFACE_DIST,
-            tilt: 0.0,
+            tilt: DEFAULT_SITE_TILT_DEG,
             heading: 0.0,
             anim: None,
             common,
@@ -882,7 +888,7 @@ impl Camera {
                 distance: 1.0 + DEFAULT_SITE_SURFACE_DIST,
                 center_lat: site_lat,
                 center_lon: site_lon,
-                tilt: 0.0,
+                tilt: DEFAULT_SITE_TILT_DEG,
                 rotation: 0.0,
             },
             // Legacy SiteOrbit: the camera sat at bearing `ob` looking
@@ -1028,7 +1034,7 @@ mod tests {
             let s = orbit(&c);
             assert!((s.pivot_lat - 39.0).abs() < 1e-4);
             assert!((s.pivot_lon - -98.0).abs() < 1e-4);
-            assert_eq!(s.tilt, 0.0);
+            assert_eq!(s.tilt, DEFAULT_SITE_TILT_DEG);
             assert_eq!(s.heading, 0.0);
         }
         // Idempotent: switching again keeps the (possibly modified) state.
@@ -1078,7 +1084,7 @@ mod tests {
             let s = orbit(&c);
             assert!((s.common.site_lat - 35.3).abs() < 1e-4);
             assert!((s.pivot_lat - 35.3).abs() < 1e-4);
-            assert_eq!(s.tilt, 0.0);
+            assert_eq!(s.tilt, DEFAULT_SITE_TILT_DEG);
             assert_eq!(s.heading, 0.0);
             assert!((s.distance - 0.10).abs() < 1e-6);
         }
@@ -1130,6 +1136,9 @@ mod tests {
     fn untilted_eye_sits_radially_above_pivot() {
         let (mut c, _) = orbit_with_rect();
         c.move_pivot_to(39.0, -98.0);
+        if let Camera::Orbit(s) = &mut c {
+            s.tilt = 0.0;
+        }
         let pivot_dir = Camera::geo_to_world(39.0, -98.0);
         let eye = c.camera_world_pos();
         let expected = pivot_dir * (1.0 + orbit(&c).distance);
@@ -1464,7 +1473,7 @@ mod tests {
         assert!((s.pivot_lat - 39.0).abs() < 1e-4);
         assert!((s.pivot_lon - -98.0).abs() < 1e-4);
         assert!((s.distance - 0.10).abs() < 1e-6);
-        assert_eq!(s.tilt, 0.0);
+        assert_eq!(s.tilt, DEFAULT_SITE_TILT_DEG);
         assert_eq!(s.heading, 0.0);
     }
 
@@ -1723,7 +1732,7 @@ mod tests {
         let s = orbit(&c);
         assert!((s.pivot_lat - 39.0).abs() < 1e-4);
         assert!((s.distance - 0.10).abs() < 1e-6);
-        assert_eq!(s.tilt, 0.0);
+        assert_eq!(s.tilt, DEFAULT_SITE_TILT_DEG);
         assert_eq!(s.heading, 0.0);
     }
 

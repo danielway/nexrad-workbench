@@ -443,7 +443,7 @@ impl DispatchState<'_> {
         unit: crate::core::transport::StepUnit,
     ) {
         let viz = &self.state.viz_state;
-        let volumetric = viz.volume_3d_enabled && viz.view_mode() == crate::geo::ViewMode::Globe3D;
+        let volumetric = viz.volume_3d_active();
         let tilt = match viz.elevation_selection {
             crate::core::ElevationSelection::Fixed {
                 elevation_number, ..
@@ -616,15 +616,10 @@ impl DispatchState<'_> {
         self.acquisition.coordinator.download_queue.requeue(item);
     }
 
-    /// The active elevation filter for fetch scoping: a Fixed cut scopes ingest
-    /// to that elevation; Latest fetches the whole volume.
+    /// The active elevation filter for fetch scoping (see
+    /// [`crate::core::acquisition::fetch_scope`]).
     fn active_elevation_filter(&self) -> Option<u8> {
-        match &self.state.viz_state.elevation_selection {
-            crate::core::ElevationSelection::Fixed {
-                elevation_number, ..
-            } => Some(*elevation_number),
-            crate::core::ElevationSelection::Latest => None,
-        }
+        self.state.viz_state.fetch_scope().elevation_number()
     }
 }
 
