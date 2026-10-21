@@ -52,21 +52,31 @@ pub(crate) fn paint_storm_cells(painter: &Painter, vm: &StormCellsVm) {
             style.trail_px
         };
         let halo = Stroke::new(width + 2.5, tokens::halo());
-        painter.add(Shape::line(pts.clone(), halo));
-        painter.add(Shape::line(
-            pts.clone(),
-            Stroke::new(width, tokens::trail()),
-        ));
-        if let Some(arrow) = &trail.arrow {
-            let (a, b) = (pos(arrow.from), pos(arrow.to));
+        if let Some((a, b)) = trail.split_join {
+            dashed_line(painter, pos(a), pos(b), halo, 3.0, 3.0);
             dashed_line(
                 painter,
-                a,
-                b,
-                Stroke::new(width + 2.5, tokens::halo()),
-                5.0,
-                4.0,
+                pos(a),
+                pos(b),
+                Stroke::new(width, tokens::trail()),
+                3.0,
+                3.0,
             );
+        }
+        for (k, seg) in pts.windows(2).enumerate() {
+            let fade = trail.segment_alpha.get(k).copied().unwrap_or(1.0);
+            painter.line_segment(
+                [seg[0], seg[1]],
+                Stroke::new(halo.width, tokens::halo().gamma_multiply(fade)),
+            );
+            painter.line_segment(
+                [seg[0], seg[1]],
+                Stroke::new(width, tokens::trail().gamma_multiply(fade)),
+            );
+        }
+        if let Some(arrow) = &trail.arrow {
+            let (a, b) = (pos(arrow.from), pos(arrow.to));
+            dashed_line(painter, a, b, halo, 5.0, 4.0);
             dashed_line(
                 painter,
                 a,
@@ -82,12 +92,13 @@ pub(crate) fn paint_storm_cells(painter: &Painter, vm: &StormCellsVm) {
                 Stroke::new(1.0, tokens::halo()),
             ));
         }
-        for p in &pts {
+        for (k, p) in pts.iter().enumerate() {
+            let fade = trail.dot_alpha.get(k).copied().unwrap_or(1.0);
             painter.circle(
                 *p,
                 style.trail_dot_px,
-                tokens::trail_dot(),
-                Stroke::new(1.0, tokens::halo()),
+                tokens::trail_dot().gamma_multiply(fade),
+                Stroke::new(1.0, tokens::halo().gamma_multiply(fade)),
             );
         }
     }

@@ -25,8 +25,12 @@
 //! - **Tracks** (the "Tracks" checkbox, [`crate::core::storm_tracks`]): the
 //!   chip leads with the track's letter and carries a trend mark when the
 //!   peak moved more than [`TREND_MARK_DB`] over the last three volumes; the
-//!   last three centroids draw as a trail of dots, and a dashed arrow points
-//!   to where the cell will be in 30 minutes once its motion is confident.
+//!   storm's path (every centroid the store holds, up to 24) draws as small
+//!   dots on a thin line that fades with age ([`path_fade`]), a track that
+//!   split off another joins the parent's centroid with a short dashed line,
+//!   and a dashed arrow points to where the cell will be in 30 minutes once
+//!   its motion is confident. Everything is anchored on centroids, never on
+//!   the outline.
 //!   The card adds motion, age, trend and, with "My location" on, where the
 //!   cell is from you and its closest approach. A coasting track (no cell
 //!   this volume) draws nothing.
@@ -293,13 +297,20 @@ pub(crate) struct ChipVm {
     pub hollow: bool,
 }
 
-/// A track's trail and forecast arrow on screen.
+/// A track's path and forecast arrow on screen.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TrailVm {
     pub cell_id: u32,
-    /// The last (up to) three centroids, oldest first; the last is the
-    /// cell's own. At least two.
+    /// The storm's path: its centroids (up to 24), oldest first; the last
+    /// is the cell's own.
     pub dots: Vec<[f32; 2]>,
+    /// Opacity (0..1) of each dot, rising with recency: the newest is 1.
+    pub dot_alpha: Vec<f32>,
+    /// Opacity of each segment `dots[i] → dots[i + 1]`: its newer end's.
+    pub segment_alpha: Vec<f32>,
+    /// A track that split off another: a dashed join from the parent's
+    /// centroid at the split to the path's first dot.
+    pub split_join: Option<([f32; 2], [f32; 2])>,
     /// The forecast arrow, from the cell's centroid to its position in 30
     /// minutes, when the motion is confident.
     pub arrow: Option<ArrowVm>,
@@ -314,6 +325,23 @@ pub(crate) struct ArrowVm {
     pub to: [f32; 2],
     /// The head: a filled triangle with its tip at `to`.
     pub head: [[f32; 2]; 3],
+}
+
+/// Opacity of the oldest point of a path.
+pub(crate) const PATH_OLDEST_ALPHA: f32 = 0.2;
+
+/// Opacity of each of `n` path points, oldest first: rising evenly from
+/// [`PATH_OLDEST_ALPHA`] to 1 at the newest.
+pub(crate) fn path_fade(n: usize) -> Vec<f32> {
+    (0..n)
+        .map(|i| {
+            if n <= 1 {
+                1.0
+            } else {
+                PATH_OLDEST_ALPHA + (1.0 - PATH_OLDEST_ALPHA) * i as f32 / (n - 1) as f32
+            }
+        })
+        .collect()
 }
 
 /// An arrow from `from` to `to` with a head `head_px` long, or `None` when
@@ -472,11 +500,15 @@ pub(crate) fn build(
             continue;
         }
         let track = i.tracks.and_then(|t| t.for_cell(id));
-        if let Some(t) = track.filter(|t| t.trail.len() >= 2) {
+        if let Some(t) = track.filter(|t| t.trail.len() >= 2 || t.split_origin.is_some()) {
             let dots: Vec<[f32; 2]> = t.trail.iter().map(|&(a, b)| project(a, b)).collect();
             let from = dots[dots.len() - 1];
+            let dot_alpha = path_fade(dots.len());
             vm.trails.push(TrailVm {
                 cell_id: id,
+                segment_alpha: dot_alpha.iter().skip(1).copied().collect(),
+                dot_alpha,
+                split_join: t.split_origin.map(|(a, b)| (project(a, b), dots[0])),
                 arrow: t
                     .forecast
                     .and_then(|(a, b)| arrow(from, project(a, b), style.arrow_head_px)),
@@ -1306,6 +1338,7 @@ mod tests {
             coasting: false,
             from_reference: None,
             approach: None,
+            split_origin: None,
         }
     }
 
@@ -1365,6 +1398,58 @@ mod tests {
         lone.tracks[0].cell_id = None;
         i.tracks = Some(&lone);
         assert!(build(&i, project).trails.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_path_fades_with_age_newest_strongest() {
+        assert_eq!(path_fade(1), vec![1.0]);
+        let f = path_fade(5);
+        assert_eq!(f.len(), 5);
+        assert_eq!(f[0], PATH_OLDEST_ALPHA);
+        assert_eq!(f[4], 1.0);
+        assert!(f.windows(2).all(|w| w[0] < w[1]), "{f:?}");
+
+        // A 24-point path draws every point, fading toward the oldest.
+        let (r, p) = (result(), StormCellPointer::default());
+        let mut tv = tracks_view();
+        tv.tracks[0].trail = (0..24)
+            .map(|k| {
+                (
+                    42.2 - 0.01 * (23 - k) as f64,
+                    -93.2 - 0.01 * (23 - k) as f64,
+                )
+            })
+            .collect();
+        let mut i = inputs(&r, &p);
+        i.tracks = Some(&tv);
+        let vm = build(&i, project);
+        let d = &vm.trails[0];
+        assert_eq!(d.dots.len(), 24);
+        assert_eq!(d.dot_alpha.len(), 24);
+        assert_eq!(d.segment_alpha.len(), 23);
+        assert_eq!(d.segment_alpha[22], 1.0);
+        assert_eq!(d.segment_alpha[0], d.dot_alpha[1]);
+        assert!(d.segment_alpha.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(d.dots[23], project(42.2, -93.2));
+        assert!(d.split_join.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn a_split_track_joins_its_parent_with_a_dashed_line() {
+        let (r, p) = (result(), StormCellPointer::default());
+        let mut tv = tracks_view();
+        // B split off D one volume ago: one point, plus the join.
+        tv.tracks[1].trail = vec![(42.2, -92.6)];
+        tv.tracks[1].split_origin = Some((42.15, -92.9));
+        let mut i = inputs(&r, &p);
+        i.tracks = Some(&tv);
+        let vm = build(&i, project);
+        let b = vm.trails.iter().find(|t| t.cell_id == 1).expect("drawn");
+        assert_eq!(b.dots, vec![project(42.2, -92.6)]);
+        assert_eq!(
+            b.split_join,
+            Some((project(42.15, -92.9), project(42.2, -92.6)))
+        );
     }
 
     #[wasm_bindgen_test]

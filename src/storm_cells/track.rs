@@ -86,7 +86,8 @@ pub(crate) struct TrackParams {
     pub max_gap_ms: i64,
     /// Centroids used for the motion fit (the most recent ones).
     pub fit_points: usize,
-    /// Centroids kept per track.
+    /// Centroids kept per track: the path a view can draw (24 is about two
+    /// hours of a 5-minute VCP).
     pub history_len: usize,
     /// Weight of `|ln(area ratio)|` in the matching cost.
     pub area_weight: f64,
@@ -111,7 +112,7 @@ impl Default for TrackParams {
             coast_volumes: 2,
             max_gap_ms: 20 * 60 * 1000,
             fit_points: 5,
-            history_len: 10,
+            history_len: 24,
             area_weight: 0.1,
             peak_weight: 1.0,
             stationary_kmh: 10.0,
@@ -190,6 +191,9 @@ pub(crate) struct Track {
     pub motion: Motion,
     /// The track this one split off from, if it started next to one.
     pub split_from: Option<TrackId>,
+    /// The parent's centroid in the volume of the split.
+    #[serde(default)]
+    pub split_origin: Option<(f64, f64)>,
     /// While coasting: the track that took the cell this one would have
     /// matched.
     pub merging_into: Option<TrackId>,
@@ -236,10 +240,12 @@ impl Track {
         } else {
             last.pos()
         };
-        let trail = self.points[self.points.len().saturating_sub(3)..]
-            .iter()
-            .map(|p| p.pos())
-            .collect();
+        let trail = self.points.iter().map(|p| p.pos()).collect();
+        // The join to the parent only while the path still starts at the
+        // split.
+        let split_origin = self
+            .split_origin
+            .filter(|_| self.points[0].time_ms == self.start_ms);
         let n = self.points.len();
         let peak_trend_db =
             (n >= 2).then(|| last.peak_dbz - self.points[n.saturating_sub(3)].peak_dbz);
@@ -260,6 +266,7 @@ impl Track {
                 && self.motion.speed_kmh() < params.stationary_kmh,
             coasting,
             split_from: self.split_from,
+            split_origin,
         }
     }
 }
@@ -274,8 +281,9 @@ pub(crate) struct TrackSnapshot {
     /// The cell's centroid, or the advected position while coasting.
     pub lat: f64,
     pub lon: f64,
-    /// The last (up to) three observed centroids, oldest first; the last one
-    /// is this volume's when the track is matched.
+    /// The observed centroids kept ([`TrackParams::history_len`]), oldest
+    /// first: the storm's path. The last one is this volume's when the
+    /// track is matched.
     pub trail: Vec<(f64, f64)>,
     pub motion: Motion,
     pub start_ms: i64,
@@ -292,6 +300,9 @@ pub(crate) struct TrackSnapshot {
     pub stationary: bool,
     pub coasting: bool,
     pub split_from: Option<TrackId>,
+    /// The parent's centroid when this track split off, while the path
+    /// still starts at the split.
+    pub split_origin: Option<(f64, f64)>,
 }
 
 impl TrackSnapshot {
@@ -570,6 +581,9 @@ impl Tracker {
                     .filter(|&(d, radius, _)| d <= radius)
                     .min_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)))
                     .map(|(_, _, ti)| old_ids[ti]);
+                let split_origin = split_from
+                    .and_then(|pid| kept.iter().find(|t| t.id == pid))
+                    .map(|t| t.last().pos());
                 let id = self.next_id;
                 self.next_id += 1;
                 kept.push(Track {
@@ -586,6 +600,7 @@ impl Tracker {
                     missed: 0,
                     motion: Motion::default(),
                     split_from,
+                    split_origin,
                     merging_into: None,
                 });
                 kept_cell.push(Some(ci as u32));
@@ -928,7 +943,7 @@ mod tests {
             assert_eq!(ids(&f), vec![Some(0)], "volume {v}");
             let s = f.track(0).unwrap();
             assert_eq!(s.age_volumes, v as u32 + 1);
-            assert_eq!(s.trail.len(), (v as usize + 1).min(3));
+            assert_eq!(s.trail.len(), v as usize + 1);
             match v {
                 0 => assert_eq!(s.motion.confidence, 0.0),
                 1 => assert!(s.motion.confidence < MIN_FORECAST_CONFIDENCE),
@@ -946,6 +961,23 @@ mod tests {
         let (dx, dy) = offset_km((s.lat, s.lon), s.forecast(30.0));
         assert!((dx - 20.0).abs() < 0.2 && dy.abs() < 0.2, "{dx} {dy}");
         assert_eq!(tr.next_id(), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_path_keeps_the_last_history_len_centroids() {
+        let mut tr = Tracker::default();
+        let mut f = Frame::default();
+        for v in 0..30 {
+            f = tr
+                .observe(t(v), &result(vec![c(v as f64, 0.0)]), false)
+                .unwrap();
+        }
+        let s = f.track(0).unwrap();
+        assert_eq!(s.trail.len(), 24);
+        let (dx, _) = offset_km(ORIGIN, s.trail[0]);
+        assert!((dx - 6.0).abs() < 0.01, "oldest kept is volume 6: {dx}");
+        assert_eq!(s.age_volumes, 30);
+        assert_eq!(s.age_minutes, 145.0);
     }
 
     #[wasm_bindgen_test]
@@ -1011,15 +1043,14 @@ mod tests {
         let mut tr = Tracker::default();
         tr.observe(t(0), &result(vec![c(0.0, 0.0)]), false);
         // The storm splits: two cores 8 km apart in one group.
-        let f = tr
-            .observe(
-                t(1),
-                &result(vec![c(1.0, 3.0).group(0), c(1.0, -5.0).peak(50.0).group(0)]),
-                false,
-            )
-            .unwrap();
+        let r1 = result(vec![c(1.0, 3.0).group(0), c(1.0, -5.0).peak(50.0).group(0)]);
+        let f = tr.observe(t(1), &r1, false).unwrap();
         assert_eq!(ids(&f), vec![Some(0), Some(1)]);
         assert_eq!(f.track(1).unwrap().split_from, Some(0));
+        // The path joins the parent's centroid of that volume.
+        let parent = (r1.cells[0].lat, r1.cells[0].lon);
+        assert_eq!(f.track(1).unwrap().split_origin, Some(parent));
+        assert_eq!(f.track(0).unwrap().split_origin, None);
         assert_eq!(f.track(0).unwrap().split_from, None);
         // A new set with a new track is not a group split.
         assert!(f.lineage.is_empty());

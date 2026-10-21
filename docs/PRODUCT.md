@@ -698,11 +698,15 @@ Interactive measurement and analysis affordances on the 2D canvas:
     volumes (SCIT-style: predicted from their recent motion, matched by
     distance, area and peak, coasting two volumes before a track ends).
     Each track has a letter (A–Z, then AA, AB…) that stays with the storm
-    and is never reused while the site is open. The last three centroids
-    draw as dots joined by a thin line, and a dashed arrow points to where
-    the cell will be in 30 minutes once its motion is confident (three
-    volumes on a steady course). Turning tracks on also detects the four
-    volumes before the one on screen, so a freshly opened time has history.
+    and is never reused while the site is open. The storm's path, every
+    centroid seen (up to 24, about two hours), draws as small dots on a thin
+    line that fades with age, newest strongest; a track that split off
+    another starts with a short dashed join to the parent's centroid at the
+    split. A dashed arrow points to where the cell will be in 30 minutes
+    once its motion is confident (three volumes on a steady course).
+    Turning tracks on also detects up to twelve volumes (about an hour)
+    before the one on screen, nearest first, so a freshly opened time has
+    a path.
     Scrubbing back over volumes already seen shows the same letters;
     scrubbing further back than the first one seen starts over with new
     letters.

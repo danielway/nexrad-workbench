@@ -50,8 +50,9 @@ use crate::storm_cells::track::{
 };
 
 /// Volumes before the shown one that tracking asks to have detected, so a
-/// freshly opened time has motion: four volumes give a five-point fit.
-pub(crate) const HISTORY_VOLUMES: usize = 4;
+/// freshly opened time has motion and a path: twelve volumes are about an
+/// hour of a 5-minute VCP.
+pub(crate) const HISTORY_VOLUMES: usize = 12;
 
 /// Frames kept for scrubbing back (twice the detection cache).
 pub(crate) const MAX_FRAMES: usize = 96;
@@ -290,6 +291,7 @@ impl StormTracks {
                     lat: s.lat,
                     lon: s.lon,
                     trail: s.trail.clone(),
+                    split_origin: s.split_origin,
                     forecast: confident.then(|| s.forecast(FORECAST_MINUTES)),
                     speed_kmh: s.motion.speed_kmh(),
                     direction_deg: s.motion.direction_deg(),
@@ -324,8 +326,10 @@ pub(crate) struct TrackVm {
     /// Current (or, coasting, advected) position.
     pub lat: f64,
     pub lon: f64,
-    /// Last (up to) three observed centroids, oldest first.
+    /// The storm's path: its observed centroids (up to 24), oldest first.
     pub trail: Vec<(f64, f64)>,
+    /// The parent's centroid when this track split off: the path's join.
+    pub split_origin: Option<(f64, f64)>,
     /// Position in [`FORECAST_MINUTES`], when the motion is confident
     /// enough to draw it.
     pub forecast: Option<(f64, f64)>,
@@ -427,7 +431,8 @@ mod tests {
         }
     }
 
-    /// History keys for `vol`: the four volumes before it (not before 0).
+    /// History keys for `vol` in these tests: the four volumes before it
+    /// (not before 0). The real rule is [`history_keys`].
     fn history(vol: i64) -> Vec<StormCellKey> {
         ((vol - 4).max(0)..vol).map(key).collect()
     }
@@ -472,7 +477,7 @@ mod tests {
         let a = view.for_cell(0).unwrap();
         assert_eq!(a.label, "A");
         assert_eq!(a.age_volumes, 5);
-        assert_eq!(a.trail.len(), 3);
+        assert_eq!(a.trail.len(), 5, "the whole path so far");
         assert!((a.speed_kmh - 36.0).abs() < 0.5);
         assert!((a.direction_deg - 90.0).abs() < 1.0);
         let (lat, lon) = a.forecast.expect("confident after five volumes");
@@ -697,8 +702,8 @@ mod tests {
             .iter()
             .map(|k| (k.scan_key.scan_start.0 - T0_MS) / VOL_MS)
             .collect();
-        // Four volumes back (6..9), 7 skipped: its lowest cut is not stored.
-        assert_eq!(vols, vec![6, 8, 9]);
+        // Every volume back (0..9), 7 skipped: its lowest cut is not stored.
+        assert_eq!(vols, vec![0, 1, 2, 3, 4, 5, 6, 8, 9]);
         assert!(keys.iter().all(|k| k.elevation_number == 1
             && k.input == CutInput::Stored
             && !k.fallback
@@ -713,6 +718,15 @@ mod tests {
             .map(|k| (k.scan_key.scan_start.0 - T0_MS) / VOL_MS)
             .collect();
         assert_eq!(vols, vec![9, 10]);
+        // At most twelve volumes (an hour) back, nearest included.
+        let long: Vec<Scan> = (0..20).map(|v| scan(v, &[1])).collect();
+        let displayed = ScanKey::new("KDMX", UnixMillis(ms(20)));
+        let vols: Vec<i64> = history_keys(&long, &displayed, 35.0)
+            .iter()
+            .map(|k| (k.scan_key.scan_start.0 - T0_MS) / VOL_MS)
+            .collect();
+        assert_eq!(vols, (8..20).collect::<Vec<_>>());
+        assert_eq!(HISTORY_VOLUMES, 12);
         // Nothing before the first volume.
         let displayed = ScanKey::new("KDMX", UnixMillis(ms(0)));
         assert!(history_keys(&scans, &displayed, 35.0).is_empty());
