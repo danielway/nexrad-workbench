@@ -1,8 +1,6 @@
 //! Central canvas UI: radar visualization area.
 
-use super::canvas_data_probe::{
-    render_data_probe, render_distance_measurement, render_storm_cells,
-};
+use super::canvas_data_probe::{render_data_probe, render_distance_measurement};
 use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interaction};
 use super::canvas_overlays::{
     draw_globe, draw_national_mosaic, layout_chrome, render_alerts, render_chrome_overlays,
@@ -224,7 +222,7 @@ pub(crate) fn render_canvas_with_geo(
                 }
 
                 let sweep_info = compute_sweep_line_azimuth(state, timeline, playback);
-                let (gpu_sweep, between_sweeps) =
+                let (gpu_sweep, between_sweeps, live_partial) =
                     compute_gpu_sweep_state(state, timeline, live, playback, derived, sweep_info);
 
                 // Age desaturation needs the estimated antenna azimuth; only
@@ -398,16 +396,42 @@ pub(crate) fn render_canvas_with_geo(
                     }),
                 );
 
-                if state.viz_state.storm_cells_visible
-                    && !state.viz_state.storm_cells.result.cells.is_empty()
-                {
-                    render_storm_cells(
-                        &painter,
-                        &projection,
-                        &state.viz_state.storm_cells.result.cells,
-                        dark,
-                    );
+                // Storm cells: what draws is the core's view-model (on, 2D,
+                // behind the Rays sweep line; provisional on a live partial).
+                // The desktop pointer reaches it as an intent, in lat/lon.
+                if !state.is_mobile {
+                    let hover = response
+                        .hover_pos()
+                        .filter(|_| state.viz_state.storm_cells_visible)
+                        .map(|p| {
+                            let g = projection.screen_to_geo(p);
+                            (g.y, g.x)
+                        });
+                    if hover != state.viz_state.storm_cell_pointer.hover {
+                        state.push_command(crate::core::Intent::StormCells(
+                            crate::core::storm_cell_view::StormCellIntent::Hover(hover),
+                        ));
+                        ui.ctx().request_repaint();
+                    }
                 }
+                let storm_cell_inputs = crate::core::storm_cell_view::StormCellViewInputs {
+                    result: &state.viz_state.storm_cells.result,
+                    visible: state.viz_state.storm_cells_visible,
+                    view_mode: ViewMode::Flat2D,
+                    radar: (state.viz_state.center_lat, state.viz_state.center_lon),
+                    site_id: &state.viz_state.site_id,
+                    sweep: gpu_sweep,
+                    provisional: live_partial,
+                    phone: state.is_mobile,
+                    pointer: &state.viz_state.storm_cell_pointer,
+                    probe_on: state.viz_state.data_probe_enabled,
+                };
+                let storm_cells_vm =
+                    crate::core::storm_cell_view::build(&storm_cell_inputs, |lat, lon| {
+                        let p = projection.geo_to_screen(Coord { x: lon, y: lat });
+                        [p.x, p.y]
+                    });
+                super::canvas_storm_cells::paint_storm_cells(&painter, &storm_cells_vm);
 
                 if state.layer_state.geo.gps_location {
                     if let Some(coords) = diagnostics.gps.coords {
@@ -490,6 +514,12 @@ pub(crate) fn render_canvas_with_geo(
 
                 if state.viz_state.data_probe_enabled {
                     if let Some(hover_pos) = response.hover_pos() {
+                        let geo = projection.screen_to_geo(hover_pos);
+                        let cell_line = crate::core::storm_cell_view::probe_line(
+                            &storm_cell_inputs,
+                            geo.y,
+                            geo.x,
+                        );
                         render_data_probe(
                             &painter,
                             &projection,
@@ -500,6 +530,7 @@ pub(crate) fn render_canvas_with_geo(
                             &state.viz_state.product,
                             state.use_local_time,
                             gpu_sweep,
+                            cell_line,
                         );
                     }
                 }
@@ -515,6 +546,7 @@ pub(crate) fn render_canvas_with_geo(
                             playback,
                             diagnostics,
                             derived,
+                            &storm_cells_vm,
                         ) {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                             paint_pick_hover(&painter, &projection, &pick, pos, rect, diagnostics);
@@ -558,6 +590,15 @@ pub(crate) fn render_canvas_with_geo(
                 } else {
                     render_canvas_caption(ui, &rect, state, live, &bottom_scrims);
                 }
+                if let Some(card) = storm_cells_vm.card.as_ref() {
+                    super::canvas_storm_cells::paint_card(
+                        ui.ctx(),
+                        rect,
+                        card,
+                        state.is_mobile,
+                        &bottom_scrims,
+                    );
+                }
                 render_map_toolbar(ui, &rect, state);
 
                 // Mobile chrome reveal tap (spec §13): when the chrome was
@@ -576,6 +617,7 @@ pub(crate) fn render_canvas_with_geo(
                         diagnostics,
                         derived,
                         &projection,
+                        &storm_cells_vm,
                     );
                 }
             }
@@ -724,7 +766,7 @@ fn compute_gpu_sweep_state(
     playback: &crate::subsystem::Playback,
     derived: &crate::subsystem::Derived,
     sweep_info: Option<(f32, f32)>,
-) -> (Option<(f32, f32)>, bool) {
+) -> (Option<(f32, f32)>, bool, bool) {
     // Live partial compositing only when the in-progress elevation matches
     // the user's filter (Latest accepts any cut). Otherwise other tilts would
     // keep driving the GPU sweep boundary and age desaturation between visits
@@ -790,7 +832,9 @@ fn compute_gpu_sweep_state(
         new_cache,
     );
 
-    (gpu_sweep, between_sweeps)
+    // A live partial composites only while `live_range` is set: the sweep on
+    // the GPU is still arriving.
+    (gpu_sweep, between_sweeps, live_range.is_some())
 }
 
 fn compute_sweep_line_azimuth(
@@ -961,7 +1005,7 @@ fn paint_pick_hover(
             .iter()
             .find(|r| r.id == *id)
             .map(|r| (r.lat, r.lon)),
-        MapPick::Alert { .. } => None,
+        MapPick::Alert { .. } | MapPick::StormCell { .. } => None,
     };
     if let Some((lat, lon)) = mark {
         let at = projection.geo_to_screen(Coord { x: lon, y: lat });

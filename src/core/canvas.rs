@@ -1393,6 +1393,9 @@ pub(crate) struct PickCandidates {
     /// The alert polygon under the cursor (severity tie-break already
     /// applied): `(id, event)`.
     pub alert: Option<(String, String)>,
+    /// The tapped point, when it falls inside a storm cell's footprint
+    /// ([`crate::core::storm_cell_view::cell_at`]): `(lat, lon)`.
+    pub storm_cell: Option<(f64, f64)>,
 }
 
 /// Which pickable layers are drawn.
@@ -1402,6 +1405,9 @@ pub(crate) struct PickLayers {
     pub mping: bool,
     /// Either alert class is on and live overlays apply at the playhead.
     pub alerts: bool,
+    /// Storm cells draw and a tap selects one (the phone; the desktop
+    /// hovers instead).
+    pub storm_cells: bool,
 }
 
 /// How far from a mark's center a click or tap still picks it, in screen
@@ -1442,6 +1448,11 @@ pub(crate) enum MapPick {
         id: String,
         event: String,
     },
+    /// A storm cell's footprint, at the tapped point.
+    StormCell {
+        lat: f64,
+        lon: f64,
+    },
 }
 
 impl MapPick {
@@ -1460,6 +1471,9 @@ impl MapPick {
             MapPick::Alert { id, .. } => {
                 crate::core::Intent::Diagnostics(DiagnosticsIntent::SelectAlert(id.clone()))
             }
+            MapPick::StormCell { lat, lon } => crate::core::Intent::StormCells(
+                crate::core::storm_cell_view::StormCellIntent::Select(Some((*lat, *lon))),
+            ),
         }
     }
 
@@ -1487,14 +1501,15 @@ impl MapPick {
     pub(crate) fn hover_label(&self) -> Option<String> {
         match self {
             MapPick::Site { id, .. } => Some(format!("{id} · switch site")),
-            MapPick::Mping(_) => None,
+            MapPick::Mping(_) | MapPick::StormCell { .. } => None,
             MapPick::Alert { event, .. } => Some(event.clone()),
         }
     }
 }
 
 /// Decide the pick. Point marks sit on top of alert polygons, so sites and
-/// reports win over alerts; a mark only picks while its layer is drawn — a
+/// reports win over storm cells, and storm cells (drawn over the radar,
+/// smaller than warnings) win over alerts; a mark only picks while its layer is drawn — a
 /// click near an invisible site does nothing, as it looks like it should.
 pub(crate) fn decide_map_pick(c: PickCandidates, layers: PickLayers) -> Option<MapPick> {
     if layers.sites {
@@ -1505,6 +1520,11 @@ pub(crate) fn decide_map_pick(c: PickCandidates, layers: PickLayers) -> Option<M
     if layers.mping {
         if let Some(id) = c.mping {
             return Some(MapPick::Mping(id));
+        }
+    }
+    if layers.storm_cells {
+        if let Some((lat, lon)) = c.storm_cell {
+            return Some(MapPick::StormCell { lat, lon });
         }
     }
     if layers.alerts {
@@ -2925,6 +2945,7 @@ mod pick_tests {
             site: Some(("KFDR", 34.3, -98.9)),
             mping: Some(7),
             alert: Some(("a1".to_string(), "Tornado Warning".to_string())),
+            storm_cell: None,
         }
     }
 
@@ -2932,7 +2953,49 @@ mod pick_tests {
         sites: true,
         mping: true,
         alerts: true,
+        storm_cells: true,
     };
+
+    #[wasm_bindgen_test]
+    fn a_tap_in_a_storm_cell_selects_it_over_an_alert() {
+        let c = PickCandidates {
+            site: None,
+            mping: None,
+            storm_cell: Some((42.0, -93.0)),
+            ..all()
+        };
+        let pick = decide_map_pick(c.clone(), ON);
+        assert_eq!(
+            pick,
+            Some(MapPick::StormCell {
+                lat: 42.0,
+                lon: -93.0
+            })
+        );
+        assert_eq!(
+            pick.unwrap().intent_for(true),
+            Intent::StormCells(crate::core::storm_cell_view::StormCellIntent::Select(Some(
+                (42.0, -93.0)
+            )))
+        );
+        // Points still win; with the layer off the alert picks.
+        let with_site = PickCandidates {
+            site: all().site,
+            ..c.clone()
+        };
+        assert!(matches!(
+            decide_map_pick(with_site, ON),
+            Some(MapPick::Site { .. })
+        ));
+        let off = PickLayers {
+            storm_cells: false,
+            ..ON
+        };
+        assert!(matches!(
+            decide_map_pick(c, off),
+            Some(MapPick::Alert { .. })
+        ));
+    }
 
     #[wasm_bindgen_test]
     fn a_phone_tap_on_a_site_asks_first_and_a_click_switches() {

@@ -14,6 +14,7 @@
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::ladder::VolumeLadder;
 use crate::core::panels::{self, MpingRow, RailTab};
+use crate::core::storm_cell_view::StormCellIntent;
 use crate::core::storm_cells;
 use crate::core::top_bar::{TopBarIntent, TopBarVm};
 use crate::core::{Intent, InterpolationMode};
@@ -461,13 +462,19 @@ pub(super) fn render_rendering_section(
     let in_macro = playback.state.playback_mode() == crate::core::PlaybackMode::Macro;
     section(ui, "Analysis");
 
-    ui.checkbox(&mut state.viz_state.storm_cells_visible, "Storm cells")
-        .on_hover_text("Detect and outline storm cells on the radar");
+    // The checkbox and the slider read the state and emit intents
+    // (core::storm_cell_view::reduce); they never write it.
+    let mut visible = state.viz_state.storm_cells_visible;
+    if ui
+        .checkbox(&mut visible, "Storm cells")
+        .on_hover_text("Outline each storm's footprint with its peak dBZ")
+        .changed()
+    {
+        state.push_command(Intent::StormCells(StormCellIntent::SetVisible(visible)));
+    }
     if state.viz_state.storm_cells_visible {
         let slider = storm_cells::threshold_slider(state.viz_state.product);
         ui.indent("storm_cell_indent", |ui| {
-            // two-way binding: the egui widget owns this value while the user edits it.
-            // A new threshold re-runs detection (the result is keyed on it).
             let mut threshold = state.viz_state.storm_cell_threshold_dbz;
             if ui
                 .add_enabled(
@@ -479,9 +486,10 @@ pub(super) fn render_rendering_section(
                     .text("Min dBZ")
                     .step_by(1.0),
                 )
+                .on_hover_text("The weakest echo that can belong to a cell (the envelope)")
                 .changed()
             {
-                state.viz_state.storm_cell_threshold_dbz = threshold;
+                state.push_command(Intent::StormCells(StormCellIntent::SetThreshold(threshold)));
             }
             if let Some(hint) = slider.hint {
                 ui.label(
@@ -490,6 +498,9 @@ pub(super) fn render_rendering_section(
                         .color(theme::TEXT_DIM),
                 );
             }
+            let mut tracks = false;
+            ui.add_enabled(false, egui::Checkbox::new(&mut tracks, "Tracks"))
+                .on_disabled_hover_text("Trails and 30 min forecasts: coming with tracking");
         });
     }
 

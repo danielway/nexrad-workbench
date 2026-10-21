@@ -1,6 +1,7 @@
 //! Visualization state (canvas, zoom/pan, product selection).
 
 use crate::core::canvas::CaptionContext;
+use crate::core::storm_cell_view::StormCellPointer;
 use crate::core::storm_cells::StormCells;
 use crate::core::storm_tracks::StormTracks;
 use crate::core::{DisplayedSweep, ElevationSelection, RadarProduct};
@@ -89,6 +90,9 @@ pub(crate) struct VizState {
     /// Tracks across volumes for the active site (see
     /// `crate::core::storm_tracks`).
     pub storm_tracks: StormTracks,
+    /// The desktop pointer and the phone's selected point over the storm
+    /// cell overlay (see `crate::core::storm_cell_view`).
+    pub storm_cell_pointer: StormCellPointer,
 
     /// Last observed visible map bounds in 2D mode, as
     /// `(min_lon, min_lat, max_lon, max_lat)`. Updated each frame by the
@@ -145,6 +149,7 @@ impl Default for VizState {
             storm_cells: StormCells::default(),
             storm_tracks_visible: false,
             storm_tracks: StormTracks::default(),
+            storm_cell_pointer: StormCellPointer::default(),
             last_visible_bounds: None,
             displayed: None,
             previous_displayed: None,

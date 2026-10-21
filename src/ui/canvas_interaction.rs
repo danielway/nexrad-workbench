@@ -121,6 +121,7 @@ pub(crate) fn handle_canvas_interaction(
     diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
     projection: &MapProjection,
+    storm_cells: &crate::core::storm_cell_view::StormCellsVm,
 ) {
     // Distance tool: click to place points. Which endpoint the click lands on
     // is the core's call (`decide_distance_click`), applied by the shell.
@@ -136,7 +137,24 @@ pub(crate) fn handle_canvas_interaction(
         if let Some(click_pos) = response.interact_pointer_pos() {
             // What the click picks is the core's call (`decide_map_pick`):
             // marks over polygons, and only marks whose layer is drawn.
-            match pick_at(click_pos, projection, state, playback, diagnostics, derived) {
+            let pick = pick_at(
+                click_pos,
+                projection,
+                state,
+                playback,
+                diagnostics,
+                derived,
+                storm_cells,
+            );
+            // A tap anywhere but on a cell closes an open cell card.
+            let on_cell = matches!(pick, Some(crate::core::canvas::MapPick::StormCell { .. }));
+            if let Some(dismiss) = crate::core::storm_cell_view::tap_dismisses_card(
+                on_cell,
+                &state.viz_state.storm_cell_pointer,
+            ) {
+                state.push_command(crate::core::Intent::StormCells(dismiss));
+            }
+            match pick {
                 // On the phone a tap near a site asks before switching.
                 Some(pick) => state.push_command(pick.intent_for(state.is_mobile)),
                 // Missed every interactive overlay — dismiss any open mPING
@@ -216,6 +234,7 @@ pub(crate) fn pick_at(
     playback: &crate::subsystem::Playback,
     diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
+    storm_cells: &crate::core::storm_cell_view::StormCellsVm,
 ) -> Option<crate::core::canvas::MapPick> {
     let geo_layers = &state.layer_state.geo;
     let radii = crate::core::canvas::pick_radii(state.is_mobile);
@@ -225,6 +244,8 @@ pub(crate) fn pick_at(
         sites: geo_layers.nexrad_sites,
         mping: geo_layers.mping,
         alerts: (show_warnings || show_other) && derived.data_is_live,
+        // The phone taps a cell for its card; the desktop hovers.
+        storm_cells: state.is_mobile && !storm_cells.shown.is_empty(),
     };
     let candidates = crate::core::canvas::PickCandidates {
         site: layers
@@ -265,6 +286,19 @@ pub(crate) fn pick_at(
                     .find(|a| a.id == id)
                     .map(|a| (id.clone(), a.event.clone()))
             }),
+        storm_cell: layers
+            .storm_cells
+            .then(|| {
+                let geo = projection.screen_to_geo(pos);
+                crate::core::storm_cell_view::cell_at(
+                    &state.viz_state.storm_cells.result,
+                    &storm_cells.shown,
+                    geo.y,
+                    geo.x,
+                )
+                .map(|_| (geo.y, geo.x))
+            })
+            .flatten(),
     };
     crate::core::canvas::decide_map_pick(candidates, layers)
 }
