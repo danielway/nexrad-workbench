@@ -5,14 +5,14 @@
 
 use crate::core::storm_cell_view::StormCellsVm;
 use crate::ui::theme::storm_cells as tokens;
-use eframe::egui::{Painter, Pos2, Shape, Stroke};
+use eframe::egui::{Align2, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
 
 fn pos(p: [f32; 2]) -> Pos2 {
     Pos2::new(p[0], p[1])
 }
 
-/// Group outlines (dashed) and cell footprints (light stroke over a dark
-/// halo).
+/// Group outlines (dashed), cell footprints (light stroke over a dark halo)
+/// and the peak dBZ chips.
 pub(crate) fn paint_storm_cells(painter: &Painter, vm: &StormCellsVm) {
     if vm.is_empty() {
         return;
@@ -23,6 +23,12 @@ pub(crate) fn paint_storm_cells(painter: &Painter, vm: &StormCellsVm) {
         if let Some(first) = path.first().copied() {
             path.push(first);
         }
+        painter.extend(Shape::dashed_line(
+            &path,
+            Stroke::new(style.group_px + 2.0, tokens::group_halo()),
+            3.0,
+            4.0,
+        ));
         painter.extend(Shape::dashed_line(
             &path,
             Stroke::new(style.group_px, tokens::group()),
@@ -46,5 +52,55 @@ pub(crate) fn paint_storm_cells(painter: &Painter, vm: &StormCellsVm) {
             path,
             Stroke::new(style.outline_px, stroke),
         ));
+    }
+
+    let font = FontId::monospace(style.chip_font_px);
+    for chip in &vm.chips {
+        let rect = Rect::from_min_size(pos(chip.min), Vec2::new(chip.size[0], chip.size[1]));
+        let center = rect.center();
+        if chip.hollow {
+            painter.rect_stroke(
+                rect,
+                3.0,
+                Stroke::new(1.0, tokens::chip_edge_hollow()),
+                StrokeKind::Inside,
+            );
+            for d in [
+                Vec2::new(-1.0, 0.0),
+                Vec2::new(1.0, 0.0),
+                Vec2::new(0.0, -1.0),
+                Vec2::new(0.0, 1.0),
+            ] {
+                painter.text(
+                    center + d,
+                    Align2::CENTER_CENTER,
+                    &chip.text,
+                    font.clone(),
+                    tokens::text_halo(),
+                );
+            }
+            painter.text(
+                center,
+                Align2::CENTER_CENTER,
+                &chip.text,
+                font.clone(),
+                tokens::OUTLINE,
+            );
+        } else {
+            painter.rect(
+                rect,
+                3.0,
+                tokens::chip_fill(),
+                Stroke::new(1.0, tokens::chip_edge()),
+                StrokeKind::Inside,
+            );
+            painter.text(
+                center,
+                Align2::CENTER_CENTER,
+                &chip.text,
+                font.clone(),
+                tokens::CHIP_VALUE,
+            );
+        }
     }
 }

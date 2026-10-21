@@ -232,7 +232,30 @@ pub(crate) mod storm_cells {
     }
     /// The dashed group outline: fainter than a cell's.
     pub(crate) fn group() -> Color32 {
-        alpha(OUTLINE, 110)
+        alpha(OUTLINE, 165)
+    }
+    /// The faint halo under the dashed group outline.
+    pub(crate) fn group_halo() -> Color32 {
+        alpha(INK, 110)
+    }
+    /// The peak dBZ on a chip: the one warm value, as in the mock.
+    pub(crate) const CHIP_VALUE: Color32 = Color32::from_rgb(255, 210, 122);
+    /// A chip's dark fill.
+    pub(crate) fn chip_fill() -> Color32 {
+        alpha(INK, 209)
+    }
+    /// A chip's hairline edge.
+    pub(crate) fn chip_edge() -> Color32 {
+        alpha(OUTLINE, 90)
+    }
+    /// A hollow (provisional) chip's edge: it has no fill, so the edge
+    /// carries it.
+    pub(crate) fn chip_edge_hollow() -> Color32 {
+        alpha(OUTLINE, 200)
+    }
+    /// The dark halo behind a hollow chip's number.
+    pub(crate) fn text_halo() -> Color32 {
+        alpha(INK, 220)
     }
 }
 
