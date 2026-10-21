@@ -404,7 +404,7 @@ pub(crate) fn render_canvas_with_geo(
                     render_storm_cells(
                         &painter,
                         &projection,
-                        &state.viz_state.detected_storm_cells,
+                        &state.viz_state.detected_storm_cells.cells,
                         dark,
                     );
                 }

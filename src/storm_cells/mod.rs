@@ -13,7 +13,8 @@
 //! 3. Label 8-connected components (with azimuth wrap) at a ladder of
 //!    levels from the user's envelope threshold up in 5 dB steps, build the
 //!    containment tree and resolve it into cells and groups (`segment`).
-//! 4. Summarize each cell's footprint (`features`).
+//! 4. Summarize each cell's and group's footprint (`features`) and trace
+//!    its outline (`outline`).
 //!
 //! The envelope threshold (the user's slider, default 35 dBZ) is the weakest
 //! echo that can belong to a cell; a cell needs a core of envelope + 10 dB.
@@ -21,36 +22,15 @@
 mod components;
 mod features;
 mod median;
+mod model;
+mod outline;
 mod segment;
 
-/// Lightweight storm cell info for rendering on the canvas.
-#[derive(Clone, Debug)]
-pub struct StormCellInfo {
-    /// Reflectivity-weighted centroid latitude.
-    pub lat: f64,
-    /// Reflectivity-weighted centroid longitude.
-    pub lon: f64,
-    /// Maximum reflectivity (dBZ) anywhere in the cell.
-    pub max_dbz: f32,
-    /// Mean reflectivity (dBZ) across the cell's gates.
-    pub mean_dbz: f32,
-    /// Cell footprint area in km².
-    pub area_km2: f32,
-    /// Bounding box (min_lat, min_lon, max_lat, max_lon).
-    pub bounds: (f64, f64, f64, f64),
-    /// Compass bearing (0° = N, clockwise) from radar to centroid.
-    pub bearing_from_radar_deg: f32,
-    /// Great-circle-approximate distance from radar to centroid, km.
-    pub range_from_radar_km: f32,
-    /// Orientation of the cell's major axis in compass degrees, folded
-    /// into [0, 180) since an axis is undirected.
-    pub orientation_deg: f32,
-    /// √(λ_major / λ_minor) from the pixel-weighted covariance. 1.0 = round.
-    pub elongation: f32,
-    /// Number of gates comprising the cell. Useful for debugging / further
-    /// filtering.
-    pub gate_count: u32,
-}
+pub(crate) use model::{DetectionSource, StormCell, StormCellsResult, StormGroup};
+
+/// Approximate kilometres per degree of latitude: the flat
+/// (equirectangular) projection around the radar that the 2D canvas uses.
+const KM_PER_DEG: f64 = 111.0;
 
 /// Borrowed view of the sweep data needed to run detection.
 pub(crate) struct DetectionInput<'a> {
@@ -114,14 +94,23 @@ impl Default for DetectionParams {
     }
 }
 
-/// Run detection over the provided sweep, returning one `StormCellInfo`
-/// per cell, strongest first.
-pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> Vec<StormCellInfo> {
+/// Run detection over the provided sweep. The result's `source` carries
+/// `params`; the caller fills in the sweep identity it knows.
+pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> StormCellsResult {
+    let mut result = StormCellsResult {
+        source: DetectionSource {
+            params: params.clone(),
+            ..DetectionSource::default()
+        },
+        ..StormCellsResult::default()
+    };
     if input.azimuth_count == 0 || input.gate_count == 0 || input.azimuths.is_empty() {
-        return Vec::new();
+        return result;
     }
-    if input.gate_values.len() < input.azimuth_count * input.gate_count {
-        return Vec::new();
+    if input.gate_values.len() < input.azimuth_count * input.gate_count
+        || input.azimuths.len() < input.azimuth_count
+    {
+        return result;
     }
 
     let az_adjacent = components::precompute_az_adjacency(input.azimuths, input.azimuth_count);
@@ -149,23 +138,89 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
         &gate_area_km2,
         params,
     );
+    let half_spacing = components::median_spacing_deg(input.azimuths, input.azimuth_count) * 0.5;
 
-    let mut cells: Vec<StormCellInfo> = seg
-        .envelopes
-        .iter()
-        .flat_map(|(_, cells)| cells.iter())
-        .map(|&c| {
+    // Cells, tagged with the index of their envelope while it is a group.
+    let mut cells: Vec<(StormCell, Option<usize>)> = Vec::new();
+    let mut groups: Vec<StormGroup> = Vec::new();
+    for (envelope, members) in &seg.envelopes {
+        let group_idx = (members.len() >= 2).then(|| {
+            let comp = &seg.components[*envelope];
+            let fp = features::summarize(&comp.pixels, &filtered, input, params.threshold_dbz);
+            groups.push(StormGroup {
+                id: 0,
+                level_dbz: params.threshold_dbz,
+                peak_dbz: comp.peak,
+                area_km2: fp.area_km2,
+                cell_ids: Vec::new(),
+                lat: fp.lat,
+                lon: fp.lon,
+                outline: outline::outline(&comp.pixels, input, half_spacing),
+            });
+            groups.len() - 1
+        });
+        for &c in members {
             let comp = &seg.components[c];
             let level = seg.levels[comp.level_idx];
-            features::summarize(&comp.pixels, &filtered, input, level)
-        })
-        .collect();
-    cells.sort_by(|a, b| {
-        b.max_dbz
-            .total_cmp(&a.max_dbz)
-            .then(b.area_km2.total_cmp(&a.area_km2))
+            let fp = features::summarize(&comp.pixels, &filtered, input, level);
+            let cell = StormCell {
+                id: 0,
+                group_id: None,
+                level_dbz: level,
+                peak_dbz: comp.peak,
+                mean_dbz: fp.mean_dbz,
+                area_km2: fp.area_km2,
+                gate_count: fp.gate_count,
+                lat: fp.lat,
+                lon: fp.lon,
+                bounds: fp.bounds,
+                bearing_from_radar_deg: fp.bearing_from_radar_deg,
+                range_from_radar_km: fp.range_from_radar_km,
+                orientation_deg: fp.orientation_deg,
+                elongation: fp.elongation,
+                outline: outline::outline(&comp.pixels, input, half_spacing),
+            };
+            cells.push((cell, group_idx));
+        }
+    }
+
+    // Strongest first, then largest, then position, so ids are deterministic.
+    let order = |a: (f32, f32, f64, f64), b: (f32, f32, f64, f64)| {
+        b.0.total_cmp(&a.0)
+            .then(b.1.total_cmp(&a.1))
+            .then(a.2.total_cmp(&b.2))
+            .then(a.3.total_cmp(&b.3))
+    };
+    let mut group_order: Vec<usize> = (0..groups.len()).collect();
+    group_order.sort_by(|&a, &b| {
+        let key = |g: &StormGroup| (g.peak_dbz, g.area_km2, g.lat, g.lon);
+        order(key(&groups[a]), key(&groups[b]))
     });
-    cells
+    let mut group_id = vec![0u32; groups.len()];
+    for (new_id, &old) in group_order.iter().enumerate() {
+        group_id[old] = new_id as u32;
+    }
+    cells.sort_by(|(a, _), (b, _)| {
+        order(
+            (a.peak_dbz, a.area_km2, a.lat, a.lon),
+            (b.peak_dbz, b.area_km2, b.lat, b.lon),
+        )
+    });
+    for (i, (cell, group)) in cells.iter_mut().enumerate() {
+        cell.id = i as u32;
+        if let Some(g) = group {
+            cell.group_id = Some(group_id[*g]);
+            groups[*g].cell_ids.push(i as u32);
+        }
+    }
+    for (old, g) in groups.iter_mut().enumerate() {
+        g.id = group_id[old];
+    }
+    groups.sort_by_key(|g| g.id);
+
+    result.cells = cells.into_iter().map(|(c, _)| c).collect();
+    result.groups = groups;
+    result
 }
 
 /// Decode raw gate values into physical dBZ, writing NaN for gates that
@@ -267,11 +322,11 @@ mod coverage_tests {
         ]);
         let az = even_az(4);
         let input = mk_input(&az, &gates, gc);
-        let cells = detect_cells(&input, &permissive());
+        let cells = detect_cells(&input, &permissive()).cells;
         assert_eq!(cells.len(), 1);
         let c = &cells[0];
         assert_eq!(c.gate_count, 4);
-        assert_eq!(c.max_dbz, 50.0);
+        assert_eq!(c.peak_dbz, 50.0);
         assert!((c.mean_dbz - 50.0).abs() < 1e-3);
         assert!(c.range_from_radar_km > 0.0);
         assert!((0.0..360.0).contains(&c.bearing_from_radar_deg));
@@ -289,9 +344,9 @@ mod coverage_tests {
         let (gates, gc) = flatten(rows);
         let az = vec![0.0_f32, 1.0, 2.0, 3.0, 4.0];
         let input = mk_input(&az, &gates, gc);
-        let cells = detect_cells(&input, &permissive());
+        let cells = detect_cells(&input, &permissive()).cells;
         assert_eq!(cells.len(), 1);
-        assert_eq!(cells[0].max_dbz, 50.0);
+        assert_eq!(cells[0].peak_dbz, 50.0);
     }
 
     #[wasm_bindgen_test]
@@ -315,10 +370,10 @@ mod coverage_tests {
         ]);
         let az = even_az(6);
         let input = mk_input(&az, &gates, gc);
-        let cells = detect_cells(&input, &permissive());
+        let cells = detect_cells(&input, &permissive()).cells;
         assert_eq!(cells.len(), 2);
-        assert_eq!(cells[0].max_dbz, 60.0);
-        assert_eq!(cells[1].max_dbz, 50.0);
+        assert_eq!(cells[0].peak_dbz, 60.0);
+        assert_eq!(cells[1].peak_dbz, 50.0);
     }
 
     #[wasm_bindgen_test]
@@ -332,8 +387,37 @@ mod coverage_tests {
         let (gates, gc) = flatten(vec![row.clone(), row.clone(), row]);
         let az = vec![0.0_f32, 1.0, 2.0];
         let input = mk_input(&az, &gates, gc);
-        let cells = detect_cells(&input, &permissive());
+        let cells = detect_cells(&input, &permissive()).cells;
         assert_eq!(cells.len(), 2, "{cells:?}");
+    }
+
+    #[wasm_bindgen_test]
+    fn groups_link_their_cells_and_ids_are_strongest_first() {
+        // Two storms (60 and 55 dBZ) in one envelope plus a lone 50 dBZ cell.
+        let row = vec![
+            0.0, 45.0, 55.0, 55.0, 55.0, 45.0, 40.0, 40.0, 45.0, 60.0, 60.0, 60.0, 45.0, 0.0, 0.0,
+            0.0, 50.0, 50.0, 50.0, 0.0,
+        ];
+        let (gates, gc) = flatten(vec![row.clone(), row.clone(), row]);
+        let az = vec![0.0_f32, 1.0, 2.0];
+        let input = mk_input(&az, &gates, gc);
+        let r = detect_cells(&input, &permissive());
+        let peaks: Vec<f32> = r.cells.iter().map(|c| c.peak_dbz).collect();
+        assert_eq!(peaks, vec![60.0, 55.0, 50.0]);
+        for (i, c) in r.cells.iter().enumerate() {
+            assert_eq!(c.id as usize, i);
+            assert!(c.outline.len() >= 4 && c.outline.first() == c.outline.last());
+        }
+        assert_eq!(r.groups.len(), 1);
+        assert_eq!(r.groups[0].cell_ids, vec![0, 1]);
+        assert_eq!(r.groups[0].peak_dbz, 60.0);
+        assert_eq!(r.cells[0].group_id, Some(0));
+        assert_eq!(r.cells[1].group_id, Some(0));
+        assert_eq!(r.cells[2].group_id, None);
+        // The lone cell keeps its envelope; grouped cells their split level.
+        assert_eq!(r.cells[2].level_dbz, 35.0);
+        assert!(r.cells[0].level_dbz > 35.0);
+        assert_eq!(r.source.params, permissive());
     }
 
     #[wasm_bindgen_test]
@@ -346,7 +430,7 @@ mod coverage_tests {
         let (gates, gc) = flatten(rows);
         let az = even_az(8);
         let input = mk_input(&az, &gates, gc);
-        let cells = detect_cells(&input, &permissive());
+        let cells = detect_cells(&input, &permissive()).cells;
         assert_eq!(cells.len(), 1);
         assert_eq!(cells[0].gate_count, 4);
     }
@@ -362,7 +446,7 @@ mod coverage_tests {
         // The wrap gap 60→0 is 300° ≫ 2× median(20), so no seam.
         let az = vec![0.0_f32, 20.0, 40.0, 60.0];
         let input = mk_input(&az, &gates, gc);
-        assert_eq!(detect_cells(&input, &permissive()).len(), 2);
+        assert_eq!(detect_cells(&input, &permissive()).cells.len(), 2);
     }
 
     #[wasm_bindgen_test]
@@ -382,7 +466,7 @@ mod coverage_tests {
         let (gates, gc) = flatten(vec![vec![50.0, 50.0, 0.0], vec![50.0, 50.0, 0.0]]);
         let az = even_az(2);
         let input = mk_input(&az, &gates, gc);
-        assert_eq!(detect_cells(&input, &permissive()).len(), 1);
+        assert_eq!(detect_cells(&input, &permissive()).cells.len(), 1);
         let params = DetectionParams {
             min_area_km2: 1.0e9,
             ..permissive()
@@ -436,7 +520,7 @@ mod coverage_tests {
             vec![0.0; 8],
         ]);
         let input = mk_input(&az, &gates, gc);
-        let cells = detect_cells(&input, &permissive());
+        let cells = detect_cells(&input, &permissive()).cells;
         assert_eq!(cells.len(), 1);
         let c = &cells[0];
         assert!(c.elongation.is_finite());

@@ -94,16 +94,22 @@ impl RadarGpuRenderer {
     /// Detect storm cells from the current CPU-side data.
     ///
     /// Thin adapter over `crate::storm_cells` — packages the shadow
-    /// copies of the rendered sweep into a `DetectionInput` and runs the
-    /// in-tree threshold + connected-component detector.
-    pub fn detect_storm_cells(
+    /// copies of the rendered sweep into a `DetectionInput`, runs the
+    /// nested-threshold detector and stamps the result with the sweep id.
+    pub(crate) fn detect_storm_cells(
         &self,
         radar_lat: f64,
         radar_lon: f64,
         threshold_dbz: f32,
-    ) -> Vec<crate::storm_cells::StormCellInfo> {
+    ) -> crate::storm_cells::StormCellsResult {
+        let params = crate::storm_cells::DetectionParams {
+            threshold_dbz,
+            ..Default::default()
+        };
         if !self.has_data || self.cpu.azimuths.is_empty() {
-            return Vec::new();
+            let mut empty = crate::storm_cells::StormCellsResult::default();
+            empty.source.params = params;
+            return empty;
         }
 
         let t_total = web_time::Instant::now();
@@ -123,18 +129,15 @@ impl RadarGpuRenderer {
             radar_lat,
             radar_lon,
         };
-        let params = crate::storm_cells::DetectionParams {
-            threshold_dbz,
-            ..Default::default()
-        };
-
-        let result = crate::storm_cells::detect_cells(&input, &params);
+        let mut result = crate::storm_cells::detect_cells(&input, &params);
+        result.source.sweep_id = self.current.sweep_id.clone();
 
         log::debug!(
-            "detect_storm_cells: {}x{} grid, {} cells (>= {:.0} dBZ), {:.1}ms",
+            "detect_storm_cells: {}x{} grid, {} cells in {} groups (envelope {:.0} dBZ), {:.1}ms",
             az_count,
             gate_count,
-            result.len(),
+            result.cells.len(),
+            result.groups.len(),
             threshold_dbz,
             t_total.elapsed().as_secs_f64() * 1000.0,
         );

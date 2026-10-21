@@ -7,19 +7,30 @@
 //! orientation + elongation.
 
 use super::components::Pixel;
-use super::DetectionInput;
-use super::StormCellInfo;
+use super::{DetectionInput, KM_PER_DEG};
 
-/// Approximate kilometers per degree of latitude. Matches the
-/// equirectangular approximation used in `canvas_data_probe.rs`.
-const KM_PER_DEG: f64 = 111.0;
+/// Summary of one component's gates.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Footprint {
+    pub lat: f64,
+    pub lon: f64,
+    pub max_dbz: f32,
+    pub mean_dbz: f32,
+    pub area_km2: f32,
+    pub bounds: (f64, f64, f64, f64),
+    pub bearing_from_radar_deg: f32,
+    pub range_from_radar_km: f32,
+    pub orientation_deg: f32,
+    pub elongation: f32,
+    pub gate_count: u32,
+}
 
 pub(super) fn summarize(
     pixels: &[Pixel],
     grid: &[f32],
     input: &DetectionInput,
     threshold_dbz: f32,
-) -> StormCellInfo {
+) -> Footprint {
     let cos_lat = input.radar_lat.to_radians().cos().max(1e-6);
     let az_spacing_rad = (360.0_f64 / input.azimuth_count as f64).to_radians();
 
@@ -121,7 +132,7 @@ pub(super) fn summarize(
         (0.0, 1.0)
     };
 
-    StormCellInfo {
+    Footprint {
         lat: centroid_lat,
         lon: centroid_lon,
         max_dbz,

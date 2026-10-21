@@ -163,6 +163,24 @@ pub(super) fn precompute_az_adjacency(azimuths: &[f32], azimuth_count: usize) ->
         .collect()
 }
 
+/// Median angular spacing between consecutive sorted radials, in degrees
+/// (1.0 when it cannot be determined).
+pub(super) fn median_spacing_deg(azimuths: &[f32], azimuth_count: usize) -> f64 {
+    let mut gaps: Vec<f32> = (0..azimuth_count)
+        .filter_map(|i| {
+            let a = *azimuths.get(i)?;
+            let b = *azimuths.get((i + 1) % azimuth_count)?;
+            (a >= 0.0 && b >= 0.0 && azimuth_count > 1).then(|| (b - a).rem_euclid(360.0))
+        })
+        .filter(|g| *g > 0.0)
+        .collect();
+    if gaps.is_empty() {
+        return 1.0;
+    }
+    gaps.sort_by(f32::total_cmp);
+    gaps[gaps.len() / 2] as f64
+}
+
 pub(super) fn wrap_az(az: usize, delta: i32, az_count: usize) -> usize {
     let n = az_count as i32;
     let v = az as i32 + delta;

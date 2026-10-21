@@ -365,7 +365,7 @@ impl Default for RenderProcessing {
 
 /// Storm cell types live in the dependency-free `storm_cells` leaf module
 /// (kept extractable so it can move upstream into the nexrad crates).
-pub(crate) use crate::storm_cells::StormCellInfo;
+pub(crate) use crate::storm_cells::{StormCell, StormCellsResult};
 
 #[cfg(test)]
 mod coverage_tests {
