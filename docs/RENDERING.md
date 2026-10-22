@@ -8,6 +8,11 @@ once per pixel, every frame.
 
 Module: [src/nexrad/render/gpu_renderer/](../src/nexrad/render/gpu_renderer/).
 
+Each site on the map has its own renderer (`SiteGpu::radar` on
+`SiteState`) with its own textures. The 2D canvas draws every site's disc
+in `core::sites::draw_order`, older frame first, so the newer frame is on
+top where two discs overlap.
+
 ## What the GPU does (and why)
 
 For each on-screen pixel, the fragment shader:

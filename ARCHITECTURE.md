@@ -49,14 +49,14 @@ fastest, so this table names *responsibilities*; find the file with `grep`.
 |--------|---------|---------|
 | `core` | The pure, headless core. `core/domain/` holds the domain vocabulary shared by every layer (radar model `Scan`/`Sweep`/`Radial`/`RadarTimeline`/`ScanMetadata`, playback time model, viz types incl. `RenderProcessing`/`SweepIdentity`, re-exports of the `storm_cells` result types, `ViewState`, errors, feed states, telemetry records, worker result types). `core` also owns the contract types (`Intent`, `Effect`), the pure decision modules (`persist`, `link` — the URL codec and how a session opens, `prefs` — the versioned preferences, their migration and the reset plan, `keymap`, `diagnostics`, `canvas`, `render`, `panels`, `acquisition`), the worker/frame **reducers** (`worker_ingest`, `worker_decoded`, `render_loop`), the live-mode state machine (`live_mode`, `live_radar_model`), the per-frame session view-model (`session` — stream, playhead, selection and frame facts, and the words every status surface prints), the top bar's view-model and width rule (`top_bar`), the tilt ladder on the volume clock and the one tilt list (`ladder`), the rail's tabs, layer recency sentence and map-tool toggles (`panels`), the toast queue (`toast`), playback sweep-cache logic (`playback_manager`), the timeline view model (`timeline_view`), streaming vocabulary (`streaming_plan`, `streaming_filter`), the projection engine (`projection/` — single owner of forward-looking radar timing; `projector.rs` is its private kernel), and the chunk-timing physics fork (`timing/`, upstream-contribution candidate). No I/O, no egui, no web_sys in decision logic. | `core/mod.rs`, `core/intent.rs`, `core/effect.rs`, `core/projection/engine.rs`, `core/timing/config.rs` |
 | `state` | `AppState` root container (frame scratch, status, command queue, settings) plus focused state containers (`viz`, `acquisition`, `calendar`, `url_state`, `recency`, `render_cache`, `saved_events`, `settings`, `stats`, `theme`, `layer`) and the **shell halves** of core types — the impls that touch the browser (`preferences` load/save, `frame_clock` capture, `playback` wall-clock constructors). | `state/mod.rs`, `state/viz.rs`, `state/url_state.rs` |
-| `subsystem` | Bounded state owners with typed APIs, each owning a coherent slice of state + channels: `Acquisition`, `Render`, `Timeline`, `Playback`, `Live`, `Chrome`, `Diagnostics`, `NetworkMonitor`, plus the per-frame `Derived` view-model cache. | `subsystem/mod.rs` |
+| `subsystem` | Bounded state owners with typed APIs, each owning a coherent slice of state + channels: `Sites` (one `SiteState` per radar on the map and the focus index), `Acquisition`, `Render`, `Timeline`, `Playback`, `Live`, `Chrome`, `Diagnostics`, `NetworkMonitor`, plus the per-frame `Derived` view-model cache. | `subsystem/mod.rs` |
 | `app` | The imperative shell over the core reducers: each frame-loop concern assembles read-only inputs, calls the pure core, then executes the described actions (`worker_results`, `render_loop`, `acquisition_intent`, `command_dispatch`, `live_mode`, `download`, `selection_download`, `frame_setup`). Also the `Effect` runtime (`effects.rs`) and the persistence shell (`persistence_manager.rs`). | `app/mod.rs`, `app/effects.rs` |
 | `nexrad` | The data pipeline, grouped by phase: `acquisition/` (S3 download, download queue, archive index, cache-load channel, coordinator), `live/` (realtime streaming loop + channel, `StreamingState`), `decode/` (record decode, ingest phases, `worker_api` WASM exports, `decode_worker` pool), `render/` (GPU renderer, globe/volume renderers, color tables, national mosaic, `RenderCoordinator`). | `nexrad/mod.rs`, `nexrad/live/realtime/streaming/`, `nexrad/decode/ingest_phases.rs` |
 | `ui` | Desktop panel layout, timeline, canvas + overlays, playback controls, modals, keyboard shortcuts, mobile chrome and gestures. Thin render shell per the core/shell standard. | `ui/layout.rs`, `ui/canvas.rs`, `ui/timeline/`, `ui/theme.rs` (color tokens, fonts, text sizes) |
 | `geo` | Camera system (2D flat + unified 3D orbit camera with fly-to transitions — pure math), map projection, geographic feature types + rendering (`ViewMode`, `GeoLayerVisibility` live here), 3D globe/line renderers, built-in cities. | `geo/camera.rs`, `geo/projection.rs` |
 | `data` | True leaf. Static data (`sites`, `vcp`), storage key vocabulary (`keys`), the sweep-blob wire format (`blob_format`), VCP sweep-duration physics (`vcp_timing`), the live-volume anchor state machine (`live_anchor`), the IndexedDB store (`indexeddb/`), quota policy (`quota`), and the main-thread eviction facade (`facade`). | `data/mod.rs`, `data/indexeddb/mod.rs` |
 | `alerts` / `mping` | Polling feed modules: API client, parse, async channel, manager (cadence/dedup/viewport policy). Their pure state containers live in `core/domain/feeds.rs`. | `alerts/manager.rs`, `mping/manager.rs` |
-| `storm_cells` | Leaf. Storm cell detection: median filter, nested-threshold segmentation, watershed footprints (each envelope shared among its cells), cell/group model and outlines; and tracking across volumes (`track`: SCIT-style IDs, motion with a confidence, coasting, split/merge lineage, closest approach). Imports nothing from the crate (std, plus serde derives for the worker transport) so it can move upstream into the nexrad crates; `core` re-exports its types, `core::storm_cells` decides which cut to detect on and caches results, `core::storm_tracks` feeds the tracker one volume at a time and keeps per-volume frames (with the tracker after each, so a late volume is inserted and the later ones replayed) so scrubbing and looping show stable IDs, and the decode worker's `detect` message runs it on a stored or live sweep. | `storm_cells/mod.rs` |
+| `storm_cells` | Leaf. Storm cell detection: median filter, nested-threshold segmentation, watershed footprints (each envelope shared among its cells), cell/group model and outlines; and tracking across volumes (`track`: SCIT-style IDs, motion with a confidence, coasting, split/merge lineage, closest approach). Imports nothing from the crate (std, plus serde derives for the worker transport) so it can move upstream into the nexrad crates; `core` re-exports its types, `core::storm_cells` decides which cut to detect on and caches results, `core::storm_tracks` feeds the tracker one volume at a time and keeps per-volume frames (with the tracker after each, so a late volume is inserted and the later ones replayed) so scrubbing and looping show stable IDs, and the decode worker's `detect` message runs it on a stored or live sweep, or `detect_composite` on the composite grid of every shown site (`storm_cells::composite`). | `storm_cells/mod.rs` |
 | `net` | Unified retry policy (`with_retry`, `Verdict`, per-context policies) applied to every outbound HTTP request. | `net/retry.rs` |
 
 ### JavaScript / HTML
@@ -92,6 +92,11 @@ occurs, forcing its row to be deleted — the table only shrinks.
 
 ## Data Flow
 
+Every pump runs once per site on the map, through that site's request
+ledger, retries and prefetch settle, and every worker reply carries a scan
+key (or a site id) that `core::sites::route` maps back to its site; a reply
+for a site no longer on the map is dropped. The flows below are one site's.
+
 ### Archive Download (Primary Pipeline)
 ```
 User selects site/date
@@ -114,10 +119,12 @@ User selects site/date
 ### Real-time Streaming
 ```
 Start live mode
-  → subsystem::Live starts RealtimeChannel, which spawns streaming_loop
-    (nexrad/live/realtime/streaming/)
+  → every site's RealtimeChannel (SiteState.live, a SiteLive) starts and
+    spawns its own streaming_loop (nexrad/live/realtime/streaming/);
+    subsystem::Live holds the one session phase over them
   → Loop: predict next chunk poll time (core ProjectionEngine) → sleep → fetch
-  → Each chunk → worker.ingest_chunk → decode + accumulate radials
+  → Each chunk → worker.ingest_chunk → decode + accumulate radials in that
+    site's accumulator (keyed by site id)
   → Completed elevations → sweep blobs stored to IDB (upsert_scan)
   → Partial elevations → worker.render_live (reads in-memory accumulator)
   → Storm cells (when on): worker.detect on the volume's lowest reflectivity
@@ -225,7 +232,7 @@ Heavy computation (bzip2 decompression, NEXRAD decoding, sweep extraction, IDB I
 |-----------|-----------|---------|
 | `init` | Main → Worker | Initialize with Trunk-generated WASM/JS URLs |
 | `ingest` | Main → Worker | Full archive: split, decode, extract sweeps, store in IDB |
-| `ingest_chunk` | Main → Worker | Real-time chunk: decode, accumulate, flush completed sweeps |
+| `ingest_chunk` | Main → Worker | Real-time chunk: decode, accumulate in the site's own accumulator, flush completed sweeps |
 | `render` | Main → Worker | Read pre-computed sweep from IDB, marshal for GPU upload |
 | `render_volume` | Main → Worker | Pack all elevations for 3D ray-marching |
 | `render_live` | Main → Worker | Read partial sweep from in-memory accumulator (synchronous); answered with `live_decoded`, or `live_superseded` when the elevation was stored after the request was sent (a no-op on the main thread) |
@@ -294,7 +301,7 @@ source of truth for the schema.
    - Content-signature-based invalidation
 
 3. **In-memory accumulator** (worker only, live mode)
-   - `ChunkAccumulator` holds partial sweeps during real-time streaming
+   - One `ChunkAccumulator` per streaming site holds its partial sweeps
    - Flushed to IDB when elevations complete
    - Readable via `render_live` for immediate partial display
 
@@ -312,7 +319,9 @@ then UI layout.
 - **Subsystems** (`subsystem/`) own their domains: `Acquisition` (download
   pipeline + operation tracking), `Render` (the worker pool), `Timeline`
   (the storm-activity book), `Playback` (cursor/speed/mode),
-  `Live` (streaming channel + live-mode state + per-frame derived models),
+  `Live` (the live session: phase, exit reason, detach latch and the
+  per-frame `SessionVm`; each site's channel and live models are its own
+  `SiteLive`),
   `Chrome` (UI visibility flags + modal booleans), `Diagnostics` (alerts,
   mPING, GPS, network monitor), and `Derived` (the per-frame view-model cache).
 - **`Sites`** (`subsystem/sites.rs`) holds one `SiteState` per radar and a
@@ -321,10 +330,15 @@ then UI layout.
   (`core::render::RenderTrack`), the crossfade and scrub caches, the displayed
   frame and its age, storm cells, the GPU renderers (`SiteGpu`; the GL
   context, globe and geo lines stay on `GpuResources`), and the request
-  ledger, retries and prefetch settle. Worker replies find their site with
+  ledger, retries and prefetch settle, and its live stream (`SiteLive`: the
+  `RealtimeChannel`, the volume in progress, the projection engine and the
+  per-frame live models). `Sites::scene` (`SceneCells`) holds the storm cells
+  detected on the composite grid while more than one site is shown, with one
+  tracker for the whole map. Worker replies find their site with
   `core::sites::route` and are dropped when it is gone; per-frame shells loop
   over the list, and single-valued surfaces (ladder, readouts, timeline,
-  links, preferences) read the focus. The list holds up to
+  links, preferences) read the focus; `focus` is only an index into the
+  list, and the single-site app is a list of one. The list holds up to
   `core::sites::cap` sites (three on a desktop, one on a phone); the
   `AddSite`, `RemoveSite`, `SetFocus` and `OnlyFocus` intents change it
   through the pure decisions in `core::sites`.
@@ -350,8 +364,8 @@ executed by the `Effect` runtime (`app/effects.rs`).
 │ Top Bar: site · product · tilt · frame time + age pill   │
 ├──────────┬─────────────────────────────┬─────────────────┤
 │ Left     │ Canvas                      │ Right Panel     │
-│ Panel    │ (Radar + Geographic layers  │ • Product       │
-│ (Radar   │  + Overlays)                │ • Palette       │
+│ Panel    │ (a disc per site + Geo      │ • Product       │
+│ (Radar   │  layers + Overlays)         │ • Palette       │
 │  Ops)    │                             │ • Layers        │
 │          │                             │ • Processing    │
 │          │                             │ • 3D Options    │
@@ -483,7 +497,13 @@ the desktop, 2 h on the phone — and the confirmation shows
 Canvas overlays live in `ui/canvas_overlays/` — one module per overlay
 (national mosaic, alerts, mPING reports, GPS location, sweep line/donut, site
 markers, info text, color scale, scale bar, compass, globe). `ui/canvas.rs`
-owns the draw order and the radar texture pass.
+owns the draw order and the radar texture pass: every site's disc, older
+frame first (`core::sites::draw_order`), each with its own Rays marks, the
+focus's marks on top. In 3D, `ui/canvas_overlays/globe.rs` draws every site's
+surface patch, then their volumes back to front from the camera
+(`core::volume_plan::globe_draw_plan`); `core::volume_plan::resident_volumes`
+decides which sites may hold a volume texture (three on a desktop, one on a
+phone).
 
 ## Platform Support
 

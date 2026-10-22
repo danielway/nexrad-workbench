@@ -133,17 +133,24 @@ The essentials to hold in mind:
   decompress, NEXRAD decode, sweep extraction, IndexedDB I/O, sweep-blob
   generation) runs in a pool of Web Workers (`worker.js`). Communication is
   `postMessage` with Transferable ArrayBuffers (zero-copy). The worker protocol
-  has six message types: `init`, `ingest`, `ingest_chunk`, `render`,
-  `render_volume`, `render_live`.
+  has eight message types: `init`, `ingest`, `ingest_chunk`, `render`,
+  `render_volume`, `render_live`, `detect` and `detect_composite` (storm
+  cells on one site's cut, or once on the composite grid of every shown
+  site).
 - **Pipeline** — Acquire (S3 download or live chunk stream) → Ingest in the worker
   (split → decompress → decode → extract sweep blobs → store in IDB) → Render in
   the worker (read one pre-computed sweep blob from IDB) → Display on the main
   thread (upload raw f32 to a GPU R32F texture; the fragment shader does
   polar→Cartesian + raw→physical + color). Sweep blobs are pre-computed at ingest
   so scrubbing and elevation changes have near-zero render latency.
+- **Sites** — up to three radars on the map, all the same kind of thing:
+  per-site state (scans, render track, displayed frame, GPU renderers,
+  request ledger, live stream) lives on `SiteState` in `subsystem::sites`,
+  and `Sites::focus` is only an index saying which site the single-valued
+  surfaces describe. The single-site app is a list of one.
 - **State** — `WorkbenchApp` is a thin coordinator over bounded subsystems
-  (Acquisition, Render, Timeline, Playback, Live, Chrome, Diagnostics,
-  NetworkMonitor — see ARCHITECTURE.md). UI actions emit `Intent` variants
+  (Sites, Acquisition, Render, Timeline, Playback, Live, Chrome,
+  Diagnostics, NetworkMonitor — see ARCHITECTURE.md). UI actions emit `Intent` variants
   (defined in `src/core/intent.rs`) processed in the main loop; decisions live
   in pure `src/core/` reducers, and `src/app/` shells execute the described
   effects.
