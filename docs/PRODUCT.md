@@ -112,6 +112,8 @@ phone shows one, and a desktop window narrowed into the phone's layout keeps
 only the focus. Every site on the map is the same kind of thing: each has
 its own scans, frame, stream and disc, all at the one shared playhead,
 product and tilt rule, drawn older frame first so the newer one is on top.
+Each disc carries its own range rings and Rays marks, the focus's at full
+strength and the others' at half.
 One of them is the **focus**: the surfaces that hold a single value (the
 tilt ladder, the frame readout, the age pill, the caption's first words, the
 timeline's full track, the overview's storm bars, the calendar) follow it.

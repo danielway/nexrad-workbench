@@ -1080,10 +1080,11 @@ impl CanvasOverlayVm {
     }
 }
 
-/// How strongly a disc's Rays marks draw: the focus at full strength, every
-/// other site at half, so the marks say which disc the single-valued
-/// surfaces describe.
-pub(crate) fn sweep_marks_opacity(is_focus: bool) -> f32 {
+/// How strongly a disc's range rings, radials and Rays marks draw: the
+/// focus at full strength, every other site at half, so each disc has its
+/// rings and the strong ones say which disc the single-valued surfaces
+/// describe.
+pub(crate) fn disc_overlay_opacity(is_focus: bool) -> f32 {
     if is_focus {
         1.0
     } else {
@@ -2951,9 +2952,9 @@ mod overlay_tests {
     }
 
     #[wasm_bindgen_test]
-    fn the_focus_marks_draw_full_and_the_others_at_half() {
-        assert_eq!(sweep_marks_opacity(true), 1.0);
-        assert_eq!(sweep_marks_opacity(false), 0.5);
+    fn the_focus_rings_and_marks_draw_full_and_the_others_at_half() {
+        assert_eq!(disc_overlay_opacity(true), 1.0);
+        assert_eq!(disc_overlay_opacity(false), 0.5);
     }
 }
 

@@ -7,7 +7,8 @@
 //! where the antenna probably is, and one edge ring at the data's range,
 //! split where the new sweep meets the previous one. No text prints on the
 //! map; hovering the edge ring reads the edge's time and age. The other
-//! sites' discs get their own marks, fainter, with no rings or hover.
+//! sites' discs get their own rings and marks, fainter, with no label or
+//! hover.
 
 use crate::core::canvas::{CanvasOverlayVm, RingGeometry, SweepMarks};
 use crate::geo::MapProjection;
@@ -64,7 +65,7 @@ pub(crate) struct SweepPaint<'a> {
 
 pub(crate) fn render_radar_sweep(painter: &Painter, vm: &CanvasOverlayVm, p: &SweepPaint<'_>) {
     let site = p.site;
-    draw_rings(painter, site, &vm.rings);
+    draw_rings(painter, site, &vm.rings, 1.0);
 
     let data_r = site.radius(vm.rings.data_km);
     let Some(marks) = vm.sweep.as_ref() else {
@@ -98,18 +99,21 @@ pub(crate) fn render_radar_sweep(painter: &Painter, vm: &CanvasOverlayVm, p: &Sw
     draw_hover(painter, vm, p, Some(marks));
 }
 
-/// Another site's Rays marks on its own disc: the start line, data edge,
-/// now line and edge ring, at `opacity` (the core's
-/// [`crate::core::canvas::sweep_marks_opacity`]). No range rings, label or
-/// hover: those describe the focus. Nothing draws without a sweep.
+/// Another site's rings and Rays marks on its own disc: range rings,
+/// radials, the start line, data edge, now line and edge ring, at `opacity`
+/// (the core's [`crate::core::canvas::disc_overlay_opacity`]). No label or
+/// hover: those describe the focus.
 pub(crate) fn render_site_sweep_marks(
     painter: &Painter,
     vm: &CanvasOverlayVm,
     site: &SiteScreen,
     opacity: f32,
 ) {
-    if let Some(marks) = vm.sweep.as_ref() {
-        draw_marks(painter, site, site.radius(vm.rings.data_km), marks, opacity);
+    draw_rings(painter, site, &vm.rings, opacity);
+    let data_r = site.radius(vm.rings.data_km);
+    match vm.sweep.as_ref() {
+        Some(marks) => draw_marks(painter, site, data_r, marks, opacity),
+        None => draw_edge_ring_whole(painter, site, data_r, opacity),
     }
 }
 
@@ -199,14 +203,17 @@ fn draw_marks(painter: &Painter, site: &SiteScreen, data_r: f32, marks: &SweepMa
     }
 }
 
-fn draw_rings(painter: &Painter, site: &SiteScreen, rings: &RingGeometry) {
+/// Range rings, radials and the centre marker at `fade` (1.0 for the
+/// focus).
+fn draw_rings(painter: &Painter, site: &SiteScreen, rings: &RingGeometry, fade: f32) {
+    let c = |color: egui::Color32| color.gamma_multiply(fade);
     for (km, major) in &rings.rings {
         let (width, color) = if *major {
             (1.0_f32, theme::map::ring_major())
         } else {
             (1.0_f32, theme::map::ring())
         };
-        painter.circle_stroke(site.center, site.radius(*km), Stroke::new(width, color));
+        painter.circle_stroke(site.center, site.radius(*km), Stroke::new(width, c(color)));
     }
 
     // Radials every 30°, to the data's range.
@@ -214,15 +221,15 @@ fn draw_rings(painter: &Painter, site: &SiteScreen, rings: &RingGeometry) {
     for i in 0..12 {
         painter.line_segment(
             [site.center, site.at(data_r, i as f32 * 30.0)],
-            Stroke::new(0.5_f32, theme::map::radial()),
+            Stroke::new(0.5_f32, c(theme::map::radial())),
         );
     }
 
-    painter.circle_filled(site.center, 4.0, theme::map::CENTER_MARKER);
+    painter.circle_filled(site.center, 4.0, c(theme::map::CENTER_MARKER));
     painter.circle_stroke(
         site.center,
         4.0,
-        Stroke::new(1.0_f32, theme::map::CENTER_MARKER_STROKE),
+        Stroke::new(1.0_f32, c(theme::map::CENTER_MARKER_STROKE)),
     );
 }
 
