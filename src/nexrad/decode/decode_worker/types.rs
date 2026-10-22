@@ -513,6 +513,8 @@ pub(crate) enum WorkerOutcome {
         /// per-scan UI state (e.g. timeline ghosts) without guessing from
         /// global state.
         failed_scan_timestamp_secs: Option<f64>,
+        /// The site of that scan, so the error reaches its site.
+        failed_site: Option<crate::data::SiteId>,
     },
 }
 

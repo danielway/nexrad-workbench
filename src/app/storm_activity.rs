@@ -2,7 +2,9 @@
 //! summaries and its published index once, fetches the index's month files
 //! and lists the days the overview shows that none of them covers (nearest
 //! the middle first, a few at a time, once the overview stops moving), and
-//! stores what comes back. Every decision is in
+//! stores what comes back, for every site on the map (the timeline draws
+//! the focus site's; the range price reads every site's volume sizes).
+//! Every decision is in
 //! [`crate::core::storm_activity`]; this only runs it.
 
 use crate::core::storm_activity::{day_start_of, needs_scans, ActivityWindow};
@@ -20,18 +22,29 @@ impl crate::WorkbenchApp {
         let now_ms = js_sys::Date::now();
         self.drain_storm_activity(now_ms);
 
-        let site = SiteId::new(self.sites.focus().id.0.clone());
-        if site.0.is_empty() {
+        let sites: Vec<SiteId> = self
+            .sites
+            .iter()
+            .map(|s| s.id.clone())
+            .filter(|id| !id.0.is_empty())
+            .collect();
+        if sites.is_empty() {
             return;
         }
         let acq = &mut self.acquisition;
-        if acq.activity_fetcher.begin_load(&site) {
-            acq.activity_channel.load(
-                ctx.clone(),
-                acq.coordinator.download_channel.stats(),
-                acq.coordinator.facade().clone(),
-                site.clone(),
-            );
+        let mut began = false;
+        for site in &sites {
+            if acq.activity_fetcher.begin_load(site) {
+                acq.activity_channel.load(
+                    ctx.clone(),
+                    acq.coordinator.download_channel.stats(),
+                    acq.coordinator.facade().clone(),
+                    site.clone(),
+                );
+                began = true;
+            }
+        }
+        if began {
             return;
         }
 
@@ -58,7 +71,7 @@ impl crate::WorkbenchApp {
         // Zoomed in to volumes, days the index covers still need listing.
         let need_scans = needs_scans(lane_px, end - start);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (&site.0, day_start_of(start), day_start_of(end), need_scans).hash(&mut hasher);
+        (&sites, day_start_of(start), day_start_of(end), need_scans).hash(&mut hasher);
         if !acq
             .activity_settle
             .poll(hasher.finish(), now_ms, ACTIVITY_SETTLE_MS)
@@ -73,19 +86,21 @@ impl crate::WorkbenchApp {
             now_secs: self.state.frame_now.secs(),
             need_scans,
         };
-        let plan = acq
-            .activity_fetcher
-            .plan(&self.timeline.activity, &site, &window, now_ms);
         let stats = acq.coordinator.download_channel.stats();
-        for month in plan.months {
-            acq.activity_fetcher.start_month(&site, month);
-            acq.activity_channel
-                .fetch_month(ctx.clone(), stats.clone(), site.clone(), month);
-        }
-        for day_start in plan.list {
-            acq.activity_fetcher.start(&site, day_start);
-            acq.activity_channel
-                .list_day(ctx.clone(), stats.clone(), site.clone(), day_start);
+        for site in sites {
+            let plan = acq
+                .activity_fetcher
+                .plan(&self.timeline.activity, &site, &window, now_ms);
+            for month in plan.months {
+                acq.activity_fetcher.start_month(&site, month);
+                acq.activity_channel
+                    .fetch_month(ctx.clone(), stats.clone(), site.clone(), month);
+            }
+            for day_start in plan.list {
+                acq.activity_fetcher.start(&site, day_start);
+                acq.activity_channel
+                    .list_day(ctx.clone(), stats.clone(), site.clone(), day_start);
+            }
         }
     }
 

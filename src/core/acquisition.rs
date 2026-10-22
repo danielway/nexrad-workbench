@@ -89,7 +89,41 @@ pub(crate) fn bulk_confirm_secs(layout: crate::core::phone::DeviceLayout) -> f64
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct RangeDownloadPrompt {
     pub range: (f64, f64),
+    /// The sum over the sites whose listing knows a volume inside the range.
     pub cost: crate::core::timeline_view::RangeCost,
+    /// How many sites the range is fetched for.
+    pub sites: u32,
+    /// How many of them know no volume inside it yet (priced by estimate).
+    pub unpriced_sites: u32,
+}
+
+impl RangeDownloadPrompt {
+    /// The prompt for `range` from each site's own cost: a range is fetched
+    /// for every site on the map, so the confirmation prices the sum.
+    pub(crate) fn priced(
+        range: (f64, f64),
+        costs: &[crate::core::timeline_view::RangeCost],
+    ) -> Self {
+        let mut cost = crate::core::timeline_view::RangeCost {
+            duration_secs: (range.1 - range.0).abs(),
+            ..Default::default()
+        };
+        let mut unpriced_sites = 0;
+        for c in costs {
+            if c.scans == 0 {
+                unpriced_sites += 1;
+            } else {
+                cost.scans += c.scans;
+                cost.fetch_bytes += c.fetch_bytes;
+            }
+        }
+        Self {
+            range,
+            cost,
+            sites: costs.len() as u32,
+            unpriced_sites,
+        }
+    }
 }
 
 /// The confirmation's words.
@@ -104,7 +138,9 @@ pub(crate) struct RangeDownloadText {
 }
 
 /// The confirmation's words for `prompt`. `fallback_scan_secs` is the volume
-/// cadence the estimate assumes when no volume inside the range is known.
+/// cadence the estimate assumes for a site that knows no volume inside the
+/// range. With several sites the size leads with their count:
+/// `3 sites · 90 scans, 1.3 GB to download`.
 pub(crate) fn range_download_text(
     prompt: &RangeDownloadPrompt,
     fallback_scan_secs: f64,
@@ -120,7 +156,12 @@ pub(crate) fn range_download_text(
             format!("{n} scans")
         }
     };
-    let size = if cost.scans > 0 {
+    let lead = if prompt.sites > 1 {
+        format!("{} sites \u{00B7} ", prompt.sites)
+    } else {
+        String::new()
+    };
+    let size = if prompt.unpriced_sites == 0 && cost.scans > 0 {
         if cost.fetch_bytes == 0 {
             format!("{}, all on this device", scans(cost.scans as u64))
         } else {
@@ -131,16 +172,20 @@ pub(crate) fn range_download_text(
             )
         }
     } else {
-        let count = (dur / fallback_scan_secs.max(1.0)).ceil().max(1.0) as u64;
+        let per_site = (dur / fallback_scan_secs.max(1.0)).ceil().max(1.0) as u64;
+        let estimated = per_site * u64::from(prompt.unpriced_sites.max(1));
         format!(
             "About {}, roughly {}",
-            scans(count),
+            scans(cost.scans as u64 + estimated),
             crate::core::timeline_view::format_bytes(
-                count.saturating_mul(crate::core::AVG_SCAN_BYTES)
+                cost.fetch_bytes + estimated.saturating_mul(crate::core::AVG_SCAN_BYTES)
             )
         )
     };
-    RangeDownloadText { subtitle, size }
+    RangeDownloadText {
+        subtitle,
+        size: format!("{lead}{size}"),
+    }
 }
 
 /// The distinct UTC dates a `[start, end]` second-range touches (one, or two
@@ -1441,14 +1486,14 @@ mod tests {
     #[wasm_bindgen_test]
     fn the_confirmation_says_the_real_size_when_the_listing_knows_it() {
         use crate::core::timeline_view::RangeCost;
-        let prompt = RangeDownloadPrompt {
-            range: (0.0, 2.5 * 3600.0),
-            cost: RangeCost {
+        let prompt = RangeDownloadPrompt::priced(
+            (0.0, 2.5 * 3600.0),
+            &[RangeCost {
                 duration_secs: 2.5 * 3600.0,
                 scans: 30,
                 fetch_bytes: 210_000_000,
-            },
-        };
+            }],
+        );
         let t = range_download_text(&prompt, 300.0);
         assert_eq!(t.subtitle, "2.5 hours selected");
         assert_eq!(t.size, "30 scans, 210 MB to download");
@@ -1464,12 +1509,43 @@ mod tests {
             "30 scans, all on this device"
         );
         // Nothing known inside it yet: the cadence estimate.
-        let unknown = RangeDownloadPrompt {
-            cost: RangeCost::default(),
-            ..prompt
-        };
+        let unknown = RangeDownloadPrompt::priced(prompt.range, &[RangeCost::default()]);
         let t = range_download_text(&unknown, 300.0);
         assert!(t.size.starts_with("About 30 scans, roughly "), "{}", t.size);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_confirmation_prices_the_sum_over_every_site() {
+        use crate::core::timeline_view::RangeCost;
+        let site = |scans, fetch_bytes| RangeCost {
+            duration_secs: 2.5 * 3600.0,
+            scans,
+            fetch_bytes,
+        };
+        let three = RangeDownloadPrompt::priced(
+            (0.0, 2.5 * 3600.0),
+            &[
+                site(30, 450_000_000),
+                site(30, 430_000_000),
+                site(30, 420_000_000),
+            ],
+        );
+        assert_eq!(three.sites, 3);
+        assert_eq!(
+            range_download_text(&three, 300.0).size,
+            "3 sites \u{00B7} 90 scans, 1.3 GB to download"
+        );
+        // One site's listing not in yet: its share is estimated.
+        let partial = RangeDownloadPrompt::priced(
+            (0.0, 2.5 * 3600.0),
+            &[site(30, 450_000_000), RangeCost::default()],
+        );
+        assert_eq!(partial.unpriced_sites, 1);
+        let t = range_download_text(&partial, 300.0).size;
+        assert!(
+            t.starts_with("2 sites \u{00B7} About 60 scans, roughly "),
+            "{t}"
+        );
     }
 
     // ── decide_selection_gate ──

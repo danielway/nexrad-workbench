@@ -581,13 +581,13 @@ impl DispatchState<'_> {
         // we flip it back to Queued.
         let scan_params = self.acquisition.state.find(op_id).and_then(|op| {
             if let state::OperationKind::ArchiveDownload {
+                site_id,
                 file_name,
                 scan_start,
                 scan_end,
-                ..
             } = &op.kind
             {
-                Some((file_name.clone(), *scan_start, *scan_end))
+                Some((site_id.clone(), file_name.clone(), *scan_start, *scan_end))
             } else {
                 None
             }
@@ -596,7 +596,7 @@ impl DispatchState<'_> {
         // Reset the operation row (Queued, front of pending) regardless.
         self.acquisition.state.retry_failed(op_id);
 
-        let Some((file_name, scan_start, scan_end)) = scan_params else {
+        let Some((site_id, file_name, scan_start, scan_end)) = scan_params else {
             // Non-download operations (listings/realtime) have no queue item to
             // re-enqueue; the status reset is all retry means for them.
             return;
@@ -611,6 +611,7 @@ impl DispatchState<'_> {
         let elevation_filter = self.active_elevation_filter();
 
         let item = crate::nexrad::download_queue::QueueItem::new(
+            crate::data::SiteId::new(site_id),
             date,
             file_name,
             scan_start,
@@ -666,6 +667,7 @@ impl DispatchState<'_> {
                     scan_end,
                 });
         let item = crate::nexrad::download_queue::QueueItem::new(
+            crate::data::SiteId::new(site_id),
             date,
             file_name,
             scan_start,
@@ -925,10 +927,10 @@ impl WorkbenchApp {
             self.acquisition
                 .coordinator
                 .cache_load_channel
-                .load_site_timeline(
+                .load_site_timelines(
                     ctx.clone(),
                     self.acquisition.coordinator.facade().clone(),
-                    self.sites.focus().id.0.clone(),
+                    self.sites.iter().map(|s| s.id.0.clone()).collect(),
                 );
         } else {
             // Cache loader is busy; replay (without auto-position) next frame.
@@ -1386,7 +1388,7 @@ mod dispatch_tests {
             f.acquisition
                 .coordinator
                 .download_queue
-                .find_by_scan_start(1_000)
+                .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
                 .is_none(),
             "skip must NOT re-enqueue the download (that is RetryFailed)"
         );
@@ -1422,7 +1424,7 @@ mod dispatch_tests {
             .acquisition
             .coordinator
             .download_queue
-            .find_by_scan_start(1_000)
+            .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
             .expect("retry must re-enqueue the download item");
         assert_eq!(item.operation_id, Some(a), "both machines stay correlated");
         // Default viz elevation selection is Fixed { elevation_number: 1 }.
@@ -1475,7 +1477,7 @@ mod dispatch_tests {
             .acquisition
             .coordinator
             .download_queue
-            .find_by_scan_start(1_000)
+            .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
             .expect("fetch must enqueue the download item");
         assert_eq!(item.operation_id, Some(op.id));
         assert_eq!(
@@ -1502,7 +1504,7 @@ mod dispatch_tests {
             .acquisition
             .coordinator
             .download_queue
-            .find_by_scan_start(1_000)
+            .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
             .is_none());
         assert!(f.toast().is_some_and(|t| t.contains("still listing")));
     }
@@ -2118,7 +2120,7 @@ mod dispatch_tests {
             .acquisition
             .coordinator
             .download_queue
-            .find_by_scan_start(1_000)
+            .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
             .expect("retry must re-enqueue");
         assert_eq!(
             item.elevation_filter, None,

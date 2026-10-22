@@ -25,14 +25,26 @@ impl WorkbenchApp {
         site
     }
 
-    /// Stop what is tied to sites that left the list: their streams and
-    /// their GPU objects.
+    /// Stop what is tied to sites that left the list: their streams, their
+    /// GPU objects and their queued scans.
     fn retire_sites(&mut self, gone: Vec<subsystem::SiteState>) {
         for mut site in gone {
             log::info!("Site {} leaves the map", site.id.0);
             site.live.channel.stop();
             if let Some(gl) = self.gpu.gl.as_ref() {
                 site.gpu.release(gl);
+            }
+            // Its queued scans go with it; a download in flight finishes and
+            // its result is dropped for want of a site.
+            let dropped = self
+                .acquisition
+                .coordinator
+                .download_queue
+                .drop_site_pending(&site.id);
+            for item in dropped {
+                if let Some(op_id) = item.operation_id {
+                    self.acquisition.state.cancel_operation(op_id);
+                }
             }
         }
     }

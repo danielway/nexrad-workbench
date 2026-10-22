@@ -142,7 +142,7 @@ impl WorkbenchApp {
                 .acquisition
                 .coordinator
                 .download_queue
-                .queued_scan_starts();
+                .queued_scan_starts(&target.id);
             let env = acquisition_core::AnchorFastPathEnv {
                 auto_fetch_cap_reached: self
                     .acquisition
@@ -199,7 +199,7 @@ impl WorkbenchApp {
             .acquisition
             .coordinator
             .download_queue
-            .queued_scan_starts();
+            .queued_scan_starts(&target.id);
         acquisition_core::reduce_window_intents(
             plan,
             &days,
@@ -246,6 +246,7 @@ impl WorkbenchApp {
         }
         let target = &mut self.sites.list[site];
         let site_id = target.id.0.clone();
+        let id = target.id.clone();
         let now_ms = js_sys::Date::now();
         let items: Vec<QueueItem> = intents
             .into_iter()
@@ -262,6 +263,7 @@ impl WorkbenchApp {
                     },
                 );
                 QueueItem::new(
+                    id.clone(),
                     i.date,
                     i.file_name,
                     i.scan_start,
@@ -300,13 +302,14 @@ impl WorkbenchApp {
         // requests per second, it never stops them — so a continuous pan issued
         // one LIST every interval for every date it swept past, none of which
         // the user was looking at by the time it landed. Keyed on the visible
-        // day range, so panning within a day (which needs no new listings) does
-        // not reset the timer.
+        // day range and the sites on the map, so panning within a day (which
+        // needs no new listings) does not reset the timer.
         let view_start = self.playback.state.timeline_view_start;
+        let ids: Vec<String> = self.sites.iter().map(|s| s.id.0.clone()).collect();
         let signature = acquisition_core::visible_listing_signature(
             view_start,
             view_start + span,
-            &self.sites.focus().id.0,
+            &ids.join(","),
         );
         if !self.acquisition.visible_listing_settle.poll(
             signature,
@@ -320,12 +323,14 @@ impl WorkbenchApp {
         let today = chrono::DateTime::from_timestamp(now_secs as i64, 0)
             .map(|dt| dt.date_naive())
             .unwrap_or_else(|| chrono::Utc::now().date_naive());
-        let site_id = self.sites.focus().id.0.clone();
+        let dates = acquisition_core::dates_in_range(view_start as i64, (view_start + span) as i64);
 
-        let days: Vec<acquisition_core::VisibleListingDay> =
-            acquisition_core::dates_in_range(view_start as i64, (view_start + span) as i64)
-                .into_iter()
-                .map(|date| acquisition_core::VisibleListingDay {
+        // Every site lists its own days; each may issue one LIST per
+        // interval.
+        for site_id in ids {
+            let days: Vec<acquisition_core::VisibleListingDay> = dates
+                .iter()
+                .map(|&date| acquisition_core::VisibleListingDay {
                     date,
                     fresh: self
                         .acquisition
@@ -345,17 +350,22 @@ impl WorkbenchApp {
                 })
                 .collect();
 
-        let actions = acquisition_core::decide_visible_listing(&days, today, now_ms);
-        if let Some(date) = actions.fetch {
-            self.acquisition
-                .coordinator
-                .download_channel
-                .fetch_listing(ctx.clone(), site_id, date);
-        }
-        if let Some(next_allowed_ms) = actions.next_allowed_ms {
-            // One new LIST per interval — the rest of the span fills in on
-            // subsequent frames.
-            self.acquisition.visible_listing_next_ms = next_allowed_ms;
+            let actions = acquisition_core::decide_visible_listing(&days, today, now_ms);
+            if let Some(date) = actions.fetch {
+                self.acquisition.coordinator.download_channel.fetch_listing(
+                    ctx.clone(),
+                    site_id,
+                    date,
+                );
+            }
+            if let Some(next_allowed_ms) = actions.next_allowed_ms {
+                // One new LIST per interval — the rest of the span fills in on
+                // subsequent frames.
+                self.acquisition.visible_listing_next_ms = self
+                    .acquisition
+                    .visible_listing_next_ms
+                    .max(next_allowed_ms);
+            }
         }
     }
 
@@ -380,19 +390,22 @@ impl WorkbenchApp {
                     });
             }
             acquisition_core::SelectionGate::Confirm => {
-                // Priced now, from the listing, so the confirmation says the
-                // real size rather than an estimate.
-                let view = self
-                    .sites
-                    .focus()
-                    .timeline_view(self.live.mode_state.is_active());
-                let site = crate::data::SiteId::new(self.sites.focus().id.0.clone());
+                // Priced now, from the listings, so the confirmation says the
+                // real size rather than an estimate. The range is fetched for
+                // every site on the map, so it prices the sum.
+                let live = self.live.mode_state.is_active();
                 let (lo, hi) = (start.min(end), start.max(end));
-                let sizes = self.timeline.activity.scans(&site, lo, hi);
-                self.chrome.range_download_modal = Some(acquisition_core::RangeDownloadPrompt {
-                    range: (start, end),
-                    cost: view.range_cost_sized(lo, hi, &sizes),
-                });
+                let costs: Vec<_> = self
+                    .sites
+                    .iter()
+                    .map(|s| {
+                        let sizes = self.timeline.activity.scans(&s.id, lo, hi);
+                        s.timeline_view(live).range_cost_sized(lo, hi, &sizes)
+                    })
+                    .collect();
+                self.chrome.range_download_modal = Some(
+                    acquisition_core::RangeDownloadPrompt::priced((start, end), &costs),
+                );
             }
         }
     }

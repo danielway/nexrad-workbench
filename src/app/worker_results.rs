@@ -14,7 +14,7 @@ use eframe::egui;
 
 impl WorkbenchApp {
     pub(crate) fn handle_worker_results(&mut self, _ctx: &egui::Context) {
-        if let Some(result) = self.acquisition.coordinator.cache_load_channel.try_recv() {
+        while let Some(result) = self.acquisition.coordinator.cache_load_channel.try_recv() {
             self.handle_cache_load_outcome(result);
         }
 
@@ -83,8 +83,15 @@ impl WorkbenchApp {
                     kind,
                     message,
                     failed_scan_timestamp_secs,
+                    failed_site,
                 } => {
-                    self.handle_worker_error_outcome(id, kind, message, failed_scan_timestamp_secs);
+                    self.handle_worker_error_outcome(
+                        id,
+                        kind,
+                        message,
+                        failed_scan_timestamp_secs,
+                        failed_site,
+                    );
                 }
             }
         }
@@ -618,8 +625,14 @@ impl WorkbenchApp {
             volume_data.total_ms,
         );
 
-        // A volume reply names no site; the 3D view draws the focus.
-        let target = self.sites.focus();
+        // The volume goes to its own site's renderer; one for a site no
+        // longer on the map is dropped.
+        let Some(site) = crate::core::sites::route_site(&volume_data.site, &self.sites.ids())
+        else {
+            log::debug!("Volume for {} dropped: site not shown", volume_data.site);
+            return;
+        };
+        let target = &self.sites.list[site];
 
         // Upload to volume ray renderer
         if let (Some(ref renderer), Some(ref gl)) = (&target.gpu.volume_ray, &self.gpu.gl) {
@@ -649,6 +662,7 @@ impl WorkbenchApp {
         kind: crate::core::WorkerErrorKind,
         message: String,
         failed_scan_timestamp_secs: Option<f64>,
+        failed_site: Option<crate::data::SiteId>,
     ) {
         log::warn!(
             "Worker error (request {}, kind {:?}): {}",
@@ -656,53 +670,15 @@ impl WorkbenchApp {
             kind,
             message
         );
-        // A worker error names no site; downloads are the focus's.
-        let focus = self.sites.focus_mut();
-        match focus
-            .retries
-            .decide(failed_scan_timestamp_secs.map(|ts| ts as i64), &message)
-        {
-            // A truncated download: no error, no backoff. Forget the request
-            // and its finished queue item so the pumps download the scan
-            // again if it is still wanted (the anchor pump does so on the
-            // next frame while the playhead is on it).
-            crate::core::acquisition::IngestFailureAction::RetryQuietly { scan_start } => {
-                log::info!("Truncated archive for scan {scan_start}; downloading it again");
-                focus
-                    .ledger
-                    .forget(scan_start, crate::SCAN_CACHE_MATCH_TOLERANCE_SECS);
-                self.acquisition
-                    .coordinator
-                    .download_queue
-                    .forget_done(scan_start);
-            }
-            crate::core::acquisition::IngestFailureAction::Report => {
-                self.state.errors.push(crate::core::AppError::Worker {
-                    kind,
-                    message: message.clone(),
-                    scan_timestamp_secs: failed_scan_timestamp_secs,
-                });
-
-                // A failed ingest means the fetched scan never reached IDB —
-                // move its ledger entry to the short Failed backoff so
-                // re-fetch becomes possible without a per-frame storm.
-                if let Some(ts) = failed_scan_timestamp_secs {
-                    focus.ledger.note_failed(
-                        ts as i64,
-                        crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
-                        js_sys::Date::now(),
-                    );
-                }
-            }
-        }
-
-        // When the worker reports that the requested (elevation, product) has
-        // no pre-computed sweep, clear the stale canvas so the user sees what
-        // the timeline already knows — nothing matches their current filter.
-        // Dispatch on the typed kind so transient errors (worker disconnect,
-        // IDB failure) keep the last-good view instead of blanking.
-        if kind == crate::core::WorkerErrorKind::NotFound {
-            self.clear_display_no_sweep(self.sites.focus);
+        // The error reaches the site of the scan it names, else the focus
+        // (an error correlated with no request). One for a site no longer
+        // on the map only clears the shared pipeline flags below.
+        let site = match &failed_site {
+            Some(id) => crate::core::sites::route_site(id, &self.sites.ids()),
+            None => Some(self.sites.focus),
+        };
+        if let Some(site) = site {
+            self.note_worker_error(site, kind, &message, failed_scan_timestamp_secs);
         }
 
         // Clean up the "processing" timeline ghost for the failed scan.
@@ -733,6 +709,65 @@ impl WorkbenchApp {
             && self.state.download_progress.pending_scans.is_empty()
         {
             self.state.download_progress.clear();
+        }
+    }
+
+    /// A worker error's effects on its site: the retry decision, the
+    /// ledger, and a blank canvas when its sweep does not exist.
+    fn note_worker_error(
+        &mut self,
+        site: usize,
+        kind: crate::core::WorkerErrorKind,
+        message: &str,
+        failed_scan_timestamp_secs: Option<f64>,
+    ) {
+        let site_id = self.sites.list[site].id.clone();
+        let focus = &mut self.sites.list[site];
+        match focus
+            .retries
+            .decide(failed_scan_timestamp_secs.map(|ts| ts as i64), message)
+        {
+            // A truncated download: no error, no backoff. Forget the request
+            // and its finished queue item so the pumps download the scan
+            // again if it is still wanted (the anchor pump does so on the
+            // next frame while the playhead is on it).
+            crate::core::acquisition::IngestFailureAction::RetryQuietly { scan_start } => {
+                log::info!("Truncated archive for scan {scan_start}; downloading it again");
+                focus
+                    .ledger
+                    .forget(scan_start, crate::SCAN_CACHE_MATCH_TOLERANCE_SECS);
+                self.acquisition
+                    .coordinator
+                    .download_queue
+                    .forget_done(&site_id, scan_start);
+            }
+            crate::core::acquisition::IngestFailureAction::Report => {
+                self.state.errors.push(crate::core::AppError::Worker {
+                    kind,
+                    message: message.to_string(),
+                    scan_timestamp_secs: failed_scan_timestamp_secs,
+                });
+
+                // A failed ingest means the fetched scan never reached IDB —
+                // move its ledger entry to the short Failed backoff so
+                // re-fetch becomes possible without a per-frame storm.
+                if let Some(ts) = failed_scan_timestamp_secs {
+                    focus.ledger.note_failed(
+                        ts as i64,
+                        crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+                        js_sys::Date::now(),
+                    );
+                }
+            }
+        }
+
+        // When the worker reports that the requested (elevation, product) has
+        // no pre-computed sweep, clear the stale canvas so the user sees what
+        // the timeline already knows — nothing matches their current filter.
+        // Dispatch on the typed kind so transient errors (worker disconnect,
+        // IDB failure) keep the last-good view instead of blanking.
+        if kind == crate::core::WorkerErrorKind::NotFound {
+            self.clear_display_no_sweep(site);
         }
     }
 }

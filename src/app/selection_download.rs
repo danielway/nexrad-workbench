@@ -4,7 +4,9 @@
 //! enqueues the scans the current view needs (scoped to the active filter).
 //! This module advances that queue — reaping finished downloads, filling free
 //! concurrency slots up to `max_parallel`, and updating the timeline/progress
-//! overlays as work completes.
+//! overlays as work completes. Every site queues into the one queue; each
+//! download runs for its item's site, and the timeline's ghosts show the
+//! focus site's items (the timeline shows the focus site's track).
 
 use crate::nexrad::download_queue::QueueAction;
 use crate::WorkbenchApp;
@@ -14,7 +16,7 @@ impl WorkbenchApp {
     /// Advance the download queue: reap finished downloads and fill as many
     /// free concurrency slots as possible. No-op when the queue is empty.
     pub(crate) fn advance_download_queue(&mut self, ctx: &egui::Context) {
-        let site_id = self.sites.focus().id.0.clone();
+        let focus = self.sites.focus().id.clone();
 
         if !self.acquisition.coordinator.download_queue.has_work() {
             return;
@@ -57,39 +59,29 @@ impl WorkbenchApp {
             .reprioritize(playhead as i64, forward);
 
         // 1. Sweep all Active items and mark any whose download has finished.
-        let finished_starts: Vec<i64> = self
+        let finished: Vec<(crate::data::SiteId, i64)> = self
             .acquisition
             .coordinator
             .download_queue
             .active_items()
-            .filter_map(|item| {
-                if !self
+            .filter(|item| {
+                !self
                     .acquisition
                     .coordinator
                     .download_channel
-                    .is_download_pending(&site_id, item.scan_start)
-                {
-                    Some(item.scan_start)
-                } else {
-                    None
-                }
+                    .is_download_pending(&item.site.0, item.scan_start)
             })
+            .map(|item| (item.site.clone(), item.scan_start))
             .collect();
-        for start in finished_starts {
+        for (site, start) in finished {
             self.acquisition
                 .coordinator
                 .download_queue
-                .mark_active_done(start);
+                .mark_active_done(&site, start);
         }
 
         // 2. Refresh the timeline-ghost list from the queue state.
-        self.state.download_progress.active_scans = self
-            .acquisition
-            .coordinator
-            .download_queue
-            .active_items()
-            .map(|item| (item.scan_start, item.scan_end))
-            .collect();
+        self.state.download_progress.active_scans = self.focus_ghosts(&focus, true);
 
         // 3. Fill as many concurrency slots as possible.
         let is_paused = self.acquisition.state.is_paused();
@@ -102,6 +94,7 @@ impl WorkbenchApp {
                 .advance(is_paused)
             {
                 QueueAction::StartDownload {
+                    site,
                     file_name,
                     scan_start,
                     scan_end,
@@ -110,10 +103,12 @@ impl WorkbenchApp {
                 } => {
                     self.state.download_progress.phase = crate::state::DownloadPhase::Downloading;
                     self.state.download_progress.batch_completed += 1;
-                    self.state
-                        .download_progress
-                        .active_scans
-                        .push((scan_start, scan_end));
+                    if site == focus {
+                        self.state
+                            .download_progress
+                            .active_scans
+                            .push((scan_start, scan_end));
+                    }
 
                     // Mark the item's own acquisition operation active and pin
                     // it to this download's scan_start. The id rides on the
@@ -124,12 +119,12 @@ impl WorkbenchApp {
                         self.acquisition
                             .coordinator
                             .download_queue
-                            .set_operation_id(scan_start, op_id);
+                            .set_operation_id(&site, scan_start, op_id);
                     }
 
                     self.acquisition.coordinator.download_channel.download_file(
                         ctx.clone(),
-                        site_id.clone(),
+                        site.0,
                         file_name,
                         scan_start,
                         self.acquisition.coordinator.facade().clone(),
@@ -162,20 +157,23 @@ impl WorkbenchApp {
             // strip's queued cells render — without this, `pending_scans` was
             // only ever cleared and queued cells were invisible (the queued
             // hatch had no data). Skipped on a drain, which clears both.
-            self.state.download_progress.active_scans = self
-                .acquisition
-                .coordinator
-                .download_queue
-                .active_items()
-                .map(|item| (item.scan_start, item.scan_end))
-                .collect();
-            self.state.download_progress.pending_scans = self
-                .acquisition
-                .coordinator
-                .download_queue
-                .pending_items()
-                .map(|item| (item.scan_start, item.scan_end))
-                .collect();
+            self.state.download_progress.active_scans = self.focus_ghosts(&focus, true);
+            self.state.download_progress.pending_scans = self.focus_ghosts(&focus, false);
         }
+    }
+
+    /// The focus site's active (or pending) queue items as timeline ghosts.
+    fn focus_ghosts(&self, focus: &crate::data::SiteId, active: bool) -> Vec<(i64, i64)> {
+        let queue = &self.acquisition.coordinator.download_queue;
+        let items: Vec<_> = if active {
+            queue.active_items().collect()
+        } else {
+            queue.pending_items().collect()
+        };
+        items
+            .into_iter()
+            .filter(|item| &item.site == focus)
+            .map(|item| (item.scan_start, item.scan_end))
+            .collect()
     }
 }

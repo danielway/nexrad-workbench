@@ -252,15 +252,17 @@ fn push_payload_parse_error(
     id: RequestId,
     msg_type: &str,
     err: impl std::fmt::Display,
-    failed_scan_timestamp_secs: Option<f64>,
+    failed_scan: Option<(crate::data::SiteId, f64)>,
 ) {
     let message = format!("Failed to parse {} payload: {}", msg_type, err);
     log::error!("{} (request {})", message, id);
+    let (failed_site, failed_scan_timestamp_secs) = failed_scan.unzip();
     results.borrow_mut().push(WorkerOutcome::WorkerError {
         id,
         kind: WorkerErrorKind::InvalidData,
         message,
         failed_scan_timestamp_secs,
+        failed_site,
     });
 }
 
@@ -283,7 +285,13 @@ fn handle_ingested_message(
     let r: IngestResultMsg = match serde_wasm_bindgen::from_value(result_obj) {
         Ok(r) => r,
         Err(e) => {
-            push_payload_parse_error(results, id, "ingested", e, Some(context.timestamp_secs));
+            push_payload_parse_error(
+                results,
+                id,
+                "ingested",
+                e,
+                Some((context.scan_key.site.clone(), context.timestamp_secs)),
+            );
             return;
         }
     };
@@ -351,7 +359,7 @@ fn handle_chunk_ingested_message(
                 id,
                 "chunk_ingested",
                 e,
-                Some(context.timestamp_secs),
+                Some((context.scan_key.site.clone(), context.timestamp_secs)),
             );
             return;
         }
@@ -423,7 +431,10 @@ fn handle_decoded_message(
                 id,
                 "decoded",
                 e,
-                Some(context.scan_key.scan_start.as_secs_f64()),
+                Some((
+                    context.scan_key.site.clone(),
+                    context.scan_key.scan_start.as_secs_f64(),
+                )),
             );
             return;
         }
@@ -475,7 +486,10 @@ fn handle_live_decoded_message(
                 id,
                 "live_decoded",
                 e,
-                Some(context.scan_key.scan_start.as_secs_f64()),
+                Some((
+                    context.scan_key.site.clone(),
+                    context.scan_key.scan_start.as_secs_f64(),
+                )),
             );
             return;
         }
@@ -537,7 +551,10 @@ fn handle_volume_decoded_message(
                 id,
                 "volume_decoded",
                 e,
-                Some(volume_ctx.scan_key.scan_start.as_secs_f64()),
+                Some((
+                    volume_ctx.scan_key.site.clone(),
+                    volume_ctx.scan_key.scan_start.as_secs_f64(),
+                )),
             );
             return;
         }
@@ -579,6 +596,7 @@ fn handle_volume_decoded_message(
     results
         .borrow_mut()
         .push(WorkerOutcome::VolumeDecoded(VolumeData {
+            site: volume_ctx.scan_key.site.clone(),
             buffer,
             word_size,
             sweeps,
@@ -675,26 +693,28 @@ fn handle_error_message(
         e.message
     );
 
-    let failed_scan_timestamp_secs = cleanup_pending_by_id(
+    let (failed_site, failed_scan_timestamp_secs) = cleanup_pending_by_id(
         e.id,
         pending_ingest,
         pending_chunk_ingest,
         pending_render,
         pending_render_live,
         pending_volume,
-    );
+    )
+    .unzip();
 
     results.borrow_mut().push(WorkerOutcome::WorkerError {
         id: e.id,
         kind: e.kind,
         message: e.message,
         failed_scan_timestamp_secs,
+        failed_site,
     });
 }
 
 /// Remove a pending entry across every pending-context map (whichever one
-/// owns it). Returns the failing scan's start timestamp when it could be
-/// correlated, so callers can reset per-scan UI state.
+/// owns it). Returns the failing scan's site and start timestamp when it
+/// could be correlated, so callers can reset that site's per-scan state.
 fn cleanup_pending_by_id(
     id: RequestId,
     pending_ingest: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
@@ -702,17 +722,18 @@ fn cleanup_pending_by_id(
     pending_render: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
     pending_render_live: &Rc<RefCell<HashMap<RequestId, LiveRenderContext>>>,
     pending_volume: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
-) -> Option<f64> {
+) -> Option<(crate::data::SiteId, f64)> {
+    let of = |key: &crate::data::ScanKey| (key.site.clone(), key.scan_start.as_secs_f64());
     if let Some(ctx) = pending_ingest.borrow_mut().remove(&id) {
-        Some(ctx.timestamp_secs)
+        Some((ctx.scan_key.site, ctx.timestamp_secs))
     } else if let Some(ctx) = pending_chunk_ingest.borrow_mut().remove(&id) {
-        Some(ctx.timestamp_secs)
+        Some((ctx.scan_key.site, ctx.timestamp_secs))
     } else if let Some(ctx) = pending_render.borrow_mut().remove(&id) {
-        Some(ctx.scan_key.scan_start.as_secs_f64())
+        Some(of(&ctx.scan_key))
     } else if let Some(ctx) = pending_render_live.borrow_mut().remove(&id) {
-        Some(ctx.render.scan_key.scan_start.as_secs_f64())
+        Some(of(&ctx.render.scan_key))
     } else if let Some(ctx) = pending_volume.borrow_mut().remove(&id) {
-        Some(ctx.scan_key.scan_start.as_secs_f64())
+        Some(of(&ctx.scan_key))
     } else {
         None
     }
@@ -826,8 +847,9 @@ mod coverage_tests {
             .insert(5, ingest_ctx("KDMX", 1000, 12345.5));
 
         let ts = cleanup_pending_by_id(5, &ing, &chunk, &rend, &live, &vol);
-        assert!(ts.is_some());
-        assert!((ts.unwrap() - 12345.5).abs() < 1e-9);
+        let (site, ts) = ts.unwrap();
+        assert_eq!(site.0, "KDMX");
+        assert!((ts - 12345.5).abs() < 1e-9);
         // Removed.
         assert!(ing.borrow().is_empty());
     }
@@ -840,8 +862,7 @@ mod coverage_tests {
             .insert(8, chunk_ctx("KDMX", 2000, 6789.0));
 
         let ts = cleanup_pending_by_id(8, &ing, &chunk, &rend, &live, &vol);
-        assert!(ts.is_some());
-        assert!((ts.unwrap() - 6789.0).abs() < 1e-9);
+        assert!((ts.unwrap().1 - 6789.0).abs() < 1e-9);
         assert!(chunk.borrow().is_empty());
     }
 
@@ -853,8 +874,7 @@ mod coverage_tests {
             .insert(3, render_ctx("KDMX", 1_700_000_000_000, 1));
 
         let ts = cleanup_pending_by_id(3, &ing, &chunk, &rend, &live, &vol);
-        assert!(ts.is_some());
-        assert!((ts.unwrap() - 1_700_000_000.0).abs() < 1e-3);
+        assert!((ts.unwrap().1 - 1_700_000_000.0).abs() < 1e-3);
         assert!(rend.borrow().is_empty());
     }
 
@@ -869,8 +889,9 @@ mod coverage_tests {
         );
 
         let ts = cleanup_pending_by_id(9, &ing, &chunk, &rend, &live, &vol);
-        assert!(ts.is_some());
-        assert!((ts.unwrap() - 5.0).abs() < 1e-6);
+        let (site, ts) = ts.unwrap();
+        assert_eq!(site.0, "KDMX");
+        assert!((ts - 5.0).abs() < 1e-6);
         assert!(vol.borrow().is_empty());
     }
 
@@ -890,7 +911,13 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn push_payload_parse_error_emits_invalid_data_outcome() {
         let results: Rc<RefCell<Vec<WorkerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
-        push_payload_parse_error(&results, 17, "decoded", "boom", Some(42.0));
+        push_payload_parse_error(
+            &results,
+            17,
+            "decoded",
+            "boom",
+            Some((crate::data::SiteId::new("KTBW".to_string()), 42.0)),
+        );
 
         let r = results.borrow();
         assert_eq!(r.len(), 1);
@@ -900,7 +927,9 @@ mod coverage_tests {
                 kind,
                 message,
                 failed_scan_timestamp_secs,
+                failed_site,
             } => {
+                assert_eq!(failed_site.as_ref().map(|s| s.0.as_str()), Some("KTBW"));
                 assert_eq!(*id, 17);
                 assert_eq!(*kind, WorkerErrorKind::InvalidData);
                 assert!(message.contains("decoded"));
