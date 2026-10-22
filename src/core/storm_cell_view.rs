@@ -724,7 +724,7 @@ fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> Ca
         ));
         if let Some(t) = track {
             lines.push(line(
-                format!("{} \u{00B7} {}", motion_text(t), age_text(t)),
+                format!("{} \u{00B7} {}", motion_text(t), short_age_text(t)),
                 false,
             ));
         } else if let Some(m) = membership {
@@ -828,6 +828,16 @@ fn age_text(t: &TrackVm) -> String {
             "Tracked {} volumes \u{00B7} {:.0} min",
             t.age_volumes, t.age_minutes
         )
+    }
+}
+
+/// The phone card's age, short enough to share a line with the motion on
+/// a 390 px screen.
+fn short_age_text(t: &TrackVm) -> String {
+    if t.age_volumes <= 1 {
+        "new".to_string()
+    } else {
+        format!("{:.0} min", t.age_minutes)
     }
 }
 
@@ -1706,9 +1716,20 @@ mod tests {
         assert_eq!(card.title, "B \u{00B7} 55 dBZ peak");
         assert_eq!(
             card.lines[1].text,
-            "Moving NE 47 km/h, low confidence \u{00B7} Tracked 2 volumes \u{00B7} 5 min"
+            "Moving NE 47 km/h, low confidence \u{00B7} 5 min"
         );
         assert_eq!(card.lines.len(), 3);
+        // The longest motion line still fits a 390 px card (it cuts off
+        // past about 50 characters).
+        let mut t = tv.tracks[1].clone();
+        t.confidence = 0.5;
+        t.speed_kmh = 128.0;
+        t.direction_deg = 315.0;
+        t.age_minutes = 118.0;
+        let longest = format!("{} \u{00B7} {}", motion_text(&t), short_age_text(&t));
+        assert!(longest.chars().count() <= 48, "{longest}");
+        t.age_volumes = 1;
+        assert_eq!(short_age_text(&t), "new");
     }
 
     #[wasm_bindgen_test]

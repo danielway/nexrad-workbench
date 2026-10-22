@@ -708,7 +708,7 @@ Interactive measurement and analysis affordances on the 2D canvas:
     6 volumes · 25 min`) and, when My location is on, the cell's distance
     and bearing from you and its closest approach (`Closest to you: 14 km
     in 22 min`; withheld beyond an hour, "Moving away from you" when it
-    is). The phone's card folds motion and age into one line.
+    is). The phone's card folds motion and age into one line ("Moving NE 82 km/h, high confidence · 34 min").
   - **Tracks** (the checkbox under the slider). Cells are tracked across
     volumes (SCIT-style: predicted from their recent motion, matched by
     distance, area and peak, coasting two volumes before a track ends).
