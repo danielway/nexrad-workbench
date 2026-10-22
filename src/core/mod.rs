@@ -127,7 +127,7 @@ pub(crate) use effect::{Effect, LocationResult, LocationSource};
 pub(crate) use geo_layers::GeoLayer;
 pub(crate) use live_mode::{
     should_stop_for_detached_idle, ExpectedSweep, LiveExitReason, LiveModeState, LivePhase,
-    StreamActivity,
+    LiveVolumeState, SiteStreamEvent, SiteStreamSlice, StreamActivity,
 };
 pub(crate) use live_radar_model::LiveRadarModel;
 pub(crate) use live_status::{derive_live_status, LiveStatus, LiveStatusInputs};

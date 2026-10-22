@@ -21,7 +21,7 @@
 //! attached-playhead effect set (env carries the GPU renderer's
 //! `current_sweep_id`, shell-read, for the promote decision), and
 //! [`reduce_live_decoded_azimuths`] applies the chronological azimuth
-//! bookkeeping to [`LiveModeState`] after the upload.
+//! bookkeeping to the site's [`LiveVolumeState`] after the upload.
 //!
 //! Pattern exemplars: [`crate::core::worker_ingest`] (Env/Slices/Actions
 //! reducer, same worker-outcome family) and [`crate::core::render_loop`]
@@ -32,7 +32,7 @@ use crate::core::playback_manager::{
     resolve_desired_display, sweep_cache_key, CachedSweepData, DesiredDisplay, PlaybackManager,
 };
 use crate::core::{
-    DecodeResult, DisplayedSweep, ElevationSelection, LiveModeState, RadarProduct, RadarTimeline,
+    DecodeResult, DisplayedSweep, ElevationSelection, LiveVolumeState, RadarProduct, RadarTimeline,
     SweepIdentity,
 };
 
@@ -252,12 +252,12 @@ pub(crate) fn reduce_decoded(
 
 /// Read-only frame context for one live decode outcome, shell-assembled.
 pub(crate) struct LiveDecodedEnv<'a> {
-    /// `self.live.canvas_follows_live(&self.playback.state)`.
+    /// `self.live.canvas_follows_live(&site.live, &self.playback.state)`.
     pub playhead_attached: bool,
     /// `self.live_shows_whole_sweeps()` — Frames mode keeps the last complete
     /// sweep on the canvas, so the partial is decoded but not shown.
     pub whole_sweeps_only: bool,
-    /// `live.radar_model.volume` — VCP target-angle lookup.
+    /// The site's `live.radar_model.volume` — VCP target-angle lookup.
     pub live_volume: Option<&'a LiveVolumeModel>,
     /// The GPU renderer's `current_sweep_id()`, shell-read under the lock.
     /// Feeds the promote decision — GPU state enters as env, the decision
@@ -383,7 +383,7 @@ pub(crate) fn reduce_live_decoded(
 /// Runs attached or detached, AFTER the shell's GPU upload — the
 /// "Live azimuth range" log follows the GPU upload logs, matching the
 /// original inline order.
-pub(crate) fn reduce_live_decoded_azimuths(live_mode: &mut LiveModeState, result: &DecodeResult) {
+pub(crate) fn reduce_live_decoded_azimuths(live_mode: &mut LiveVolumeState, result: &DecodeResult) {
     if !result.azimuths.is_empty() {
         // Chronological first = sweep start azimuth (set once per sweep).
         // Chronological last = most recent radial's azimuth from the live state.
@@ -904,7 +904,7 @@ mod tests {
     // latest-by-time radial is the trailing edge.
     #[wasm_bindgen_test]
     fn live_azimuths_chronological_first_last() {
-        let mut live = LiveModeState::default();
+        let mut live = LiveVolumeState::default();
         let mut r = decode_result(1000.0, 1, "reflectivity");
         r.azimuths = vec![10.0, 350.0, 20.0];
         r.radial_times = vec![5.0, 3.0, 9.0];
@@ -928,7 +928,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn live_azimuths_fallbacks_and_empty_noop() {
         // No radial times → first/last by position.
-        let mut live = LiveModeState::default();
+        let mut live = LiveVolumeState::default();
         let mut r = decode_result(1000.0, 1, "reflectivity");
         r.azimuths = vec![30.0, 40.0];
         r.radial_times = Vec::new();
@@ -937,7 +937,7 @@ mod tests {
         assert_eq!(live.live_data_azimuth_range, Some((30.0, 40.0)));
 
         // Empty azimuths → nothing changes.
-        let mut live = LiveModeState::default();
+        let mut live = LiveVolumeState::default();
         let mut r = decode_result(1000.0, 1, "reflectivity");
         r.azimuths = Vec::new();
         r.radial_times = Vec::new();

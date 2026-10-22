@@ -281,6 +281,9 @@ pub(super) fn format_timestamp_full(ts: f64, use_local: bool) -> String {
     )
 }
 
+/// Draw the desktop timeline strip and apply its gestures. Returns where a
+/// scrub put the pointer this frame, for the caller to seek to once the
+/// strip's view of the focus site is done.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_timeline(
     ui: &mut egui::Ui,
@@ -292,7 +295,7 @@ pub(super) fn render_timeline(
     acquisition: &crate::subsystem::Acquisition,
     derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
-) {
+) -> Option<f64> {
     let use_local = state.use_local_time;
     let available_width = ui.available_width() as f64;
     playback.state.timeline_width_px = available_width;
@@ -355,7 +358,7 @@ pub(super) fn render_timeline(
     );
 
     if zoom <= 0.0 {
-        return;
+        return None;
     }
 
     let view_start = playback.state.timeline_view_start;
@@ -400,12 +403,7 @@ pub(super) fn render_timeline(
     // volume's already-downloaded sweeps visible lives inside
     // `TimelineView::build`.
     let frame = TimelineFrame {
-        view: crate::core::TimelineView::build(
-            &site.scans,
-            &site.shadows,
-            Some(&live.mode_state),
-            live.radar_model.position.as_ref(),
-        ),
+        view: site.timeline_view(live.mode_state.is_active()),
         now_secs: state.frame_now.secs(),
         view_start,
         view_end,
@@ -483,7 +481,7 @@ pub(super) fn render_timeline(
 
         // Which container carries the "next data" countdown (the core's
         // call: the live container's next cut, else the soonest ghost).
-        let countdown = live.countdown_remaining_secs(frame.now_secs);
+        let countdown = live.countdown_remaining_secs(&site.live, frame.now_secs);
         let countdown_idx =
             crate::core::timeline_view::countdown_container(&containers, frame.now_secs);
 
@@ -679,7 +677,6 @@ pub(super) fn render_timeline(
     let interaction = handle_timeline_interaction(
         ui,
         state,
-        live,
         playback,
         chrome,
         &response,
@@ -692,7 +689,7 @@ pub(super) fn render_timeline(
     if response.hovered() && !interaction.scrubbing {
         if let Some(hover_pos) = response.hover_pos() {
             let hover_ts = frame.x_to_ts(hover_pos.x);
-            render_timeline_tooltip(ui, &frame, live, hover_ts, hover_pos);
+            render_timeline_tooltip(ui, &frame, live, &site.live, hover_ts, hover_pos);
         }
     }
 
@@ -700,4 +697,5 @@ pub(super) fn render_timeline(
     // After the strip's interaction, so its interact rect is on top over its
     // band (the strip also suppresses seeks there).
     selection_strip::render_selection_strip(ui, state, live, playback, &frame, selection_rect);
+    interaction.scrub_to
 }

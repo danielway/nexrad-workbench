@@ -34,7 +34,7 @@
 //! renders (spec §6.3).
 
 use crate::core::projection::{ScanProjection, SweepProjectionStatus, SweepTimingProvenance};
-use crate::core::LiveModeState;
+use crate::core::LiveVolumeState;
 use crate::core::ScanBoundary;
 use crate::core::{RadarTimeline, Scan};
 use std::collections::BTreeSet;
@@ -200,18 +200,22 @@ impl<'a> TimelineView<'a> {
     /// Build the view from every timeline source. Sources are passed by
     /// reference and never reference each other; all merging happens here.
     ///
-    /// `live_position` is the live subsystem's per-frame `from_live` model
-    /// (`live.radar_model.position`); the adapter clones it and overlays the
-    /// cached sweeps for the same volume.
+    /// `live_volume` is the site's live volume while the session streams
+    /// (`None` otherwise). `live_position` is the site's per-frame
+    /// `from_live` model (`site.live.radar_model.position`); the adapter
+    /// clones it and overlays the cached sweeps for the same volume.
     pub(crate) fn build(
         cache: &'a RadarTimeline,
         shadows: &'a [ScanBoundary],
-        live_state: Option<&LiveModeState>,
+        live_volume: Option<&LiveVolumeState>,
         live_position: Option<&ScanProjection>,
     ) -> Self {
-        let (live_position, live_volume_ms) = match (live_state, live_position) {
-            (Some(ls), Some(pos)) if ls.is_active() => {
-                let anchor_ms = ls.current_volume.as_ref().map(|a| a.scan_key.scan_start.0);
+        let (live_position, live_volume_ms) = match (live_volume, live_position) {
+            (Some(volume), Some(pos)) => {
+                let anchor_ms = volume
+                    .current_volume
+                    .as_ref()
+                    .map(|a| a.scan_key.scan_start.0);
                 let mut merged = pos.clone();
                 if let Some(ms) = anchor_ms {
                     if let Some(scan) = scan_with_key_ms(cache, ms) {
@@ -1609,10 +1613,7 @@ mod tests {
         let mut pos = live_model(vec![s_inprog, s_other, s_cached, s_future]);
         pos.in_progress_radials = Some(42);
 
-        let live = crate::core::LiveModeState::with_dummy_streaming(
-            crate::core::LivePhase::Streaming,
-            1_700_000_010.0,
-        );
+        let live = crate::core::LiveVolumeState::default();
         let cache = RadarTimeline { scans: Vec::new() };
         let shadows: Vec<ScanBoundary> = Vec::new();
         let view = TimelineView::build(&cache, &shadows, Some(&live), Some(&pos));
@@ -1709,10 +1710,7 @@ mod tests {
         s_inprog.collection_end_secs = 1_700_000_030.0;
         s_inprog.chunks_in_sweep = 3;
         let pos = live_model(vec![s_inprog]); // volume_start = 1_700_000_000.0
-        let live = crate::core::LiveModeState::with_dummy_streaming(
-            crate::core::LivePhase::Streaming,
-            1_700_000_010.0,
-        );
+        let live = crate::core::LiveVolumeState::default();
         let cache = RadarTimeline { scans: Vec::new() };
         let shadows: Vec<ScanBoundary> = Vec::new();
         let view = TimelineView::build(&cache, &shadows, Some(&live), Some(&pos));
@@ -1994,10 +1992,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn scan_start_at_prefers_live_volume() {
         let pos = live_model(vec![sweep_pos(1, SweepProjectionStatus::InProgress)]);
-        let live = crate::core::LiveModeState::with_dummy_streaming(
-            crate::core::LivePhase::Streaming,
-            1_700_000_010.0,
-        );
+        let live = crate::core::LiveVolumeState::default();
         let cache = RadarTimeline { scans: Vec::new() };
         let shadows: Vec<ScanBoundary> = Vec::new();
         let view = TimelineView::build(&cache, &shadows, Some(&live), Some(&pos));
@@ -2122,10 +2117,7 @@ mod coverage_tests {
         sp.collection_end_secs = 1_700_000_030.0;
         sp.chunks_in_sweep = 3;
         let pos = live_model(vec![sp]);
-        let live = crate::core::LiveModeState::with_dummy_streaming(
-            crate::core::LivePhase::Streaming,
-            1_700_000_010.0,
-        );
+        let live = crate::core::LiveVolumeState::default();
         let shadows: Vec<ScanBoundary> = Vec::new();
         let view = TimelineView::build(&cache, &shadows, Some(&live), Some(&pos));
         let c = view.frame_containers_in_range(
@@ -2159,10 +2151,7 @@ mod coverage_tests {
         ghost.volume_end = 1_700_000_600.0;
         pos.next_scan_ghost = Some(Box::new(ghost));
 
-        let live = crate::core::LiveModeState::with_dummy_streaming(
-            crate::core::LivePhase::Streaming,
-            1_700_000_010.0,
-        );
+        let live = crate::core::LiveVolumeState::default();
         let cache = RadarTimeline { scans: Vec::new() };
         let shadows: Vec<ScanBoundary> = Vec::new();
         let view = TimelineView::build(&cache, &shadows, Some(&live), Some(&pos));

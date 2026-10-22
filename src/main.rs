@@ -487,8 +487,10 @@ impl WorkbenchApp {
         let initial_site_id = initial_site.id.0.clone();
         let data_facade = MainThreadStore::new();
         let acquisition = subsystem::Acquisition::new(data_facade.clone());
-        let realtime_channel =
-            nexrad::RealtimeChannel::with_stats(acquisition.coordinator.download_stats());
+        // The site's stream counts its bytes in the shared download stats.
+        initial_site.live = subsystem::SiteLive::new(nexrad::RealtimeChannel::with_stats(
+            acquisition.coordinator.download_stats(),
+        ));
 
         // Open the record cache database
         {
@@ -550,7 +552,7 @@ impl WorkbenchApp {
             },
             render: subsystem::Render::new(nexrad::RenderCoordinator::new(decode_worker)),
             acquisition,
-            live: subsystem::Live::new(realtime_channel),
+            live: subsystem::Live::new(),
             timeline: subsystem::Timeline::default(),
             sites: subsystem::Sites::new(initial_site),
             playback,
@@ -657,8 +659,11 @@ impl WorkbenchApp {
                         avg_fetch_ms: stats.median_chunk_latency_ms,
                         avg_processing_ms: stats.median_processing_time_ms,
                         avg_render_ms: stats.avg_render_time_ms,
-                        vcp_forecast_available: self.live.mode_state.volume_start_plan.is_some()
-                            || self.live.mode_state.last_completed_volume.is_some(),
+                        vcp_forecast_available: {
+                            let volume = &self.sites.focus().live.volume;
+                            volume.volume_start_plan.is_some()
+                                || volume.last_completed_volume.is_some()
+                        },
                         ingest_phases: stats.last_ingest_detail.as_ref().map(|d| {
                             [
                                 ("Split", d.split_ms),
@@ -701,7 +706,9 @@ impl WorkbenchApp {
         let elevations = self.state.current_elevation_list(
             &self.playback.state,
             &self.sites.focus().scans,
-            self.live
+            self.sites
+                .focus()
+                .live
                 .radar_model
                 .volume
                 .as_ref()
@@ -736,6 +743,8 @@ impl WorkbenchApp {
         let now = self.state.frame_now.secs();
         let playhead = self.playback.state.playback_position();
         let live_vcp = self
+            .sites
+            .focus()
             .live
             .radar_model
             .volume
@@ -746,12 +755,10 @@ impl WorkbenchApp {
             &self.sites.focus().scans,
             live_vcp,
         );
-        let view = core::TimelineView::build(
-            &self.sites.focus().scans,
-            &self.sites.focus().shadows,
-            Some(&self.live.mode_state),
-            self.live.radar_model.position.as_ref(),
-        );
+        let view = self
+            .sites
+            .focus()
+            .timeline_view(self.live.mode_state.is_active());
         let pinned = self.live.session.playhead == core::session::Playhead::PinnedToNow;
         let (volume, clock) = core::ladder::ladder_volume(&view, pinned, now, playhead);
         let viz = &self.state.viz_state;
@@ -762,7 +769,7 @@ impl WorkbenchApp {
                 product: viz.product,
                 volume: volume.as_ref(),
                 clock,
-                antenna_azimuth: self.live.radar_model.estimated_azimuth,
+                antenna_azimuth: self.sites.focus().live.radar_model.estimated_azimuth,
                 on_screen: self.sites.focus().displayed.as_ref().map(|d| {
                     core::ladder::OnScreenCut {
                         elevation_number: d.identity.elevation_number,
@@ -937,8 +944,9 @@ impl eframe::App for WorkbenchApp {
         let early_derived = subsystem::Derived::for_frame(
             &self.state,
             &self.playback,
-            self.live.canvas_follows_live(&self.playback.state),
-            &self.live.radar_model,
+            self.live
+                .canvas_follows_live(&self.sites.focus().live, &self.playback.state),
+            &self.sites.focus().live.radar_model,
         );
         self.state.national_mosaic.poll_tick(
             ctx,
@@ -1028,15 +1036,16 @@ impl eframe::App for WorkbenchApp {
 
         // 14-17. FRAME SNAPSHOT: materialize the per-frame state UI reads.
         // Live::refresh derives everything from this frame's shared `now`.
-        self.live.refresh(subsystem::live::LiveRefreshInputs {
-            playback: &self.playback.state,
-            archive_boundaries: &self.sites.focus().shadows,
-            now: self.state.frame_now,
-            elevation_selection: &self.state.viz_state.elevation_selection,
-            displayed: self.sites.focus().displayed.as_ref(),
-            caption_context: self.state.viz_state.caption_context,
-            volume_3d_active: self.state.viz_state.volume_3d_active(),
-        });
+        self.live.refresh(
+            &mut self.sites,
+            subsystem::live::LiveRefreshInputs {
+                playback: &self.playback.state,
+                now: self.state.frame_now,
+                elevation_selection: &self.state.viz_state.elevation_selection,
+                caption_context: self.state.viz_state.caption_context,
+                volume_3d_active: self.state.viz_state.volume_3d_active(),
+            },
+        );
         // The touch-screen fact is re-read when the viewport changes size, so
         // an emulator's device toggle (or a rotation) sees the current one.
         let size = ctx.content_rect().size();
@@ -1083,8 +1092,9 @@ impl eframe::App for WorkbenchApp {
         let derived = subsystem::Derived::for_frame(
             &self.state,
             &self.playback,
-            self.live.canvas_follows_live(&self.playback.state),
-            &self.live.radar_model,
+            self.live
+                .canvas_follows_live(&self.sites.focus().live, &self.playback.state),
+            &self.sites.focus().live.radar_model,
         );
 
         // 19. Resolve the phone chrome's auto-hide for this frame

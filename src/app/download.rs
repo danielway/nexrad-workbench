@@ -282,19 +282,21 @@ impl WorkbenchApp {
         // each frame. The manager diffs internally so this is a no-op when
         // the selection hasn't changed; on a real change it bumps the
         // channel's filter epoch so any in-flight sleep wakes within ~250ms.
-        self.live.channel.sync_filter(
+        let live = &self.sites.focus().live;
+        live.channel.sync_filter(
             &self.state.viz_state.elevation_selection,
-            self.live.radar_model.vcp_pattern(),
+            live.radar_model.vcp_pattern(),
         );
 
-        for result in self.live.channel.poll() {
+        for result in live.channel.poll() {
             self.handle_realtime_result(result, ctx);
         }
 
         // Stop realtime channel if live mode was stopped by UI
-        if !self.live.mode_state.is_active() && self.live.channel.is_active() {
+        let live = &self.sites.focus().live;
+        if !self.live.mode_state.is_active() && live.channel.is_active() {
             log::debug!("Stopping realtime channel (live mode ended)");
-            self.live.channel.stop();
+            live.channel.stop();
         }
 
         // The plan's per-chunk `projected_available_at_secs` is an absolute

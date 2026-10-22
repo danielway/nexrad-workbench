@@ -39,6 +39,10 @@ pub(super) struct InteractionOutcome {
     /// A primary-drag scrub is active this frame — suppress hover tooltips and
     /// press-seek re-triggering.
     pub scrubbing: bool,
+    /// Where this frame's scrub put the pointer. The layer runs the seek
+    /// reducer on it once the strip is drawn (the seek borrows every site's
+    /// stream, which the strip's view of the focus site is still reading).
+    pub scrub_to: Option<f64>,
 }
 
 /// Handle mouse / touch interaction on the timeline strip.
@@ -46,7 +50,6 @@ pub(super) struct InteractionOutcome {
 pub(super) fn handle_timeline_interaction(
     ui: &mut egui::Ui,
     state: &mut AppState,
-    live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
     response: &egui::Response,
@@ -120,19 +123,14 @@ pub(super) fn handle_timeline_interaction(
         // -- Press-seek and drag-scrub ---------------------------------------
         // What a seek does (keep a range it lands in, keep a parked I point,
         // detach from now, pause on a scrub) is core::transport::reduce_seek.
-        // A press is an intent; a scrub runs the same reducer synchronously
-        // so the playhead keeps up with the pointer.
+        // A press is an intent; a scrub runs the same reducer in this frame
+        // (see `InteractionOutcome::scrub_to`) so the playhead keeps up with
+        // the pointer.
         StripGesture::Seek => {
             if let Some(pos) = pointer_pos {
                 let ts = frame.x_to_ts(pos.x);
                 if input.primary_dragging || input.primary_drag_started {
-                    live.seek(
-                        &mut playback.state,
-                        state.frame_now.secs(),
-                        state.pause_stream_while_reviewing,
-                        ts,
-                        SeekGesture::Scrub,
-                    );
+                    outcome.scrub_to = Some(ts);
                 } else {
                     state.push_command(Intent::Seek {
                         ts,

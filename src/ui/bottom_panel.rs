@@ -28,7 +28,7 @@ impl Layer for BottomPanelLayer {
             ctx.root_ui,
             ctx.state,
             ctx.timeline,
-            ctx.sites.focus(),
+            ctx.sites,
             ctx.live,
             ctx.playback,
             ctx.acquisition,
@@ -44,7 +44,7 @@ fn draw_bottom_panel(
     root_ui: &mut egui::Ui,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
-    site: &crate::subsystem::SiteState,
+    sites: &mut crate::subsystem::Sites,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     acquisition: &mut Acquisition,
@@ -96,18 +96,29 @@ fn draw_bottom_panel(
 
                 ui.add_space(2.0);
 
-                // Timeline strip row
-                render_timeline(
+                // Timeline strip row. A scrub seeks once the strip is
+                // drawn, over every site's stream.
+                let scrub_to = render_timeline(
                     ui,
                     state,
                     timeline,
-                    site,
+                    sites.focus(),
                     live,
                     playback,
                     acquisition,
                     derived,
                     chrome,
                 );
+                if let Some(ts) = scrub_to {
+                    live.seek(
+                        sites,
+                        &mut playback.state,
+                        state.frame_now.secs(),
+                        state.pause_stream_while_reviewing,
+                        ts,
+                        crate::core::transport::SeekGesture::Scrub,
+                    );
+                }
             });
         });
 

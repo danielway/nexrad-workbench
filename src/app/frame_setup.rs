@@ -159,9 +159,13 @@ impl WorkbenchApp {
         );
         // A live partial is displayed under a placeholder scan key (live
         // renders are not bound to a stored scan); its volume is the one the
-        // stream is collecting. The stream belongs to the focus.
-        let live_anchor = (is_focus && self.live.mode_state.is_active())
-            .then_some(self.live.mode_state.current_volume.as_ref())
+        // site's stream is collecting.
+        let live = &target.live;
+        let live_anchor = self
+            .live
+            .mode_state
+            .is_active()
+            .then_some(live.volume.current_volume.as_ref())
             .flatten();
         let live_partial = shown.as_ref().and_then(|d| {
             let anchor = live_anchor.filter(|_| d.identity.scan_key.site.0.is_empty())?;
@@ -175,7 +179,7 @@ impl WorkbenchApp {
             displayed_ms.and_then(|ms| scans.scans.iter().rev().find(|s| s.key_ms() == ms));
         // The cut the live stream is filling, keyed to the live volume.
         let live_cut = live_anchor.and_then(|anchor| {
-            let engine = self.live.engine.borrow();
+            let engine = live.engine.borrow();
             let obs = engine.observations();
             Some(LiveCutProgress {
                 scan_key: anchor.scan_key.clone(),
@@ -191,7 +195,7 @@ impl WorkbenchApp {
         };
         let live_vcp = live_anchor
             .filter(|a| Some(a.scan_key.scan_start.0) == displayed_ms)
-            .and(self.live.radar_model.volume.as_ref())
+            .and(live.radar_model.volume.as_ref())
             .and_then(|v| v.vcp_pattern.as_ref());
         let env = StormCellEnv {
             visible,

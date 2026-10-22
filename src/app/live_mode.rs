@@ -21,6 +21,7 @@ impl WorkbenchApp {
         // live, drives the live-range replay instead. The playhead is kept on
         // "now" by `tick_live`, independent of `playing`.
         self.live.mode_state.start(now);
+        self.sites.focus_mut().live.volume.begin();
         self.playback.state.enter_pinned_live(now);
 
         // Ensure the timeline is zoomed in far enough to show individual sweeps
@@ -38,15 +39,16 @@ impl WorkbenchApp {
         // Push the current elevation filter into the channel before starting
         // so the streaming loop's init-time backfill targets the user's
         // selected elevation rather than a default.
-        self.live.channel.sync_filter(
+        let site = self.sites.focus();
+        site.live.channel.sync_filter(
             &self.state.viz_state.elevation_selection,
-            self.live.radar_model.vcp_pattern(),
+            site.live.radar_model.vcp_pattern(),
         );
-        self.live.channel.start(
+        site.live.channel.start(
             ctx.clone(),
             site_id,
             self.acquisition.coordinator.facade().clone(),
-            self.live.engine.clone(),
+            site.live.engine.clone(),
         );
     }
 
@@ -164,7 +166,10 @@ impl WorkbenchApp {
                 now,
                 crate::LIVE_DETACHED_STOP_SECS,
             ) {
-                self.live.stop(crate::core::LiveExitReason::DetachedTimeout);
+                self.live.stop(
+                    &mut self.sites,
+                    crate::core::LiveExitReason::DetachedTimeout,
+                );
                 self.state
                     .toasts
                     .notice(crate::core::LiveExitReason::DetachedTimeout.message());
@@ -213,10 +218,11 @@ impl WorkbenchApp {
         if !self.live.mode_state.is_active() {
             return None;
         }
-        let anchor = self.live.mode_state.current_volume.as_ref()?;
+        let live = &self.sites.focus().live;
+        let anchor = live.volume.current_volume.as_ref()?;
         Some(crate::core::LiveVolume {
             key_secs: anchor.scan_key.scan_start.0 as f64 / 1000.0,
-            projection: self.live.radar_model.position.as_ref()?,
+            projection: live.radar_model.position.as_ref()?,
         })
     }
 
@@ -275,10 +281,7 @@ impl WorkbenchApp {
     pub(crate) fn request_worker_render(&mut self, site: usize) {
         use crate::core::playback_manager::DesiredDisplay;
 
-        // The live stream belongs to the focus site; every other site
-        // resolves from its cache alone.
-        let streams = site == self.sites.focus;
-        let live_cut = streams.then(|| self.live_render_sources()).flatten();
+        let live_cut = self.live_render_sources(site);
         let target = &self.sites.list[site];
         let desired = crate::core::playback_manager::resolve_desired_display(
             &target.id.0,
@@ -323,8 +326,9 @@ impl WorkbenchApp {
                 // resolve to `Blank` even though the GPU holds a good `live|*`
                 // sweep. Only blank when archive owns the canvas — which it
                 // does whenever the playhead is detached from the live edge.
-                let protecting_live_partial = streams
-                    && self.live.canvas_follows_live(&self.playback.state)
+                let protecting_live_partial = self
+                    .live
+                    .canvas_follows_live(&self.sites.list[site].live, &self.playback.state)
                     && self.gpu_holds_live_sweep(site);
                 // Don't blank merely because the playhead drifted into a gap
                 // (spec §11.2): a Blank with NO scan covering the playhead is the
@@ -343,27 +347,27 @@ impl WorkbenchApp {
         }
     }
 
-    /// The live cut feeding [`crate::core::playback_manager::resolve_desired_display`]:
+    /// Site `site`'s live cut feeding [`crate::core::playback_manager::resolve_desired_display`]:
     /// `Some((collecting_elevation, anchor_key_ms))` while streaming with a
-    /// fully-known volume, the canvas following the live stream (see
-    /// [`crate::subsystem::Live::canvas_follows_live`]) AND radials of that
+    /// fully-known volume, the canvas following the site's live stream (see
+    /// [`crate::subsystem::SiteLive::canvas_follows_live`]) AND radials of that
     /// elevation still in the accumulator (see
     /// [`crate::core::worker_ingest::live_cut`]), else
     /// `None` (which collapses the resolver to the cache path — a detached
     /// playhead resolves whatever's cached under the cursor, untouched by
     /// the background stream). Shared by `request_worker_render` and the
     /// `Decoded` upload gate in `handle_decoded_outcome`.
-    pub(crate) fn live_render_sources(&self) -> Option<(u8, i64)> {
-        if !self.live.canvas_follows_live(&self.playback.state) {
+    pub(crate) fn live_render_sources(&self, site: usize) -> Option<(u8, i64)> {
+        let live = &self.sites.list[site].live;
+        if !self.live.canvas_follows_live(live, &self.playback.state) {
             return None;
         }
-        let anchor_ms = self
-            .live
-            .mode_state
+        let anchor_ms = live
+            .volume
             .current_volume
             .as_ref()
             .map(|a| a.scan_key.scan_start.0);
-        let engine = self.live.engine.borrow();
+        let engine = live.engine.borrow();
         let obs = engine.observations();
         crate::core::worker_ingest::live_cut(
             obs.current_in_progress_elevation,
@@ -412,9 +416,11 @@ impl WorkbenchApp {
     pub(crate) fn stop_live_mode(&mut self, reason: crate::core::LiveExitReason) {
         log::info!("Stopping live mode: {:?}", reason);
 
-        self.live.stop(reason);
+        self.live.stop(&mut self.sites, reason);
         self.playback.state.exit_live(crate::core::FreezeAt::Keep);
-        self.live.channel.stop();
+        for site in self.sites.iter() {
+            site.live.channel.stop();
+        }
 
         // Halt playback: every remaining stop path (explicit stop, error,
         // site change) lands the cursor where it was, and leaving
@@ -434,7 +440,11 @@ impl WorkbenchApp {
         match result {
             nexrad::RealtimeResult::Started { site_id } => {
                 log::debug!("Realtime streaming started for site: {}", site_id);
-                self.live.mode_state.handle_streaming_started(now);
+                self.live.mode_state.apply_site_event(
+                    crate::core::SiteStreamEvent::Started,
+                    true,
+                    now,
+                );
             }
             nexrad::RealtimeResult::ChunkReceived {
                 chunks_in_volume,
@@ -455,12 +465,16 @@ impl WorkbenchApp {
                     fetch_latency_ms,
                     plan.as_ref().and_then(|p| p.next_available_in_secs(now)),
                 );
-                self.live
-                    .mode_state
-                    .handle_realtime_chunk(chunks_in_volume, now, plan.as_ref());
-
+                let awaiting_target = plan.as_ref().and_then(|p| p.next_target()).is_some();
+                self.live.mode_state.apply_site_event(
+                    crate::core::SiteStreamEvent::Chunk { awaiting_target },
+                    true,
+                    now,
+                );
+                let volume = &mut self.sites.focus_mut().live.volume;
+                volume.chunks_received = chunks_in_volume;
                 if let Some(stat) = arrival_stat {
-                    self.live.mode_state.record_chunk_arrival(stat);
+                    volume.record_chunk_arrival(stat);
                 }
 
                 // Record chunk latency for the acquisition drawer. No radial

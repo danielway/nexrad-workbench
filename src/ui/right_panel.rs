@@ -685,6 +685,7 @@ fn navigate_to_event(
 
     // Loop the event's span (a fixed range: the playhead leaves live).
     live.select_range(
+        sites,
         &mut playback.state,
         event.start_time,
         event.end_time,

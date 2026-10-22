@@ -1,16 +1,16 @@
 //! Computed, read-only snapshot of live radar state.
 //!
-//! `LiveRadarModel` is derived once per frame from `LiveModeState`, capturing
+//! `LiveRadarModel` is derived once per frame from a site's `LiveVolumeState`, capturing
 //! the current wall-clock `now` so all UI consumers see a consistent picture
 //! of what sweeps/chunks are in the past, which sweep is being received, and
 //! what the radar is doing right now.
 
-use super::LiveModeState;
+use super::LiveVolumeState;
 use crate::core::projection::{ExtrapolationState, ScanProjection};
 
 /// Computed snapshot of live radar state for consistent UI consumption.
 ///
-/// Derived once per frame from [`LiveModeState`]. All fields reflect the same
+/// Derived once per frame from [`LiveVolumeState`]. All fields reflect the same
 /// `now` timestamp, eliminating inconsistencies between components that would
 /// otherwise independently call `js_sys::Date::now()`.
 #[derive(Clone, Debug, Default)]
@@ -115,7 +115,7 @@ pub(crate) struct LiveSweepModel {
     pub chunks_expected: Option<u32>,
 
     /// Per-chunk time spans for the current elevation (start_secs, end_secs, radial_count).
-    /// Pre-filtered from `LiveModeState::chunk_elev_spans` for the active elevation.
+    /// Pre-filtered from the engine's `chunk_elev_spans` for the active elevation.
     pub chunk_time_spans: Vec<(f64, f64, u32)>,
 }
 
@@ -131,17 +131,18 @@ pub(crate) struct LiveChunkBoundary {
     pub radial_count: u32,
 }
 
-impl LiveModeState {
-    /// Compute a consistent, read-only model of the current live radar state.
+impl LiveVolumeState {
+    /// Compute a consistent, read-only model of the site's live radar state.
+    /// `active`: the session is streaming ([`super::LiveModeState::is_active`]).
     ///
     /// Call once per frame at the start of the UI rendering pass, then pass the
     /// result to all consumers so they see the same `now` timestamp.
     pub(crate) fn compute_model(
         &self,
+        active: bool,
         now_secs: f64,
         position: Option<ScanProjection>,
     ) -> LiveRadarModel {
-        let active = self.is_active();
         if !active {
             return LiveRadarModel::default();
         }
@@ -180,7 +181,7 @@ impl LiveModeState {
 
         // The in-progress sweep is read entirely from the engine projection (the
         // in-progress `SweepProjection` carries the per-chunk az + time spans);
-        // only the decoder-specific azimuth fields stay on `LiveModeState`.
+        // only the decoder-specific azimuth fields stay on `LiveVolumeState`.
         let active_sweep = position.as_ref().and_then(|p| {
             let elev = p.in_progress_elevation?;
             let sweep = p.sweeps.iter().find(|s| s.elevation_number == elev);
@@ -277,12 +278,11 @@ mod coverage_tests {
         }
     }
 
-    /// An active (Streaming) live-mode state. `compute_model` returns a default
-    /// model for any non-active state, so most behavior needs an active one.
-    fn active_state() -> LiveModeState {
-        let mut s = LiveModeState::new();
-        s.phase = LivePhase::Streaming;
-        s
+    /// A site's volume state, modelled with the session streaming.
+    /// `compute_model` returns a default model for an inactive session, so
+    /// most behavior needs an active one.
+    fn active_state() -> LiveVolumeState {
+        LiveVolumeState::default()
     }
 
     fn vcp_one_elev(angle: f32) -> crate::data::ExtractedVcp {
@@ -307,9 +307,10 @@ mod coverage_tests {
     fn compute_model_inactive_returns_default() {
         // Idle phase → not active → model is the all-default snapshot,
         // independent of the position passed in.
-        let s = LiveModeState::new(); // phase defaults to Idle
+        let s = crate::core::LiveModeState::new(); // phase defaults to Idle
         assert!(!s.is_active());
-        let model = s.compute_model(
+        let model = LiveVolumeState::default().compute_model(
+            s.is_active(),
             1005.0,
             Some(scan(vec![sweep(1, 1000.0, 1010.0)], 1000.0, 1010.0)),
         );
@@ -323,10 +324,10 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn compute_model_error_phase_is_inactive() {
-        let mut s = LiveModeState::new();
+        let mut s = crate::core::LiveModeState::new();
         s.phase = LivePhase::Error;
         assert!(!s.is_active());
-        let model = s.compute_model(1005.0, None);
+        let model = LiveVolumeState::default().compute_model(s.is_active(), 1005.0, None);
         assert!(!model.active);
     }
 
@@ -336,7 +337,7 @@ mod coverage_tests {
     fn compute_model_active_no_position() {
         // Active but the engine hasn't emitted a projection yet (cold window).
         let s = active_state();
-        let model = s.compute_model(1005.0, None);
+        let model = s.compute_model(true, 1005.0, None);
         assert!(model.active);
         assert!(model.position.is_none());
         // estimated_azimuth comes from position → None here.
@@ -362,7 +363,7 @@ mod coverage_tests {
             1000.0,
             1030.0,
         );
-        let model = s.compute_model(1025.0, Some(sp));
+        let model = s.compute_model(true, 1025.0, Some(sp));
         assert!(model.active);
         assert!(model.position.is_some());
         // elevation_angle for sweep(2) is 0.5*2 = 1.0.
@@ -380,7 +381,7 @@ mod coverage_tests {
         s.last_radial_azimuth = Some(350.0);
         s.last_radial_time_secs = Some(1000.0);
         let sp = scan(vec![sweep(1, 1000.0, 1010.0)], 1000.0, 1010.0);
-        let model = s.compute_model(1001.0, Some(sp));
+        let model = s.compute_model(true, 1001.0, Some(sp));
 
         // The model filled extrapolation onto the returned position.
         let pos = model.position.as_ref().expect("position");
@@ -405,7 +406,7 @@ mod coverage_tests {
         sw.azimuth_rate_dps = 30.0;
         let mut sp = scan(vec![sw], 1000.0, 1010.0);
         sp.in_progress_elevation = Some(1);
-        let model = s.compute_model(1001.0, Some(sp));
+        let model = s.compute_model(true, 1001.0, Some(sp));
 
         let pos = model.position.as_ref().unwrap();
         let ext = pos.extrapolation.as_ref().unwrap();
@@ -446,7 +447,7 @@ mod coverage_tests {
         sp.in_progress_elevation = Some(2);
         sp.in_progress_radials = Some(61);
 
-        let model = s.compute_model(1001.0, Some(sp));
+        let model = s.compute_model(true, 1001.0, Some(sp));
         let active_sweep = model.active_sweep.expect("active sweep");
         assert_eq!(active_sweep.elevation_number, 2);
         // chunks_expected = chunks_in_sweep (5) as u32, kept because > 0.
@@ -468,7 +469,7 @@ mod coverage_tests {
         // in_progress_elevation = None → active_sweep is None even with sweeps.
         let s = active_state();
         let sp = scan(vec![sweep(1, 1000.0, 1010.0)], 1000.0, 1010.0); // in_progress None
-        let model = s.compute_model(1005.0, Some(sp));
+        let model = s.compute_model(true, 1005.0, Some(sp));
         assert!(model.active_sweep.is_none());
         // The volume is still populated.
         assert!(model.volume.is_some());
