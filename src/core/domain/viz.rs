@@ -329,7 +329,7 @@ pub(crate) fn build_elevation_list_from_vcp(
 
 /// Interpolation mode for radar rendering.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum InterpolationMode {
+pub(crate) enum InterpolationMode {
     /// Raw nearest-neighbor sampling (blocky, traditional).
     #[default]
     Nearest,
@@ -337,22 +337,25 @@ pub enum InterpolationMode {
     Bilinear,
 }
 
+// Nothing outside the tests reads these. They were hidden from the dead-code
+// lint while the renderers were reachable through a `pub` struct.
+#[allow(dead_code)]
 impl InterpolationMode {
-    pub fn label(&self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self {
             InterpolationMode::Nearest => "Nearest",
             InterpolationMode::Bilinear => "Bilinear",
         }
     }
 
-    pub fn all() -> &'static [InterpolationMode] {
+    pub(crate) fn all() -> &'static [InterpolationMode] {
         &[InterpolationMode::Nearest, InterpolationMode::Bilinear]
     }
 }
 
 /// GPU rendering processing options (shader uniforms).
 #[derive(Clone)]
-pub struct RenderProcessing {
+pub(crate) struct RenderProcessing {
     /// Interpolation mode (nearest vs bilinear).
     pub interpolation: InterpolationMode,
     /// Global opacity for radar data (0.0..1.0).

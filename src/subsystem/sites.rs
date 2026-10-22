@@ -4,9 +4,10 @@
 //! A `SiteState` owns everything that differs between radars: the site's id
 //! and position, its scan inventory, its render track and the crossfade and
 //! scrub caches in front of it, the frame on its canvas and how old it is,
-//! and its storm cells. Everything shared (playback,
-//! selection, settings, the worker pool, the download queue, the archive
-//! index, the activity book) stays with its own owner.
+//! its storm cells and the GPU renderers that draw it ([`SiteGpu`]).
+//! Everything shared (playback, selection, settings, the worker pool, the
+//! download queue, the archive index, the activity book) stays with its own
+//! owner.
 //!
 //! `focus` only says which site the single-valued surfaces describe: the tilt
 //! ladder, the frame readout, the age pill, the timeline's full track, the
@@ -23,6 +24,45 @@ use crate::core::render_loop::ScrubCache;
 use crate::core::storm_cells::StormCells;
 use crate::core::{DisplayedSweep, RadarTimeline, ScanBoundary};
 use crate::data::SiteId;
+use crate::nexrad::{GlobeRadarRenderer, RadarGpuRenderer, VolumeRayRenderer};
+use std::sync::{Arc, Mutex};
+
+/// One site's GPU renderers: the flat disc, its projection onto the globe
+/// and the volume ray-march. Each holds that site's textures, so two sites
+/// never share one. The GL context and the site-independent renderers (the
+/// globe sphere, geographic lines) stay on `GpuResources`.
+#[derive(Default)]
+pub(crate) struct SiteGpu {
+    /// 2D radar disc; also owns the colour table the 3D paths read.
+    pub radar: Option<Arc<Mutex<RadarGpuRenderer>>>,
+    pub globe_radar: Option<Arc<Mutex<GlobeRadarRenderer>>>,
+    pub volume_ray: Option<Arc<Mutex<VolumeRayRenderer>>>,
+    /// `RadarGpuRenderer::new` failed once; don't retry (and re-log) each
+    /// frame.
+    radar_failed: bool,
+}
+
+impl SiteGpu {
+    /// Create whichever renderers this site does not have yet. Cheap once
+    /// they exist, so the frame loop calls it for every site.
+    pub(crate) fn ensure(&mut self, gl: &Arc<glow::Context>) {
+        if self.radar.is_none() && !self.radar_failed {
+            match RadarGpuRenderer::new(gl) {
+                Ok(r) => self.radar = Some(Arc::new(Mutex::new(r))),
+                Err(e) => {
+                    log::error!("Failed to create GPU radar renderer: {}", e);
+                    self.radar_failed = true;
+                }
+            }
+        }
+        if self.globe_radar.is_none() {
+            self.globe_radar = Some(Arc::new(Mutex::new(GlobeRadarRenderer::new(gl))));
+        }
+        if self.volume_ray.is_none() {
+            self.volume_ray = Some(Arc::new(Mutex::new(VolumeRayRenderer::new(gl))));
+        }
+    }
+}
 
 /// Everything the app holds for one radar.
 pub(crate) struct SiteState {
@@ -69,6 +109,9 @@ pub(crate) struct SiteState {
     /// threshold it was computed for (see `crate::core::storm_cells`). The
     /// visibility flag and threshold are global settings on `VizState`.
     pub cells: StormCells,
+    /// This site's renderers; empty until [`SiteGpu::ensure`] runs with a GL
+    /// context.
+    pub gpu: SiteGpu,
 }
 
 impl SiteState {
@@ -88,6 +131,7 @@ impl SiteState {
             data_staleness_secs: None,
             data_staleness_start_secs: None,
             cells: StormCells::default(),
+            gpu: SiteGpu::default(),
         }
     }
 
@@ -175,6 +219,12 @@ impl Sites {
         &mut self.list[self.focus]
     }
 
+    /// The sites the canvas draws, in draw order: the focus alone until the
+    /// canvas lays out more than one.
+    pub(crate) fn drawn(&self) -> impl Iterator<Item = &SiteState> {
+        std::iter::once(self.focus())
+    }
+
     /// The ids in list order, for [`crate::core::sites::route`].
     pub(crate) fn ids(&self) -> Vec<SiteId> {
         self.list.iter().map(|s| s.id.clone()).collect()
@@ -225,6 +275,22 @@ mod tests {
         assert_eq!(sites.list[0].id, SiteId::new("KDMX"));
         assert_eq!(sites.list[1].id, SiteId::new("KFWS"));
         assert!((sites.list[1].lon + 97.30).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_canvas_draws_the_focus_alone() {
+        let mut sites = two_sites();
+        sites.focus = 1;
+        let drawn: Vec<_> = sites.drawn().map(|s| s.id.clone()).collect();
+        assert_eq!(drawn, vec![SiteId::new("KTLX")]);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_new_site_has_no_renderers_until_ensured() {
+        let site = SiteState::new("KTLX", 35.33, -97.28);
+        assert!(site.gpu.radar.is_none());
+        assert!(site.gpu.globe_radar.is_none());
+        assert!(site.gpu.volume_ray.is_none());
     }
 
     #[wasm_bindgen_test]

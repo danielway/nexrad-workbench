@@ -15,6 +15,13 @@ impl WorkbenchApp {
         // they can't drift against each other within a frame.
         self.state.frame_now = crate::core::FrameNow::capture();
 
+        // Every site gets its renderers before anything uploads to them.
+        if let Some(gl) = self.gpu.gl.as_ref() {
+            for site in &mut self.sites.list {
+                site.gpu.ensure(gl);
+            }
+        }
+
         // Safety release for the scrub level. The timeline strip owns this
         // flag, but if the strip stops rendering mid-drag (mobile switch,
         // panel collapse) its clear would never run and the reactive prefetch
@@ -97,7 +104,7 @@ impl WorkbenchApp {
                 self.state.push_command(crate::core::Intent::StartLive);
             }
         }
-        if let Some(ref renderer) = self.gpu.gpu {
+        if let Some(ref renderer) = self.sites.focus().gpu.radar {
             if let Ok(mut r) = renderer.lock() {
                 r.clear_data();
             }

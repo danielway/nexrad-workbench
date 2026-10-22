@@ -32,13 +32,13 @@ pub(crate) fn render_canvas_with_geo(
     geo_layers: Option<&GeoLayerSet>,
     gpu: &crate::GpuResources,
 ) {
-    let gpu_renderer = gpu.gpu.as_ref();
     let globe_renderer = gpu.globe.as_ref();
     let geo_line_renderer = gpu.geo_line.as_ref();
-    let globe_radar_renderer = gpu.globe_radar.as_ref();
-    let volume_ray_renderer = gpu.volume_ray.as_ref();
     let ctx = root_ui.ctx().clone();
+    // The single-valued overlays (rings, probe, cells, captions) describe the
+    // focus; the radar discs are drawn for every site in `Sites::drawn`.
     let site = sites.focus();
+    let gpu_renderer = site.gpu.radar.as_ref();
     egui::CentralPanel::default().show(root_ui, |ui| {
         let available_size = ui.available_size();
 
@@ -68,17 +68,7 @@ pub(crate) fn render_canvas_with_geo(
                 }
 
                 // Draw the 3D globe via PaintCallback
-                draw_globe(
-                    ui,
-                    &rect,
-                    state,
-                    site,
-                    globe_renderer,
-                    geo_line_renderer,
-                    gpu_renderer,
-                    globe_radar_renderer,
-                    volume_ray_renderer,
-                );
+                draw_globe(ui, &rect, state, site, globe_renderer, geo_line_renderer);
 
                 // Corner-chrome overlays (color scale + info + compass)
                 // dispatched through the typed registry. The trait's
@@ -232,28 +222,34 @@ pub(crate) fn render_canvas_with_geo(
                     .then_some(live.radar_model.estimated_azimuth)
                     .flatten();
 
-                if let Some(renderer) = gpu_renderer {
-                    // Live compositing keeps `gpu_sweep` set even when animation
-                    // is off; force desaturation off in that case so age fades
-                    // only accompany an active sweep animation (#134).
-                    let mut processing = state.render_processing.clone();
-                    processing.data_age_desaturation =
-                        crate::core::canvas::data_age_desaturation_effective(
-                            processing.data_age_desaturation,
-                            derived.effective_sweep_animation,
-                        );
-                    draw_radar_gpu(
-                        ui,
-                        &projection,
-                        renderer,
-                        &rect,
-                        site.lat,
-                        site.lon,
-                        &processing,
-                        gpu_sweep,
-                        chunk_boundary,
+                // Live compositing keeps `gpu_sweep` set even when animation
+                // is off; force desaturation off in that case so age fades
+                // only accompany an active sweep animation (#134).
+                let mut processing = state.render_processing.clone();
+                processing.data_age_desaturation =
+                    crate::core::canvas::data_age_desaturation_effective(
+                        processing.data_age_desaturation,
+                        derived.effective_sweep_animation,
                     );
+                // The sweep reveal and chunk boundary are the focus's, the
+                // only site drawn so far.
+                for drawn in sites.drawn() {
+                    if let Some(renderer) = drawn.gpu.radar.as_ref() {
+                        draw_radar_gpu(
+                            ui,
+                            &projection,
+                            renderer,
+                            &rect,
+                            drawn.lat,
+                            drawn.lon,
+                            &processing,
+                            gpu_sweep,
+                            chunk_boundary,
+                        );
+                    }
+                }
 
+                if gpu_renderer.is_some() {
                     // Boundary ring at the edge of the active site's data range,
                     // matching the mosaic cutout so the seam reads as a single circle.
                     if let Some(c) = radar_cutout {

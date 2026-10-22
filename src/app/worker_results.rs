@@ -355,7 +355,9 @@ impl WorkbenchApp {
             self.live.channel.record_availability_lag_secs(lag);
         }
         if actions.promote_prev_texture {
-            if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
+            if let (Some(ref renderer), Some(ref gl)) =
+                (&self.sites.list[site].gpu.radar, &self.gpu.gl)
+            {
                 if let Ok(mut r) = renderer.lock() {
                     r.promote_current_to_previous(gl);
                 }
@@ -442,7 +444,9 @@ impl WorkbenchApp {
         let t_gpu = web_time::Instant::now();
         let mut gpu_upload_succeeded = false;
         if actions.upload_to_gpu {
-            if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
+            if let (Some(ref renderer), Some(ref gl)) =
+                (&self.sites.list[site].gpu.radar, &self.gpu.gl)
+            {
                 if let Ok(mut r) = renderer.lock() {
                     r.update_data(
                         gl,
@@ -516,15 +520,23 @@ impl WorkbenchApp {
             reduce_live_decoded, reduce_live_decoded_azimuths, LiveDecodedEnv,
         };
 
+        // The live stream belongs to the focus site.
+        let site = self.sites.focus;
+
         // Phase 1: display decisions. The GPU renderer's current sweep id
         // (the promote decision's input) is read here and passed in as env.
         let mut actions = {
-            let gpu_current_sweep_id = self.gpu.gpu.as_ref().and_then(|renderer| {
-                renderer
-                    .lock()
-                    .ok()
-                    .and_then(|r| r.current_sweep_id().map(str::to_string))
-            });
+            let gpu_current_sweep_id =
+                self.sites.list[site]
+                    .gpu
+                    .radar
+                    .as_ref()
+                    .and_then(|renderer| {
+                        renderer
+                            .lock()
+                            .ok()
+                            .and_then(|r| r.current_sweep_id().map(str::to_string))
+                    });
             let env = LiveDecodedEnv {
                 playhead_attached: self.live.canvas_follows_live(&self.playback.state),
                 whole_sweeps_only: self.live_shows_whole_sweeps(),
@@ -536,7 +548,10 @@ impl WorkbenchApp {
 
         // Execute the described actions: the GPU upload block stays here.
         if actions.upload_to_gpu {
-            if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
+            let mut uploaded = false;
+            if let (Some(ref renderer), Some(ref gl)) =
+                (&self.sites.list[site].gpu.radar, &self.gpu.gl)
+            {
                 if let Ok(mut r) = renderer.lock() {
                     if actions.promote_prev_texture {
                         r.promote_current_to_previous(gl);
@@ -558,28 +573,28 @@ impl WorkbenchApp {
                     );
                     r.set_current_sweep_id(Some(actions.gpu_sweep_id));
                     r.update_color_table(gl, &result.product);
-
-                    // Roll semantics decided by the reducer: promote →
-                    // snapshot `displayed` into `previous_displayed` (the
-                    // canonical source for overlay/timeline prev info),
-                    // else overwrite in place.
-                    if let Some(new_displayed) = actions.new_displayed.take() {
-                        let focus = self.sites.focus_mut();
-                        if actions.promote_prev_texture {
-                            focus.previous_displayed = focus.displayed.replace(new_displayed);
-                        } else {
-                            focus.displayed = Some(new_displayed);
-                        }
-                    }
+                    uploaded = true;
+                }
+            }
+            // Roll semantics decided by the reducer: promote → snapshot
+            // `displayed` into `previous_displayed` (the canonical source for
+            // overlay/timeline prev info), else overwrite in place. Written
+            // after the renderer borrow ends, since both live on the site.
+            if let Some(new_displayed) = actions.new_displayed.take().filter(|_| uploaded) {
+                let target = &mut self.sites.list[site];
+                if actions.promote_prev_texture {
+                    target.previous_displayed = target.displayed.replace(new_displayed);
+                } else {
+                    target.displayed = Some(new_displayed);
                 }
             }
             // Detection for the new chunk, decided by the same rule as the
             // per-frame check. Runs after the lock above is released.
-            self.sync_storm_cells_for(self.sites.focus);
+            self.sync_storm_cells_for(site);
         }
 
         if let Some((start, end, angle)) = actions.update_overlay {
-            self.update_overlay_from_sweep(self.sites.focus, start, end, angle);
+            self.update_overlay_from_sweep(site, start, end, angle);
         }
 
         // Phase 2: azimuth bookkeeping — runs attached or detached, after
@@ -596,22 +611,25 @@ impl WorkbenchApp {
             volume_data.total_ms,
         );
 
+        // A volume reply names no site; the 3D view draws the focus.
+        let target = self.sites.focus();
+
         // Upload to volume ray renderer
-        if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.volume_ray, &self.gpu.gl) {
+        if let (Some(ref renderer), Some(ref gl)) = (&target.gpu.volume_ray, &self.gpu.gl) {
             if let Ok(mut r) = renderer.lock() {
                 r.update_volume(
                     gl,
                     &volume_data.buffer,
                     volume_data.word_size,
                     &volume_data.sweeps,
-                    self.sites.focus().lat,
-                    self.sites.focus().lon,
+                    target.lat,
+                    target.lon,
                 );
             }
         }
 
         // Update LUT for the volume product
-        if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
+        if let (Some(ref renderer), Some(ref gl)) = (&target.gpu.radar, &self.gpu.gl) {
             if let Ok(mut r) = renderer.lock() {
                 r.update_color_table(gl, &volume_data.product);
             }

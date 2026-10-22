@@ -395,7 +395,7 @@ void main() {
 
 // ── Renderer struct ─────────────────────────────────────────────────
 
-pub struct VolumeRayRenderer {
+pub(crate) struct VolumeRayRenderer {
     program: glow::Program,
     quad_vao: glow::VertexArray,
     _quad_vbo: glow::Buffer,
@@ -448,7 +448,7 @@ pub struct VolumeRayRenderer {
 }
 
 impl VolumeRayRenderer {
-    pub fn new(gl: &Arc<glow::Context>) -> Self {
+    pub(crate) fn new(gl: &Arc<glow::Context>) -> Self {
         unsafe { Self::new_inner(gl) }
     }
 
@@ -637,7 +637,7 @@ impl VolumeRayRenderer {
     /// Upload packed volume data and sweep metadata.
     ///
     /// `word_size` is 1 for u8 data (R8UI) or 2 for u16 data (R16UI).
-    pub fn update_volume(
+    pub(crate) fn update_volume(
         &mut self,
         gl: &glow::Context,
         buffer: &[u8],
@@ -830,13 +830,13 @@ impl VolumeRayRenderer {
     }
 
     /// Returns true if volume data has been uploaded.
-    pub fn has_data(&self) -> bool {
+    pub(crate) fn has_data(&self) -> bool {
         self.has_data
     }
 
     /// Paint the volume at half resolution into an FBO, then blit to screen.
     #[allow(clippy::too_many_arguments)]
-    pub fn paint(
+    pub(crate) fn paint(
         &mut self,
         gl: &glow::Context,
         camera: &Camera,

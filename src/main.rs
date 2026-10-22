@@ -157,18 +157,13 @@ pub async fn start() {
 
 /// All GPU renderers and their shared GL context, grouped for clarity.
 pub struct GpuResources {
-    /// GPU renderer for radar data (None if GL not available).
-    pub gpu: Option<std::sync::Arc<std::sync::Mutex<nexrad::RadarGpuRenderer>>>,
-    /// GL context for uploading data to GPU textures.
+    /// GL context for uploading data to GPU textures. Each site's own
+    /// renderers live on its [`subsystem::sites::SiteGpu`].
     pub gl: Option<std::sync::Arc<glow::Context>>,
     /// Globe sphere renderer (3D mode).
     pub globe: Option<std::sync::Arc<std::sync::Mutex<geo::GlobeRenderer>>>,
     /// Geographic line renderer for 3D globe.
     pub geo_line: Option<std::sync::Arc<std::sync::Mutex<geo::GeoLineRenderer>>>,
-    /// Globe-mode radar renderer (projects radar data onto sphere).
-    pub globe_radar: Option<std::sync::Arc<std::sync::Mutex<nexrad::GlobeRadarRenderer>>>,
-    /// Volumetric ray-march renderer for 3D mode.
-    pub volume_ray: Option<std::sync::Arc<std::sync::Mutex<nexrad::VolumeRayRenderer>>>,
 }
 
 use state::MAX_RECENT_NETWORK_REQUESTS;
@@ -523,19 +518,6 @@ impl WorkbenchApp {
             }
         };
 
-        // Create GPU renderer for radar visualization
-        let gpu_renderer_gl = cc.gl.clone();
-        let gpu_renderer = cc
-            .gl
-            .as_ref()
-            .and_then(|gl| match nexrad::RadarGpuRenderer::new(gl) {
-                Ok(renderer) => Some(std::sync::Arc::new(std::sync::Mutex::new(renderer))),
-                Err(e) => {
-                    log::error!("Failed to create GPU radar renderer: {}", e);
-                    None
-                }
-            });
-
         // Create globe and geo-line renderers for 3D mode
         let globe_renderer = cc.gl.as_ref().map(|gl| {
             let r = geo::GlobeRenderer::new(gl);
@@ -557,25 +539,14 @@ impl WorkbenchApp {
             r.upload_layers(gl, &owned);
             std::sync::Arc::new(std::sync::Mutex::new(r))
         });
-        let globe_radar_renderer = cc.gl.as_ref().map(|gl| {
-            let r = nexrad::GlobeRadarRenderer::new(gl);
-            std::sync::Arc::new(std::sync::Mutex::new(r))
-        });
-        let volume_ray_renderer = cc.gl.as_ref().map(|gl| {
-            let r = nexrad::VolumeRayRenderer::new(gl);
-            std::sync::Arc::new(std::sync::Mutex::new(r))
-        });
 
         let mut app = Self {
             state,
             geo_layers,
             gpu: GpuResources {
-                gpu: gpu_renderer,
-                gl: gpu_renderer_gl,
+                gl: cc.gl.clone(),
                 globe: globe_renderer,
                 geo_line: geo_line_renderer,
-                globe_radar: globe_radar_renderer,
-                volume_ray: volume_ray_renderer,
             },
             render: subsystem::Render::new(nexrad::RenderCoordinator::new(decode_worker)),
             acquisition,

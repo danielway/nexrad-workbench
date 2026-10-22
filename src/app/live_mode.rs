@@ -300,7 +300,7 @@ impl WorkbenchApp {
                 // playhead just reached the live cut, or a scrubbed playhead
                 // was pinned again), draw the partial now rather than at the
                 // next chunk.
-                if !self.gpu_holds_live_sweep() {
+                if !self.gpu_holds_live_sweep(site) {
                     self.render.coordinator.render_live(
                         elevation_number,
                         self.state.viz_state.product.to_worker_string().to_string(),
@@ -325,7 +325,7 @@ impl WorkbenchApp {
                 // does whenever the playhead is detached from the live edge.
                 let protecting_live_partial = streams
                     && self.live.canvas_follows_live(&self.playback.state)
-                    && self.gpu_holds_live_sweep();
+                    && self.gpu_holds_live_sweep(site);
                 // Don't blank merely because the playhead drifted into a gap
                 // (spec §11.2): a Blank with NO scan covering the playhead is the
                 // "drifted away in time" case — keep the held frame and let the
@@ -378,15 +378,16 @@ impl WorkbenchApp {
         self.playback.state.playback_mode() == crate::core::PlaybackMode::Macro
     }
 
-    /// Whether the main GPU texture currently holds a live partial sweep
+    /// Whether site `site`'s main GPU texture holds a live partial sweep
     /// (`current_sweep_id` like `live|{elev}`, set by
     /// `handle_live_decoded_outcome`). Lets `request_worker_render` avoid
     /// blanking a valid partial during a between-chunks frame, and lets
     /// `sync_prev_sweep_texture` tell a live partial (whose prev slot the
     /// LiveDecoded promote owns) from a cached cut shown during live.
-    pub(crate) fn gpu_holds_live_sweep(&self) -> bool {
-        self.gpu
+    pub(crate) fn gpu_holds_live_sweep(&self, site: usize) -> bool {
+        self.sites.list[site]
             .gpu
+            .radar
             .as_ref()
             .and_then(|renderer| {
                 renderer

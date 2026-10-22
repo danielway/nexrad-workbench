@@ -14,7 +14,7 @@ impl RadarGpuRenderer {
     /// Sentinels: 0 = below threshold, 1 = range folded.
     /// Physical value = (raw - offset) / scale.
     #[allow(clippy::too_many_arguments)]
-    pub fn update_data(
+    pub(crate) fn update_data(
         &mut self,
         gl: &glow::Context,
         azimuths: &[f32],
@@ -106,7 +106,7 @@ impl RadarGpuRenderer {
     /// can sample the previous texture with correct gate/range mapping even
     /// when the current and previous sweeps have different dimensions.
     #[allow(clippy::too_many_arguments)]
-    pub fn update_previous_data(
+    pub(crate) fn update_previous_data(
         &mut self,
         gl: &glow::Context,
         azimuths: &[f32],
@@ -156,7 +156,7 @@ impl RadarGpuRenderer {
     ///
     /// Called at elevation transitions during live streaming so the just-completed
     /// sweep becomes the background for compositing partial data on top.
-    pub fn promote_current_to_previous(&mut self, gl: &glow::Context) {
+    pub(crate) fn promote_current_to_previous(&mut self, gl: &glow::Context) {
         if !self.has_data || self.cpu.azimuths.is_empty() {
             return;
         }
@@ -178,7 +178,7 @@ impl RadarGpuRenderer {
     }
 
     /// Clear all radar data (e.g. on site change).
-    pub fn clear_data(&mut self) {
+    pub(crate) fn clear_data(&mut self) {
         self.has_data = false;
         self.current.sweep_id = None;
         self.cpu.azimuths.clear();
@@ -192,7 +192,7 @@ impl RadarGpuRenderer {
     /// metadata so the shader's range/gate check bails out on the prev branch
     /// — sweep_id alone isn't enough because the shader samples prev_data_tex
     /// based on the uploaded uniforms, not the identity string.
-    pub fn clear_previous_data(&mut self) {
+    pub(crate) fn clear_previous_data(&mut self) {
         self.prev.sweep_id = None;
         self.prev.azimuth_count = 0;
         self.prev.gate_count = 0;
@@ -202,27 +202,27 @@ impl RadarGpuRenderer {
     }
 
     /// Returns true if radar data has been uploaded.
-    pub fn has_data(&self) -> bool {
+    pub(crate) fn has_data(&self) -> bool {
         self.has_data
     }
 
     /// Identity of the sweep currently loaded in the primary data texture.
-    pub fn current_sweep_id(&self) -> Option<&str> {
+    pub(crate) fn current_sweep_id(&self) -> Option<&str> {
         self.current.sweep_id.as_deref()
     }
 
     /// Identity of the sweep currently loaded in the previous data texture.
-    pub fn prev_sweep_id(&self) -> Option<&str> {
+    pub(crate) fn prev_sweep_id(&self) -> Option<&str> {
         self.prev.sweep_id.as_deref()
     }
 
     /// Set the identity of the current sweep (called after `update_data`).
-    pub fn set_current_sweep_id(&mut self, id: Option<String>) {
+    pub(crate) fn set_current_sweep_id(&mut self, id: Option<String>) {
         self.current.sweep_id = id;
     }
 
     /// Build and upload a color lookup table for the given product.
-    pub fn update_color_table(&mut self, gl: &glow::Context, product_str: &str) {
+    pub(crate) fn update_color_table(&mut self, gl: &glow::Context, product_str: &str) {
         let t_total = web_time::Instant::now();
 
         let product = product_from_str(product_str);

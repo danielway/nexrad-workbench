@@ -147,7 +147,7 @@ impl WorkbenchApp {
         // *cached* cut is shown during live (e.g. just after a mid-stream
         // reload), there's no live promote for it, so the archive prev-sweep
         // animation is correct and should run.
-        if self.live.mode_state.is_active() && self.gpu_holds_live_sweep() {
+        if self.live.mode_state.is_active() && self.gpu_holds_live_sweep(site) {
             return;
         }
 
@@ -207,7 +207,7 @@ impl WorkbenchApp {
             None => {
                 self.sites.list[site].previous_displayed = None;
                 // Clear GPU previous sweep so shader composites against black
-                if let Some(ref renderer) = self.gpu.gpu {
+                if let Some(ref renderer) = self.sites.list[site].gpu.radar {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_previous_data();
                     }
@@ -233,12 +233,16 @@ impl WorkbenchApp {
         });
 
         // Get current GPU prev sweep ID for comparison
-        let current_gpu_prev_id = self.gpu.gpu.as_ref().and_then(|renderer| {
-            renderer
-                .lock()
-                .ok()
-                .and_then(|r| r.prev_sweep_id().map(String::from))
-        });
+        let current_gpu_prev_id = self.sites.list[site]
+            .gpu
+            .radar
+            .as_ref()
+            .and_then(|renderer| {
+                renderer
+                    .lock()
+                    .ok()
+                    .and_then(|r| r.prev_sweep_id().map(String::from))
+            });
 
         let product = self.state.viz_state.product.to_worker_string().to_string();
         let action = self.sites.list[site].crossfade.resolve_prev_sweep(
@@ -252,13 +256,15 @@ impl WorkbenchApp {
             PrevSweepAction::AlreadyLoaded => {}
             PrevSweepAction::UploadFromCache(cache_key) => {
                 // Clear stale previous sweep immediately
-                if let Some(ref renderer) = self.gpu.gpu {
+                if let Some(ref renderer) = self.sites.list[site].gpu.radar {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_previous_data();
                     }
                 }
                 if let Some(cached) = self.sites.list[site].crossfade.get_cached_sweep(&cache_key) {
-                    if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
+                    if let (Some(ref renderer), Some(ref gl)) =
+                        (&self.sites.list[site].gpu.radar, &self.gpu.gl)
+                    {
                         if let Ok(mut r) = renderer.lock() {
                             r.update_previous_data(
                                 gl,
@@ -285,7 +291,7 @@ impl WorkbenchApp {
                 product,
             } => {
                 // Clear stale previous sweep immediately
-                if let Some(ref renderer) = self.gpu.gpu {
+                if let Some(ref renderer) = self.sites.list[site].gpu.radar {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_previous_data();
                     }
@@ -295,7 +301,7 @@ impl WorkbenchApp {
                     .render_direct(&scan_key, elevation_number, product);
             }
             PrevSweepAction::Clear => {
-                if let Some(ref renderer) = self.gpu.gpu {
+                if let Some(ref renderer) = self.sites.list[site].gpu.radar {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_previous_data();
                     }
@@ -308,7 +314,7 @@ impl WorkbenchApp {
     /// is gone (e.g. scrubbed off the timeline). Resets site `site`'s scan
     /// key too.
     pub(crate) fn clear_display_no_scan(&mut self, site: usize) {
-        if let Some(ref renderer) = self.gpu.gpu {
+        if let Some(ref renderer) = self.sites.list[site].gpu.radar {
             if let Ok(mut r) = renderer.lock() {
                 r.clear_data();
             }
@@ -330,7 +336,7 @@ impl WorkbenchApp {
     /// available for the current scan, but the scan itself is still valid.
     /// Leaves the scan key intact so other elevations/products can still render.
     pub(crate) fn clear_display_no_sweep(&mut self, site: usize) {
-        if let Some(ref renderer) = self.gpu.gpu {
+        if let Some(ref renderer) = self.sites.list[site].gpu.radar {
             if let Ok(mut r) = renderer.lock() {
                 r.clear_data();
             }

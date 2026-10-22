@@ -129,7 +129,7 @@ void main() {{
 }
 
 /// Globe-mode radar renderer — renders radar data on a spherical cap mesh.
-pub struct GlobeRadarRenderer {
+pub(crate) struct GlobeRadarRenderer {
     program: glow::Program,
     vao: glow::VertexArray,
     _vbo: glow::Buffer,
@@ -159,7 +159,7 @@ pub struct GlobeRadarRenderer {
 }
 
 impl GlobeRadarRenderer {
-    pub fn new(gl: &Arc<glow::Context>) -> Self {
+    pub(crate) fn new(gl: &Arc<glow::Context>) -> Self {
         unsafe { Self::new_inner(gl) }
     }
 
@@ -250,7 +250,13 @@ impl GlobeRadarRenderer {
 
     /// Rebuild the spherical cap mesh for a radar site.
     /// Call when the radar site changes or on first data load.
-    pub fn update_site(&mut self, gl: &glow::Context, lat: f64, lon: f64, max_range_km: f64) {
+    pub(crate) fn update_site(
+        &mut self,
+        gl: &glow::Context,
+        lat: f64,
+        lon: f64,
+        max_range_km: f64,
+    ) {
         if (self.site_lat - lat).abs() < 1e-6
             && (self.site_lon - lon).abs() < 1e-6
             && (self.mesh_range_km - max_range_km).abs() < 1.0
@@ -287,7 +293,7 @@ impl GlobeRadarRenderer {
 
     /// Paint radar data on the globe. Textures must already be bound by the
     /// flat renderer (units 0=data, 1=lut, 2=azimuth).
-    pub fn paint(
+    pub(crate) fn paint(
         &self,
         gl: &glow::Context,
         camera: &Camera,
