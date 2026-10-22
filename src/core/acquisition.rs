@@ -44,6 +44,16 @@ pub(crate) fn reactive_prefetch_allowed(
     !playhead_attached && !queue_paused && autofetch_while_scrubbing && !scrub_in_progress
 }
 
+/// Whether a site's live stream owns its acquisition this frame, so the
+/// archive prefetch must leave it alone: the playhead is attached to the
+/// live edge AND that site's stream is running. A site whose stream never
+/// connected or gave up (a dead chunk feed on S3) reads the archive like a
+/// detached playhead, so it still shows its latest volume beside the sites
+/// that stream.
+pub(crate) fn stream_owns_acquisition(playhead_attached: bool, stream_active: bool) -> bool {
+    playhead_attached && stream_active
+}
+
 /// How a just-finalized timeline selection should be fetched.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum SelectionGate {
@@ -1656,6 +1666,18 @@ mod coverage_tests {
         assert!(!reactive_prefetch_allowed(false, false, true, true));
         // …and releasing the drag re-allows it on the very next frame.
         assert!(reactive_prefetch_allowed(false, false, true, false));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_site_without_a_running_stream_reads_the_archive_while_live() {
+        // Attached and streaming: the stream owns the site.
+        assert!(stream_owns_acquisition(true, true));
+        // Attached, but this site's stream is not running (never connected
+        // or gave up): the archive pump runs for it.
+        assert!(!stream_owns_acquisition(true, false));
+        // Detached: the archive pump runs whatever the stream does.
+        assert!(!stream_owns_acquisition(false, true));
+        assert!(!stream_owns_acquisition(false, false));
     }
 
     // ── decide_selection_gate: edge spans ──
