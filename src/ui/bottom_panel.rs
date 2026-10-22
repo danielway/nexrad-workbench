@@ -70,8 +70,11 @@ fn draw_bottom_panel(
 
     // Sized to the content layout (timeline + spacing + controls ~24 +
     // frame margins). Stays constant across macro/micro because the
-    // timeline locks its own height in render_timeline.
-    let controls_height = super::timeline::style::TIMELINE_TOTAL_H + 35.0;
+    // timeline locks its own height in render_timeline; each site but the
+    // focus adds its lane.
+    let lanes = sites.list.len().saturating_sub(1);
+    let controls_height =
+        super::timeline::style::TIMELINE_TOTAL_H + super::timeline::style::lanes_h(lanes) + 35.0;
     let top_bar_height = 36.0;
     let min_central_height = 100.0;
     let max_panel_height =
@@ -102,7 +105,7 @@ fn draw_bottom_panel(
                     ui,
                     state,
                     timeline,
-                    sites.focus(),
+                    sites,
                     live,
                     playback,
                     acquisition,

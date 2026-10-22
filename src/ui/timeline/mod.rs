@@ -4,6 +4,7 @@
 
 mod frame_cells;
 mod interaction;
+mod lanes;
 mod marks;
 pub(in crate::ui) mod mini;
 mod now_edge;
@@ -32,8 +33,9 @@ use ruler::{render_playback_cursor, render_tick_marks};
 use scan_track::render_macro_track;
 use tooltips::render_timeline_tooltip;
 
-/// Sub-rects of the timeline widget. One main track now (frames-first), with
-/// a tick rail above. The `overlay` rect spans the main track for the cursor,
+/// Sub-rects of the timeline widget. One main track (frames-first) with a
+/// tick rail above and, with more than one site, a lane per other site below.
+/// The `overlay` rect spans the main track and the lanes for the cursor,
 /// selection, and now-affordance.
 pub(super) struct TrackRects {
     /// Timestamp rail above the main track.
@@ -41,7 +43,8 @@ pub(super) struct TrackRects {
     /// The single main track: scan containers + frame cells (Micro), or
     /// uniform ticks / coverage fill (Macro).
     pub scan: Rect,
-    /// Main-track span for cursor, selection, and now-affordance overlays.
+    /// Main track plus lanes: the span for cursor, selection, and
+    /// now-affordance overlays.
     pub overlay: Rect,
 }
 
@@ -281,21 +284,23 @@ pub(super) fn format_timestamp_full(ts: f64, use_local: bool) -> String {
     )
 }
 
-/// Draw the desktop timeline strip and apply its gestures. Returns where a
-/// scrub put the pointer this frame, for the caller to seek to once the
-/// strip's view of the focus site is done.
+/// Draw the desktop timeline strip and apply its gestures. The main track
+/// is the focus site's; every other site gets a lane under it. Returns where
+/// a scrub put the pointer this frame, for the caller to seek to once the
+/// strip's view of the sites is done.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_timeline(
     ui: &mut egui::Ui,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
-    site: &crate::subsystem::SiteState,
+    sites: &crate::subsystem::Sites,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     acquisition: &crate::subsystem::Acquisition,
     derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
 ) -> Option<f64> {
+    let site = sites.focus();
     let use_local = state.use_local_time;
     let available_width = ui.available_width() as f64;
     playback.state.timeline_width_px = available_width;
@@ -325,10 +330,11 @@ pub(super) fn render_timeline(
     // selection strip registers its own interact rect over its band after the
     // strip's interaction runs, so it owns presses there.
     let selection_strip_h = style::SELECTION_STRIP_H;
+    let lane_count = sites.list.len().saturating_sub(1);
     let (response, painter) = ui.allocate_painter(
         Vec2::new(
             available_width as f32,
-            tick_lane_h + selection_strip_h + main_track_h,
+            tick_lane_h + selection_strip_h + main_track_h + style::lanes_h(lane_count),
         ),
         Sense::click_and_drag(),
     );
@@ -391,8 +397,15 @@ pub(super) fn render_timeline(
         None
     };
 
-    // The overlay rect spans the main track (not the tick rail).
-    let overlay_rect = scan_rect;
+    // The other sites' lanes under the track. The overlay rect spans the
+    // main track and the lanes (not the tick rail), so the one now line and
+    // the playhead cross every site.
+    let lane_rects = lanes::lane_rects(scan_rect, lane_count);
+    let overlay_rect = lane_rects
+        .last()
+        .map_or(scan_rect, |last| scan_rect.union(*last));
+    let failed_for = |id: &crate::data::SiteId| acquisition.state.failed_scan_starts_for(&id.0);
+    let site_lanes = sites.lanes(&live.mode_state, failed_for, view_start, view_end);
 
     // -- Build the per-frame TimelineFrame --
     // One adapter (`TimelineView`) merges every timeline source (cache,
@@ -514,6 +527,8 @@ pub(super) fn render_timeline(
                 .request_repaint_after(std::time::Duration::from_millis(67));
         }
     }
+
+    lanes::paint_lanes(&painter, &frame, &site_lanes, &lane_rects);
 
     // Draw tick marks and labels in the dedicated tick lane above the main
     // track. Tick spacing/alignment is derived inside from the frame's zoom
@@ -686,10 +701,19 @@ pub(super) fn render_timeline(
 
     // -- Hover tooltips --
     // Suppressed during an active scrub so the popup doesn't chase the pointer.
+    // A hover over a lane names that site's volume instead.
     if response.hovered() && !interaction.scrubbing {
         if let Some(hover_pos) = response.hover_pos() {
             let hover_ts = frame.x_to_ts(hover_pos.x);
-            render_timeline_tooltip(ui, &frame, live, &site.live, hover_ts, hover_pos);
+            if hover_pos.y > scan_rect.bottom() {
+                if let Some((lane, block)) =
+                    lanes::hovered(&site_lanes, &lane_rects, hover_pos, hover_ts)
+                {
+                    tooltips::render_lane_tooltip(ui, &lane.site, block, hover_pos, use_local);
+                }
+            } else {
+                render_timeline_tooltip(ui, &frame, live, &site.live, hover_ts, hover_pos);
+            }
         }
     }
 

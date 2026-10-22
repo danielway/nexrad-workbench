@@ -778,7 +778,6 @@ pub(crate) fn merge_cached_into_live(position: &mut ScanProjection, cached: &Sca
 // ──────────────────────────────────────────────────────────────────────────
 
 /// What one block on a lane stands for.
-#[allow(dead_code)] // Drawn by the timeline lanes (next commit).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum LaneBlockState {
     /// A volume on the device: solid.
@@ -797,7 +796,6 @@ pub(crate) enum LaneBlockState {
     Failed,
 }
 
-#[allow(dead_code)] // Drawn by the timeline lanes (next commit).
 impl LaneBlockState {
     /// The state word for the block's tooltip, in the track's tooltip words.
     pub(crate) fn label(self) -> &'static str {
@@ -812,7 +810,6 @@ impl LaneBlockState {
 }
 
 /// One volume on a lane.
-#[allow(dead_code)] // Drawn by the timeline lanes (next commit).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LaneBlock {
     pub start_secs: f64,
@@ -823,7 +820,6 @@ pub(crate) struct LaneBlock {
 }
 
 /// The lane-only inputs beside the site's [`TimelineView`].
-#[allow(dead_code)] // Drawn by the timeline lanes (next commit).
 #[derive(Clone, Copy)]
 pub(crate) struct LaneInputs<'i> {
     /// Scan starts (seconds) of this site's failed downloads.
@@ -835,7 +831,6 @@ pub(crate) struct LaneInputs<'i> {
 }
 
 /// One site's lane.
-#[allow(dead_code)] // Drawn by the timeline lanes (next commit).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LaneVm {
     /// The site id printed at the lane's left edge.
@@ -856,7 +851,6 @@ pub(crate) struct LaneVm {
 /// - The live volume, present only while the session streams, is
 ///   `LiveFilling`, or `Stalled` when the site's stream is stalled. Its
 ///   solid part ends at the newest chunk, clamped to the volume.
-#[allow(dead_code)] // Drawn by the timeline lanes (next commit).
 pub(crate) fn lane_vm(
     site: &str,
     view: &TimelineView<'_>,
@@ -924,7 +918,6 @@ pub(crate) fn lane_vm(
     }
 }
 
-#[allow(dead_code)] // Drawn by the timeline lanes (next commit).
 impl LaneVm {
     /// The block under `ts`, for the hover: the live block wins, then the
     /// latest-starting block that contains it.
