@@ -35,7 +35,6 @@ use crate::core::overview::{
     OverviewMarkInputs, OverviewMarks, LANE_HINT, PENNANT_HIT_PX,
 };
 use crate::core::storm_activity::{ScanSizes, SpanActivity, ViewScale};
-use crate::data::SiteId;
 use crate::state::TimeBucket;
 use crate::ui::theme::timeline as tl_colors;
 use crate::ui::time_format::ZoneClock;
@@ -75,6 +74,7 @@ pub(super) fn render_overview(
     ui: &mut egui::Ui,
     state: &mut crate::state::AppState,
     timeline: &crate::subsystem::Timeline,
+    site: &crate::subsystem::SiteState,
     live: &crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
 ) {
@@ -131,34 +131,26 @@ pub(super) fn render_overview(
     let clock = ZoneClock {
         use_local: state.use_local_time,
     };
-    let site = SiteId::new(state.viz_state.site_id.clone());
     let mut sizes = ScanSizes::default();
     let (bars, activity) = match detail {
         OverviewDetail::Scans => {
-            sizes = timeline.activity.scans(&site, ov.start, ov.end());
-            paint_scans(
-                &lane_painter,
-                timeline,
-                &sizes,
-                bars_rect,
-                &ts_to_x,
-                &x_to_ts,
-            );
+            sizes = timeline.activity.scans(&site.id, ov.start, ov.end());
+            paint_scans(&lane_painter, site, &sizes, bars_rect, &ts_to_x, &x_to_ts);
             (Vec::new(), Vec::new())
         }
         OverviewDetail::Bars(granularity) => {
             let bars = crate::state::aggregate_buckets(
-                &timeline.scans,
-                &timeline.shadow_scan_boundaries,
+                &site.scans,
+                &site.shadows,
                 &state.saved_events,
-                &state.viz_state.site_id,
+                &site.id.0,
                 ov.start.max(era),
                 ov.end().min(now),
                 granularity,
             );
             let activity: Vec<SpanActivity> = bars
                 .iter()
-                .map(|b| timeline.activity.span(&site, b.start, b.end))
+                .map(|b| timeline.activity.span(&site.id, b.start, b.end))
                 .collect();
             let scale = ViewScale::from_levels(activity.iter().filter_map(|a| a.peak));
             paint_bars(&lane_painter, &bars, &activity, &scale, bars_rect, &ts_to_x);
@@ -186,7 +178,7 @@ pub(super) fn render_overview(
     }
 
     // Every other mark is placed by the core.
-    let held: Vec<(f64, f64)> = timeline
+    let held: Vec<(f64, f64)> = site
         .scans
         .time_ranges()
         .iter()
@@ -196,14 +188,14 @@ pub(super) fn render_overview(
         .saved_events
         .events
         .iter()
-        .filter(|e| e.site_id == state.viz_state.site_id)
+        .filter(|e| e.site_id == site.id.0)
         .map(|e| OverviewEvent {
             start: e.start_time,
             end: e.end_time,
             name: &e.name,
         })
         .collect();
-    let outage_days = timeline.activity.outage_days(&site, ov.start, ov.end());
+    let outage_days = timeline.activity.outage_days(&site.id, ov.start, ov.end());
     let marks = OverviewMarks::build(&OverviewMarkInputs {
         start: ov.start,
         end: ov.end(),
@@ -376,7 +368,7 @@ pub(super) fn render_overview(
             };
             let day_mean_mb = timeline
                 .activity
-                .day(&site, bars[i].start as i64)
+                .day(&site.id, bars[i].start as i64)
                 .filter(|_| bars[i].end - bars[i].start <= 86_400.0)
                 .map(|d| d.mean_bytes as f64 / 1e6);
             Some(bar_tip(
@@ -606,7 +598,7 @@ fn paint_calendar_labels(
 /// cached data, the same rule the strip uses.
 fn paint_scans(
     painter: &egui::Painter,
-    timeline: &crate::subsystem::Timeline,
+    site: &crate::subsystem::SiteState,
     sizes: &ScanSizes,
     lane: Rect,
     ts_to_x: &dyn Fn(f64) -> f32,
@@ -628,19 +620,14 @@ fn paint_scans(
         );
     };
     // Full-height coverage, only across days whose sizes aren't known.
-    let view = crate::core::TimelineView::build(
-        &timeline.scans,
-        &timeline.shadow_scan_boundaries,
-        None,
-        None,
-    );
+    let view = crate::core::TimelineView::build(&site.scans, &site.shadows, None, None);
     let listed = view
         .shadow_boundaries()
         .iter()
         .filter(|b| !view.is_covered_by_cached(b.start))
         .map(|b| (b.start as f64, b.end as f64));
     // Held time is the underline, so cached coverage draws like any other.
-    let held = timeline.scans.time_ranges();
+    let held = site.scans.time_ranges();
     let held = held.iter().map(|r| (r.start, r.end));
     for (start, end) in sizes.unknown_pieces(listed.chain(held)) {
         column(start, end, lane.height(), tl_colors::available_fill());

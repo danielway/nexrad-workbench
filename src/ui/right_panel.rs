@@ -71,6 +71,7 @@ impl Layer for RightPanelLayer {
                             render_events_section(
                                 ui,
                                 ctx.state,
+                                ctx.sites,
                                 ctx.live,
                                 ctx.playback,
                                 ctx.chrome,
@@ -80,7 +81,7 @@ impl Layer for RightPanelLayer {
                     });
                 });
         }
-        rail(ctx.root_ui, ctx.state, ctx.chrome);
+        rail(ctx.root_ui, ctx.state, &ctx.sites.focus().id.0, ctx.chrome);
     }
 }
 
@@ -95,13 +96,17 @@ fn tab_icon(tab: RailTab) -> &'static str {
     }
 }
 
-fn rail(root_ui: &mut egui::Ui, state: &AppState, chrome: &mut crate::subsystem::Chrome) {
-    let site = &state.viz_state.site_id;
+fn rail(
+    root_ui: &mut egui::Ui,
+    state: &AppState,
+    site: &str,
+    chrome: &mut crate::subsystem::Chrome,
+) {
     let events_here = state
         .saved_events
         .events
         .iter()
-        .filter(|e| &e.site_id == site)
+        .filter(|e| e.site_id == site)
         .count();
     let tabs = panels::rail_tabs(
         chrome.rail_tab,
@@ -555,11 +560,12 @@ pub(super) fn render_rendering_section(
 pub(super) fn render_events_section(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    sites: &mut crate::subsystem::Sites,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    let current_site = state.viz_state.site_id.clone();
+    let current_site = sites.focus().id.0.clone();
     let site_events: Vec<_> = state
         .saved_events
         .events
@@ -570,7 +576,7 @@ pub(super) fn render_events_section(
     let other_count = state.saved_events.events.len() - site_events.len();
 
     for event in &site_events {
-        event_row(ui, state, live, playback, chrome, event, false);
+        event_row(ui, state, sites, live, playback, chrome, event, false);
     }
 
     if other_count > 0 {
@@ -591,7 +597,7 @@ pub(super) fn render_events_section(
                 .cloned()
                 .collect();
             for event in &other_events {
-                event_row(ui, state, live, playback, chrome, event, true);
+                event_row(ui, state, sites, live, playback, chrome, event, true);
             }
         });
     }
@@ -608,9 +614,11 @@ pub(super) fn render_events_section(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn event_row(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    sites: &mut crate::subsystem::Sites,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
@@ -640,7 +648,7 @@ fn event_row(
                 .on_hover_text("Go to this event and loop it")
                 .clicked()
             {
-                navigate_to_event(state, live, playback, event);
+                navigate_to_event(state, sites, live, playback, event);
             }
         });
     });
@@ -657,17 +665,16 @@ fn event_row(
 /// Navigate to a saved event: switch site if needed, loop its span, center timeline.
 fn navigate_to_event(
     state: &mut AppState,
+    sites: &mut crate::subsystem::Sites,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     event: &crate::state::SavedEvent,
 ) {
     use crate::data::get_site;
 
-    if event.site_id != state.viz_state.site_id {
+    if event.site_id != sites.focus().id.0 {
         if let Some(site) = get_site(&event.site_id) {
-            state.viz_state.site_id = site.id.to_string();
-            state.viz_state.center_lat = site.lat;
-            state.viz_state.center_lon = site.lon;
+            sites.focus_mut().retarget(site.id, site.lat, site.lon);
             state.viz_state.set_pan_offset(egui::Vec2::ZERO);
             state.viz_state.camera.center_on(site.lat, site.lon);
             state.push_command(Intent::RefreshTimeline {

@@ -217,12 +217,14 @@ pub(crate) struct DecodeResult {
 }
 
 /// Per-sweep metadata for the volume ray marcher.
-pub struct VolumeSweepMeta {
+pub(crate) struct VolumeSweepMeta {
     pub elevation_deg: f32,
     pub azimuth_count: u32,
     pub gate_count: u32,
     pub first_gate_km: f32,
     pub gate_interval_km: f32,
+    /// Filled from the worker's metadata; nothing reads it yet.
+    #[allow(dead_code)]
     pub max_range_km: f32,
     pub data_offset: u32,
     pub scale: f32,

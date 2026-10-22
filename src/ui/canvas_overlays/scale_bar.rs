@@ -51,10 +51,8 @@ const ROW_HEIGHT: f32 = 16.0;
 
 /// The bars for the map as it stands: km-per-pixel from the projection.
 fn scale_bar_vm(ctx: &super::OverlayContext) -> Option<crate::core::canvas::ScaleBarVm> {
-    let mut projection = MapProjection::new(
-        ctx.state.viz_state.center_lat,
-        ctx.state.viz_state.center_lon,
-    );
+    // The map centre, which is the focus site's position for now.
+    let mut projection = MapProjection::new(ctx.site.lat, ctx.site.lon);
     projection.update(
         ctx.state.viz_state.zoom(),
         ctx.state.viz_state.pan_offset(),

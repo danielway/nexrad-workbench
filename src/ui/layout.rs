@@ -96,8 +96,12 @@ pub(crate) struct LayoutCtx<'a> {
     /// queue via `state.push_command`, and a few widgets remain two-way
     /// bound to `viz_state`.
     pub state: &'a mut AppState,
-    /// Read-only: the scan index is projected, never edited, by the UI.
+    /// Read-only: the storm-activity book behind the overview's bars.
     pub timeline: &'a Timeline,
+    /// Still `&mut`: opening a saved event from another site retargets the
+    /// focus site in place (`right_panel::navigate_to_event`). Everything
+    /// else reads the focus site's scans, shadows and position.
+    pub sites: &'a mut crate::subsystem::Sites,
     /// Still `&mut`: every scrub gesture calls `Live::seek`, which detaches
     /// the playhead, mutates `mode_state` and can stop the worker channel
     /// (playback controls, timeline interaction, the mini timeline,

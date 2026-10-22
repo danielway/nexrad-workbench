@@ -71,8 +71,11 @@ pub(crate) struct DispatchState<'a> {
     pub live: &'a mut subsystem::Live,
     pub diagnostics: &'a mut subsystem::Diagnostics,
     pub chrome: &'a mut subsystem::Chrome,
-    /// Read-only: the frames a step can land on.
+    /// Read-only: the storm-activity book (the calendar's landing reads it).
     pub timeline: &'a subsystem::Timeline,
+    /// The sites: a step lands on the focus site's frames, and "show on map"
+    /// moves the focus site's position (the map centre, for now).
+    pub sites: &'a mut subsystem::Sites,
 }
 
 /// Handle the intents that are pure state transitions. Returns `Some(intent)`
@@ -343,6 +346,36 @@ pub(crate) fn dispatch_state_only(
     None
 }
 
+/// The body of [`DispatchState::transport_with`] over just the fields a
+/// transport reducer touches, so a caller can hold a borrow of another field
+/// (the focus site's scans, for a step) across the call.
+fn transport_over<R>(
+    state: &state::AppState,
+    playback: &mut subsystem::Playback,
+    live: &mut subsystem::Live,
+    reduce: impl FnOnce(
+        &crate::core::transport::TransportEnv,
+        crate::core::transport::TransportSlices<'_>,
+    ) -> (crate::core::transport::TransportActions, R),
+) -> R {
+    let (actions, out) = reduce(
+        &crate::core::transport::TransportEnv {
+            now_secs: state.frame_now.secs(),
+            pause_stream_while_reviewing: state.pause_stream_while_reviewing,
+            frame_secs: playback.state.median_frame_spacing(),
+        },
+        crate::core::transport::TransportSlices {
+            live_mode: &mut live.mode_state,
+            engine: &mut live.engine.borrow_mut(),
+            playback: &mut playback.state,
+        },
+    );
+    if actions.stop_channel {
+        live.channel.stop();
+    }
+    out
+}
+
 impl DispatchState<'_> {
     /// Run one pure transport reducer over the core state and execute the
     /// [`crate::core::transport::TransportActions`] it describes.
@@ -368,22 +401,7 @@ impl DispatchState<'_> {
             crate::core::transport::TransportSlices<'_>,
         ) -> (crate::core::transport::TransportActions, R),
     ) -> R {
-        let (actions, out) = reduce(
-            &crate::core::transport::TransportEnv {
-                now_secs: self.state.frame_now.secs(),
-                pause_stream_while_reviewing: self.state.pause_stream_while_reviewing,
-                frame_secs: self.playback.state.median_frame_spacing(),
-            },
-            crate::core::transport::TransportSlices {
-                live_mode: &mut self.live.mode_state,
-                engine: &mut self.live.engine.borrow_mut(),
-                playback: &mut self.playback.state,
-            },
-        );
-        if actions.stop_channel {
-            self.live.channel.stop();
-        }
-        out
+        transport_over(self.state, self.playback, self.live, reduce)
     }
 
     /// Apply a top-bar intent. Every arm is a plain state write; the one
@@ -398,7 +416,7 @@ impl DispatchState<'_> {
                 // The product picks the cut inside a fixed angle's row.
                 let entries = self.state.current_elevation_list(
                     &self.playback.state,
-                    &self.timeline.scans,
+                    &self.sites.focus().scans,
                     self.live
                         .radar_model
                         .volume
@@ -457,13 +475,17 @@ impl DispatchState<'_> {
         let viz = &self.state.viz_state;
         let volumetric = viz.volume_3d_active();
         let tilt = crate::core::tilt::TiltFilter::from(&viz.elevation_selection);
-        let timeline = self.timeline;
         let index = crate::core::transport::ScanFrames {
-            scans: &timeline.scans,
+            scans: &self.sites.focus().scans,
             tilt,
             volumes: volumetric || unit == crate::core::transport::StepUnit::Volume,
         };
-        self.transport(|env, slices| crate::core::transport::reduce_step(env, slices, &index, dir));
+        transport_over(self.state, self.playback, self.live, |env, slices| {
+            (
+                crate::core::transport::reduce_step(env, slices, &index, dir),
+                (),
+            )
+        });
     }
 
     /// The distance tool: place, drag or clear an endpoint. What it lands
@@ -504,8 +526,10 @@ impl DispatchState<'_> {
             self.state.layer_state.geo.alerts_other = true;
         }
         if let Some((center_lat, center_lon)) = focus.center {
-            self.state.viz_state.center_lat = center_lat;
-            self.state.viz_state.center_lon = center_lon;
+            // The map centre is still the focus site's position.
+            let focus = self.sites.focus_mut();
+            focus.lat = center_lat;
+            focus.lon = center_lon;
             self.state
                 .viz_state
                 .set_pan_offset(eframe::egui::Vec2::ZERO);
@@ -577,7 +601,7 @@ impl DispatchState<'_> {
     /// operation and re-enqueues, reusing the same `requeue` path the failed-cell
     /// retry uses so the two state machines stay correlated.
     fn fetch_scan(&mut self, scan_start: i64, elevation_filter: Option<u8>) {
-        let site_id = self.state.viz_state.site_id.clone();
+        let site_id = self.sites.focus().id.0.clone();
         let Some(date) = chrono::DateTime::from_timestamp(scan_start, 0).map(|dt| dt.date_naive())
         else {
             return;
@@ -665,11 +689,14 @@ impl WorkbenchApp {
                 diagnostics: &mut self.diagnostics,
                 chrome: &mut self.chrome,
                 timeline: &self.timeline,
+                sites: &mut self.sites,
             };
             dispatch_state_only(cmd, &mut bundle, outcome)
         };
         if std::mem::take(&mut outcome.fresh_render) {
-            self.render.coordinator.force_fresh_render();
+            for site in self.sites.list.iter_mut() {
+                site.render.force_fresh_render();
+            }
         }
         let Some(cmd) = cmd else {
             return;
@@ -792,7 +819,7 @@ impl WorkbenchApp {
         crate::core::site_picker::push_recent(&mut self.state.recent_sites, site_id);
         self.state.preferred_site = Some(site_id.to_string());
         self.chrome.site_modal_open = false;
-        if site_id == self.state.viz_state.site_id {
+        if site_id == self.sites.focus().id.0 {
             // Picking the current site is allowed (a first visit can keep the
             // default site); nothing to retarget, but a deferred boot tether
             // still starts.
@@ -801,9 +828,7 @@ impl WorkbenchApp {
             }
             return;
         }
-        self.state.viz_state.site_id = site_id.to_string();
-        self.state.viz_state.center_lat = lat;
-        self.state.viz_state.center_lon = lon;
+        self.sites.focus_mut().retarget(site_id, lat, lon);
         self.state
             .viz_state
             .set_pan_offset(eframe::egui::Vec2::ZERO);
@@ -861,7 +886,9 @@ impl WorkbenchApp {
             // correct (spec §11.2): the data the displayed frame came from is
             // gone, so drop it rather than holding a stale frame with a
             // discrepancy caption.
-            self.clear_display_no_scan();
+            for site in 0..self.sites.list.len() {
+                self.clear_display_no_scan(site);
+            }
             // Reset the acquisition machinery to match the now-empty cache:
             // the queue, its drawer operations, the progress ghosts, the
             // prefetch settle (its resolved marker would otherwise suppress
@@ -874,8 +901,10 @@ impl WorkbenchApp {
             self.acquisition.coordinator.download_queue.clear();
             self.acquisition.state.cancel_all();
             self.state.download_progress.clear();
-            self.acquisition.prefetch_settle = crate::core::acquisition::PrefetchSettle::default();
-            self.acquisition.request_ledger.clear();
+            for site in self.sites.iter_mut() {
+                site.prefetch_settle = crate::core::acquisition::PrefetchSettle::default();
+                site.ledger.clear();
+            }
         } else {
             // Cache loader is busy; replay the request on the next frame.
             self.state.push_command(crate::core::Intent::ClearCacheNow);
@@ -923,7 +952,7 @@ impl WorkbenchApp {
                 .load_site_timeline(
                     ctx.clone(),
                     self.acquisition.coordinator.facade().clone(),
-                    self.state.viz_state.site_id.clone(),
+                    self.sites.focus().id.0.clone(),
                 );
         } else {
             // Cache loader is busy; replay (without auto-position) next frame.
@@ -1024,6 +1053,7 @@ mod dispatch_tests {
         diagnostics: crate::subsystem::Diagnostics,
         chrome: crate::subsystem::Chrome,
         timeline: crate::subsystem::Timeline,
+        sites: crate::subsystem::Sites,
         outcome: CommandOutcome,
     }
 
@@ -1037,6 +1067,7 @@ mod dispatch_tests {
                 diagnostics: crate::subsystem::Diagnostics::new(),
                 chrome: crate::subsystem::Chrome::new(),
                 timeline: crate::subsystem::Timeline::default(),
+                sites: crate::subsystem::Sites::default(),
                 outcome: CommandOutcome::default(),
             }
         }
@@ -1052,6 +1083,7 @@ mod dispatch_tests {
                 diagnostics: &mut self.diagnostics,
                 chrome: &mut self.chrome,
                 timeline: &self.timeline,
+                sites: &mut self.sites,
             };
             dispatch_state_only(intent, &mut bundle, &mut self.outcome)
         }
@@ -1416,7 +1448,7 @@ mod dispatch_tests {
     #[wasm_bindgen_test]
     fn fetch_scan_creates_an_operation_and_enqueues_the_listed_file() {
         let mut f = Fixture::new();
-        let site = f.state.viz_state.site_id.clone();
+        let site = f.sites.focus().id.0.clone();
         let date = chrono::DateTime::from_timestamp(1_000, 0)
             .unwrap()
             .date_naive();
@@ -2044,8 +2076,8 @@ mod dispatch_tests {
             !f.state.layer_state.geo.alerts_other,
             "a warning must not switch on the watches/advisories layer"
         );
-        assert!((f.state.viz_state.center_lat - 42.0).abs() < 1e-9);
-        assert!((f.state.viz_state.center_lon + 93.0).abs() < 1e-9);
+        assert!((f.sites.focus().lat - 42.0).abs() < 1e-9);
+        assert!((f.sites.focus().lon + 93.0).abs() < 1e-9);
         assert_eq!(f.diagnostics.alerts.selected_alert_id, None);
         assert!(!f.diagnostics.alerts.list_modal_open);
     }
@@ -2184,7 +2216,7 @@ mod dispatch_tests {
         use crate::core::phone_strip::StripZoom;
         let mut f = Fixture::new();
         f.state.frame_now = FrameNow(1_792_238_400.0);
-        f.state.viz_state.site_id = "KTLX".to_string();
+        f.sites.focus_mut().id = crate::data::SiteId::new("KTLX");
         f.playback.state.playing = true;
         f.apply(Intent::OpenGoToDay);
         let day = CalendarDay::of(
@@ -2213,7 +2245,7 @@ mod dispatch_tests {
         use crate::core::calendar::{CalendarDay, FixedZone};
         let mut f = Fixture::new();
         f.state.frame_now = FrameNow(1_792_238_400.0);
-        f.state.viz_state.site_id = "KTLX".to_string();
+        f.sites.focus_mut().id = crate::data::SiteId::new("KTLX");
         f.playback.state.timeline_width_px = 1200.0;
         f.apply(Intent::OpenGoToDay);
         let day = CalendarDay::of(
@@ -2234,7 +2266,7 @@ mod dispatch_tests {
     fn go_to_time_pauses_on_the_time_and_frames_the_overview() {
         let mut f = Fixture::new();
         f.state.frame_now = FrameNow(1_792_238_400.0);
-        f.state.viz_state.site_id = "KTLX".to_string();
+        f.sites.focus_mut().id = crate::data::SiteId::new("KTLX");
         f.playback.state.timeline_width_px = 1200.0;
         f.playback.state.playing = true;
         f.apply(Intent::OpenGoToDay);
@@ -2256,7 +2288,7 @@ mod dispatch_tests {
         use crate::core::calendar::{CalendarDay, FixedZone};
         let mut f = Fixture::new();
         f.state.frame_now = FrameNow(1_792_238_400.0);
-        f.state.viz_state.site_id = "KTLX".to_string();
+        f.sites.focus_mut().id = crate::data::SiteId::new("KTLX");
         f.live.mode_state.phase = LivePhase::Streaming;
         f.playback.state.enter_pinned_live(1_792_238_000.0);
         let day = CalendarDay::of(
@@ -2276,7 +2308,7 @@ mod dispatch_tests {
         use crate::core::calendar::{CalendarDay, FixedZone};
         let mut f = Fixture::new();
         f.state.frame_now = FrameNow(1_792_238_400.0);
-        f.state.viz_state.site_id = "KTLX".to_string();
+        f.sites.focus_mut().id = crate::data::SiteId::new("KTLX");
         let date = chrono::NaiveDate::from_ymd_opt(2024, 5, 6).unwrap();
         let day = CalendarDay::of(date, &FixedZone(0));
         f.timeline.activity.insert_many([crate::data::DayActivity {

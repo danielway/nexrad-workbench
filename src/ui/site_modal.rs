@@ -99,7 +99,13 @@ impl super::layout::Layer for SiteModalLayer {
         ctx.chrome.site_modal_open
     }
     fn render(&self, ctx: &mut super::layout::LayoutCtx) {
-        draw_site_picker(ctx.ctx, ctx.state, ctx.chrome, &mut ctx.modals.site);
+        draw_site_picker(
+            ctx.ctx,
+            ctx.state,
+            &ctx.sites.focus().id.0,
+            ctx.chrome,
+            &mut ctx.modals.site,
+        );
     }
 }
 
@@ -114,6 +120,7 @@ fn select(state: &mut AppState, row: &SiteRow) {
 fn draw_site_picker(
     ctx: &egui::Context,
     state: &mut AppState,
+    current_site: &str,
     chrome: &crate::subsystem::Chrome,
     picker: &mut SiteModalState,
 ) {
@@ -144,7 +151,7 @@ fn draw_site_picker(
     let anchor = ctx
         .data(|d| d.get_temp::<Rect>(anchor_id()))
         .unwrap_or_else(|| Rect::from_min_size(Pos2::new(12.0, 40.0), Vec2::ZERO));
-    let sites = SiteSet::single(&state.viz_state.site_id);
+    let sites = SiteSet::single(current_site);
     let (title, subtitle) = if required {
         (
             "Welcome to NEXRAD Workbench",

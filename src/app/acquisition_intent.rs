@@ -61,14 +61,22 @@ impl WorkbenchApp {
         {
             return;
         }
+        for site in 0..self.sites.list.len() {
+            self.pump_implicit_prefetch_for(ctx, site);
+        }
+    }
 
+    /// [`Self::pump_implicit_prefetch`] for one site, past the shared
+    /// preconditions.
+    fn pump_implicit_prefetch_for(&mut self, ctx: &egui::Context, site: usize) {
         // Fast path, ahead of the settle debounce: the scan under the
         // playhead right now. A click into a shadow region starts its fetch
         // on this very frame instead of after the 300 ms settle.
-        self.pump_anchor_fast_path();
+        self.pump_anchor_fast_path(site);
 
         // Phase 1: debounce + volume-cap gate + window plan (pure; mutates
-        // only the settle state).
+        // only the site's settle state, a field apart from the id it reads).
+        let target = &mut self.sites.list[site];
         let env = acquisition_core::ReactivePrefetchEnv {
             auto_fetch_cap_reached: self
                 .acquisition
@@ -77,7 +85,7 @@ impl WorkbenchApp {
                 .auto_fetch_cap_reached(),
             now_ms: js_sys::Date::now(),
             debounce_ms: crate::PREFETCH_DEBOUNCE_MS,
-            site_id: &self.state.viz_state.site_id,
+            site_id: &target.id.0,
             product_worker_string: self.state.viz_state.product.to_worker_string(),
             fallback_scan_duration_secs: crate::FALLBACK_SCAN_DURATION_SECS,
         };
@@ -86,7 +94,7 @@ impl WorkbenchApp {
             &env,
             &self.playback.state,
             &scope,
-            &mut self.acquisition.prefetch_settle,
+            &mut target.prefetch_settle,
         ) {
             acquisition_core::ReactivePrefetchPlan::Skip => return,
             acquisition_core::ReactivePrefetchPlan::CapReached { status_message } => {
@@ -101,13 +109,14 @@ impl WorkbenchApp {
         // Phase 2 on a fresh snapshot (the anchor fast path above may have
         // just enqueued): reduce the settled window to concrete actions,
         // then execute them.
-        let actions = self.reduce_window_plan(&plan);
-        let listing_pending = self.execute_window_actions(ctx, actions, QueueOrigin::Reactive);
+        let actions = self.reduce_window_plan(site, &plan);
+        let listing_pending =
+            self.execute_window_actions(ctx, site, actions, QueueOrigin::Reactive);
 
         // Listings may still be in flight for adjacent dates; only mark the
         // view resolved once everything is enqueued and nothing is pending.
         if !listing_pending {
-            self.acquisition.prefetch_settle.mark_resolved();
+            self.sites.list[site].prefetch_settle.mark_resolved();
         }
     }
 
@@ -116,17 +125,18 @@ impl WorkbenchApp {
     /// Idempotent and cheap — the satisfied check hits on every subsequent
     /// frame — so it runs every frame ahead of the settle gate. Listings
     /// themselves are left to the debounced pump and the visible-range pump.
-    fn pump_anchor_fast_path(&mut self) {
+    fn pump_anchor_fast_path(&mut self, site: usize) {
         let pos = self.playback.state.playback_position() as i64;
         let Some(date) = chrono::DateTime::from_timestamp(pos, 0).map(|dt| dt.date_naive()) else {
             return;
         };
         let intent = {
+            let target = &self.sites.list[site];
             let listing = self
                 .acquisition
                 .coordinator
                 .archive_index
-                .get(&self.state.viz_state.site_id, &date)
+                .get(&target.id.0, &date)
                 .map(snapshot_listing);
             let queued_scan_starts = self
                 .acquisition
@@ -145,21 +155,22 @@ impl WorkbenchApp {
                 listing: listing.as_ref(),
                 queued_scan_starts: &queued_scan_starts,
                 cache_match_tolerance_secs: crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
-                ledger: &self.acquisition.request_ledger,
+                ledger: &target.ledger,
                 now_ms: js_sys::Date::now(),
             };
-            acquisition_core::decide_anchor_fast_path(&env, &self.timeline.scans)
+            acquisition_core::decide_anchor_fast_path(&env, &target.scans)
         };
         if let Some(intent) = intent {
-            self.enqueue_intents(vec![intent], QueueOrigin::Reactive);
+            self.enqueue_intents(site, vec![intent], QueueOrigin::Reactive);
         }
     }
 
-    /// Assemble the per-date listing/backoff/pending inputs for a window plan
-    /// and reduce it to concrete actions. Read-only input assembly; the caller
-    /// executes the returned actions.
-    fn reduce_window_plan(&self, plan: &WindowPlan) -> WindowIntentActions {
-        let site_id = &self.state.viz_state.site_id;
+    /// Assemble site `site`'s per-date listing/backoff/pending inputs for a
+    /// window plan and reduce it to concrete actions. Read-only input
+    /// assembly; the caller executes the returned actions.
+    fn reduce_window_plan(&self, site: usize, plan: &WindowPlan) -> WindowIntentActions {
+        let target = &self.sites.list[site];
+        let site_id = &target.id.0;
         let now_ms = js_sys::Date::now();
         let days: Vec<WindowDayInput<'_>> = plan
             .dates
@@ -194,9 +205,9 @@ impl WorkbenchApp {
             &days,
             now_ms,
             &queued_scan_starts,
-            &self.timeline.scans,
+            &target.scans,
             crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
-            &self.acquisition.request_ledger,
+            &target.ledger,
         )
     }
 
@@ -208,10 +219,11 @@ impl WorkbenchApp {
     fn execute_window_actions(
         &mut self,
         ctx: &egui::Context,
+        site: usize,
         actions: WindowIntentActions,
         origin: QueueOrigin,
     ) -> bool {
-        let site_id = self.state.viz_state.site_id.clone();
+        let site_id = self.sites.list[site].id.0.clone();
         for date in actions.fetch_listings {
             self.acquisition.coordinator.download_channel.fetch_listing(
                 ctx.clone(),
@@ -219,7 +231,7 @@ impl WorkbenchApp {
                 date,
             );
         }
-        self.enqueue_intents(actions.enqueue, origin);
+        self.enqueue_intents(site, actions.enqueue, origin);
         actions.listing_pending
     }
 
@@ -228,20 +240,19 @@ impl WorkbenchApp {
     /// rides on each queue item so priority dispatch and pruning stay
     /// correlated with the drawer. The next frame's pump_download_queue
     /// dispatches them.
-    fn enqueue_intents(&mut self, intents: Vec<ScanFetchIntent>, origin: QueueOrigin) {
+    fn enqueue_intents(&mut self, site: usize, intents: Vec<ScanFetchIntent>, origin: QueueOrigin) {
         if intents.is_empty() {
             return;
         }
-        let site_id = self.state.viz_state.site_id.clone();
+        let target = &mut self.sites.list[site];
+        let site_id = target.id.0.clone();
         let now_ms = js_sys::Date::now();
         let items: Vec<QueueItem> = intents
             .into_iter()
             .map(|i| {
-                self.acquisition.request_ledger.note_enqueued(
-                    i.scan_start,
-                    i.elevation_filter,
-                    now_ms,
-                );
+                target
+                    .ledger
+                    .note_enqueued(i.scan_start, i.elevation_filter, now_ms);
                 let op_id = self.acquisition.state.create_operation(
                     state::OperationKind::ArchiveDownload {
                         site_id: site_id.clone(),
@@ -295,7 +306,7 @@ impl WorkbenchApp {
         let signature = acquisition_core::visible_listing_signature(
             view_start,
             view_start + span,
-            &self.state.viz_state.site_id,
+            &self.sites.focus().id.0,
         );
         if !self.acquisition.visible_listing_settle.poll(
             signature,
@@ -309,7 +320,7 @@ impl WorkbenchApp {
         let today = chrono::DateTime::from_timestamp(now_secs as i64, 0)
             .map(|dt| dt.date_naive())
             .unwrap_or_else(|| chrono::Utc::now().date_naive());
-        let site_id = self.state.viz_state.site_id.clone();
+        let site_id = self.sites.focus().id.0.clone();
 
         let days: Vec<acquisition_core::VisibleListingDay> =
             acquisition_core::dates_in_range(view_start as i64, (view_start + span) as i64)
@@ -372,12 +383,12 @@ impl WorkbenchApp {
                 // Priced now, from the listing, so the confirmation says the
                 // real size rather than an estimate.
                 let view = crate::core::TimelineView::build(
-                    &self.timeline.scans,
-                    &self.timeline.shadow_scan_boundaries,
+                    &self.sites.focus().scans,
+                    &self.sites.focus().shadows,
                     Some(&self.live.mode_state),
                     self.live.radar_model.position.as_ref(),
                 );
-                let site = crate::data::SiteId::new(self.state.viz_state.site_id.clone());
+                let site = crate::data::SiteId::new(self.sites.focus().id.0.clone());
                 let (lo, hi) = (start.min(end), start.max(end));
                 let sizes = self.timeline.activity.scans(&site, lo, hi);
                 self.chrome.range_download_modal = Some(acquisition_core::RangeDownloadPrompt {
@@ -434,9 +445,12 @@ impl WorkbenchApp {
                 // A bulk request is explicit, so all missing dates' listings
                 // are fetched at once — the per-(site,date) backoff + channel
                 // pending-dedup (decided in the reducer) still prevent storms.
-                let actions = self.reduce_window_plan(&plan);
-                let listing_pending =
-                    self.execute_window_actions(ctx, actions, QueueOrigin::Selection);
+                let mut listing_pending = false;
+                for site in 0..self.sites.list.len() {
+                    let actions = self.reduce_window_plan(site, &plan);
+                    listing_pending |=
+                        self.execute_window_actions(ctx, site, actions, QueueOrigin::Selection);
+                }
 
                 // Disarm: every fetchable date is present and enqueued
                 // (normal path).
@@ -486,7 +500,9 @@ impl WorkbenchApp {
             now,
             self.state.viz_state.fetch_scope().elevation_number(),
         );
-        let actions = self.reduce_window_plan(&plan);
-        self.execute_window_actions(ctx, actions, QueueOrigin::Reactive);
+        for site in 0..self.sites.list.len() {
+            let actions = self.reduce_window_plan(site, &plan);
+            self.execute_window_actions(ctx, site, actions, QueueOrigin::Reactive);
+        }
     }
 }

@@ -117,6 +117,7 @@ pub(crate) fn handle_canvas_interaction(
     response: &egui::Response,
     rect: &Rect,
     state: &mut AppState,
+    site: &crate::subsystem::SiteState,
     playback: &crate::subsystem::Playback,
     diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
@@ -147,6 +148,7 @@ pub(crate) fn handle_canvas_interaction(
                 click_pos,
                 projection,
                 state,
+                site,
                 playback,
                 diagnostics,
                 derived,
@@ -287,10 +289,12 @@ fn distance_tool_input(
 /// The map object under `pos`: hit-test every pickable mark against the
 /// projection (pixel radii, the shell's part), then let the core decide.
 /// Shared by clicks and hover so a hover state always previews the click.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn pick_at(
     pos: egui::Pos2,
     projection: &MapProjection,
     state: &AppState,
+    site: &crate::subsystem::SiteState,
     playback: &crate::subsystem::Playback,
     diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
@@ -310,7 +314,7 @@ pub(crate) fn pick_at(
     let candidates = crate::core::canvas::PickCandidates {
         site: layers
             .sites
-            .then(|| pick_site_at(pos, projection, state, radii.site))
+            .then(|| pick_site_at(pos, projection, &site.id.0, radii.site))
             .flatten(),
         mping: layers
             .mping
@@ -351,7 +355,7 @@ pub(crate) fn pick_at(
             .then(|| {
                 let geo = projection.screen_to_geo(pos);
                 crate::core::storm_cell_view::cell_at(
-                    &state.viz_state.storm_cells.result,
+                    &site.cells.result,
                     &storm_cells.shown,
                     geo.y,
                     geo.x,
@@ -364,18 +368,18 @@ pub(crate) fn pick_at(
 }
 
 /// Return `(site_id, lat, lon)` for the NEXRAD site closest to `click_pos`
-/// within `radius_px` ([`crate::core::canvas::pick_radii`]), or `None` if no site was hit. The currently
-/// active site is excluded so re-selecting it is a no-op rather than a spurious
+/// within `radius_px` ([`crate::core::canvas::pick_radii`]), or `None` if no site was hit. The focus
+/// site (`current_site`) is excluded so re-selecting it is a no-op rather than a spurious
 /// camera recenter.
 fn pick_site_at(
     click_pos: egui::Pos2,
     projection: &MapProjection,
-    state: &AppState,
+    current_site: &str,
     radius_px: f32,
 ) -> Option<(&'static str, f64, f64)> {
     let (min_lon, min_lat, max_lon, max_lat) = projection.visible_bounds();
     let padding = 2.0;
-    let current_upper = state.viz_state.site_id.to_uppercase();
+    let current_upper = current_site.to_uppercase();
     let hit_radius_sq = radius_px * radius_px;
 
     let mut best: Option<(&'static str, f64, f64, f32)> = None;
@@ -446,7 +450,7 @@ mod coverage_tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     // KABR is a real NEXRAD site; centering the projection on its coords makes
-    // KABR project to the exact screen center. AppState::default()'s site_id is
+    // KABR project to the exact screen center. The tests pass a focus site of
     // "KDMX" (not KABR), so KABR is a live click candidate unless we exclude it.
     const KABR_LAT: f64 = 45.45583;
     const KABR_LON: f64 = -98.41306;
@@ -488,9 +492,9 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn site_click_at_center_hits_centered_site() {
         let p = proj_on_kabr();
-        let state = AppState::default(); // site_id = "KDMX", so KABR is a candidate
-                                         // KABR projects to screen center (400,300); clicking there is a direct hit.
-        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &state, DESKTOP.site);
+        // The focus site is KDMX, so KABR is a candidate. KABR projects to
+        // screen center (400,300); clicking there is a direct hit.
+        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, "KDMX", DESKTOP.site);
         match hit {
             Some((id, lat, lon)) => {
                 assert!(id == "KABR");
@@ -504,49 +508,42 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn site_click_within_radius_still_hits() {
         let p = proj_on_kabr();
-        let state = AppState::default();
         // 7px from center: dist_sq = 49 <= 100 (the desktop site radius squared).
-        let hit = pick_site_at(egui::Pos2::new(407.0, 300.0), &p, &state, DESKTOP.site);
+        let hit = pick_site_at(egui::Pos2::new(407.0, 300.0), &p, "KDMX", DESKTOP.site);
         assert!(matches!(hit, Some((id, _, _)) if id == "KABR"));
     }
 
     #[wasm_bindgen_test]
     fn site_click_just_outside_radius_misses() {
         let p = proj_on_kabr();
-        let state = AppState::default();
         // 11px from center: dist_sq = 121 > 100, and the next-nearest site (KFSD)
         // is ~80px away, so nothing is within the hit radius.
-        let hit = pick_site_at(egui::Pos2::new(411.0, 300.0), &p, &state, DESKTOP.site);
+        let hit = pick_site_at(egui::Pos2::new(411.0, 300.0), &p, "KDMX", DESKTOP.site);
         assert!(hit.is_none());
     }
 
     #[wasm_bindgen_test]
     fn site_click_far_corner_misses() {
         let p = proj_on_kabr();
-        let state = AppState::default();
-        let hit = pick_site_at(egui::Pos2::new(5.0, 5.0), &p, &state, DESKTOP.site);
+        let hit = pick_site_at(egui::Pos2::new(5.0, 5.0), &p, "KDMX", DESKTOP.site);
         assert!(hit.is_none());
     }
 
     #[wasm_bindgen_test]
     fn active_site_is_excluded_from_hit() {
         let p = proj_on_kabr();
-        let mut state = AppState::default();
-        // Make KABR the active site: it must be excluded, and no other site is
+        // Make KABR the focus site: it must be excluded, and no other site is
         // within 10px of center, so the center click now misses.
-        state.viz_state.site_id = "KABR".to_string();
-        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &state, DESKTOP.site);
+        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, "KABR", DESKTOP.site);
         assert!(hit.is_none());
     }
 
     #[wasm_bindgen_test]
     fn active_site_match_is_case_insensitive() {
         let p = proj_on_kabr();
-        let mut state = AppState::default();
         // Lower-case site_id is upper-cased before comparison, so KABR is still
         // excluded and the center click misses.
-        state.viz_state.site_id = "kabr".to_string();
-        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &state, DESKTOP.site);
+        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, "kabr", DESKTOP.site);
         assert!(hit.is_none());
     }
 

@@ -63,6 +63,7 @@ impl super::layout::Layer for EventModalLayer {
         draw_event_modal(
             ctx.ctx,
             ctx.state,
+            &ctx.sites.focus().id.0,
             ctx.playback,
             &mut ctx.modals.event,
             ctx.chrome,
@@ -73,6 +74,7 @@ impl super::layout::Layer for EventModalLayer {
 fn draw_event_modal(
     ctx: &egui::Context,
     state: &mut AppState,
+    site_id: &str,
     playback: &crate::subsystem::Playback,
     form: &mut EventModalState,
     chrome: &crate::subsystem::Chrome,
@@ -90,7 +92,7 @@ fn draw_event_modal(
                     playback.state.selection_range(),
                     playback.state.playback_position(),
                 );
-                form.init_from_selection(&state.viz_state.site_id, start, end);
+                form.init_from_selection(site_id, start, end);
             }
         }
     }

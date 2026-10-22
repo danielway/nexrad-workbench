@@ -34,7 +34,6 @@ use crate::core::phone_strip::{
 };
 use crate::core::transport::SeekGesture;
 use crate::core::{FrameJoinInputs, Intent};
-use crate::data::SiteId;
 use crate::state::AppState;
 use crate::ui::theme;
 use crate::ui::theme::phone as colors;
@@ -66,6 +65,7 @@ pub(in crate::ui) fn render_mini_timeline(
     ui: &mut egui::Ui,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
+    site: &crate::subsystem::SiteState,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
@@ -90,7 +90,7 @@ pub(in crate::ui) fn render_mini_timeline(
         .interactable(true)
         .show(ui.ctx(), |ui| {
             ui.set_clip_rect(clip);
-            draw_strip(ui, strip, state, timeline, live, playback, chrome);
+            draw_strip(ui, strip, state, timeline, site, live, playback, chrome);
         });
 }
 
@@ -100,6 +100,7 @@ fn draw_strip(
     strip: Rect,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
+    site: &crate::subsystem::SiteState,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
@@ -121,8 +122,8 @@ fn draw_strip(
 
     let now = state.frame_now.secs();
     let view = crate::core::TimelineView::build(
-        &timeline.scans,
-        &timeline.shadow_scan_boundaries,
+        &site.scans,
+        &site.shadows,
         Some(&live.mode_state),
         live.radar_model.position.as_ref(),
     );
@@ -131,7 +132,7 @@ fn draw_strip(
     let failed: Vec<i64> = Vec::new();
     let mut in_flight = state.download_progress.in_flight_scans.clone();
     in_flight.extend_from_slice(&state.download_progress.active_scans);
-    let active = state.viz_state.displayed.as_ref().map(|d| {
+    let active = site.displayed.as_ref().map(|d| {
         (
             d.identity.scan_timestamp_secs(),
             d.identity.elevation_number,
@@ -170,9 +171,8 @@ fn draw_strip(
         .filter(|c| c.end_secs >= window.start && c.start_secs <= window.end)
         .collect();
 
-    let site = SiteId::new(state.viz_state.site_id.clone());
     let (sizes_from, sizes_to) = sizes_span(stop, window);
-    let sizes = timeline.activity.scans(&site, sizes_from, sizes_to);
+    let sizes = timeline.activity.scans(&site.id, sizes_from, sizes_to);
     let units = StripUnits::from_containers(&containers).with_listed(&sizes.scans);
     let secs_per_px = window.span() / lane.width().max(1.0) as f64;
     let x_to_ts = |x: f32| window.start + (x - lane.left()) as f64 * secs_per_px;

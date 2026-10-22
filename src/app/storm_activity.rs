@@ -20,7 +20,7 @@ impl crate::WorkbenchApp {
         let now_ms = js_sys::Date::now();
         self.drain_storm_activity(now_ms);
 
-        let site = SiteId::new(self.state.viz_state.site_id.clone());
+        let site = SiteId::new(self.sites.focus().id.0.clone());
         if site.0.is_empty() {
             return;
         }

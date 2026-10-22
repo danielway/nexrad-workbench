@@ -87,7 +87,7 @@ struct CpuShadowData {
 }
 
 /// GPU-based radar renderer using WebGL2 shaders.
-pub struct RadarGpuRenderer {
+pub(crate) struct RadarGpuRenderer {
     program: glow::Program,
     vao: glow::VertexArray,
     #[allow(dead_code)] // Owns the GPU buffer handle so the quad VBO isn't orphaned/deallocated.
@@ -117,7 +117,7 @@ impl RadarGpuRenderer {
     ///
     /// Returns `Err` if shader compilation, program linking, or GL resource
     /// allocation fails, allowing the caller to fall back gracefully.
-    pub fn new(gl: &Arc<glow::Context>) -> Result<Self, String> {
+    pub(crate) fn new(gl: &Arc<glow::Context>) -> Result<Self, String> {
         unsafe {
             let program = Self::build_program(gl)?;
 
@@ -231,46 +231,46 @@ impl RadarGpuRenderer {
     }
 
     /// Maximum range of the currently loaded data in km.
-    pub fn max_range_km(&self) -> f64 {
+    pub(crate) fn max_range_km(&self) -> f64 {
         self.current.max_range_km
     }
 
     // --- Accessors for globe radar renderer ---
 
-    pub fn gate_count(&self) -> u32 {
+    pub(crate) fn gate_count(&self) -> u32 {
         self.current.gate_count
     }
-    pub fn azimuth_count(&self) -> u32 {
+    pub(crate) fn azimuth_count(&self) -> u32 {
         self.current.azimuth_count
     }
-    pub fn first_gate_km(&self) -> f64 {
+    pub(crate) fn first_gate_km(&self) -> f64 {
         self.current.first_gate_km
     }
-    pub fn gate_interval_km(&self) -> f64 {
+    pub(crate) fn gate_interval_km(&self) -> f64 {
         self.current.gate_interval_km
     }
-    pub fn value_min(&self) -> f32 {
+    pub(crate) fn value_min(&self) -> f32 {
         self.value_min
     }
-    pub fn value_range(&self) -> f32 {
+    pub(crate) fn value_range(&self) -> f32 {
         self.value_range
     }
-    pub fn data_offset(&self) -> f32 {
+    pub(crate) fn data_offset(&self) -> f32 {
         self.current.data_offset
     }
-    pub fn data_scale(&self) -> f32 {
+    pub(crate) fn data_scale(&self) -> f32 {
         self.current.data_scale
     }
-    pub fn azimuth_spacing_deg(&self) -> f32 {
+    pub(crate) fn azimuth_spacing_deg(&self) -> f32 {
         self.current.azimuth_spacing_deg
     }
-    pub fn data_texture(&self) -> glow::Texture {
+    pub(crate) fn data_texture(&self) -> glow::Texture {
         self.data_texture
     }
-    pub fn lut_texture(&self) -> glow::Texture {
+    pub(crate) fn lut_texture(&self) -> glow::Texture {
         self.lut_texture
     }
-    pub fn azimuth_texture(&self) -> glow::Texture {
+    pub(crate) fn azimuth_texture(&self) -> glow::Texture {
         self.azimuth_texture
     }
 
@@ -282,7 +282,7 @@ impl RadarGpuRenderer {
     /// egui_glow restores its own GL state after each paint callback,
     /// so we don't need to save/restore state ourselves.
     #[allow(clippy::too_many_arguments)]
-    pub fn paint(
+    pub(crate) fn paint(
         &self,
         gl: &glow::Context,
         radar_center: [f32; 2],

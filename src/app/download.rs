@@ -61,38 +61,42 @@ impl WorkbenchApp {
                 // Records are already in IDB — hold the ledger entry in
                 // AwaitingTimeline until a refresh actually shows them, so
                 // the per-frame anchor pump can't re-request into the gap.
-                self.acquisition.request_ledger.note_ingested(
-                    scan_ts,
-                    crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
-                    js_sys::Date::now(),
-                );
+                if let Some(site) = crate::core::sites::route(&scan.key, &self.sites.ids()) {
+                    self.sites.list[site].ledger.note_ingested(
+                        scan_ts,
+                        crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+                        js_sys::Date::now(),
+                    );
+                }
 
                 // Cache hit: skip ingest, go straight to decode.
                 // Ghost stays until timeline refresh shows the real scan.
                 self.state.download_progress.phase = crate::state::DownloadPhase::Decoding;
 
                 // Cache hit: records already in IDB. Resolve elevation list
-                // from timeline metadata (when available) and route both the
-                // scan key and elevation list through the single-owner
-                // helper.
-                let elev_nums: Vec<u8> = self
-                    .timeline
-                    .scans
-                    .find_recent_scan(scan_ts as f64, 1.0)
-                    .map(|tl_scan| {
-                        let mut nums: Vec<u8> =
-                            tl_scan.sweeps.iter().map(|s| s.elevation_number).collect();
-                        nums.sort_unstable();
-                        nums.dedup();
-                        nums
-                    })
-                    .unwrap_or_default();
-                self.set_active_scan(scan.key.clone(), elev_nums, scan_ts as f64);
+                // from the site's timeline metadata (when available) and
+                // route both the scan key and elevation list through the
+                // single-owner helper. A scan for a site no longer in the
+                // list is not rendered.
+                if let Some(site) = crate::core::sites::route(&scan.key, &self.sites.ids()) {
+                    let elev_nums: Vec<u8> = self.sites.list[site]
+                        .scans
+                        .find_recent_scan(scan_ts as f64, 1.0)
+                        .map(|tl_scan| {
+                            let mut nums: Vec<u8> =
+                                tl_scan.sweeps.iter().map(|s| s.elevation_number).collect();
+                            nums.sort_unstable();
+                            nums.dedup();
+                            nums
+                        })
+                        .unwrap_or_default();
+                    self.set_active_scan(site, scan.key.clone(), elev_nums);
 
-                self.render.coordinator.force_fresh_render();
-                self.request_worker_render();
-                if self.volume_3d_active() {
-                    self.request_worker_render_volume();
+                    self.sites.list[site].render.force_fresh_render();
+                    self.request_worker_render(site);
+                    if self.volume_3d_active() {
+                        self.request_worker_render_volume(site);
+                    }
                 }
             } else {
                 // Count fresh-download bytes toward the reactive auto-fetch
@@ -168,8 +172,9 @@ impl WorkbenchApp {
 
             // Short-backoff suppression so the reactive pumps don't hammer a
             // failing endpoint; evicts on its own so automatic retry stays
-            // possible (explicit retries bypass the reducers entirely).
-            self.acquisition.request_ledger.note_failed(
+            // possible (explicit retries bypass the reducers entirely). A
+            // download error names no site; downloads are the focus's.
+            self.sites.focus_mut().ledger.note_failed(
                 *scan_start,
                 crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
                 js_sys::Date::now(),
@@ -228,8 +233,9 @@ impl WorkbenchApp {
                 // Rebuild shadow scan boundaries for the timeline. Reactive
                 // prefetch re-evaluates on the next settle and will pick up the
                 // scans this listing exposes — no explicit resume needed.
-                if site_id == self.state.viz_state.site_id {
-                    self.timeline.shadow_scan_boundaries = self
+                let id = crate::data::SiteId::new(site_id.clone());
+                if let Some(site) = crate::core::sites::route_site(&id, &self.sites.ids()) {
+                    self.sites.list[site].shadows = self
                         .acquisition
                         .coordinator
                         .archive_index

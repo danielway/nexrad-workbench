@@ -14,7 +14,7 @@ impl WorkbenchApp {
     /// Advance the download queue: reap finished downloads and fill as many
     /// free concurrency slots as possible. No-op when the queue is empty.
     pub(crate) fn advance_download_queue(&mut self, ctx: &egui::Context) {
-        let site_id = self.state.viz_state.site_id.clone();
+        let site_id = self.sites.focus().id.0.clone();
 
         if !self.acquisition.coordinator.download_queue.has_work() {
             return;

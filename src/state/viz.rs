@@ -2,9 +2,8 @@
 
 use crate::core::canvas::CaptionContext;
 use crate::core::storm_cell_view::StormCellPointer;
-use crate::core::storm_cells::StormCells;
 use crate::core::storm_tracks::StormTracks;
-use crate::core::{DisplayedSweep, ElevationSelection, RadarProduct};
+use crate::core::{ElevationSelection, RadarProduct};
 use crate::geo::{Camera, Flat2DState, ViewMode};
 use eframe::egui::Vec2;
 
@@ -27,28 +26,11 @@ pub(crate) struct VizState {
     /// Stored Fixed selection to restore when toggling off auto mode.
     pub last_fixed_selection: Option<(u8, f32)>,
 
-    /// Overlay info: radar site ID
-    pub site_id: String,
-
     /// Overlay info: current elevation/sweep, e.g. "0.5°". Timezone-independent,
     /// so it stays a baked string; the displayed-frame *timestamp* is NOT baked
-    /// here — it is formatted at render time from `displayed` (spec §11.4) so a
-    /// local/UTC flip reformats it the same frame.
+    /// here — it is formatted at render time from the focus site's `displayed`
+    /// (spec §11.4) so a local/UTC flip reformats it the same frame.
     pub elevation: String,
-
-    /// Geographic center latitude (radar site location)
-    pub center_lat: f64,
-
-    /// Geographic center longitude (radar site location)
-    pub center_lon: f64,
-
-    /// Staleness of the most recent radial (sweep end) in seconds.
-    /// Recomputed every frame from `displayed.end_time` against wall clock.
-    pub data_staleness_secs: Option<f64>,
-
-    /// Staleness of the oldest radial (sweep start) in seconds.
-    /// Recomputed every frame from `displayed.start_time` against wall clock.
-    pub data_staleness_start_secs: Option<f64>,
 
     /// Cached last sweep line position (azimuth, start_azimuth) for between-sweep display.
     pub last_sweep_line_cache: Option<(f32, f32)>,
@@ -77,10 +59,6 @@ pub(crate) struct VizState {
     /// Minimum dBZ threshold for storm cell detection.
     pub storm_cell_threshold_dbz: f32,
 
-    /// The last storm cell detection result and the sweep/threshold it was
-    /// computed for (see `crate::core::storm_cells`).
-    pub storm_cells: StormCells,
-
     /// Whether storm cell tracks (trails and forecast arrows) are on. Needs
     /// `storm_cells_visible` too.
     pub storm_tracks_visible: bool,
@@ -99,22 +77,6 @@ pub(crate) struct VizState {
     /// canvas rect. `None` while in 3D globe mode.
     pub last_visible_bounds: Option<(f64, f64, f64, f64)>,
 
-    /// What is actually on the GPU main-slot texture right now. Set only
-    /// after a successful `update_data()` in `handle_decoded_outcome` /
-    /// `handle_live_decoded_outcome`; cleared when the canvas blanks.
-    /// Single source of truth for the timeline active border, canvas
-    /// overlay text, and staleness counters.
-    pub displayed: Option<DisplayedSweep>,
-
-    /// What is on the GPU prev-sweep texture (the under-layer for sweep
-    /// animation). Written by `sync_prev_sweep_texture` in archive mode
-    /// and by the `should_promote` branch in
-    /// `handle_live_decoded_outcome` for live mode — both reflect what
-    /// the prev-sweep slot actually holds, NOT the prior main upload.
-    /// Drives the timeline secondary border and the prev-sweep overlay
-    /// panel.
-    pub previous_displayed: Option<DisplayedSweep>,
-
     /// What the render loop knows for the canvas caption rule this frame
     /// (one frame's length, a render in flight, downloads, the wanted tilt).
     /// Recomputed each frame in `advance_playback`; the session's caption
@@ -129,12 +91,7 @@ impl Default for VizState {
             product: RadarProduct::default(),
             elevation_selection: ElevationSelection::default(),
             last_fixed_selection: None,
-            site_id: "KDMX".to_string(),
             elevation: "-- deg".to_string(),
-            center_lat: 41.7312,
-            center_lon: -93.7229,
-            data_staleness_secs: None,
-            data_staleness_start_secs: None,
             last_sweep_line_cache: None,
             volume_3d_enabled: true,
             volume_density_cutoff: 5.0,
@@ -143,13 +100,10 @@ impl Default for VizState {
             measurement: Default::default(),
             storm_cells_visible: false,
             storm_cell_threshold_dbz: 35.0,
-            storm_cells: StormCells::default(),
             storm_tracks_visible: false,
             storm_tracks: StormTracks::default(),
             storm_cell_pointer: StormCellPointer::default(),
             last_visible_bounds: None,
-            displayed: None,
-            previous_displayed: None,
             caption_context: CaptionContext::default(),
         }
     }
@@ -242,38 +196,12 @@ impl VizState {
         }
     }
 
-    /// Update the canvas overlay's elevation text and seed staleness from a
-    /// freshly decoded sweep. The displayed-frame *timestamp* is no longer baked
-    /// here: it is formatted at render time from `displayed` so a local/UTC flip
-    /// reformats it the same frame (spec §11.4). Sweep start/end times live on
-    /// `displayed` (set by the decode handler); staleness is recomputed each
-    /// frame from there. `now_secs` is the frame clock (`AppState::frame_now`).
-    pub(crate) fn update_overlay(
-        &mut self,
-        start: f64,
-        end: f64,
-        elevation_deg: f32,
-        now_secs: f64,
-    ) {
+    /// Set the canvas overlay's elevation text from a freshly decoded sweep.
+    /// The displayed-frame *timestamp* is not baked here: it is formatted at
+    /// render time from the focus site's `displayed` so a local/UTC flip
+    /// reformats it the same frame (spec §11.4).
+    pub(crate) fn set_elevation_label(&mut self, elevation_deg: f32) {
         self.elevation = format!("{:.1}\u{00B0}", elevation_deg);
-
-        // Seed staleness for immediate display; the per-frame recompute
-        // in `update()` keeps it ticking from `displayed`.
-        let staleness_end = now_secs - end;
-        let staleness_start = now_secs - start;
-        self.data_staleness_secs = (staleness_end >= 0.0).then_some(staleness_end);
-        self.data_staleness_start_secs = (staleness_start >= 0.0).then_some(staleness_start);
-    }
-
-    /// Representative (midpoint) collection time of the on-screen frame, in Unix
-    /// seconds, or `None` when the canvas holds no frame. This is the raw time
-    /// the primary readout and overlay format live each frame — never the
-    /// playhead (the canvas-honesty invariant).
-    #[cfg(test)]
-    pub(crate) fn displayed_midpoint_secs(&self) -> Option<f64> {
-        self.displayed
-            .as_ref()
-            .map(|d| (d.start_time + d.end_time) / 2.0)
     }
 }
 
@@ -328,14 +256,6 @@ mod coverage_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    use crate::core::SweepIdentity;
-    use crate::data::keys::UnixMillis;
-    use crate::data::ScanKey;
-
-    fn scan_key(site: &str, ms: i64) -> ScanKey {
-        ScanKey::new(site, UnixMillis(ms))
-    }
-
     // ---- enum defaults -----------------------------------------------------
 
     #[wasm_bindgen_test]
@@ -343,40 +263,15 @@ mod coverage_tests {
         assert_eq!(ViewMode::default(), ViewMode::Flat2D);
     }
 
-    // ---- VizState::update_overlay & displayed_midpoint_secs ---------------
+    // ---- VizState::set_elevation_label -----------------------------------
 
     #[wasm_bindgen_test]
-    fn update_overlay_formats_and_seeds_staleness() {
+    fn elevation_label_formats_to_a_tenth_of_a_degree() {
         let mut viz = VizState::default();
-        // now=300, end=200 -> 100s stale; start=100 -> 200s stale.
-        viz.update_overlay(100.0, 200.0, 0.5, 300.0);
+        viz.set_elevation_label(0.5);
         assert_eq!(viz.elevation, "0.5\u{00B0}");
-        assert!((viz.data_staleness_secs.unwrap() - 100.0).abs() < 1e-6);
-        assert!((viz.data_staleness_start_secs.unwrap() - 200.0).abs() < 1e-6);
-    }
-
-    #[wasm_bindgen_test]
-    fn update_overlay_clamps_future_frames_to_none() {
-        let mut viz = VizState::default();
-        // now precedes both start and end -> negative staleness clamped to None.
-        viz.update_overlay(500.0, 600.0, 12.34, 400.0);
+        viz.set_elevation_label(12.34);
         assert_eq!(viz.elevation, "12.3\u{00B0}");
-        assert_eq!(viz.data_staleness_secs, None);
-        assert_eq!(viz.data_staleness_start_secs, None);
-    }
-
-    #[wasm_bindgen_test]
-    fn displayed_midpoint_secs_none_then_some() {
-        let mut viz = VizState::default();
-        assert_eq!(viz.displayed_midpoint_secs(), None);
-
-        viz.displayed = Some(DisplayedSweep {
-            identity: SweepIdentity::new(scan_key("KDMX", 1000), 1, "reflectivity"),
-            start_time: 100.0,
-            end_time: 250.0,
-            elevation_deg: 0.5,
-        });
-        assert!((viz.displayed_midpoint_secs().unwrap() - 175.0).abs() < 1e-6);
     }
 
     // ---- VizState 2D/3D accessor no-ops ----------------------------------

@@ -49,17 +49,28 @@ impl WorkbenchApp {
                     self.handle_volume_decoded_outcome(volume_data);
                 }
                 nexrad::WorkerOutcome::Detected(reply) => {
-                    let disposition = self.state.viz_state.storm_cells.accept(reply);
-                    log::debug!("storm cells: reply {:?}", disposition);
-                    self.sync_storm_cells();
+                    // The site whose request this answers; a reply nobody
+                    // awaits any more (a site change reset it) is dropped.
+                    let id = reply.request_id;
+                    match self.sites.iter().position(|s| s.cells.awaits(id)) {
+                        Some(site) => {
+                            let disposition = self.sites.list[site].cells.accept(reply);
+                            log::debug!("storm cells: reply {:?}", disposition);
+                            self.sync_storm_cells_for(site);
+                        }
+                        None => log::debug!("storm cells: reply {id} dropped"),
+                    }
                 }
                 nexrad::WorkerOutcome::DetectFailed {
                     request_id,
                     message,
                 } => {
                     log::warn!("storm cells: detection failed: {message}");
-                    self.state.viz_state.storm_cells.fail(request_id);
-                    self.sync_storm_cells();
+                    let owner = self.sites.iter().position(|s| s.cells.awaits(request_id));
+                    if let Some(site) = owner {
+                        self.sites.list[site].cells.fail(request_id);
+                        self.sync_storm_cells_for(site);
+                    }
                 }
                 nexrad::WorkerOutcome::WorkerError {
                     id,
@@ -118,21 +129,31 @@ impl WorkbenchApp {
                 // Update cache size in session stats
                 self.state.session_stats.cache_size_bytes = total_cache_size;
 
+                // A load for a site no longer in the list is dropped.
+                let Some(i) = crate::core::sites::route_site(
+                    &crate::data::SiteId::new(site_id),
+                    &self.sites.ids(),
+                ) else {
+                    return;
+                };
+                let site = &mut self.sites.list[i];
+
                 // Build timeline from metadata
-                self.timeline.scans = RadarTimeline::from_metadata(metadata);
+                site.scans = RadarTimeline::from_metadata(metadata);
 
                 // Reconcile the request ledger against what the timeline now
                 // actually holds: satisfied requests retire, ingested-but-
                 // missing cuts become Unavailable, stale entries age out.
-                self.acquisition.request_ledger.observe_timeline(
-                    &self.timeline.scans,
+                site.ledger.observe_timeline(
+                    &site.scans,
                     crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
                     js_sys::Date::now(),
                 );
 
-                // Get time ranges (may be non-contiguous)
-                let ranges = self.timeline.scans.time_ranges();
-                if !ranges.is_empty() {
+                // Get time ranges (may be non-contiguous). The playhead is
+                // shared, so only the focus site's load positions it.
+                let ranges = site.scans.time_ranges();
+                if !ranges.is_empty() && i == self.sites.focus {
                     // Position playback at the end of the most recent range
                     let most_recent_end = ranges.last().unwrap().end;
 
@@ -160,35 +181,36 @@ impl WorkbenchApp {
         }
     }
 
-    /// Set the active scan for rendering — the scan key + elevation list
-    /// owned by `RenderCoordinator`. The on-GPU `viz_state.displayed`
-    /// slot is updated separately by the decode-result handlers once
-    /// the worker actually delivers pixels for the requested sweep.
+    /// Set site `site`'s active scan for rendering — the scan key +
+    /// elevation list on its render track. The site's on-GPU `displayed`
+    /// slot is updated separately by the decode-result handlers once the
+    /// worker actually delivers pixels for the requested sweep.
     pub(crate) fn set_active_scan(
         &mut self,
+        site: usize,
         scan_key: data::ScanKey,
         elevations: Vec<u8>,
-        _displayed_ts: f64,
     ) {
-        self.render.coordinator.set_scan(scan_key, elevations);
+        self.sites.list[site].render.set_scan(scan_key, elevations);
     }
 
     /// Like [`Self::set_active_scan`] but for the live chunk-by-chunk
     /// path where the elevation list grows incrementally.
     pub(crate) fn advance_active_scan_chunk(
         &mut self,
+        site: usize,
         scan_key: data::ScanKey,
         new_elevations: &[u8],
-        _displayed_ts: f64,
     ) {
-        self.render.coordinator.set_scan_key(scan_key);
-        self.render.coordinator.add_elevations(new_elevations);
+        let track = &mut self.sites.list[site].render;
+        track.set_scan_key(scan_key);
+        track.add_elevations(new_elevations);
     }
 
-    /// Clear the active scan. Used when no scan is in range, on site
-    /// change, and on error paths.
-    pub(crate) fn clear_active_scan(&mut self) {
-        self.render.coordinator.clear_scan_key();
+    /// Clear site `site`'s active scan. Used when no scan is in range, on
+    /// site change, and on error paths.
+    pub(crate) fn clear_active_scan(&mut self, site: usize) {
+        self.sites.list[site].render.clear_scan_key();
     }
 
     fn handle_ingested_outcome(&mut self, result: IngestResult) {
@@ -233,20 +255,6 @@ impl WorkbenchApp {
         // and timeline position match the stored blob exactly.
         let scan_start_secs = result.scan_key.scan_start.as_secs_f64();
 
-        // The scan's data is now in IDB but the timeline hasn't observed it
-        // yet — hold the ledger entry in AwaitingTimeline across that gap
-        // (matched within tolerance because this key is the re-keyed
-        // volume-header time, not the listing timestamp it was enqueued as).
-        self.acquisition.request_ledger.note_ingested(
-            scan_start_secs as i64,
-            crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
-            js_sys::Date::now(),
-        );
-        self.set_active_scan(
-            result.scan_key.clone(),
-            result.elevation_numbers,
-            scan_start_secs,
-        );
         // Refresh timeline to include the new scan
         self.state
             .push_command(crate::core::Intent::RefreshTimeline {
@@ -256,13 +264,34 @@ impl WorkbenchApp {
         // Request eviction check
         self.state.push_command(crate::core::Intent::CheckEviction);
 
+        // The rest is the ingesting site's; a scan for a site no longer in
+        // the list is stored but not rendered.
+        let Some(site) = crate::core::sites::route(&result.scan_key, &self.sites.ids()) else {
+            log::debug!(
+                "Ingest for {} not rendered: site not shown",
+                result.scan_key
+            );
+            return;
+        };
+
+        // The scan's data is now in IDB but the timeline hasn't observed it
+        // yet — hold the ledger entry in AwaitingTimeline across that gap
+        // (matched within tolerance because this key is the re-keyed
+        // volume-header time, not the listing timestamp it was enqueued as).
+        self.sites.list[site].ledger.note_ingested(
+            scan_start_secs as i64,
+            crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+            js_sys::Date::now(),
+        );
+        self.set_active_scan(site, result.scan_key.clone(), result.elevation_numbers);
+
         // Force a fresh render
-        self.render.coordinator.force_fresh_render();
+        self.sites.list[site].render.force_fresh_render();
 
         // Trigger render for the ingested scan
-        self.request_worker_render();
+        self.request_worker_render(site);
         if self.volume_3d_active() {
-            self.request_worker_render_volume();
+            self.request_worker_render_volume(site);
         }
     }
 
@@ -275,14 +304,20 @@ impl WorkbenchApp {
 
         let is_live = self.live.mode_state.is_active();
 
-        // Update scan key, growing elevation list, and displayed timestamp
-        // through the single owner so they can never drift.
-        let had_elevations = !self.render.coordinator.available_elevations().is_empty();
-        self.advance_active_scan_chunk(
-            result.scan_key.clone(),
-            &result.elevations_completed,
-            result.context.timestamp_secs,
-        );
+        // A chunk from a stream whose site is no longer in the list (it was
+        // switched away while the chunk was in the worker) is dropped.
+        let Some(site) = crate::core::sites::route(&result.scan_key, &self.sites.ids()) else {
+            log::debug!("Chunk for {} dropped: site not shown", result.scan_key);
+            return None;
+        };
+
+        // Update scan key and the growing elevation list through the single
+        // owner so they can never drift.
+        let had_elevations = !self.sites.list[site]
+            .render
+            .available_elevations()
+            .is_empty();
+        self.advance_active_scan_chunk(site, result.scan_key.clone(), &result.elevations_completed);
 
         // Assemble the frame context and run the pure reducer over the core
         // state slices. All decisions (and the core-state mutations they
@@ -291,11 +326,11 @@ impl WorkbenchApp {
         let actions = {
             let env = ChunkIngestEnv {
                 is_live,
-                site_id: &self.state.viz_state.site_id,
+                site_id: &self.sites.list[site].id.0,
                 product_worker_string: self.state.viz_state.product.to_worker_string(),
                 now_secs: self.state.frame_now.secs(),
                 had_elevations,
-                available_elevations: self.render.coordinator.available_elevations(),
+                available_elevations: self.sites.list[site].render.available_elevations(),
                 frame_projection: self.live.frame_projection.as_ref(),
                 volume_3d_active: self.volume_3d_active(),
             };
@@ -317,7 +352,9 @@ impl WorkbenchApp {
             self.live.channel.record_availability_lag_secs(lag);
         }
         if actions.promote_prev_texture {
-            if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
+            if let (Some(ref renderer), Some(ref gl)) =
+                (&self.sites.list[site].gpu.radar, &self.gpu.gl)
+            {
                 if let Ok(mut r) = renderer.lock() {
                     r.promote_current_to_previous(gl);
                 }
@@ -330,13 +367,13 @@ impl WorkbenchApp {
             self.state.session_stats.pipeline.mark_processing_done();
         }
         if actions.force_fresh_render {
-            self.render.coordinator.force_fresh_render();
+            self.sites.list[site].render.force_fresh_render();
         }
         if actions.request_render {
-            self.request_worker_render();
+            self.request_worker_render(site);
         }
         if actions.request_volume_render {
-            self.request_worker_render_volume();
+            self.request_worker_render_volume(site);
         }
         actions.render_live
     }
@@ -348,21 +385,40 @@ impl WorkbenchApp {
         self.state.session_stats.pipeline.mark_processing_done();
         self.state.session_stats.pipeline.rendering = true;
 
+        // A sweep for a site no longer in the list is dropped; only the
+        // shared pipeline bookkeeping runs.
+        let Some(site) = crate::core::sites::route(&result.context.scan_key, &self.sites.ids())
+        else {
+            log::debug!(
+                "Decode for {} dropped: site not shown",
+                result.context.scan_key
+            );
+            self.state.session_stats.pipeline.mark_render_done();
+            self.retire_in_flight_scan(result.context.scan_key.scan_start.as_secs());
+            return;
+        };
+        // The live stream belongs to the focus site.
+        let live_cut = (site == self.sites.focus)
+            .then(|| self.live_render_sources())
+            .flatten();
+
         // Assemble the frame context and run the pure reducer. All decisions
         // (current-scan gate, cache entry, pending-prev clearing, display
         // angle, ghost retention, overlay gate) happen in `reduce_decoded`;
         // the shell executes the described actions below — the GPU upload
         // block itself stays here.
+        let whole_sweeps_only = self.live_shows_whole_sweeps();
         let actions = {
+            let target = &mut self.sites.list[site];
             let env = DecodedEnv {
                 dev_mode: self.state.dev_mode,
-                site_id: &self.state.viz_state.site_id,
+                site_id: &target.id.0,
                 playback_position: self.playback.state.playback_position(),
                 elevation_selection: &self.state.viz_state.elevation_selection,
                 product: self.state.viz_state.product,
                 max_scan_age_secs: MAX_SCAN_AGE_SECS,
-                live_cut: self.live_render_sources(),
-                whole_sweeps_only: self.live_shows_whole_sweeps(),
+                live_cut,
+                whole_sweeps_only,
                 sweep_animation: self.state.effective_sweep_animation(
                     &self.playback.state,
                     self.live.canvas_follows_live(&self.playback.state),
@@ -372,9 +428,9 @@ impl WorkbenchApp {
                 pending_scans_empty: self.state.download_progress.pending_scans.is_empty(),
             };
             let slices = DecodedSlices {
-                playback_manager: &mut self.render.playback_manager,
+                playback_manager: &mut target.crossfade,
             };
-            reduce_decoded(env, slices, &self.timeline.scans, &result)
+            reduce_decoded(env, slices, &target.scans, &result)
         };
 
         // Execute the described actions in the struct's field order.
@@ -385,7 +441,9 @@ impl WorkbenchApp {
         let t_gpu = web_time::Instant::now();
         let mut gpu_upload_succeeded = false;
         if actions.upload_to_gpu {
-            if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
+            if let (Some(ref renderer), Some(ref gl)) =
+                (&self.sites.list[site].gpu.radar, &self.gpu.gl)
+            {
                 if let Ok(mut r) = renderer.lock() {
                     r.update_data(
                         gl,
@@ -410,10 +468,10 @@ impl WorkbenchApp {
         let gpu_upload_ms = t_gpu.elapsed().as_secs_f64() * 1000.0;
 
         if gpu_upload_succeeded {
-            self.state.viz_state.displayed = actions.displayed_on_upload;
+            self.sites.list[site].displayed = actions.displayed_on_upload;
             // Detection for the new sweep, decided by the same rule as the
             // per-frame check (which then sees it as already computed).
-            self.sync_storm_cells();
+            self.sync_storm_cells_for(site);
         }
 
         // Store detailed render timing for the detail modal (dev mode only).
@@ -438,7 +496,19 @@ impl WorkbenchApp {
         }
 
         if let Some((start, end, angle)) = actions.update_overlay {
-            self.update_overlay_from_sweep(start, end, angle);
+            self.update_overlay_from_sweep(site, start, end, angle);
+        }
+    }
+
+    /// Drop a scan's in-flight ghost and, when nothing else is in flight or
+    /// pending, the download progress with it.
+    fn retire_in_flight_scan(&mut self, scan_start: i64) {
+        let progress = &mut self.state.download_progress;
+        progress
+            .in_flight_scans
+            .retain(|&(start, _)| start != scan_start);
+        if progress.in_flight_scans.is_empty() && progress.pending_scans.is_empty() {
+            progress.clear();
         }
     }
 
@@ -447,15 +517,23 @@ impl WorkbenchApp {
             reduce_live_decoded, reduce_live_decoded_azimuths, LiveDecodedEnv,
         };
 
+        // The live stream belongs to the focus site.
+        let site = self.sites.focus;
+
         // Phase 1: display decisions. The GPU renderer's current sweep id
         // (the promote decision's input) is read here and passed in as env.
         let mut actions = {
-            let gpu_current_sweep_id = self.gpu.gpu.as_ref().and_then(|renderer| {
-                renderer
-                    .lock()
-                    .ok()
-                    .and_then(|r| r.current_sweep_id().map(str::to_string))
-            });
+            let gpu_current_sweep_id =
+                self.sites.list[site]
+                    .gpu
+                    .radar
+                    .as_ref()
+                    .and_then(|renderer| {
+                        renderer
+                            .lock()
+                            .ok()
+                            .and_then(|r| r.current_sweep_id().map(str::to_string))
+                    });
             let env = LiveDecodedEnv {
                 playhead_attached: self.live.canvas_follows_live(&self.playback.state),
                 whole_sweeps_only: self.live_shows_whole_sweeps(),
@@ -467,7 +545,10 @@ impl WorkbenchApp {
 
         // Execute the described actions: the GPU upload block stays here.
         if actions.upload_to_gpu {
-            if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
+            let mut uploaded = false;
+            if let (Some(ref renderer), Some(ref gl)) =
+                (&self.sites.list[site].gpu.radar, &self.gpu.gl)
+            {
                 if let Ok(mut r) = renderer.lock() {
                     if actions.promote_prev_texture {
                         r.promote_current_to_previous(gl);
@@ -489,28 +570,28 @@ impl WorkbenchApp {
                     );
                     r.set_current_sweep_id(Some(actions.gpu_sweep_id));
                     r.update_color_table(gl, &result.product);
-
-                    // Roll semantics decided by the reducer: promote →
-                    // snapshot `displayed` into `previous_displayed` (the
-                    // canonical source for overlay/timeline prev info),
-                    // else overwrite in place.
-                    if let Some(new_displayed) = actions.new_displayed.take() {
-                        if actions.promote_prev_texture {
-                            let prior = self.state.viz_state.displayed.replace(new_displayed);
-                            self.state.viz_state.previous_displayed = prior;
-                        } else {
-                            self.state.viz_state.displayed = Some(new_displayed);
-                        }
-                    }
+                    uploaded = true;
+                }
+            }
+            // Roll semantics decided by the reducer: promote → snapshot
+            // `displayed` into `previous_displayed` (the canonical source for
+            // overlay/timeline prev info), else overwrite in place. Written
+            // after the renderer borrow ends, since both live on the site.
+            if let Some(new_displayed) = actions.new_displayed.take().filter(|_| uploaded) {
+                let target = &mut self.sites.list[site];
+                if actions.promote_prev_texture {
+                    target.previous_displayed = target.displayed.replace(new_displayed);
+                } else {
+                    target.displayed = Some(new_displayed);
                 }
             }
             // Detection for the new chunk, decided by the same rule as the
             // per-frame check. Runs after the lock above is released.
-            self.sync_storm_cells();
+            self.sync_storm_cells_for(site);
         }
 
         if let Some((start, end, angle)) = actions.update_overlay {
-            self.update_overlay_from_sweep(start, end, angle);
+            self.update_overlay_from_sweep(site, start, end, angle);
         }
 
         // Phase 2: azimuth bookkeeping — runs attached or detached, after
@@ -527,22 +608,25 @@ impl WorkbenchApp {
             volume_data.total_ms,
         );
 
+        // A volume reply names no site; the 3D view draws the focus.
+        let target = self.sites.focus();
+
         // Upload to volume ray renderer
-        if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.volume_ray, &self.gpu.gl) {
+        if let (Some(ref renderer), Some(ref gl)) = (&target.gpu.volume_ray, &self.gpu.gl) {
             if let Ok(mut r) = renderer.lock() {
                 r.update_volume(
                     gl,
                     &volume_data.buffer,
                     volume_data.word_size,
                     &volume_data.sweeps,
-                    self.state.viz_state.center_lat,
-                    self.state.viz_state.center_lon,
+                    target.lat,
+                    target.lon,
                 );
             }
         }
 
         // Update LUT for the volume product
-        if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
+        if let (Some(ref renderer), Some(ref gl)) = (&target.gpu.radar, &self.gpu.gl) {
             if let Ok(mut r) = renderer.lock() {
                 r.update_color_table(gl, &volume_data.product);
             }
@@ -562,9 +646,10 @@ impl WorkbenchApp {
             kind,
             message
         );
-        match self
-            .acquisition
-            .ingest_retries
+        // A worker error names no site; downloads are the focus's.
+        let focus = self.sites.focus_mut();
+        match focus
+            .retries
             .decide(failed_scan_timestamp_secs.map(|ts| ts as i64), &message)
         {
             // A truncated download: no error, no backoff. Forget the request
@@ -573,8 +658,8 @@ impl WorkbenchApp {
             // next frame while the playhead is on it).
             crate::core::acquisition::IngestFailureAction::RetryQuietly { scan_start } => {
                 log::info!("Truncated archive for scan {scan_start}; downloading it again");
-                self.acquisition
-                    .request_ledger
+                focus
+                    .ledger
                     .forget(scan_start, crate::SCAN_CACHE_MATCH_TOLERANCE_SECS);
                 self.acquisition
                     .coordinator
@@ -592,7 +677,7 @@ impl WorkbenchApp {
                 // move its ledger entry to the short Failed backoff so
                 // re-fetch becomes possible without a per-frame storm.
                 if let Some(ts) = failed_scan_timestamp_secs {
-                    self.acquisition.request_ledger.note_failed(
+                    focus.ledger.note_failed(
                         ts as i64,
                         crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
                         js_sys::Date::now(),
@@ -607,7 +692,7 @@ impl WorkbenchApp {
         // Dispatch on the typed kind so transient errors (worker disconnect,
         // IDB failure) keep the last-good view instead of blanking.
         if kind == crate::core::WorkerErrorKind::NotFound {
-            self.clear_display_no_sweep();
+            self.clear_display_no_sweep(self.sites.focus);
         }
 
         // Clean up the "processing" timeline ghost for the failed scan.
@@ -615,8 +700,9 @@ impl WorkbenchApp {
         // right ghost is removed even after the user scrolled away and
         // the active scan key now points elsewhere.
         let cleanup_ts = failed_scan_timestamp_secs.or_else(|| {
-            self.render
-                .coordinator
+            self.sites
+                .focus()
+                .render
                 .scan_key()
                 .map(|k| k.scan_start.as_secs_f64())
         });

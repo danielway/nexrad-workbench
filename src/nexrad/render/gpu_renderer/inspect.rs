@@ -40,7 +40,7 @@ impl RadarGpuRenderer {
     /// returns the appropriate value. Pass `None` for non-animated lookups.
     /// The lookup math lives in [`crate::core::canvas`]; this binds it to the
     /// renderer's CPU shadow buffers.
-    pub fn value_at_polar(
+    pub(crate) fn value_at_polar(
         &self,
         azimuth_deg: f32,
         range_km: f64,
@@ -71,7 +71,7 @@ impl RadarGpuRenderer {
     /// When `sweep_params` is `Some((sweep_azimuth, sweep_start))`, determines
     /// whether the queried position falls in the previous-sweep region and
     /// returns the appropriate timestamp. Pass `None` for non-animated lookups.
-    pub fn collection_time_at_polar(
+    pub(crate) fn collection_time_at_polar(
         &self,
         azimuth_deg: f32,
         sweep_params: Option<(f32, f32)>,

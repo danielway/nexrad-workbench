@@ -44,7 +44,7 @@ use crate::core::{
 pub(crate) struct DecodedEnv<'a> {
     /// `state.dev_mode`.
     pub dev_mode: bool,
-    /// `viz_state.site_id`.
+    /// The decoding site's id (`SiteState::id`).
     pub site_id: &'a str,
     /// `playback.state.playback_position()`.
     pub playback_position: f64,
@@ -70,7 +70,7 @@ pub(crate) struct DecodedEnv<'a> {
 
 /// Mutable borrows of the core state the reducer updates directly.
 pub(crate) struct DecodedSlices<'a> {
-    /// `render.playback_manager` — receives the cached sweep entry and the
+    /// The site's `crossfade` cache — receives the cached sweep entry and the
     /// pending-prev-sweep clearing.
     pub playback_manager: &'a mut PlaybackManager,
 }
@@ -84,7 +84,7 @@ pub(crate) struct DecodedActions {
     pub upload_to_gpu: bool,
     /// `set_current_sweep_id(Some(..))` inside the upload block.
     pub gpu_sweep_id: String,
-    /// Assign to `viz_state.displayed` iff the shell's GPU upload succeeded.
+    /// Assign to the site's `displayed` iff the shell's GPU upload succeeded.
     /// Always populated; only meaningful when `upload_to_gpu`.
     pub displayed_on_upload: Option<DisplayedSweep>,
     /// dev-mode: store `last_render_detail` (the shell adds the measured

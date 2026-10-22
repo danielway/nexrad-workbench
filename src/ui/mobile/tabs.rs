@@ -45,11 +45,13 @@ fn draw_mobile_chrome(ctx: &mut super::super::layout::LayoutCtx) {
         root_ui,
         state,
         timeline,
+        sites,
         live,
         playback,
         chrome,
         ..
     } = ctx;
+    let site = sites.focus();
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
     // under the home indicator reservation. Pad the transport row below so the
     // controls don't sit flush with the bottom edge of the screen.
@@ -89,7 +91,7 @@ fn draw_mobile_chrome(ctx: &mut super::super::layout::LayoutCtx) {
         .frame(dock)
         .show_collapsible(root_ui, &mut expanded, |ui| {
             crate::ui::timeline::mini::render_mini_timeline(
-                ui, state, timeline, live, playback, chrome,
+                ui, state, timeline, site, live, playback, chrome,
             );
         });
 }

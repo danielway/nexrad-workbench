@@ -11,7 +11,7 @@ use eframe::egui;
 
 impl WorkbenchApp {
     pub(crate) fn start_live_mode(&mut self, ctx: &egui::Context) {
-        let site_id = self.state.viz_state.site_id.clone();
+        let site_id = self.sites.focus().id.0.clone();
         log::info!("Starting live mode for site: {}", site_id);
 
         let now = self.state.frame_now.secs();
@@ -190,10 +190,11 @@ impl WorkbenchApp {
     ) -> (f64, f64) {
         match basis {
             crate::core::LoopBasis::FrameCount(n) => self
-                .timeline
+                .sites
+                .focus()
                 .scans
                 .lookback_window(
-                    &self.timeline.shadow_scan_boundaries,
+                    &self.sites.focus().shadows,
                     self.live_volume_frames(),
                     &self.state.viz_state.elevation_selection,
                     self.state.viz_state.product.to_worker_string(),
@@ -243,14 +244,24 @@ impl WorkbenchApp {
         }
     }
 
-    /// Update the canvas overlay text with sweep timing and elevation info.
-    pub(crate) fn update_overlay_from_sweep(&mut self, start: f64, end: f64, elevation_deg: f32) {
-        self.state
-            .viz_state
-            .update_overlay(start, end, elevation_deg, self.state.frame_now.secs());
+    /// Set site `site`'s staleness from a sweep's timing and, for the focus,
+    /// the elevation readout.
+    pub(crate) fn update_overlay_from_sweep(
+        &mut self,
+        site: usize,
+        start: f64,
+        end: f64,
+        elevation_deg: f32,
+    ) {
+        if site == self.sites.focus {
+            self.state.viz_state.set_elevation_label(elevation_deg);
+        }
+        let now = self.state.frame_now.secs();
+        self.sites.list[site].set_staleness(start, end, now);
     }
 
-    /// Send a render request to the worker for the current scan/elevation/product.
+    /// Send a render request to the worker for site `site`'s
+    /// scan/elevation/product at the playhead.
     ///
     /// Mode-agnostic: the unified resolver merges the live in-progress
     /// accumulator with the cached timeline and returns one of three intents.
@@ -261,17 +272,22 @@ impl WorkbenchApp {
     /// Honours the user's intent exactly: no fuzzy elevation fallback — if the
     /// user picks 5° and the resolved scan only has 1°/3°/7°, the canvas blanks
     /// rather than snapping to a neighbor.
-    pub(crate) fn request_worker_render(&mut self) {
+    pub(crate) fn request_worker_render(&mut self, site: usize) {
         use crate::core::playback_manager::DesiredDisplay;
 
+        // The live stream belongs to the focus site; every other site
+        // resolves from its cache alone.
+        let streams = site == self.sites.focus;
+        let live_cut = streams.then(|| self.live_render_sources()).flatten();
+        let target = &self.sites.list[site];
         let desired = crate::core::playback_manager::resolve_desired_display(
-            &self.state.viz_state.site_id,
+            &target.id.0,
             self.playback.state.playback_position(),
             &self.state.viz_state.elevation_selection,
             self.state.viz_state.product,
-            &self.timeline.scans,
+            &target.scans,
             MAX_SCAN_AGE_SECS,
-            self.live_render_sources(),
+            live_cut,
             self.live_shows_whole_sweeps(),
         );
 
@@ -284,7 +300,7 @@ impl WorkbenchApp {
                 // playhead just reached the live cut, or a scrubbed playhead
                 // was pinned again), draw the partial now rather than at the
                 // next chunk.
-                if !self.gpu_holds_live_sweep() {
+                if !self.gpu_holds_live_sweep(site) {
                     self.render.coordinator.render_live(
                         elevation_number,
                         self.state.viz_state.product.to_worker_string().to_string(),
@@ -292,7 +308,8 @@ impl WorkbenchApp {
                 }
             }
             DesiredDisplay::Cached(identity) => {
-                if self.render.coordinator.request_render_for(identity) {
+                let track = &mut self.sites.list[site].render;
+                if self.render.coordinator.request_render_for(track, identity) {
                     // Was guarded by `&& !pipeline.processing`, which only ever
                     // skipped a redundant `true = true`.
                     self.state.session_stats.pipeline.processing = true;
@@ -306,21 +323,21 @@ impl WorkbenchApp {
                 // resolve to `Blank` even though the GPU holds a good `live|*`
                 // sweep. Only blank when archive owns the canvas — which it
                 // does whenever the playhead is detached from the live edge.
-                let protecting_live_partial = self.live.canvas_follows_live(&self.playback.state)
-                    && self.gpu_holds_live_sweep();
+                let protecting_live_partial = streams
+                    && self.live.canvas_follows_live(&self.playback.state)
+                    && self.gpu_holds_live_sweep(site);
                 // Don't blank merely because the playhead drifted into a gap
                 // (spec §11.2): a Blank with NO scan covering the playhead is the
                 // "drifted away in time" case — keep the held frame and let the
                 // canvas caption surface the discrepancy. Blank only when a scan
                 // IS present but the selected elevation/product isn't in it (the
                 // honest "nothing here for your filter" case).
-                let scan_covers_playhead = self
-                    .timeline
+                let scan_covers_playhead = self.sites.list[site]
                     .scans
                     .find_recent_scan(self.playback.state.playback_position(), MAX_SCAN_AGE_SECS)
                     .is_some();
                 if !protecting_live_partial && scan_covers_playhead {
-                    self.clear_display_no_sweep();
+                    self.clear_display_no_sweep(site);
                 }
             }
         }
@@ -361,15 +378,16 @@ impl WorkbenchApp {
         self.playback.state.playback_mode() == crate::core::PlaybackMode::Macro
     }
 
-    /// Whether the main GPU texture currently holds a live partial sweep
+    /// Whether site `site`'s main GPU texture holds a live partial sweep
     /// (`current_sweep_id` like `live|{elev}`, set by
     /// `handle_live_decoded_outcome`). Lets `request_worker_render` avoid
     /// blanking a valid partial during a between-chunks frame, and lets
     /// `sync_prev_sweep_texture` tell a live partial (whose prev slot the
     /// LiveDecoded promote owns) from a cached cut shown during live.
-    pub(crate) fn gpu_holds_live_sweep(&self) -> bool {
-        self.gpu
+    pub(crate) fn gpu_holds_live_sweep(&self, site: usize) -> bool {
+        self.sites.list[site]
             .gpu
+            .radar
             .as_ref()
             .and_then(|renderer| {
                 renderer
@@ -380,10 +398,14 @@ impl WorkbenchApp {
             .unwrap_or(false)
     }
 
-    /// Request volume render (all elevations for ray marching).
-    pub(crate) fn request_worker_render_volume(&mut self) {
+    /// Request a volume render (all elevations for ray marching) of site
+    /// `site`'s active scan.
+    pub(crate) fn request_worker_render_volume(&mut self, site: usize) {
         let product = self.state.viz_state.product.to_worker_string().to_string();
-        self.render.coordinator.request_volume_render(&product);
+        let track = &mut self.sites.list[site].render;
+        self.render
+            .coordinator
+            .request_volume_render(track, &product);
     }
 
     /// Stop live mode streaming.
@@ -471,7 +493,7 @@ impl WorkbenchApp {
                 );
 
                 // Track realtime chunk as an acquisition operation
-                let rt_site_id = self.state.viz_state.site_id.clone();
+                let rt_site_id = self.sites.focus().id.0.clone();
                 let op_id =
                     self.acquisition
                         .state
@@ -496,7 +518,7 @@ impl WorkbenchApp {
                 }
 
                 // Forward chunk to worker for incremental ingest
-                let site_id = self.state.viz_state.site_id.clone();
+                let site_id = self.sites.focus().id.0.clone();
                 let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
                 if is_start {
                     self.state.session_stats.pipeline.processing = true;
@@ -536,7 +558,7 @@ impl WorkbenchApp {
                 self.live.mode_state.error_message = Some(msg.clone());
 
                 // Track error as a failed acquisition operation
-                let err_site_id = self.state.viz_state.site_id.clone();
+                let err_site_id = self.sites.focus().id.0.clone();
                 let op_id =
                     self.acquisition
                         .state

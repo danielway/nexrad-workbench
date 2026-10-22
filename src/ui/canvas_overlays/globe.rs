@@ -5,7 +5,6 @@
 //! 3D volumetric ray-marching — all within a single `egui::PaintCallback`.
 
 use crate::geo::{GeoLineRenderer, GlobeRenderer};
-use crate::nexrad::RadarGpuRenderer;
 use crate::state::AppState;
 use eframe::egui::{self, Rect};
 use glow::HasContext;
@@ -16,24 +15,23 @@ pub(crate) fn draw_globe(
     ui: &mut egui::Ui,
     rect: &Rect,
     state: &AppState,
+    site: &crate::subsystem::SiteState,
     globe_renderer: Option<&Arc<Mutex<GlobeRenderer>>>,
     geo_line_renderer: Option<&Arc<Mutex<GeoLineRenderer>>>,
-    gpu_renderer: Option<&Arc<Mutex<RadarGpuRenderer>>>,
-    globe_radar_renderer: Option<&Arc<Mutex<crate::nexrad::GlobeRadarRenderer>>>,
-    volume_ray_renderer: Option<&Arc<Mutex<crate::nexrad::VolumeRayRenderer>>>,
 ) {
     let Some(globe_r) = globe_renderer.cloned() else {
         return;
     };
     let geo_r = geo_line_renderer.cloned();
-    let radar_r = gpu_renderer.cloned();
-    let globe_rr = globe_radar_renderer.cloned();
-    let vol_r = volume_ray_renderer.cloned();
+    // The globe drapes and ray-marches the focus site alone.
+    let radar_r = site.gpu.radar.clone();
+    let globe_rr = site.gpu.globe_radar.clone();
+    let vol_r = site.gpu.volume_ray.clone();
 
     let camera = state.viz_state.camera.clone();
     let processing = state.render_processing.clone();
-    let radar_lat = state.viz_state.center_lat;
-    let radar_lon = state.viz_state.center_lon;
+    let radar_lat = site.lat;
+    let radar_lon = site.lon;
     let volume_enabled = state.viz_state.volume_3d_enabled;
     let volume_density_cutoff = state.viz_state.volume_density_cutoff;
     let geo_vis = crate::geo::geo_line_renderer::VisibleLayers {

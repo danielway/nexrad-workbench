@@ -157,18 +157,13 @@ pub async fn start() {
 
 /// All GPU renderers and their shared GL context, grouped for clarity.
 pub struct GpuResources {
-    /// GPU renderer for radar data (None if GL not available).
-    pub gpu: Option<std::sync::Arc<std::sync::Mutex<nexrad::RadarGpuRenderer>>>,
-    /// GL context for uploading data to GPU textures.
+    /// GL context for uploading data to GPU textures. Each site's own
+    /// renderers live on its [`subsystem::sites::SiteGpu`].
     pub gl: Option<std::sync::Arc<glow::Context>>,
     /// Globe sphere renderer (3D mode).
     pub globe: Option<std::sync::Arc<std::sync::Mutex<geo::GlobeRenderer>>>,
     /// Geographic line renderer for 3D globe.
     pub geo_line: Option<std::sync::Arc<std::sync::Mutex<geo::GeoLineRenderer>>>,
-    /// Globe-mode radar renderer (projects radar data onto sphere).
-    pub globe_radar: Option<std::sync::Arc<std::sync::Mutex<nexrad::GlobeRadarRenderer>>>,
-    /// Volumetric ray-march renderer for 3D mode.
-    pub volume_ray: Option<std::sync::Arc<std::sync::Mutex<nexrad::VolumeRayRenderer>>>,
 }
 
 use state::MAX_RECENT_NETWORK_REQUESTS;
@@ -197,9 +192,12 @@ pub struct WorkbenchApp {
     /// derived models (live radar model, top-level app mode).
     live: subsystem::Live,
 
-    /// Timeline subsystem: scan inventory + shadow scan boundaries
-    /// derived from the archive listing.
+    /// Timeline subsystem: the storm-activity book shared across sites.
     timeline: subsystem::Timeline,
+
+    /// The active radar sites (one today) and which one the single-valued
+    /// surfaces describe. Everything per site lives on its element.
+    sites: subsystem::Sites,
 
     /// Playback subsystem: cursor position, speed, mode, animation,
     /// realtime lock.
@@ -249,6 +247,7 @@ fn apply_link(
     link: &core::link::LinkState,
     prefs: &core::Preferences,
     state: &mut AppState,
+    site: &mut subsystem::SiteState,
     playback: &mut subsystem::Playback,
     chrome: &mut subsystem::Chrome,
 ) {
@@ -273,13 +272,11 @@ fn apply_link(
     }
 
     match plan.site.as_deref().and_then(data::get_site) {
-        Some(site) => {
-            state.viz_state.site_id = site.id.to_string();
-            state.viz_state.center_lat = site.lat;
-            state.viz_state.center_lon = site.lon;
+        Some(found) => {
             if state.recent_sites.is_empty() {
-                state.recent_sites = vec![site.id.to_string()];
+                state.recent_sites = vec![found.id.to_string()];
             }
+            site.retarget(found.id, found.lat, found.lon);
             if plan.site_from_link {
                 state.push_command(crate::core::Intent::RefreshTimeline {
                     auto_position: false,
@@ -294,16 +291,15 @@ fn apply_link(
             chrome.site_required = true;
         }
     }
+    // The link's `lat`/`lon` are the map centre; until the map has a centre
+    // of its own they land on the site's position, as they always have.
     if let Some(lat) = link.lat {
-        state.viz_state.center_lat = lat;
+        site.lat = lat;
     }
     if let Some(lon) = link.lon {
-        state.viz_state.center_lon = lon;
+        site.lon = lon;
     }
-    state
-        .viz_state
-        .camera
-        .center_on(state.viz_state.center_lat, state.viz_state.center_lon);
+    state.viz_state.camera.center_on(site.lat, site.lon);
 
     let pinned = plan.start.is_pinned();
 
@@ -478,9 +474,17 @@ impl WorkbenchApp {
         chrome.right_sidebar_visible = loaded_prefs.panel_open;
 
         let link = state::url_state::read_link();
-        apply_link(&link, &loaded_prefs, &mut state, &mut playback, &mut chrome);
+        let mut initial_site = subsystem::SiteState::default();
+        apply_link(
+            &link,
+            &loaded_prefs,
+            &mut state,
+            &mut initial_site,
+            &mut playback,
+            &mut chrome,
+        );
 
-        let initial_site_id = state.viz_state.site_id.clone();
+        let initial_site_id = initial_site.id.0.clone();
         let data_facade = MainThreadStore::new();
         let acquisition = subsystem::Acquisition::new(data_facade.clone());
         let realtime_channel =
@@ -514,19 +518,6 @@ impl WorkbenchApp {
             }
         };
 
-        // Create GPU renderer for radar visualization
-        let gpu_renderer_gl = cc.gl.clone();
-        let gpu_renderer = cc
-            .gl
-            .as_ref()
-            .and_then(|gl| match nexrad::RadarGpuRenderer::new(gl) {
-                Ok(renderer) => Some(std::sync::Arc::new(std::sync::Mutex::new(renderer))),
-                Err(e) => {
-                    log::error!("Failed to create GPU radar renderer: {}", e);
-                    None
-                }
-            });
-
         // Create globe and geo-line renderers for 3D mode
         let globe_renderer = cc.gl.as_ref().map(|gl| {
             let r = geo::GlobeRenderer::new(gl);
@@ -548,30 +539,20 @@ impl WorkbenchApp {
             r.upload_layers(gl, &owned);
             std::sync::Arc::new(std::sync::Mutex::new(r))
         });
-        let globe_radar_renderer = cc.gl.as_ref().map(|gl| {
-            let r = nexrad::GlobeRadarRenderer::new(gl);
-            std::sync::Arc::new(std::sync::Mutex::new(r))
-        });
-        let volume_ray_renderer = cc.gl.as_ref().map(|gl| {
-            let r = nexrad::VolumeRayRenderer::new(gl);
-            std::sync::Arc::new(std::sync::Mutex::new(r))
-        });
 
         let mut app = Self {
             state,
             geo_layers,
             gpu: GpuResources {
-                gpu: gpu_renderer,
-                gl: gpu_renderer_gl,
+                gl: cc.gl.clone(),
                 globe: globe_renderer,
                 geo_line: geo_line_renderer,
-                globe_radar: globe_radar_renderer,
-                volume_ray: volume_ray_renderer,
             },
             render: subsystem::Render::new(nexrad::RenderCoordinator::new(decode_worker)),
             acquisition,
             live: subsystem::Live::new(realtime_channel),
             timeline: subsystem::Timeline::default(),
+            sites: subsystem::Sites::new(initial_site),
             playback,
             chrome,
             persistence: app::persistence_manager::PersistenceManager::new(
@@ -651,8 +632,8 @@ impl WorkbenchApp {
                 now_ms,
                 operations: &self.acquisition.state.operations,
                 queue_paused: self.acquisition.state.is_paused(),
-                ledger: self.acquisition.request_ledger.summarize(now_ms),
-                awaiting_scan_starts: &self.acquisition.request_ledger.awaiting_scan_starts(now_ms),
+                ledger: self.sites.focus().ledger.summarize(now_ms),
+                awaiting_scan_starts: &self.sites.focus().ledger.awaiting_scan_starts(now_ms),
                 worker: stats.worker_load,
                 last_worker_outcome_ms: stats.last_worker_outcome_ms,
                 gpu_render_in_flight: stats.pipeline.rendering,
@@ -701,7 +682,7 @@ impl WorkbenchApp {
                             .state
                             .latency_summary()
                             .map(|l| (l.avg_fetch_ms, l.p95_fetch_ms, l.avg_e2e_ms)),
-                        storm_cells: self.state.viz_state.storm_cells.stats(),
+                        storm_cells: self.sites.focus().cells.stats(),
                     }),
             },
             settle,
@@ -719,7 +700,7 @@ impl WorkbenchApp {
         let use_local = self.state.use_local_time;
         let elevations = self.state.current_elevation_list(
             &self.playback.state,
-            &self.timeline.scans,
+            &self.sites.focus().scans,
             self.live
                 .radar_model
                 .volume
@@ -731,7 +712,7 @@ impl WorkbenchApp {
             core::top_bar::TopBarInputs {
                 session: &self.live.session,
                 now_secs: now,
-                site_id: &self.state.viz_state.site_id,
+                site_id: &self.sites.focus().id.0,
                 product: self.state.viz_state.product,
                 elevation_selection: &self.state.viz_state.elevation_selection,
                 elevations: &elevations,
@@ -760,12 +741,14 @@ impl WorkbenchApp {
             .volume
             .as_ref()
             .and_then(|v| v.vcp_pattern.as_ref());
-        let entries =
-            self.state
-                .current_elevation_list(&self.playback.state, &self.timeline.scans, live_vcp);
+        let entries = self.state.current_elevation_list(
+            &self.playback.state,
+            &self.sites.focus().scans,
+            live_vcp,
+        );
         let view = core::TimelineView::build(
-            &self.timeline.scans,
-            &self.timeline.shadow_scan_boundaries,
+            &self.sites.focus().scans,
+            &self.sites.focus().shadows,
             Some(&self.live.mode_state),
             self.live.radar_model.position.as_ref(),
         );
@@ -780,9 +763,11 @@ impl WorkbenchApp {
                 volume: volume.as_ref(),
                 clock,
                 antenna_azimuth: self.live.radar_model.estimated_azimuth,
-                on_screen: viz.displayed.as_ref().map(|d| core::ladder::OnScreenCut {
-                    elevation_number: d.identity.elevation_number,
-                    start_secs: d.start_time,
+                on_screen: self.sites.focus().displayed.as_ref().map(|d| {
+                    core::ladder::OnScreenCut {
+                        elevation_number: d.identity.elevation_number,
+                        start_secs: d.start_time,
+                    }
                 }),
                 role: viz.tilt_role(),
                 fetching: viz.caption_context.fetch_covers_playhead,
@@ -864,6 +849,7 @@ impl WorkbenchApp {
             self.state.frame_now.secs(),
             &self.state,
             &self.playback.state,
+            self.sites.focus(),
             state::PanelPrefs {
                 tab: self.chrome.rail_tab,
                 open: self.chrome.right_sidebar_visible,
@@ -964,7 +950,7 @@ impl eframe::App for WorkbenchApp {
             mping_layer_visible: self.state.layer_state.geo.mping,
             mping_pinned_to_now: self.playback.state.is_pinned()
                 || self.playback.state.is_live_range(),
-            site_id: &self.state.viz_state.site_id,
+            site_id: &self.sites.focus().id.0,
             playback_secs: self.playback.state.playback_position(),
         };
         self.diagnostics
@@ -1044,10 +1030,10 @@ impl eframe::App for WorkbenchApp {
         // Live::refresh derives everything from this frame's shared `now`.
         self.live.refresh(subsystem::live::LiveRefreshInputs {
             playback: &self.playback.state,
-            archive_boundaries: &self.timeline.shadow_scan_boundaries,
+            archive_boundaries: &self.sites.focus().shadows,
             now: self.state.frame_now,
             elevation_selection: &self.state.viz_state.elevation_selection,
-            displayed: self.state.viz_state.displayed.as_ref(),
+            displayed: self.sites.focus().displayed.as_ref(),
             caption_context: self.state.viz_state.caption_context,
             volume_3d_active: self.state.viz_state.volume_3d_active(),
         });
@@ -1160,6 +1146,7 @@ impl eframe::App for WorkbenchApp {
             root_ui: ui,
             state: &mut self.state,
             timeline: &self.timeline,
+            sites: &mut self.sites,
             live: &mut self.live,
             playback: &mut self.playback,
             acquisition: &mut self.acquisition,
@@ -1192,7 +1179,7 @@ impl eframe::App for WorkbenchApp {
         ui::render_canvas_with_geo(
             ui,
             &mut self.state,
-            &self.timeline,
+            &self.sites,
             &self.live,
             &mut self.playback,
             &mut self.chrome,
@@ -1207,7 +1194,7 @@ impl eframe::App for WorkbenchApp {
             ctx,
             &mut self.state,
             &mut self.live,
-            &self.timeline,
+            &self.sites,
             &mut self.playback,
             &mut self.chrome,
         );

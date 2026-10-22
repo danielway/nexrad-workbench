@@ -65,6 +65,9 @@ pub(crate) struct OverlayContext<'a> {
     pub rect: Rect,
     /// Read-only app state.
     pub state: &'a AppState,
+    /// The focus site: its id names the frame, its position anchors the
+    /// scale bar.
+    pub site: &'a crate::subsystem::SiteState,
     /// Live streaming subsystem (for the in-progress chunk indicator
     /// that the overlay info panel shows).
     pub live: &'a Live,
