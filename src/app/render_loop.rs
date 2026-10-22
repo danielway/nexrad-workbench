@@ -29,6 +29,17 @@ impl WorkbenchApp {
         self.playback
             .state
             .apply_tilt_role(self.state.viz_state.tilt_role().draws_all());
+        // The Frames list walks every site's frames, so it is built once
+        // from all of them before each site's scrub.
+        let timelines: Vec<&crate::core::RadarTimeline> =
+            self.sites.iter().map(|s| &s.scans).collect();
+        crate::core::render_loop::reduce_macro_frames(
+            self.state.viz_state.product,
+            self.state.viz_state.volume_3d_active(),
+            &mut self.playback.state,
+            &self.state.viz_state.elevation_selection,
+            &timelines,
+        );
         for site in 0..self.sites.list.len() {
             self.advance_playback_for(site);
         }
@@ -42,7 +53,6 @@ impl WorkbenchApp {
                 live_active: self.live.mode_state.is_active(),
                 has_worker: self.render.coordinator.has_worker(),
                 site_id: &target.id.0,
-                product: self.state.viz_state.product,
                 volume_3d_active: self.state.viz_state.volume_3d_active(),
                 track_scan_key: target.render.scan_key(),
                 max_scan_age_secs: MAX_SCAN_AGE_SECS,

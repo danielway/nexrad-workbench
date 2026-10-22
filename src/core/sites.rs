@@ -11,6 +11,7 @@
 //!   the picker says).
 //! - [`draw_order`]: the order the canvas draws the discs in, older frame
 //!   first so the newer frame is on top.
+//! - [`frame_union`]: the Frames-mode frame list across every site.
 //! - [`route`]: the site a worker reply belongs to. Replies that carry a
 //!   stored scan key route by the key's site; a reply whose site is no longer
 //!   in the list (the user removed it while the reply was in flight) is
@@ -179,6 +180,39 @@ pub(crate) fn route_site(site: &SiteId, ids: &[SiteId]) -> Option<usize> {
 /// never empty, so a valid focus always exists.
 pub(crate) fn focus_valid(focus: usize, len: usize) -> bool {
     focus < len
+}
+
+/// The Frames-mode frame list across every site: the union of each site's
+/// frame times (sorted), with frames of different sites that fall within
+/// `tolerance_secs` of the first frame of their group joined into one frame
+/// at the group's latest time, so stepping onto it shows every site's new
+/// frame. Two frames of the same site are never joined: a site's own list
+/// passes through unchanged.
+pub(crate) fn frame_union(per_site: &[Vec<f64>], tolerance_secs: f64) -> Vec<f64> {
+    let mut all: Vec<(f64, usize)> = per_site
+        .iter()
+        .enumerate()
+        .flat_map(|(site, times)| times.iter().map(move |&t| (t, site)))
+        .filter(|(t, _)| t.is_finite())
+        .collect();
+    all.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut out = Vec::new();
+    let mut group: Option<(f64, f64, Vec<usize>)> = None;
+    for (t, site) in all {
+        if let Some((first, latest, sites)) = group.as_mut() {
+            if t - *first <= tolerance_secs && !sites.contains(&site) {
+                *latest = t;
+                sites.push(site);
+                continue;
+            }
+            out.push(*latest);
+        }
+        group = Some((t, t, vec![site]));
+    }
+    if let Some((_, latest, _)) = group {
+        out.push(latest);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -396,5 +430,38 @@ mod tests {
         assert!(focus_valid(2, 3));
         assert!(!focus_valid(1, 1));
         assert!(!focus_valid(0, 0));
+    }
+
+    #[wasm_bindgen_test]
+    fn frame_union_of_one_site_is_its_own_list() {
+        // A site's own frames are never joined, however close.
+        let frames = vec![100.0, 120.0, 140.0, 400.0];
+        assert_eq!(frame_union(std::slice::from_ref(&frames), 60.0), frames);
+        assert_eq!(frame_union(&[], 60.0), Vec::<f64>::new());
+    }
+
+    #[wasm_bindgen_test]
+    fn frame_union_joins_other_sites_frames_within_the_tolerance() {
+        // KMLB at 593 and KJAX at 632 are one frame at 632; KTBW's 414
+        // stands alone.
+        let union = frame_union(&[vec![414.0, 800.0], vec![593.0], vec![632.0]], 60.0);
+        assert_eq!(union, vec![414.0, 632.0, 800.0]);
+    }
+
+    #[wasm_bindgen_test]
+    fn frame_union_keeps_frames_apart_beyond_the_tolerance() {
+        let union = frame_union(&[vec![0.0, 300.0], vec![100.0, 400.0]], 60.0);
+        assert_eq!(union, vec![0.0, 100.0, 300.0, 400.0]);
+        // Within: a group is measured from its first frame.
+        let union = frame_union(&[vec![0.0], vec![50.0], vec![100.0]], 60.0);
+        assert_eq!(union, vec![50.0, 100.0]);
+    }
+
+    #[wasm_bindgen_test]
+    fn frame_union_drops_non_finite_times() {
+        assert_eq!(
+            frame_union(&[vec![f64::NAN, 10.0], vec![f64::INFINITY]], 60.0),
+            vec![10.0]
+        );
     }
 }
