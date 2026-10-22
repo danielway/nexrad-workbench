@@ -213,7 +213,7 @@ pub(crate) fn dispatch_state_only(
 
         // ---- Canvas / map overlays --------------------------------
         Intent::ShowAlertOnMap(id) => s.show_alert_on_map(id),
-        Intent::PlaceDistancePoint { lat, lon } => s.place_distance_point(lat, lon),
+        Intent::Measure(intent) => s.measure(intent),
         Intent::ToggleMapTool(tool) => {
             let viz = &mut s.state.viz_state;
             let t = crate::core::panels::toggle_map_tool(
@@ -224,8 +224,7 @@ pub(crate) fn dispatch_state_only(
             viz.data_probe_enabled = t.probe;
             viz.distance_tool_active = t.distance;
             if t.clear_points {
-                viz.distance_start = None;
-                viz.distance_end = None;
+                viz.measurement = Default::default();
             }
         }
         Intent::SetGeoLayer(layer, on) => layer.set(&mut s.state.layer_state.geo, on),
@@ -527,23 +526,26 @@ impl DispatchState<'_> {
         );
     }
 
-    /// Place the next distance-tool endpoint at `(lat, lon)`. Which endpoint
-    /// that is comes from the pure
-    /// [`crate::core::canvas::decide_distance_click`].
-    fn place_distance_point(&mut self, lat: f64, lon: f64) {
+    /// The distance tool: place, drag or clear an endpoint. What it lands
+    /// on (a map point, a lettered track, "My location") is the pure
+    /// [`crate::core::measure::reduce`]; this lends it the snap targets.
+    fn measure(&mut self, intent: crate::core::measure::MeasureIntent) {
+        let my_location = self
+            .state
+            .layer_state
+            .geo
+            .gps_location
+            .then_some(self.diagnostics.gps.coords)
+            .flatten();
         let viz = &mut self.state.viz_state;
-        match crate::core::canvas::decide_distance_click(
-            viz.distance_start.is_some(),
-            viz.distance_end.is_some(),
-        ) {
-            crate::core::canvas::DistancePlacement::Start => {
-                viz.distance_start = Some((lat, lon));
-                viz.distance_end = None;
-            }
-            crate::core::canvas::DistancePlacement::End => {
-                viz.distance_end = Some((lat, lon));
-            }
-        }
+        let tracks = (viz.storm_cells_visible && viz.storm_tracks_visible)
+            .then(|| viz.storm_tracks.view(None))
+            .flatten();
+        let targets = crate::core::measure::SnapTargets {
+            tracks: tracks.as_ref(),
+            my_location,
+        };
+        crate::core::measure::reduce(&mut viz.measurement, intent, &targets, self.state.is_mobile);
     }
 
     /// "Show on map": enable the alert's overlay class and center the 2D view on
@@ -810,7 +812,7 @@ impl WorkbenchApp {
             | Intent::CancelOperation(_)
             | Intent::ReorderOperation(..)
             | Intent::ShowAlertOnMap(_)
-            | Intent::PlaceDistancePoint { .. }
+            | Intent::Measure(_)
             | Intent::ToggleMapTool(_)
             | Intent::SetGeoLayer(..)
             | Intent::StormCells(_)
@@ -1178,10 +1180,11 @@ mod dispatch_tests {
             Intent::CancelOperation(1),
             Intent::ReorderOperation(1, 1),
             Intent::ShowAlertOnMap("a1".to_string()),
-            Intent::PlaceDistancePoint {
+            Intent::Measure(crate::core::measure::MeasureIntent::Place {
                 lat: 41.0,
                 lon: -93.0,
-            },
+                km_per_px: 1.0,
+            }),
             Intent::ToggleMapTool(crate::core::panels::MapTool::Probe),
             Intent::SetGeoLayer(GeoLayer::Cities, false),
             Intent::StormCells(crate::core::storm_cell_view::StormCellIntent::SetVisible(
@@ -1998,34 +2001,48 @@ mod dispatch_tests {
         assert!(f.playback.state.speed.macro_frames_per_second().is_some());
     }
 
-    /// `PlaceDistancePoint` cycles start → end → start, so a third click
+    /// A measure click cycles start → end → start, so a third click
     /// restarts the measurement rather than dragging the old end point.
     #[wasm_bindgen_test]
-    fn place_distance_point_cycles_start_end_start() {
+    fn measure_place_cycles_start_end_start() {
+        use crate::core::measure::{Endpoint, MeasureIntent};
         let mut f = Fixture::new();
+        let place = |lat, lon| {
+            Intent::Measure(MeasureIntent::Place {
+                lat,
+                lon,
+                km_per_px: 1.0,
+            })
+        };
+        let at = |e: &Option<Endpoint>| e.as_ref().map(|e| (e.lat, e.lon));
 
-        f.apply(Intent::PlaceDistancePoint {
-            lat: 41.0,
-            lon: -93.0,
-        });
-        assert_eq!(f.state.viz_state.distance_start, Some((41.0, -93.0)));
-        assert_eq!(f.state.viz_state.distance_end, None);
+        f.apply(place(41.0, -93.0));
+        let m = &f.state.viz_state.measurement;
+        assert_eq!(at(&m.start), Some((41.0, -93.0)));
+        assert_eq!(at(&m.end), None);
 
-        f.apply(Intent::PlaceDistancePoint {
-            lat: 42.0,
-            lon: -94.0,
-        });
-        assert_eq!(f.state.viz_state.distance_start, Some((41.0, -93.0)));
-        assert_eq!(f.state.viz_state.distance_end, Some((42.0, -94.0)));
+        f.apply(place(42.0, -94.0));
+        let m = &f.state.viz_state.measurement;
+        assert_eq!(at(&m.start), Some((41.0, -93.0)));
+        assert_eq!(at(&m.end), Some((42.0, -94.0)));
 
-        f.apply(Intent::PlaceDistancePoint {
-            lat: 43.0,
-            lon: -95.0,
-        });
-        assert_eq!(f.state.viz_state.distance_start, Some((43.0, -95.0)));
+        f.apply(place(43.0, -95.0));
+        let m = &f.state.viz_state.measurement;
+        assert_eq!(at(&m.start), Some((43.0, -95.0)));
         assert_eq!(
-            f.state.viz_state.distance_end, None,
+            at(&m.end),
+            None,
             "a finished measurement must restart, not extend"
+        );
+
+        // Switching the tool off drops it.
+        f.state.viz_state.distance_tool_active = true;
+        f.apply(Intent::ToggleMapTool(
+            crate::core::panels::MapTool::Distance,
+        ));
+        assert_eq!(
+            f.state.viz_state.measurement,
+            crate::core::measure::Measurement::default()
         );
     }
 

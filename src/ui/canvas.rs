@@ -566,15 +566,36 @@ pub(crate) fn render_canvas_with_geo(
                     },
                 );
 
-                if state.viz_state.distance_tool_active || state.viz_state.distance_start.is_some()
-                {
-                    render_distance_measurement(
-                        &painter,
-                        &projection,
-                        state.viz_state.distance_start,
-                        state.viz_state.distance_end,
-                    );
-                }
+                // The distance tool: what draws (snap hint, ends, letters,
+                // readout) is the core's view-model.
+                let snap_km = crate::core::measure::snap_radius_km(
+                    state.is_mobile,
+                    super::canvas_overlays::compute_km_per_pixel(&projection, &rect).unwrap_or(0.0),
+                );
+                let measure_hover = response.hover_pos().map(|p| {
+                    let g = projection.screen_to_geo(p);
+                    (g.y, g.x)
+                });
+                let measure_vm =
+                    crate::core::measure::view(&crate::core::measure::MeasureViewInputs {
+                        measurement: &state.viz_state.measurement,
+                        tool_active: state.viz_state.distance_tool_active,
+                        targets: crate::core::measure::SnapTargets {
+                            tracks: storm_tracks_view
+                                .as_ref()
+                                .filter(|_| state.viz_state.storm_cells_visible),
+                            my_location,
+                        },
+                        hover: measure_hover,
+                        snap_km,
+                    });
+                render_distance_measurement(&painter, &projection, &measure_vm, &|r| {
+                    crate::core::map_chrome::label_clear_of_chrome(
+                        super::canvas_overlays::viewport_bounds(r),
+                        &keep_out,
+                        viewport,
+                    )
+                });
 
                 if state.viz_state.data_probe_enabled {
                     if let Some(hover_pos) = response.hover_pos() {
@@ -604,6 +625,23 @@ pub(crate) fn render_canvas_with_geo(
 
                 // Hover states (§7): every clickable mark gets a highlight and
                 // a pointing cursor, previewing exactly what a click picks.
+                if let Some((lat, lon)) = measure_hover {
+                    if crate::core::measure::can_grab(
+                        &state.viz_state.measurement,
+                        state.viz_state.distance_tool_active,
+                        lat,
+                        lon,
+                        snap_km,
+                    ) {
+                        ui.ctx().set_cursor_icon(
+                            if state.viz_state.measurement.dragging.is_some() {
+                                egui::CursorIcon::Grabbing
+                            } else {
+                                egui::CursorIcon::Grab
+                            },
+                        );
+                    }
+                }
                 if let Some(pos) = response.hover_pos() {
                     if !state.viz_state.distance_tool_active && !response.dragged() {
                         if let Some(pick) = super::canvas_interaction::pick_at(
@@ -725,7 +763,8 @@ fn render_map_toolbar(ui: &egui::Ui, rect: &egui::Rect, state: &mut AppState) {
             MapTool::Distance,
             icons::RULER,
             state.viz_state.distance_tool_active,
-            "Measure: click two points for the distance between them",
+            "Measure: click two points for the distance between them. A point on a \
+             lettered storm follows it; drag an end to move it",
         ),
     ];
     let inset = crate::core::map_chrome::TOOLBAR_INSET;
