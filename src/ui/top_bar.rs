@@ -103,7 +103,10 @@ fn measure(ui: &egui::Ui, vm: &TopBarVm) -> TopBarWidths {
     let mono = |t: &str| text_width(ui, t, theme::readout_font()) + sp;
 
     let mut fixed = 0.0;
-    fixed += label(&format!("{} {}", vm.site.id, icons::CARET_DOWN));
+    fixed += match &vm.site.others {
+        Some(others) => label(&format!("{} {others} {}", vm.site.id, icons::CARET_DOWN)),
+        None => label(&format!("{} {}", vm.site.id, icons::CARET_DOWN)),
+    };
     fixed += label(&format!("{} {}", vm.product.code, icons::CARET_DOWN));
     fixed += label(&format!("{} {}", vm.tilt.label, icons::CARET_DOWN));
     fixed += 6.0;
@@ -147,7 +150,8 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, hover: &str) -> bool {
         .clicked()
 }
 
-/// "KTLX  Oklahoma City, OK ▾" — the ID always, the city while it fits.
+/// "KTLX  Oklahoma City, OK ▾" — the ID always, the city while it fits;
+/// "KTBW · +2 ▾" with other sites on the map.
 fn site_picker(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState, show_city: bool) {
     let mut job = egui::text::LayoutJob::default();
     let style = ui.style().clone();
@@ -160,6 +164,9 @@ fn site_picker(ui: &mut egui::Ui, vm: &TopBarVm, state: &mut AppState, show_city
         )
     };
     push(RichText::new(&vm.site.id).strong().color(theme::TEXT));
+    if let Some(others) = &vm.site.others {
+        push(RichText::new(format!(" {others}")).color(theme::TEXT_DIM));
+    }
     if let (true, Some(city)) = (show_city, &vm.site.city) {
         push(RichText::new(format!("  {city}")).color(theme::TEXT_DIM));
     }

@@ -761,6 +761,7 @@ impl WorkbenchApp {
                 session: &self.live.session,
                 now_secs: now,
                 site_id: &self.sites.focus().id.0,
+                other_sites: self.sites.iter().len() - 1,
                 product: self.state.viz_state.product,
                 elevation_selection: &self.state.viz_state.elevation_selection,
                 elevations: &elevations,
