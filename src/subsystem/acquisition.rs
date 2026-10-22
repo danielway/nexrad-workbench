@@ -20,7 +20,7 @@
 //! refactors may collapse one into the other; this seam is intentionally
 //! left visible so the move can happen incrementally.
 
-use crate::core::acquisition::{PrefetchSettle, RequestLedger};
+use crate::core::acquisition::PrefetchSettle;
 use crate::core::storm_activity::ActivityFetcher;
 use crate::data::MainThreadStore;
 use crate::nexrad::acquisition::activity_listing::ActivityChannel;
@@ -33,10 +33,6 @@ pub(crate) struct Acquisition {
     pub state: AcquisitionState,
     /// Download channels, cache loader, archive index, data facade.
     pub coordinator: AcquisitionCoordinator,
-    /// Debounce/idempotency state for reactive (implicit) prefetch (the
-    /// state machine itself is a core decision type; see
-    /// [`crate::core::acquisition::PrefetchSettle`]).
-    pub prefetch_settle: PrefetchSettle,
     /// Wall-clock ms before which the lookback backfill pump should not
     /// recompute (a light 1 Hz throttle; the enqueue is idempotent anyway).
     pub lookback_backfill_next_ms: f64,
@@ -47,7 +43,8 @@ pub(crate) struct Acquisition {
     /// *day* range. The rate limit alone only bounds requests per second — it
     /// never stops them, so a continuous pan issued a LIST every interval for
     /// each date it swept past. This makes the pump wait for the view to stop
-    /// moving, the same way `prefetch_settle` does for the playhead.
+    /// moving, the same way each site's `prefetch_settle` does for the
+    /// playhead.
     pub visible_listing_settle: PrefetchSettle,
     /// Per-(site, date) wall-clock ms before which a failed listing may be
     /// retried — keeps a failing day from being re-LISTed at the pump rate.
@@ -57,13 +54,6 @@ pub(crate) struct Acquisition {
     /// finalization (or via the confirm modal for long spans) and drained by
     /// `pump_selection_fetch`, which fetches every scan in the range.
     pub selection_fetch_target: Option<SelectionFetchTarget>,
-    /// Ledger of recently requested scans — the dedup input that survives
-    /// queue clears and bridges the ingest→timeline-refresh blackout (see
-    /// [`crate::core::acquisition::RequestLedger`]).
-    pub request_ledger: RequestLedger,
-    /// Scans that have had their one quiet re-download after a truncated
-    /// archive (see [`crate::core::acquisition::IngestRetries`]).
-    pub ingest_retries: crate::core::acquisition::IngestRetries,
     /// Storm-activity listings and stored-day reads for the overview's bars.
     pub activity_channel: ActivityChannel,
     /// Which activity listings are in flight or backing off (the plan is
@@ -97,14 +87,11 @@ impl Acquisition {
         Self {
             state: AcquisitionState::default(),
             coordinator: AcquisitionCoordinator::new(data_facade),
-            prefetch_settle: PrefetchSettle::default(),
             lookback_backfill_next_ms: 0.0,
             visible_listing_next_ms: 0.0,
             visible_listing_settle: PrefetchSettle::default(),
             listing_backoff: std::collections::HashMap::new(),
             selection_fetch_target: None,
-            request_ledger: RequestLedger::default(),
-            ingest_retries: Default::default(),
             activity_channel: ActivityChannel::default(),
             activity_fetcher: ActivityFetcher::default(),
             activity_settle: PrefetchSettle::default(),

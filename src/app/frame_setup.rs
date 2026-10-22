@@ -17,7 +17,7 @@ impl WorkbenchApp {
 
         // Every site gets its renderers before anything uploads to them.
         if let Some(gl) = self.gpu.gl.as_ref() {
-            for site in &mut self.sites.list {
+            for site in self.sites.iter_mut() {
                 site.gpu.ensure(gl);
             }
         }
@@ -58,7 +58,7 @@ impl WorkbenchApp {
         // This ensures archive data correctly shows its true age (days/years)
         // rather than a misleading "few minutes" relative to playback position.
         let now = self.state.frame_now.secs();
-        for site in &mut self.sites.list {
+        for site in self.sites.iter_mut() {
             site.refresh_staleness(now);
         }
 

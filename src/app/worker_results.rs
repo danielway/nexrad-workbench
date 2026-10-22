@@ -52,7 +52,7 @@ impl WorkbenchApp {
                     // The site whose request this answers; a reply nobody
                     // awaits any more (a site change reset it) is dropped.
                     let id = reply.request_id;
-                    match self.sites.list.iter().position(|s| s.cells.awaits(id)) {
+                    match self.sites.iter().position(|s| s.cells.awaits(id)) {
                         Some(site) => {
                             let disposition = self.sites.list[site].cells.accept(reply);
                             log::debug!("storm cells: reply {:?}", disposition);
@@ -66,11 +66,7 @@ impl WorkbenchApp {
                     message,
                 } => {
                     log::warn!("storm cells: detection failed: {message}");
-                    let owner = self
-                        .sites
-                        .list
-                        .iter()
-                        .position(|s| s.cells.awaits(request_id));
+                    let owner = self.sites.iter().position(|s| s.cells.awaits(request_id));
                     if let Some(site) = owner {
                         self.sites.list[site].cells.fail(request_id);
                         self.sync_storm_cells_for(site);
@@ -148,7 +144,7 @@ impl WorkbenchApp {
                 // Reconcile the request ledger against what the timeline now
                 // actually holds: satisfied requests retire, ingested-but-
                 // missing cuts become Unavailable, stale entries age out.
-                self.acquisition.request_ledger.observe_timeline(
+                site.ledger.observe_timeline(
                     &site.scans,
                     crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
                     js_sys::Date::now(),
@@ -259,15 +255,6 @@ impl WorkbenchApp {
         // and timeline position match the stored blob exactly.
         let scan_start_secs = result.scan_key.scan_start.as_secs_f64();
 
-        // The scan's data is now in IDB but the timeline hasn't observed it
-        // yet — hold the ledger entry in AwaitingTimeline across that gap
-        // (matched within tolerance because this key is the re-keyed
-        // volume-header time, not the listing timestamp it was enqueued as).
-        self.acquisition.request_ledger.note_ingested(
-            scan_start_secs as i64,
-            crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
-            js_sys::Date::now(),
-        );
         // Refresh timeline to include the new scan
         self.state
             .push_command(crate::core::Intent::RefreshTimeline {
@@ -286,6 +273,16 @@ impl WorkbenchApp {
             );
             return;
         };
+
+        // The scan's data is now in IDB but the timeline hasn't observed it
+        // yet — hold the ledger entry in AwaitingTimeline across that gap
+        // (matched within tolerance because this key is the re-keyed
+        // volume-header time, not the listing timestamp it was enqueued as).
+        self.sites.list[site].ledger.note_ingested(
+            scan_start_secs as i64,
+            crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+            js_sys::Date::now(),
+        );
         self.set_active_scan(site, result.scan_key.clone(), result.elevation_numbers);
 
         // Force a fresh render
@@ -649,9 +646,10 @@ impl WorkbenchApp {
             kind,
             message
         );
-        match self
-            .acquisition
-            .ingest_retries
+        // A worker error names no site; downloads are the focus's.
+        let focus = self.sites.focus_mut();
+        match focus
+            .retries
             .decide(failed_scan_timestamp_secs.map(|ts| ts as i64), &message)
         {
             // A truncated download: no error, no backoff. Forget the request
@@ -660,8 +658,8 @@ impl WorkbenchApp {
             // next frame while the playhead is on it).
             crate::core::acquisition::IngestFailureAction::RetryQuietly { scan_start } => {
                 log::info!("Truncated archive for scan {scan_start}; downloading it again");
-                self.acquisition
-                    .request_ledger
+                focus
+                    .ledger
                     .forget(scan_start, crate::SCAN_CACHE_MATCH_TOLERANCE_SECS);
                 self.acquisition
                     .coordinator
@@ -679,7 +677,7 @@ impl WorkbenchApp {
                 // move its ledger entry to the short Failed backoff so
                 // re-fetch becomes possible without a per-frame storm.
                 if let Some(ts) = failed_scan_timestamp_secs {
-                    self.acquisition.request_ledger.note_failed(
+                    focus.ledger.note_failed(
                         ts as i64,
                         crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
                         js_sys::Date::now(),

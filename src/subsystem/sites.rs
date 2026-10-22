@@ -4,7 +4,8 @@
 //! A `SiteState` owns everything that differs between radars: the site's id
 //! and position, its scan inventory, its render track and the crossfade and
 //! scrub caches in front of it, the frame on its canvas and how old it is,
-//! its storm cells and the GPU renderers that draw it ([`SiteGpu`]).
+//! its storm cells, the GPU renderers that draw it ([`SiteGpu`]), and the
+//! request ledger, retry set and prefetch settle its pumps fetch through.
 //! Everything shared (playback, selection, settings, the worker pool, the
 //! download queue, the archive index, the activity book) stays with its own
 //! owner.
@@ -18,6 +19,7 @@
 //! The list is never empty and `focus` is always one of its indices
 //! ([`crate::core::sites::focus_valid`]); nothing adds or removes sites yet.
 
+use crate::core::acquisition::{IngestRetries, PrefetchSettle, RequestLedger};
 use crate::core::playback_manager::PlaybackManager;
 use crate::core::render::RenderTrack;
 use crate::core::render_loop::ScrubCache;
@@ -112,6 +114,17 @@ pub(crate) struct SiteState {
     /// This site's renderers; empty until [`SiteGpu::ensure`] runs with a GL
     /// context.
     pub gpu: SiteGpu,
+    /// Scans recently requested for this site: the dedup input that
+    /// survives queue clears and bridges the ingest→timeline-refresh
+    /// blackout (see [`RequestLedger`]). Keyed by scan start alone, which is
+    /// enough within one site.
+    pub ledger: RequestLedger,
+    /// This site's scans that have had their one quiet re-download after a
+    /// truncated archive (see [`IngestRetries`]).
+    pub retries: IngestRetries,
+    /// Debounce/idempotency state for this site's reactive prefetch (see
+    /// [`PrefetchSettle`]).
+    pub prefetch_settle: PrefetchSettle,
 }
 
 impl SiteState {
@@ -132,6 +145,9 @@ impl SiteState {
             data_staleness_start_secs: None,
             cells: StormCells::default(),
             gpu: SiteGpu::default(),
+            ledger: RequestLedger::default(),
+            retries: IngestRetries::default(),
+            prefetch_settle: PrefetchSettle::default(),
         }
     }
 
@@ -219,6 +235,16 @@ impl Sites {
         &mut self.list[self.focus]
     }
 
+    /// Every site, in list order.
+    pub(crate) fn iter(&self) -> std::slice::Iter<'_, SiteState> {
+        self.list.iter()
+    }
+
+    /// Mutable [`Self::iter`].
+    pub(crate) fn iter_mut(&mut self) -> std::slice::IterMut<'_, SiteState> {
+        self.list.iter_mut()
+    }
+
     /// The sites the canvas draws, in draw order: the focus alone until the
     /// canvas lays out more than one.
     pub(crate) fn drawn(&self) -> impl Iterator<Item = &SiteState> {
@@ -227,7 +253,7 @@ impl Sites {
 
     /// The ids in list order, for [`crate::core::sites::route`].
     pub(crate) fn ids(&self) -> Vec<SiteId> {
-        self.list.iter().map(|s| s.id.clone()).collect()
+        self.iter().map(|s| s.id.clone()).collect()
     }
 }
 
@@ -275,6 +301,17 @@ mod tests {
         assert_eq!(sites.list[0].id, SiteId::new("KDMX"));
         assert_eq!(sites.list[1].id, SiteId::new("KFWS"));
         assert!((sites.list[1].lon + 97.30).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn iter_visits_every_site_and_iter_mut_writes_each() {
+        let mut sites = two_sites();
+        for site in sites.iter_mut() {
+            site.shadows.push(ScanBoundary { start: 0, end: 1 });
+        }
+        let ids: Vec<_> = sites.iter().map(|s| s.id.0.as_str()).collect();
+        assert_eq!(ids, ["KDMX", "KTLX"]);
+        assert!(sites.iter().all(|s| s.shadows.len() == 1));
     }
 
     #[wasm_bindgen_test]

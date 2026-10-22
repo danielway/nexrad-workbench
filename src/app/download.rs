@@ -61,11 +61,13 @@ impl WorkbenchApp {
                 // Records are already in IDB — hold the ledger entry in
                 // AwaitingTimeline until a refresh actually shows them, so
                 // the per-frame anchor pump can't re-request into the gap.
-                self.acquisition.request_ledger.note_ingested(
-                    scan_ts,
-                    crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
-                    js_sys::Date::now(),
-                );
+                if let Some(site) = crate::core::sites::route(&scan.key, &self.sites.ids()) {
+                    self.sites.list[site].ledger.note_ingested(
+                        scan_ts,
+                        crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+                        js_sys::Date::now(),
+                    );
+                }
 
                 // Cache hit: skip ingest, go straight to decode.
                 // Ghost stays until timeline refresh shows the real scan.
@@ -170,8 +172,9 @@ impl WorkbenchApp {
 
             // Short-backoff suppression so the reactive pumps don't hammer a
             // failing endpoint; evicts on its own so automatic retry stays
-            // possible (explicit retries bypass the reducers entirely).
-            self.acquisition.request_ledger.note_failed(
+            // possible (explicit retries bypass the reducers entirely). A
+            // download error names no site; downloads are the focus's.
+            self.sites.focus_mut().ledger.note_failed(
                 *scan_start,
                 crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
                 js_sys::Date::now(),

@@ -899,8 +899,10 @@ impl WorkbenchApp {
             self.acquisition.coordinator.download_queue.clear();
             self.acquisition.state.cancel_all();
             self.state.download_progress.clear();
-            self.acquisition.prefetch_settle = crate::core::acquisition::PrefetchSettle::default();
-            self.acquisition.request_ledger.clear();
+            for site in self.sites.iter_mut() {
+                site.prefetch_settle = crate::core::acquisition::PrefetchSettle::default();
+                site.ledger.clear();
+            }
         } else {
             // Cache loader is busy; replay the request on the next frame.
             self.state.push_command(crate::core::Intent::ClearCacheNow);
