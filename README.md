@@ -30,12 +30,20 @@ no account, no server: everything runs on your own device.
 - **Add context.** Turn on NWS warnings, watches and advisories, mPING storm
   reports, detected storm cells, the national mosaic, and labels for states,
   counties and cities. Probe any point for its value, or measure a distance.
-- **Share exactly what you see.** The page URL carries the site, time, product,
+- **Watch up to three radars at once.** On a desktop, add nearby sites from
+  the site picker and they play together on one map and one timeline, each
+  with its own lane. The link carries the set, as in
+  [`?site=KTBW&also=KMLB,KJAX`](https://danielway.github.io/nexrad-workbench/?site=KTBW&also=KMLB,KJAX&t=1728529200&lat=28.2&lon=-81.9).
+- **Share exactly what you see.** The page URL carries the sites, time, product,
   tilt and view, so a copied link opens the same picture for someone else.
 - **Use it on your phone.** It works on phones too, and you can
   [install it](#install-it-as-an-app) to your home screen.
 
 ## A closer look
+
+![Milton seen by KTBW, KMLB and KJAX together, with storm cells outlined across all three](docs/media/multi-site.jpg)
+
+<sub>**Three radars, one map.** Milton at 03:00 UTC on 10 October 2024 from Tampa Bay, Melbourne and Jacksonville. The newer frame draws on top where discs overlap, storm cells are found once across all three, and each extra site gets its own lane under the timeline.</sub>
 
 ![Rays playback of one Milton volume, the sweep line painting each tilt over the last](docs/media/sweep.webp)
 
@@ -84,6 +92,7 @@ published. To remove it, delete it like any other app.
 | To | Do this |
 |----|---------|
 | Change radar | Click the site name at top left, or press `S` |
+| Show another radar beside it | In the site picker, choose **+ Also show** on a site's row |
 | Change product or tilt | Use the menus in the top bar, or press `P` / `E` |
 | Scrub | Drag the playhead along the timeline |
 | Loop a stretch | Drag across the thin strip above the volumes, or press `I` and `O` |
