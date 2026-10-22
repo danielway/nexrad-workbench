@@ -41,6 +41,8 @@ pub(crate) struct LiveRefreshInputs<'a> {
     pub caption_context: crate::core::canvas::CaptionContext,
     /// Volume rendering is on and the camera is in 3D.
     pub volume_3d_active: bool,
+    /// The map is the flat 2D one, the only view that draws every site.
+    pub flat: bool,
 }
 
 /// One site's live stream: its channel, its volume in progress, its
@@ -471,6 +473,29 @@ impl Live {
                 .iter()
                 .map(|site| Stream::classify(site.live.frame_status.activity, phase, last_exit)),
         );
+        let latest = inputs.elevation_selection.is_auto();
+        let others = if inputs.flat {
+            sites
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i != sites.focus)
+                .map(|(_, s)| crate::core::site_canvas::SiteFrame {
+                    id: s.id.0.clone(),
+                    frame: s
+                        .displayed
+                        .as_ref()
+                        .map(|d| ((d.start_time + d.end_time) / 2.0, d.end_time)),
+                    frame_step_secs: s
+                        .displayed
+                        .as_ref()
+                        .map_or(crate::core::canvas::DEFAULT_FRAME_STEP_SECS, |d| {
+                            crate::core::canvas::frame_step_secs(&s.scans, d, latest)
+                        }),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let focus = sites.focus();
         self.session = SessionVm::build(SessionInputs {
             now: inputs.now,
@@ -485,6 +510,7 @@ impl Live {
             live_cut: focus.live.live_cut(),
             caption_context: inputs.caption_context,
             volume_3d_active: inputs.volume_3d_active,
+            others,
         });
     }
 }

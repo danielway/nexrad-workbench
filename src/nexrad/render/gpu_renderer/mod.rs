@@ -90,7 +90,7 @@ struct CpuShadowData {
 pub(crate) struct RadarGpuRenderer {
     program: glow::Program,
     vao: glow::VertexArray,
-    #[allow(dead_code)] // Owns the GPU buffer handle so the quad VBO isn't orphaned/deallocated.
+    /// The quad's vertex buffer; held so [`Self::release`] can delete it.
     vbo: glow::Buffer,
 
     data_texture: glow::Texture,
@@ -113,6 +113,25 @@ pub(crate) struct RadarGpuRenderer {
 }
 
 impl RadarGpuRenderer {
+    /// Delete every GL object this renderer owns. Called when its site
+    /// leaves the map; the renderer is dropped right after.
+    pub(crate) fn release(&self, gl: &glow::Context) {
+        unsafe {
+            for tex in [
+                self.data_texture,
+                self.lut_texture,
+                self.azimuth_texture,
+                self.prev_data_texture,
+                self.prev_azimuth_texture,
+            ] {
+                gl.delete_texture(tex);
+            }
+            gl.delete_vertex_array(self.vao);
+            gl.delete_buffer(self.vbo);
+            gl.delete_program(self.program);
+        }
+    }
+
     /// Create a new GPU renderer, compiling shaders and allocating GL resources.
     ///
     /// Returns `Err` if shader compilation, program linking, or GL resource

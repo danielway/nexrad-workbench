@@ -306,6 +306,9 @@ pub(crate) struct SessionInputs<'a> {
     /// Volume rendering is on and the camera is in 3D
     /// (`VizState::volume_3d_active`).
     pub volume_3d_active: bool,
+    /// Every drawn site but the focus, for the caption's sites behind;
+    /// empty with one site and in 3D, which draws the focus only.
+    pub others: Vec<crate::core::site_canvas::SiteFrame>,
 }
 
 /// One session, four facts, five surfaces. Rebuilt once per frame.
@@ -334,6 +337,9 @@ pub(crate) struct SessionVm {
     /// ([`decide_canvas_caption`]). Words via
     /// [`SessionVm::canvas_caption_line`].
     pub canvas_caption: CanvasCaption,
+    /// The other sites whose frame disagrees with the playhead
+    /// ([`crate::core::site_canvas::sites_behind`]).
+    pub sites_behind: Option<crate::core::site_canvas::SitesBehind>,
 
     /// A stream runs and the selection is pinned to now: what the favicon,
     /// the tab title and the link's pinned selection read.
@@ -364,6 +370,7 @@ impl Default for SessionVm {
             activity_chip: None,
             activity_hover: None,
             canvas_caption: CanvasCaption::None,
+            sites_behind: None,
             live_now: false,
             tilt_role: TiltRole::Picks,
         }
@@ -443,6 +450,11 @@ impl SessionVm {
             inputs.live_cut.as_ref().and_then(|c| c.elevation_angle),
             &inputs.caption_context,
         );
+        let target = match playhead {
+            Playhead::PinnedToNow => now,
+            Playhead::AtTime { ts, .. } => ts,
+        };
+        let sites_behind = crate::core::site_canvas::sites_behind(&inputs.others, target);
         let activity_chip = stream_line(stream, status, inputs.live_cut.as_ref(), now);
         let activity_hover = stream_hover(stream, status);
         let live_now = inputs.any_site_streams && selection_pinned;
@@ -459,6 +471,7 @@ impl SessionVm {
             activity_chip,
             activity_hover,
             canvas_caption,
+            sites_behind,
             live_now,
             tilt_role: TiltRole::from_volume_3d(inputs.volume_3d_active),
         }
@@ -544,13 +557,18 @@ impl SessionVm {
     }
 
     /// The canvas caption, segment by segment (§7 forms), or `None` when
-    /// the frame and the playhead agree.
+    /// the frame and the playhead agree. With other sites behind the
+    /// playhead the caption names them instead of the focus's own lag (the
+    /// age pill and the frame readout already speak for the focus); a
+    /// blank or waiting focus still says why first.
     pub(crate) fn canvas_caption_line(&self, clock: &dyn Clock) -> Option<CaptionLine> {
-        caption_line(
-            &self.canvas_caption,
-            self.playhead == Playhead::PinnedToNow,
-            clock,
-        )
+        let pinned = self.playhead == Playhead::PinnedToNow;
+        match (&self.canvas_caption, &self.sites_behind) {
+            (CanvasCaption::None | CanvasCaption::Discrepancy { .. }, Some(behind)) => Some(
+                crate::core::site_canvas::sites_behind_line(behind, pinned, clock),
+            ),
+            (caption, _) => caption_line(caption, pinned, clock),
+        }
     }
 
     /// The canvas caption's words as one string.
@@ -837,6 +855,8 @@ mod tests {
         volume_3d_active: bool,
         /// The other listed sites' streams, beside the focus one.
         other_sites: Vec<Stream>,
+        /// The other drawn sites' frames.
+        others: Vec<crate::core::site_canvas::SiteFrame>,
     }
 
     impl<'a> S<'a> {
@@ -854,6 +874,7 @@ mod tests {
                 caption: CaptionContext::default(),
                 volume_3d_active: false,
                 other_sites: Vec::new(),
+                others: Vec::new(),
             }
         }
 
@@ -885,6 +906,7 @@ mod tests {
                 live_cut: self.live_cut.clone(),
                 caption_context: self.caption,
                 volume_3d_active: self.volume_3d_active,
+                others: self.others.clone(),
             })
         }
     }
@@ -1151,6 +1173,43 @@ mod tests {
         assert_eq!(
             vm.canvas_caption_text(&Utc).as_deref(),
             Some("showing 11:28:51 · playhead 11:30:49 · 0.5° at 11:30 is downloading")
+        );
+    }
+
+    /// Other sites behind the playhead: the caption names them in place of
+    /// the focus's own lag, and gives way to a blank focus.
+    #[wasm_bindgen_test]
+    fn other_sites_behind_the_playhead_take_the_caption() {
+        use crate::core::site_canvas::SiteFrame;
+        let f = frame(t(11, 29, 1), 1, 0.5);
+        let mut s = S::at(t(11, 36, 22));
+        s.playhead = t(11, 30, 49);
+        s.displayed = Some(&f);
+        s.caption = CaptionContext {
+            frame_step_secs: 90.0,
+            ..CaptionContext::default()
+        };
+        s.others = vec![SiteFrame {
+            id: "KMLB".to_string(),
+            frame: Some((t(11, 20, 0), t(11, 20, 15))),
+            frame_step_secs: 90.0,
+        }];
+        assert_eq!(
+            s.vm().canvas_caption_text(&Utc).as_deref(),
+            Some("KMLB showing 11:20:00 · playhead 11:30:49")
+        );
+        // Every other site with the playhead: the focus's own caption.
+        s.others[0].frame = Some((t(11, 30, 40), t(11, 30, 55)));
+        assert_eq!(
+            s.vm().canvas_caption_text(&Utc).as_deref(),
+            Some("showing 11:28:51 · playhead 11:30:49 · no data at 11:30")
+        );
+        // A blank focus always says why first.
+        s.others[0].frame = Some((t(11, 20, 0), t(11, 20, 15)));
+        s.displayed = None;
+        assert_eq!(
+            s.vm().canvas_caption_text(&Utc).as_deref(),
+            Some("no data at 11:30")
         );
     }
 

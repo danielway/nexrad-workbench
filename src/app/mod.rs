@@ -17,5 +17,6 @@ pub(crate) mod live_mode;
 pub(crate) mod persistence_manager;
 pub(crate) mod render_loop;
 pub(crate) mod selection_download;
+pub(crate) mod sites;
 pub(crate) mod storm_activity;
 pub(crate) mod worker_results;

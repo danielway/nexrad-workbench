@@ -60,8 +60,6 @@ pub(crate) struct AdvancePlaybackEnv<'a> {
     pub has_worker: bool,
     /// The site's id (`SiteState::id`).
     pub site_id: &'a str,
-    /// `viz_state.product`.
-    pub product: RadarProduct,
     /// The combined 3D predicate: `viz_state.volume_3d_enabled` AND the view
     /// mode is `Globe3D` (the shell's `WorkbenchApp::volume_3d_active`). All
     /// 3D gates share this one predicate so they can't disagree.
@@ -110,32 +108,24 @@ pub(crate) struct AdvancePlaybackActions {
     pub request_volume_render: bool,
 }
 
-/// Rebuild the macro frame list when dirty and keep the coordinator's active
-/// scan in sync while scrubbing. Pure: in-memory mutation of the slices only.
-pub(crate) fn reduce_advance_playback(
-    env: AdvancePlaybackEnv<'_>,
-    slices: AdvancePlaybackSlices<'_>,
-    timeline: &RadarTimeline,
-) -> AdvancePlaybackActions {
-    let AdvancePlaybackSlices {
-        playback,
-        elevation_selection,
-        scrub_cache,
-    } = slices;
-    let mut actions = AdvancePlaybackActions::default();
-
-    // Live mode no longer skips playback-driven renders: the unified
-    // resolver (`request_worker_render`) runs in both modes so a cached
-    // cut paints while streaming. Live still owns *acquisition* (the
-    // archive "acquiring" hint never applies) and the active-scan tracking
-    // + prefetch-next-sweep path stay archive-only.
-    let live_active = env.live_active;
-
+/// Rebuild the Frames-mode frame list when dirty, from every site's
+/// timeline: the union of their frame times, frames of different sites
+/// within [`crate::core::SCAN_JOIN_TOLERANCE_SECS`] joined
+/// ([`crate::core::sites::frame_union`]). Runs once per frame, before the
+/// per-site [`reduce_advance_playback`]. Pure: in-memory mutation of
+/// `playback` only.
+pub(crate) fn reduce_macro_frames(
+    product: RadarProduct,
+    volume_3d_active: bool,
+    playback: &mut PlaybackState,
+    elevation_selection: &ElevationSelection,
+    timelines: &[&RadarTimeline],
+) {
     // Rebuild macro frame list when dirty (elevation selection, bounds, or
     // scan count changed). Uses the *effective* mode so the list is also
     // built during a lookback replay (which frame-steps regardless of zoom).
     if playback.playback_mode() == PlaybackMode::Macro {
-        let product = env.product.to_worker_string();
+        let product = product.to_worker_string();
         let inputs = MacroFrameInputs {
             elevation: elevation_selection.clone(),
             product,
@@ -147,28 +137,37 @@ pub(crate) fn reduce_advance_playback(
                 playback.view_width_secs(),
                 playback.playback_position(),
             ),
-            scan_count: timeline.scans.len(),
-            volume_3d: env.volume_3d_active,
+            // Every site's count, so a scan landing at any site rebuilds.
+            scan_count: timelines.iter().map(|t| t.scans.len()).sum(),
+            volume_3d: volume_3d_active,
         };
 
         if let Some(cause) = playback.macro_playback.rebuild_cause(&inputs) {
             // In 3D a frame is a whole scan: the volume render is keyed
             // (scan_key, product), so per-sweep frames would advance the
             // playhead/captions without changing the picture.
-            let frames = if inputs.volume_3d {
-                timeline.scan_end_frame_times(product, inputs.bounds)
-            } else {
-                match &inputs.elevation {
-                    // Every visit of the held angle is a frame (SAILS/MRLE
-                    // repeats included).
-                    sel @ ElevationSelection::Fixed { .. } => {
-                        timeline.matching_sweep_end_times(sel.into(), product, inputs.bounds)
+            let per_site: Vec<Vec<f64>> = timelines
+                .iter()
+                .map(|timeline| {
+                    if inputs.volume_3d {
+                        timeline.scan_end_frame_times(product, inputs.bounds)
+                    } else {
+                        match &inputs.elevation {
+                            // Every visit of the held angle is a frame
+                            // (SAILS/MRLE repeats included).
+                            sel @ ElevationSelection::Fixed { .. } => timeline
+                                .matching_sweep_end_times(sel.into(), product, inputs.bounds),
+                            ElevationSelection::Latest => {
+                                timeline.all_sweep_end_times(product, inputs.bounds)
+                            }
+                        }
                     }
-                    ElevationSelection::Latest => {
-                        timeline.all_sweep_end_times(product, inputs.bounds)
-                    }
-                }
-            };
+                })
+                .collect();
+            let frames = crate::core::sites::frame_union(
+                &per_site,
+                crate::core::SCAN_JOIN_TOLERANCE_SECS as f64,
+            );
             playback.macro_playback.store_rebuilt(inputs, frames);
             playback.sync_macro_frame_index();
             // When the elevation filter changes, snap playback_position
@@ -195,6 +194,28 @@ pub(crate) fn reduce_advance_playback(
         }
         playback.macro_playback.last_seen_position = pos;
     }
+}
+
+/// Keep the site's render track on the scan under the playhead while
+/// scrubbing. Pure: in-memory mutation of the slices only.
+pub(crate) fn reduce_advance_playback(
+    env: AdvancePlaybackEnv<'_>,
+    slices: AdvancePlaybackSlices<'_>,
+    timeline: &RadarTimeline,
+) -> AdvancePlaybackActions {
+    let AdvancePlaybackSlices {
+        playback,
+        elevation_selection,
+        scrub_cache,
+    } = slices;
+    let mut actions = AdvancePlaybackActions::default();
+
+    // Live mode no longer skips playback-driven renders: the unified
+    // resolver (`request_worker_render`) runs in both modes so a cached
+    // cut paints while streaming. Live still owns *acquisition* (the
+    // archive "acquiring" hint never applies) and the active-scan tracking
+    // + prefetch-next-sweep path stay archive-only.
+    let live_active = env.live_active;
 
     // Auto-load scan when scrubbing: find the most recent scan within 15 minutes.
     // In the worker architecture, this sends a render request directly —
@@ -609,7 +630,6 @@ mod tests {
             live_active: false,
             has_worker: true,
             site_id: "KDMX",
-            product: RadarProduct::Reflectivity,
             volume_3d_active: false,
             track_scan_key: None,
             max_scan_age_secs: MAX_AGE,
@@ -670,6 +690,15 @@ mod tests {
             env: AdvancePlaybackEnv<'_>,
             timeline: &RadarTimeline,
         ) -> AdvancePlaybackActions {
+            // The shell's order: the frame list from every site, then each
+            // site's scrub.
+            reduce_macro_frames(
+                RadarProduct::Reflectivity,
+                env.volume_3d_active,
+                &mut self.playback,
+                &self.selection,
+                &[timeline],
+            );
             reduce_advance_playback(
                 env,
                 AdvancePlaybackSlices {
@@ -687,6 +716,45 @@ mod tests {
     }
 
     // ── macro frame-list rebuild ────────────────────────────────────────────
+
+    // The frame list walks every site's frames: their union, a frame of
+    // another site within the join tolerance folded into one at the later
+    // time; and a scan landing at any site rebuilds it.
+    #[wasm_bindgen_test]
+    fn macro_frames_are_the_union_of_every_sites_frames() {
+        let a = two_scan_timeline();
+        let mut b = RadarTimeline {
+            scans: vec![
+                scan(1030.0, vec![sweep(1, 1030.0, 1040.0, vec!["reflectivity"])]),
+                scan(2025.0, vec![sweep(1, 2025.0, 2030.0, vec!["reflectivity"])]),
+            ],
+        };
+        let mut fx = Fx::at(2005.0, PlaybackMode::Macro);
+        fx.selection = ElevationSelection::Latest;
+        let build = |fx: &mut Fx, b: &RadarTimeline| {
+            reduce_macro_frames(
+                RadarProduct::Reflectivity,
+                false,
+                &mut fx.playback,
+                &fx.selection.clone(),
+                &[&a, b],
+            )
+        };
+        build(&mut fx, &b);
+        assert_eq!(
+            fx.playback.macro_playback.sweep_frames,
+            vec![1010.0, 1040.0, 2010.0, 2030.0]
+        );
+        b.scans.push(scan(
+            2400.0,
+            vec![sweep(1, 2400.0, 2410.0, vec!["reflectivity"])],
+        ));
+        build(&mut fx, &b);
+        assert_eq!(
+            fx.playback.macro_playback.sweep_frames.last(),
+            Some(&2410.0)
+        );
+    }
 
     // (1) First macro-tier frame with a fresh state rebuilds the frame list
     // (product differs from the default inputs → window-class change), syncs

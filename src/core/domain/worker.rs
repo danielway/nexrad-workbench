@@ -233,6 +233,8 @@ pub(crate) struct VolumeSweepMeta {
 
 /// All-elevation packed volume data for ray-march rendering.
 pub(crate) struct VolumeData {
+    /// The site whose volume this is, so the reply reaches its site.
+    pub site: crate::data::SiteId,
     /// Packed raw gate values (all sweeps concatenated).
     /// Byte width per value is determined by `word_size`.
     pub buffer: Vec<u8>,

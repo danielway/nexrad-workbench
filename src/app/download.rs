@@ -44,18 +44,22 @@ impl WorkbenchApp {
 
             // Move this scan's boundary to in-flight tracking (ghost stays
             // visible until processing completes in the Decoded handler).
+            // The timeline shows the focus site's track, so only its scans
+            // ghost there.
             let scan_ts = scan.key.scan_start.as_secs();
             let scan_end = self
                 .acquisition
                 .coordinator
                 .download_queue
-                .find_by_scan_start(scan_ts)
+                .find_by_scan_start(&scan.key.site, scan_ts)
                 .map(|item| item.scan_end)
                 .unwrap_or(scan_ts + FALLBACK_SCAN_DURATION_SECS);
-            self.state
-                .download_progress
-                .in_flight_scans
-                .push((scan_ts, scan_end));
+            if scan.key.site == self.sites.focus().id {
+                self.state
+                    .download_progress
+                    .in_flight_scans
+                    .push((scan_ts, scan_end));
+            }
 
             if is_cache_hit {
                 // Records are already in IDB — hold the ledger entry in
@@ -122,7 +126,7 @@ impl WorkbenchApp {
                     .acquisition
                     .coordinator
                     .download_queue
-                    .find_by_scan_start(scan_ts)
+                    .find_by_scan_start(&scan.key.site, scan_ts)
                     .and_then(|item| item.elevation_filter)
                     .map(|elev| vec![elev])
                     .unwrap_or_default();
@@ -151,7 +155,7 @@ impl WorkbenchApp {
                 .acquisition
                 .coordinator
                 .download_queue
-                .take_operation_id(scan_ts)
+                .take_operation_id(&scan.key.site, scan_ts)
             {
                 self.acquisition
                     .state
@@ -161,9 +165,11 @@ impl WorkbenchApp {
 
         if let nexrad::DownloadResult::Error {
             message,
+            site_id,
             scan_start,
         } = &result
         {
+            let site_key = crate::data::SiteId::new(site_id.clone());
             log::error!("Download failed: {}", message);
             self.state.errors.push(crate::core::AppError::Download {
                 message: message.clone(),
@@ -173,19 +179,21 @@ impl WorkbenchApp {
             // Short-backoff suppression so the reactive pumps don't hammer a
             // failing endpoint; evicts on its own so automatic retry stays
             // possible (explicit retries bypass the reducers entirely). A
-            // download error names no site; downloads are the focus's.
-            self.sites.focus_mut().ledger.note_failed(
-                *scan_start,
-                crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
-                js_sys::Date::now(),
-            );
+            // site no longer on the map has no ledger to note it in.
+            if let Some(site) = crate::core::sites::route_site(&site_key, &self.sites.ids()) {
+                self.sites.list[site].ledger.note_failed(
+                    *scan_start,
+                    crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+                    js_sys::Date::now(),
+                );
+            }
 
             // Mark this scan's acquisition operation as failed
             if let Some(op_id) = self
                 .acquisition
                 .coordinator
                 .download_queue
-                .take_operation_id(*scan_start)
+                .take_operation_id(&site_key, *scan_start)
             {
                 self.acquisition.state.mark_failed(op_id, message.clone());
             }
@@ -195,11 +203,13 @@ impl WorkbenchApp {
             self.acquisition
                 .coordinator
                 .download_queue
-                .mark_active_done(*scan_start);
-            self.state
-                .download_progress
-                .active_scans
-                .retain(|&(s, _)| s != *scan_start);
+                .mark_active_done(&site_key, *scan_start);
+            if site_key == self.sites.focus().id {
+                self.state
+                    .download_progress
+                    .active_scans
+                    .retain(|&(s, _)| s != *scan_start);
+            }
 
             // Clear download progress on error if no more work remains
             if !self.acquisition.coordinator.download_queue.has_work() {

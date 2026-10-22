@@ -23,7 +23,7 @@ use eframe::egui;
 ///
 /// Computed by the caller from `AppState` so this subsystem stays
 /// decoupled from the god struct.
-pub(crate) struct DiagnosticsInputs<'a> {
+pub(crate) struct DiagnosticsInputs {
     /// Recency gate for the alerts overlay. (mPING no longer gates on
     /// this — it shows reports for historical playback too.)
     pub is_live: bool,
@@ -32,8 +32,9 @@ pub(crate) struct DiagnosticsInputs<'a> {
     /// Whether the playhead is tracking the live edge (pinned to now or
     /// replaying the lookback loop). Selects mPING's live-tailing regime.
     pub mping_pinned_to_now: bool,
-    /// Active radar site id.
-    pub site_id: &'a str,
+    /// The map centre (`VizState::map_centre`): where mPING reports are
+    /// fetched around.
+    pub map_centre: (f64, f64),
     /// Current playback position in Unix seconds (drives the mPING fetch
     /// window and refetch decision).
     pub playback_secs: f64,
@@ -80,7 +81,7 @@ impl Diagnostics {
     pub(crate) fn tick(
         &mut self,
         ctx: &egui::Context,
-        inputs: DiagnosticsInputs<'_>,
+        inputs: DiagnosticsInputs,
         errors: &mut ErrorContext,
     ) {
         self.alerts_manager
@@ -97,7 +98,7 @@ impl Diagnostics {
             MpingTickInputs {
                 layer_visible: inputs.mping_layer_visible,
                 pinned_to_now: inputs.mping_pinned_to_now,
-                site_id: inputs.site_id,
+                centre: inputs.map_centre,
                 playback_secs: inputs.playback_secs,
             },
             errors,

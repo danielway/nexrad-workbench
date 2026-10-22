@@ -675,8 +675,7 @@ fn navigate_to_event(
     if event.site_id != sites.focus().id.0 {
         if let Some(site) = get_site(&event.site_id) {
             sites.focus_mut().retarget(site.id, site.lat, site.lon);
-            state.viz_state.set_pan_offset(egui::Vec2::ZERO);
-            state.viz_state.camera.center_on(site.lat, site.lon);
+            state.viz_state.centre_map_on(site.lat, site.lon);
             state.push_command(Intent::RefreshTimeline {
                 auto_position: false,
             });

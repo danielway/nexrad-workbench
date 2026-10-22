@@ -58,17 +58,18 @@ pub(crate) fn link_selection(selection: Selection) -> LinkSelection {
 /// Assemble the link for what is on screen — the shell-side input builder
 /// for the pure [`crate::core::decide_persist`]. Kept beside
 /// [`ViewState::from_state`] so the whole state → link field mapping lives in
-/// one place. `site_id` is the focus site; `map_centre` is what the link's
-/// `lat`/`lon` carry (the focus site's position until the map has a centre of
-/// its own).
+/// one place. `site_id` is the focus site and `also` the other sites on the
+/// map, in list order; `map_centre` is what the link's `lat`/`lon` carry.
 pub(crate) fn build_link(
     state: &super::AppState,
     playback: &crate::core::PlaybackState,
     site_id: &str,
+    also: Vec<String>,
     map_centre: (f64, f64),
 ) -> LinkState {
     LinkState {
         site: Some(site_id.to_string()),
+        also,
         time: Some(playback.playback_position()),
         selection: Some(link_selection(playback.selection)),
         play_mode: Some(playback.chosen_play_mode()),
@@ -118,7 +119,7 @@ mod tests {
         state: &crate::state::AppState,
         playback: &crate::core::PlaybackState,
     ) -> LinkState {
-        build_link(state, playback, "KDMX", (41.7312, -93.7229))
+        build_link(state, playback, "KDMX", Vec::new(), (41.7312, -93.7229))
     }
 
     #[wasm_bindgen_test]
@@ -191,7 +192,7 @@ mod tests {
         state.viz_state.elevation_selection = ElevationSelection::Latest;
         state.dev_mode = true;
         playback.restore_play_mode(PlaybackMode::Micro);
-        let link = build_link(&state, &playback, "KDMX", (41.25, -93.75));
+        let link = build_link(&state, &playback, "KDMX", Vec::new(), (41.25, -93.75));
         assert_eq!(link.site.as_deref(), Some("KDMX"));
         assert_eq!(link.product.as_deref(), Some("VEL"));
         assert_eq!(link.tilt, Some(LinkTilt::Latest));

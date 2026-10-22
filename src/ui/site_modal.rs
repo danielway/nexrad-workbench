@@ -13,8 +13,8 @@
 
 use crate::core::dialogs::{DialogId, DialogIntent};
 use crate::core::site_picker::{
-    on_location, site_picker_vm, EnterAction, GroupKind, NearYou, SitePickerInputs, SiteRole,
-    SiteRow, SiteSet,
+    on_location, site_picker_vm, EnterAction, GroupKind, LiveDot, NearYou, SitePickerInputs,
+    SiteRole, SiteRow, SiteSet,
 };
 use crate::core::{Intent, LocationResult};
 use crate::state::AppState;
@@ -99,28 +99,23 @@ impl super::layout::Layer for SiteModalLayer {
         ctx.chrome.site_modal_open
     }
     fn render(&self, ctx: &mut super::layout::LayoutCtx) {
-        draw_site_picker(
-            ctx.ctx,
-            ctx.state,
-            &ctx.sites.focus().id.0,
-            ctx.chrome,
-            &mut ctx.modals.site,
+        let sites = ctx.sites.picker_set(
+            ctx.live.mode_state.phase,
+            ctx.live.mode_state.last_exit_reason,
+            crate::core::sites::cap(ctx.chrome.device_layout),
         );
+        draw_site_picker(ctx.ctx, ctx.state, &sites, ctx.chrome, &mut ctx.modals.site);
     }
 }
 
 fn select(state: &mut AppState, row: &SiteRow) {
-    state.push_command(Intent::SelectSite {
-        site_id: row.id.to_string(),
-        lat: row.lat,
-        lon: row.lon,
-    });
+    state.push_command(row.pick_intent());
 }
 
 fn draw_site_picker(
     ctx: &egui::Context,
     state: &mut AppState,
-    current_site: &str,
+    sites: &SiteSet,
     chrome: &crate::subsystem::Chrome,
     picker: &mut SiteModalState,
 ) {
@@ -151,7 +146,6 @@ fn draw_site_picker(
     let anchor = ctx
         .data(|d| d.get_temp::<Rect>(anchor_id()))
         .unwrap_or_else(|| Rect::from_min_size(Pos2::new(12.0, 40.0), Vec2::ZERO));
-    let sites = SiteSet::single(current_site);
     let (title, subtitle) = if required {
         (
             "Welcome to NEXRAD Workbench",
@@ -188,7 +182,7 @@ fn draw_site_picker(
 
         let vm = site_picker_vm(&SitePickerInputs {
             query: &picker.query,
-            sites: &sites,
+            sites,
             recent: &state.recent_sites,
             near: &picker.near,
         });
@@ -206,21 +200,52 @@ fn draw_site_picker(
             .max_height((room - 90.0).max(120.0))
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                for group in &vm.groups {
-                    ui.add_space(6.0);
-                    dialog::group_heading(ui, &group.title);
-                    if group.kind == GroupKind::NearYou && group.rows.is_empty() {
-                        near_you_actions(ui, state, &vm);
-                    }
-                    for row in &group.rows {
-                        if site_row(ui, row) {
-                            select(state, row);
+                // Room on the right for the scroll bar, so the rows' right
+                // column stays clear of it.
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        right: 10,
+                        ..Default::default()
+                    })
+                    .show(ui, |ui| {
+                        for group in &vm.groups {
+                            ui.add_space(6.0);
+                            match &group.header_action {
+                                Some(action) => {
+                                    ui.horizontal(|ui| {
+                                        dialog::group_heading(ui, &group.title);
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui.link(&action.label).clicked() {
+                                                    state.push_command(action.intent.clone());
+                                                }
+                                            },
+                                        );
+                                    });
+                                }
+                                None => dialog::group_heading(ui, &group.title),
+                            }
+                            if group.kind == GroupKind::NearYou && group.rows.is_empty() {
+                                near_you_actions(ui, state, &vm);
+                            }
+                            for row in &group.rows {
+                                if let Some(intent) = site_row(ui, row) {
+                                    state.push_command(intent);
+                                }
+                            }
+                            if let Some(note) = group.note {
+                                ui.label(
+                                    RichText::new(note)
+                                        .size(theme::CAPTION)
+                                        .color(theme::TEXT_FAINT),
+                                );
+                            }
                         }
-                    }
-                }
-                if vm.match_count == 0 && vm.zip_query.is_none() {
-                    ui.label(RichText::new("No site matches").color(theme::TEXT_DIM));
-                }
+                        if vm.match_count == 0 && vm.zip_query.is_none() {
+                            ui.label(RichText::new("No site matches").color(theme::TEXT_DIM));
+                        }
+                    });
             });
 
         ui.add_space(8.0);
@@ -299,31 +324,46 @@ fn near_you_actions(
     }
 }
 
-/// One site row: the primary's filled circle, the ID, the place, a TDWR tag
-/// and the distance. Returns whether it was clicked.
-fn site_row(ui: &mut egui::Ui, row: &SiteRow) -> bool {
-    let primary = row.role == SiteRole::Primary;
-    let mut job = egui::text::LayoutJob::default();
+/// One site row: the On the map control (the focus's filled circle, a
+/// ticked box for the others), the ID, the place, a TDWR tag and the
+/// distance, and on the right the row's status or second action. Returns the
+/// intent a click on it stands for.
+fn site_row(ui: &mut egui::Ui, row: &SiteRow) -> Option<Intent> {
+    let focus = row.role == SiteRole::Focus;
     let style = ui.style().clone();
-    let mut push = |text: RichText| {
+    let mut job = egui::text::LayoutJob::default();
+    let push = |job: &mut egui::text::LayoutJob, text: RichText| {
         text.append_to(
-            &mut job,
+            job,
             &style,
             egui::FontSelection::Default,
             egui::Align::Center,
         )
     };
-    // The filled circle marks the primary; other rows keep its space.
-    let mark = if primary {
-        theme::SELECTED
-    } else {
-        egui::Color32::TRANSPARENT
-    };
-    push(RichText::new(format!("{} ", egui_phosphor::regular::RECORD)).color(mark));
-    push(RichText::new(row.id).monospace().color(theme::TEXT));
-    push(RichText::new(format!("  {}", row.place)).color(theme::TEXT_DIM));
+    // In the On the map group the control is its own button; elsewhere the
+    // filled circle marks the focus and other rows keep its space.
+    if row.on_map.is_none() {
+        let mark = if focus {
+            theme::SELECTED
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        push(
+            &mut job,
+            RichText::new(format!("{} ", egui_phosphor::regular::RECORD)).color(mark),
+        );
+    }
+    push(
+        &mut job,
+        RichText::new(row.id).monospace().color(theme::TEXT),
+    );
+    push(
+        &mut job,
+        RichText::new(format!("  {}", row.place)).color(theme::TEXT_DIM),
+    );
     if row.tdwr {
         push(
+            &mut job,
             RichText::new("  TDWR")
                 .size(theme::CAPTION)
                 .color(theme::TEXT_FAINT),
@@ -331,24 +371,147 @@ fn site_row(ui: &mut egui::Ui, row: &SiteRow) -> bool {
     }
     if let Some(d) = &row.distance {
         push(
+            &mut job,
             RichText::new(format!("  {d}"))
                 .monospace()
                 .size(theme::CAPTION)
                 .color(theme::TEXT_FAINT),
         );
     }
-    let hover = if primary {
+    let hover = if focus {
         "On the map now"
     } else if row.tdwr {
         "Terminal Doppler Weather Radar (airport site)"
     } else {
-        "Show this site"
+        "Show this site alone"
     };
-    // Full-width, left-aligned rows.
-    let response = ui
-        .with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
-            ui.add(egui::Button::selectable(primary, job).min_size(Vec2::new(0.0, 22.0)))
-        })
-        .inner;
-    response.on_hover_text(hover).clicked()
+
+    let mut out = None;
+    // The whole row, action included, so the action stays while the pointer
+    // crosses from the name to the right edge.
+    let row_rect = {
+        let r = ui.available_rect_before_wrap();
+        egui::Rect::from_min_size(r.min, Vec2::new(r.width(), 22.0))
+    };
+    let row_hovered = ui.rect_contains_pointer(row_rect);
+    ui.horizontal(|ui| {
+        // The On the map control: the focus's circle, the others' box.
+        if let Some(status) = &row.on_map {
+            match row.control_intents() {
+                None => {
+                    ui.add(
+                        egui::Button::new(
+                            RichText::new(egui_phosphor::regular::RADIO_BUTTON).color(theme::TEXT),
+                        )
+                        .frame(false),
+                    )
+                    .on_hover_text("The focus");
+                }
+                Some((focus_intent, remove_intent)) => {
+                    let circle = ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new(egui_phosphor::regular::CIRCLE)
+                                    .color(theme::TEXT_DIM),
+                            )
+                            .frame(false),
+                        )
+                        .on_hover_text("Make this the focus");
+                    if circle.clicked() {
+                        out = Some(focus_intent);
+                    }
+                    let boxed = ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new(egui_phosphor::regular::CHECK_SQUARE)
+                                    .color(theme::SELECTED),
+                            )
+                            .frame(false),
+                        )
+                        .on_hover_text("Remove from the map");
+                    if boxed.clicked() {
+                        out = Some(remove_intent);
+                    }
+                }
+            }
+            ui.add(egui::Label::new(job.clone()).selectable(false));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(text) = &status.text {
+                    ui.label(
+                        RichText::new(text)
+                            .size(theme::CAPTION)
+                            .color(theme::TEXT_DIM),
+                    );
+                }
+                match status.dot {
+                    Some(LiveDot::Streaming) => {
+                        ui.label(RichText::new(egui_phosphor::regular::RECORD).color(theme::NOW));
+                    }
+                    Some(LiveDot::Stalled) => {
+                        ui.label(RichText::new(egui_phosphor::regular::CIRCLE).color(theme::NOW));
+                    }
+                    None => {}
+                }
+            });
+            return;
+        }
+
+        // Every other row: a full-width pick button, the second action on
+        // the right.
+        let action = row.action.label();
+        let right_w = if action.is_some() { 150.0 } else { 0.0 };
+        let width = (ui.available_width() - right_w).max(80.0);
+        // Left-aligned, filling the row up to the action.
+        let pick = ui
+            .allocate_ui_with_layout(
+                Vec2::new(width, 22.0),
+                egui::Layout::top_down_justified(egui::Align::Min),
+                |ui| {
+                    ui.add(
+                        egui::Button::selectable(focus, job.clone())
+                            .wrap_mode(egui::TextWrapMode::Truncate)
+                            .min_size(Vec2::new(0.0, 22.0)),
+                    )
+                },
+            )
+            .inner
+            .on_hover_text(hover);
+        if pick.clicked() {
+            out = Some(row.pick_intent());
+        }
+        if let Some(label) = action {
+            if row.action.on_hover_only() && !row_hovered {
+                return;
+            }
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| match row.also_intent() {
+                    Some(intent) => {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(&label)
+                                        .size(theme::CAPTION)
+                                        .color(theme::SELECTED),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text("Show this site beside the ones on the map")
+                            .clicked()
+                        {
+                            out = Some(intent);
+                        }
+                    }
+                    None => {
+                        ui.label(
+                            RichText::new(&label)
+                                .size(theme::CAPTION)
+                                .color(theme::TEXT_FAINT),
+                        );
+                    }
+                },
+            );
+        }
+    });
+    out
 }

@@ -160,7 +160,22 @@ pub(crate) enum Intent {
     /// the timeline + alerts. Emitted by every site-picking surface (the
     /// modal's list, the zip/geolocation result, and a canvas click on a site
     /// marker).
+    ///
+    /// The picked site becomes the only site on the map and the focus
+    /// ([`crate::core::sites::select`]).
     SelectSite { site_id: String, lat: f64, lon: f64 },
+    /// Show `site_id` beside the sites already on the map (the picker's
+    /// "+ Also show"), up to [`crate::core::sites::cap`]. The focus stays.
+    AddSite { site_id: String, lat: f64, lon: f64 },
+    /// Take `site_id` off the map (the picker's ticked box). Removing the
+    /// focus moves it to the first remaining site; the last site stays.
+    RemoveSite { site_id: String },
+    /// Make `site_id`, already on the map, the focus: the site the ladder,
+    /// the frame readout, the age pill and the timeline track describe (the
+    /// picker's circle).
+    SetFocus { site_id: String },
+    /// Keep only the focus on the map (the picker's "Only KTBW").
+    OnlyFocus,
     /// The distance tool on the canvas: a click places an endpoint, a drag
     /// moves one, and an endpoint near a lettered storm track (or "My
     /// location") snaps to it. Reduced by [`crate::core::measure::reduce`].

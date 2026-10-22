@@ -73,8 +73,7 @@ pub(crate) struct DispatchState<'a> {
     pub chrome: &'a mut subsystem::Chrome,
     /// Read-only: the storm-activity book (the calendar's landing reads it).
     pub timeline: &'a subsystem::Timeline,
-    /// The sites: a step lands on the focus site's frames, and "show on map"
-    /// moves the focus site's position (the map centre, for now).
+    /// The sites: a step lands on the focus site's frames.
     pub sites: &'a mut subsystem::Sites,
 }
 
@@ -321,6 +320,10 @@ pub(crate) fn dispatch_state_only(
         // about which half of the partition owns it. The reason each one
         // is here:
         //   SelectSite ........ tears down GPU/render/stream state
+        //   AddSite ........... starts the new site's stream
+        //   RemoveSite ........ stops its stream, releases its GPU objects
+        //   SetFocus .......... recentres the camera, moves the latch
+        //   OnlyFocus ......... RemoveSite for every other site
         //   OpenExternalUrl ... web_sys window.open
         //   LocateMeForSite ... browser geolocation
         //   SubmitZip ......... network geocode lookup
@@ -335,6 +338,10 @@ pub(crate) fn dispatch_state_only(
         //   RetryWorker ....... constructs the decode worker
         //   Diagnostics ....... reducer effects (geolocation / URL open)
         shell @ (Intent::SelectSite { .. }
+        | Intent::AddSite { .. }
+        | Intent::RemoveSite { .. }
+        | Intent::SetFocus { .. }
+        | Intent::OnlyFocus
         | Intent::OpenExternalUrl(_)
         | Intent::LocateMeForSite
         | Intent::SubmitZip(_)
@@ -556,18 +563,8 @@ impl DispatchState<'_> {
         } else {
             self.state.layer_state.geo.alerts_other = true;
         }
-        if let Some((center_lat, center_lon)) = focus.center {
-            // The map centre is still the focus site's position.
-            let focus = self.sites.focus_mut();
-            focus.lat = center_lat;
-            focus.lon = center_lon;
-            self.state
-                .viz_state
-                .set_pan_offset(eframe::egui::Vec2::ZERO);
-            self.state
-                .viz_state
-                .camera
-                .center_on(center_lat, center_lon);
+        if let Some((lat, lon)) = focus.center {
+            self.state.viz_state.centre_map_on(lat, lon);
         }
         // Both surfaces must close so a detail opened from the list exposes the
         // newly focused map instead of immediately resurfacing the list.
@@ -586,13 +583,13 @@ impl DispatchState<'_> {
         // we flip it back to Queued.
         let scan_params = self.acquisition.state.find(op_id).and_then(|op| {
             if let state::OperationKind::ArchiveDownload {
+                site_id,
                 file_name,
                 scan_start,
                 scan_end,
-                ..
             } = &op.kind
             {
-                Some((file_name.clone(), *scan_start, *scan_end))
+                Some((site_id.clone(), file_name.clone(), *scan_start, *scan_end))
             } else {
                 None
             }
@@ -601,7 +598,7 @@ impl DispatchState<'_> {
         // Reset the operation row (Queued, front of pending) regardless.
         self.acquisition.state.retry_failed(op_id);
 
-        let Some((file_name, scan_start, scan_end)) = scan_params else {
+        let Some((site_id, file_name, scan_start, scan_end)) = scan_params else {
             // Non-download operations (listings/realtime) have no queue item to
             // re-enqueue; the status reset is all retry means for them.
             return;
@@ -616,6 +613,7 @@ impl DispatchState<'_> {
         let elevation_filter = self.active_elevation_filter();
 
         let item = crate::nexrad::download_queue::QueueItem::new(
+            crate::data::SiteId::new(site_id),
             date,
             file_name,
             scan_start,
@@ -671,6 +669,7 @@ impl DispatchState<'_> {
                     scan_end,
                 });
         let item = crate::nexrad::download_queue::QueueItem::new(
+            crate::data::SiteId::new(site_id),
             date,
             file_name,
             scan_start,
@@ -738,6 +737,10 @@ impl WorkbenchApp {
             Intent::SelectSite { site_id, lat, lon } => {
                 self.apply_site_selection(&site_id, lat, lon)
             }
+            Intent::AddSite { site_id, lat, lon } => self.add_site(ctx, &site_id, lat, lon),
+            Intent::RemoveSite { site_id } => self.remove_site(&site_id),
+            Intent::SetFocus { site_id } => self.set_focus(&site_id),
+            Intent::OnlyFocus => self.only_focus(),
             Intent::OpenExternalUrl(url) => {
                 self.apply_effects(ctx, vec![crate::core::Effect::OpenUrl(url)])
             }
@@ -834,60 +837,6 @@ impl WorkbenchApp {
         }
     }
 
-    /// Apply a site selection: retarget viz, center the camera, remember the
-    /// preference, close the modal, and queue the timeline/alerts refresh.
-    ///
-    /// Every site-picking surface (modal list, zip/geolocation result, canvas
-    /// marker click) routes here through [`Intent::SelectSite`], so this is the
-    /// single place a site change happens.
-    fn apply_site_selection(&mut self, site_id: &str, lat: f64, lon: f64) {
-        // Every pick — list, search, zip, location or map — completes the
-        // first visit and ends "Pick on map" (restoring the Sites layer).
-        self.chrome.site_required = false;
-        if let Some(was_on) = self.chrome.site_map_pick.take() {
-            self.state.layer_state.geo.nexrad_sites = was_on;
-        }
-        crate::core::site_picker::push_recent(&mut self.state.recent_sites, site_id);
-        self.state.preferred_site = Some(site_id.to_string());
-        self.chrome.site_modal_open = false;
-        if site_id == self.sites.focus().id.0 {
-            // Picking the current site is allowed (a first visit can keep the
-            // default site); nothing to retarget, but a deferred boot tether
-            // still starts.
-            if std::mem::take(&mut self.state.start_live_on_site_select) {
-                self.state.push_command(crate::core::Intent::StartLive);
-            }
-            return;
-        }
-        self.sites.focus_mut().retarget(site_id, lat, lon);
-        self.state
-            .viz_state
-            .set_pan_offset(eframe::egui::Vec2::ZERO);
-        self.state.viz_state.camera.center_on(lat, lon);
-        self.state
-            .push_command(crate::core::Intent::RefreshTimeline {
-                auto_position: true,
-            });
-        self.state.push_command(crate::core::Intent::Diagnostics(
-            crate::core::diagnostics::DiagnosticsIntent::RefreshAlerts,
-        ));
-        self.state.preferred_site = Some(site_id.to_string());
-        self.chrome.site_modal_open = false;
-
-        // Boot-tether deferred from a first visit (no site at launch): now that
-        // a site exists, open tethered to live (spec §7). One-shot — consumed
-        // here so later mid-session site re-selections don't auto-tether.
-        if std::mem::take(&mut self.state.start_live_on_site_select) {
-            self.state.push_command(crate::core::Intent::StartLive);
-        }
-
-        // Tear down the previous radar's stream/GPU/cache state now, in the
-        // same step that retargeted `viz_state` — otherwise the frame between
-        // here and the next `apply_frame_setup` would paint the old site's
-        // sweep under the new site's projection.
-        self.sync_to_active_site();
-    }
-
     /// Apply a diagnostics overlay intent through the pure
     /// [`crate::core::diagnostics::reduce`], executing any effects it returns.
     pub(crate) fn handle_diagnostics_intent(
@@ -980,10 +929,10 @@ impl WorkbenchApp {
             self.acquisition
                 .coordinator
                 .cache_load_channel
-                .load_site_timeline(
+                .load_site_timelines(
                     ctx.clone(),
                     self.acquisition.coordinator.facade().clone(),
-                    self.sites.focus().id.0.clone(),
+                    self.sites.iter().map(|s| s.id.0.clone()).collect(),
                 );
         } else {
             // Cache loader is busy; replay (without auto-position) next frame.
@@ -1294,6 +1243,18 @@ mod dispatch_tests {
                 lat: 45.0,
                 lon: -98.0,
             },
+            Intent::AddSite {
+                site_id: "KMLB".to_string(),
+                lat: 28.1,
+                lon: -80.65,
+            },
+            Intent::RemoveSite {
+                site_id: "KMLB".to_string(),
+            },
+            Intent::SetFocus {
+                site_id: "KMLB".to_string(),
+            },
+            Intent::OnlyFocus,
             Intent::OpenExternalUrl("https://example.com/changelog"),
             Intent::LocateMeForSite,
             Intent::SubmitZip("50309".to_string()),
@@ -1310,7 +1271,7 @@ mod dispatch_tests {
             Intent::RetryWorker,
             Intent::Diagnostics(crate::core::diagnostics::DiagnosticsIntent::RefreshAlerts),
         ];
-        assert_eq!(shell.len(), 14);
+        assert_eq!(shell.len(), 18);
         for intent in shell {
             let mut f = Fixture::new();
             let left = f.dispatch(intent.clone());
@@ -1430,7 +1391,7 @@ mod dispatch_tests {
             f.acquisition
                 .coordinator
                 .download_queue
-                .find_by_scan_start(1_000)
+                .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
                 .is_none(),
             "skip must NOT re-enqueue the download (that is RetryFailed)"
         );
@@ -1466,7 +1427,7 @@ mod dispatch_tests {
             .acquisition
             .coordinator
             .download_queue
-            .find_by_scan_start(1_000)
+            .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
             .expect("retry must re-enqueue the download item");
         assert_eq!(item.operation_id, Some(a), "both machines stay correlated");
         // Default viz elevation selection is Fixed { elevation_number: 1 }.
@@ -1519,7 +1480,7 @@ mod dispatch_tests {
             .acquisition
             .coordinator
             .download_queue
-            .find_by_scan_start(1_000)
+            .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
             .expect("fetch must enqueue the download item");
         assert_eq!(item.operation_id, Some(op.id));
         assert_eq!(
@@ -1546,7 +1507,7 @@ mod dispatch_tests {
             .acquisition
             .coordinator
             .download_queue
-            .find_by_scan_start(1_000)
+            .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
             .is_none());
         assert!(f.toast().is_some_and(|t| t.contains("still listing")));
     }
@@ -2107,8 +2068,11 @@ mod dispatch_tests {
             !f.state.layer_state.geo.alerts_other,
             "a warning must not switch on the watches/advisories layer"
         );
-        assert!((f.sites.focus().lat - 42.0).abs() < 1e-9);
-        assert!((f.sites.focus().lon + 93.0).abs() < 1e-9);
+        let (lat, lon) = f.state.viz_state.map_centre;
+        assert!((lat - 42.0).abs() < 1e-9);
+        assert!((lon + 93.0).abs() < 1e-9);
+        // The map moved; the radar did not.
+        assert!((f.sites.focus().lat - 41.7312).abs() < 1e-9);
         assert_eq!(f.diagnostics.alerts.selected_alert_id, None);
         assert!(!f.diagnostics.alerts.list_modal_open);
     }
@@ -2173,7 +2137,7 @@ mod dispatch_tests {
             .acquisition
             .coordinator
             .download_queue
-            .find_by_scan_start(1_000)
+            .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
             .expect("retry must re-enqueue");
         assert_eq!(
             item.elevation_filter, None,

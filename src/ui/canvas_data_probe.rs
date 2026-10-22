@@ -28,6 +28,10 @@ pub(crate) fn render_data_probe(
     sweep_params: Option<(f32, f32)>,
     // The storm cell under the pointer (core::storm_cell_view::probe_line).
     cell_line: Option<String>,
+    // With several sites on the map, one line per site under the cursor
+    // (core::site_canvas::probe_site_line), focus first; they replace the
+    // single site's polar, value and time lines.
+    site_lines: Option<Vec<String>>,
 ) {
     let geo = projection.screen_to_geo(hover_pos);
     let lat = geo.y;
@@ -47,10 +51,17 @@ pub(crate) fn render_data_probe(
         .unwrap_or((None, None));
 
     // Build tooltip text
-    let mut lines = vec![
-        format!("{:.4}\u{00B0}N {:.4}\u{00B0}W", lat, -lon),
-        format!("Az: {:.1}\u{00B0}  Rng: {:.1} km", azimuth_deg, range_km),
-    ];
+    let mut lines = vec![format!("{:.4}\u{00B0}N {:.4}\u{00B0}W", lat, -lon)];
+    if let Some(site_lines) = site_lines {
+        lines.extend(site_lines);
+        lines.extend(cell_line);
+        paint_probe(painter, hover_pos, &lines.join("\n"));
+        return;
+    }
+    lines.push(format!(
+        "Az: {:.1}\u{00B0}  Rng: {:.1} km",
+        azimuth_deg, range_km
+    ));
     if let Some(v) = value {
         let unit = product.unit();
         if unit.is_empty() {
@@ -63,11 +74,14 @@ pub(crate) fn render_data_probe(
         lines.push(format_unix_timestamp(ts, use_local_time));
     }
     lines.extend(cell_line);
-    let text = lines.join("\n");
+    paint_probe(painter, hover_pos, &lines.join("\n"));
+}
 
+/// The probe's tooltip and crosshair at `hover_pos`.
+fn paint_probe(painter: &Painter, hover_pos: Pos2, text: &str) {
     // Draw tooltip background
     let font_id = egui::FontId::monospace(11.0);
-    let galley = painter.layout_no_wrap(text.clone(), font_id.clone(), theme::TEXT);
+    let galley = painter.layout_no_wrap(text.to_string(), font_id, theme::TEXT);
     let tooltip_size = galley.size();
     let padding = Vec2::new(6.0, 4.0);
     let tooltip_pos = hover_pos + Vec2::new(16.0, -tooltip_size.y - 8.0);

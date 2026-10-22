@@ -7,44 +7,94 @@
 //! recent list and the "near you" fix into rows; [`on_location`] decides what
 //! a geolocation or zip result does. The egui popover is `ui::site_modal`.
 //!
-//! **Several sites, later.** The model already speaks of a [`SiteSet`] — one
-//! primary and its companions — and rows carry a [`SiteRole`]. Today the set
-//! always has no companions, so the "On the map" group is never built; when
-//! companions arrive the picker gains that group at the top and every row a
-//! second action, with nothing else in the picker changing.
+//! **Several sites.** The [`SiteSet`] is the list of sites on the map and the
+//! focus index. Once more than one site is shown, an "On the map" group heads
+//! the list: the focus has the filled circle (another row's circle moves the
+//! focus), the others a ticked box (unticking removes the site), each with
+//! its frame's age, and the group header offers "Only KTBW". Every row
+//! elsewhere offers "+ Also show" until the cap, where the action says why
+//! it is disabled; a row already on the map reads "on the map". A plain
+//! click on a row is still a pick: that site alone. On a phone (a cap of one)
+//! the picker is the single-site picker.
 
-use crate::core::{LocationResult, LocationSource};
+use crate::core::session::{format_age, Stream};
+use crate::core::sites::Refusal;
+use crate::core::{Intent, LocationResult, LocationSource};
 use crate::data::sites::{all_sites_sorted, haversine_distance, NexradSite};
+use crate::data::SiteId;
 
 /// How many sites the Near you group lists.
 pub(crate) const NEAR_YOU_COUNT: usize = 4;
 /// How many sites the Recent group remembers.
 pub(crate) const RECENT_CAP: usize = 5;
 
-/// The sites on the map: one primary that the single-valued surfaces
-/// describe, and companions (none yet — single-site build).
-#[derive(Clone, Debug, Default, PartialEq)]
+/// One site on the map, as the picker reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OnMap {
+    pub id: String,
+    /// Age of the frame on its canvas, in seconds; `None` with no frame.
+    pub age_secs: Option<f64>,
+    /// Its live stream's health ([`Stream::Off`] when not streaming).
+    pub stream: Stream,
+}
+
+impl OnMap {
+    /// A site with no frame and no stream.
+    #[cfg(test)]
+    pub(crate) fn idle(id: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            age_secs: None,
+            stream: Stream::Off,
+        }
+    }
+}
+
+/// The sites on the map, in list order, and which one is the focus (the
+/// one the single-valued surfaces describe).
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SiteSet {
-    pub primary: String,
-    pub companions: Vec<String>,
+    pub sites: Vec<OnMap>,
+    pub focus: usize,
+    /// How many sites the layout shows ([`crate::core::sites::cap`]).
+    pub cap: usize,
 }
 
 impl SiteSet {
-    /// A set holding only `primary`.
-    pub(crate) fn single(primary: &str) -> Self {
+    /// A desktop set holding only `id`.
+    #[cfg(test)]
+    pub(crate) fn single(id: &str) -> Self {
         Self {
-            primary: primary.to_string(),
-            companions: Vec::new(),
+            sites: vec![OnMap::idle(id)],
+            focus: 0,
+            cap: crate::core::sites::DESKTOP_CAP,
         }
     }
 
+    fn ids(&self) -> Vec<SiteId> {
+        self.sites
+            .iter()
+            .map(|s| SiteId::new(s.id.clone()))
+            .collect()
+    }
+
     fn role(&self, id: &str) -> SiteRole {
-        if id == self.primary {
-            SiteRole::Primary
-        } else if self.companions.iter().any(|c| c == id) {
-            SiteRole::Companion
-        } else {
-            SiteRole::None
+        match self.sites.iter().position(|s| s.id == id) {
+            Some(i) if i == self.focus => SiteRole::Focus,
+            Some(_) => SiteRole::Shown,
+            None => SiteRole::None,
+        }
+    }
+
+    /// What a row's secondary action offers for `id`.
+    fn action(&self, id: &str) -> RowAction {
+        if self.cap <= 1 {
+            return RowAction::None;
+        }
+        match crate::core::sites::add(&self.ids(), &SiteId::new(id), self.cap) {
+            Ok(_) => RowAction::AlsoShow,
+            Err(Refusal::AlreadyShown) => RowAction::OnTheMap,
+            Err(refusal) => RowAction::AtCap(refusal.words()),
         }
     }
 }
@@ -54,11 +104,98 @@ impl SiteSet {
 pub(crate) enum SiteRole {
     /// Not on the map.
     None,
-    /// The primary site (the filled circle; "current").
-    Primary,
-    /// Shown alongside the primary (future).
-    Companion,
+    /// The focus (the filled circle).
+    Focus,
+    /// On the map beside the focus (a ticked box in the On the map group).
+    Shown,
 }
+
+/// A row's second action, beside the plain click that picks the site alone.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RowAction {
+    /// No second action (a phone).
+    None,
+    /// "+ Also show", shown while the pointer is anywhere on the row.
+    AlsoShow,
+    /// The set is full: "+ Also show · 3 sites max", disabled. Carries the
+    /// refusal's words.
+    AtCap(String),
+    /// The site is on the map: the row reads "on the map".
+    OnTheMap,
+}
+
+impl RowAction {
+    /// The words on the row's right: "+ Also show", "+ Also show · 3 sites
+    /// max" or "on the map".
+    pub(crate) fn label(&self) -> Option<String> {
+        match self {
+            RowAction::None => None,
+            RowAction::AlsoShow => Some("+ Also show".to_string()),
+            RowAction::AtCap(why) => Some(format!("+ Also show \u{00B7} {why}")),
+            RowAction::OnTheMap => Some("on the map".to_string()),
+        }
+    }
+
+    /// The action shows only while the pointer is anywhere on the row, the
+    /// action's own words included, so it can be reached ("on the map"
+    /// always shows).
+    pub(crate) fn on_hover_only(&self) -> bool {
+        matches!(self, RowAction::AlsoShow | RowAction::AtCap(_))
+    }
+}
+
+/// The live dot beside an On the map row's age.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LiveDot {
+    /// Streaming: a filled red dot.
+    Streaming,
+    /// The stream stalled: a hollow red dot.
+    Stalled,
+}
+
+/// An On the map row's right side: the frame's age ("2 min old") or, for a
+/// stalled stream, "stalled · 6 min".
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OnMapStatus {
+    pub text: Option<String>,
+    pub dot: Option<LiveDot>,
+}
+
+fn on_map_status(site: &OnMap) -> OnMapStatus {
+    let dot = match site.stream {
+        Stream::Stalled => Some(LiveDot::Stalled),
+        s if s.is_running() => Some(LiveDot::Streaming),
+        _ => None,
+    };
+    let text = site.age_secs.map(|age| {
+        let words = format_age(age);
+        if dot == Some(LiveDot::Stalled) {
+            format!(
+                "stalled \u{00B7} {}",
+                words.strip_suffix(" old").unwrap_or(&words)
+            )
+        } else {
+            words
+        }
+    });
+    OnMapStatus {
+        text: text.or_else(|| (dot == Some(LiveDot::Stalled)).then(|| "stalled".to_string())),
+        dot,
+    }
+}
+
+/// What the On the map group's header offers.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HeaderAction {
+    /// "Only KTBW".
+    pub label: String,
+    pub intent: Intent,
+}
+
+/// The words under the On the map group.
+pub(crate) const ON_THE_MAP_NOTE: &str = "The filled circle is the focus: the ladder, the frame \
+     readout, the age pill and the timeline track follow it. Click another row's circle to move \
+     the focus; untick a box to remove a site.";
 
 /// Where the Near you group is.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -92,6 +229,47 @@ pub(crate) struct SiteRow {
     pub distance: Option<String>,
     pub lat: f64,
     pub lon: f64,
+    /// The second action ("+ Also show"); [`RowAction::None`] in the On the
+    /// map group, whose rows carry [`Self::on_map`] instead.
+    pub action: RowAction,
+    /// In the On the map group: the age or stall beside the row.
+    pub on_map: Option<OnMapStatus>,
+}
+
+impl SiteRow {
+    /// A plain click: this site alone.
+    pub(crate) fn pick_intent(&self) -> Intent {
+        Intent::SelectSite {
+            site_id: self.id.to_string(),
+            lat: self.lat,
+            lon: self.lon,
+        }
+    }
+
+    /// The "+ Also show" action, when it is enabled.
+    pub(crate) fn also_intent(&self) -> Option<Intent> {
+        (self.action == RowAction::AlsoShow).then(|| Intent::AddSite {
+            site_id: self.id.to_string(),
+            lat: self.lat,
+            lon: self.lon,
+        })
+    }
+
+    /// An On the map row's control: the circle of a non-focus row moves the
+    /// focus to it; the box of a non-focus row removes it. The focus's own
+    /// circle does nothing.
+    pub(crate) fn control_intents(&self) -> Option<(Intent, Intent)> {
+        (self.on_map.is_some() && self.role == SiteRole::Shown).then(|| {
+            (
+                Intent::SetFocus {
+                    site_id: self.id.to_string(),
+                },
+                Intent::RemoveSite {
+                    site_id: self.id.to_string(),
+                },
+            )
+        })
+    }
 }
 
 /// Which group a block of rows is.
@@ -113,6 +291,22 @@ pub(crate) struct SiteGroup {
     pub kind: GroupKind,
     pub title: String,
     pub rows: Vec<SiteRow>,
+    /// The header's action ("Only KTBW" on the On the map group).
+    pub header_action: Option<HeaderAction>,
+    /// Words under the group ([`ON_THE_MAP_NOTE`]).
+    pub note: Option<&'static str>,
+}
+
+impl SiteGroup {
+    fn plain(kind: GroupKind, title: String, rows: Vec<SiteRow>) -> Self {
+        Self {
+            kind,
+            title,
+            rows,
+            header_action: None,
+            note: None,
+        }
+    }
 }
 
 /// What the Enter key does.
@@ -156,6 +350,8 @@ fn row(site: &NexradSite, set: &SiteSet, distance: Option<String>) -> SiteRow {
         distance,
         lat: site.lat,
         lon: site.lon,
+        action: set.action(site.id),
+        on_map: None,
     }
 }
 
@@ -221,18 +417,32 @@ pub(crate) fn site_picker_vm(input: &SitePickerInputs<'_>) -> SitePickerVm {
     let set = input.sites;
     let mut groups = Vec::new();
 
-    // On the map: only once a companion exists (the single-site build never
-    // has one).
-    if !set.companions.is_empty() {
-        let rows = std::iter::once(&set.primary)
-            .chain(set.companions.iter())
-            .filter_map(|id| crate::data::get_site(id))
-            .map(|s| row(s, set, None))
+    // On the map: once more than one site is shown, in list order.
+    if set.sites.len() > 1 {
+        let rows = set
+            .sites
+            .iter()
+            .filter_map(|on| crate::data::get_site(&on.id).map(|s| (on, s)))
+            .map(|(on, s)| SiteRow {
+                action: RowAction::None,
+                on_map: Some(on_map_status(on)),
+                ..row(s, set, None)
+            })
             .collect();
+        let focus_id = set
+            .sites
+            .get(set.focus)
+            .map(|s| s.id.as_str())
+            .unwrap_or("");
         groups.push(SiteGroup {
             kind: GroupKind::OnTheMap,
             title: "On the map".into(),
             rows,
+            header_action: Some(HeaderAction {
+                label: format!("Only {focus_id}"),
+                intent: Intent::OnlyFocus,
+            }),
+            note: Some(ON_THE_MAP_NOTE),
         });
     }
 
@@ -274,27 +484,27 @@ pub(crate) fn site_picker_vm(input: &SitePickerInputs<'_>) -> SitePickerVm {
             Some(first) => EnterAction::Pick(first.clone()),
             None => EnterAction::LookUpZip(zip.clone()),
         };
-        groups.push(SiteGroup {
-            kind: GroupKind::NearYou,
-            title: format!("Near {zip}"),
+        groups.push(SiteGroup::plain(
+            GroupKind::NearYou,
+            format!("Near {zip}"),
             rows,
-        });
+        ));
     } else if q.is_empty() {
         if let NearYou::Found { lat, lon, zip } = input.near {
-            groups.push(SiteGroup {
-                kind: GroupKind::NearYou,
-                title: match zip {
+            groups.push(SiteGroup::plain(
+                GroupKind::NearYou,
+                match zip {
                     Some(z) => format!("Near {z}"),
                     None => "Near you".into(),
                 },
-                rows: near_rows(*lat, *lon),
-            });
+                near_rows(*lat, *lon),
+            ));
         } else {
-            groups.push(SiteGroup {
-                kind: GroupKind::NearYou,
-                title: "Near you".into(),
-                rows: Vec::new(),
-            });
+            groups.push(SiteGroup::plain(
+                GroupKind::NearYou,
+                "Near you".into(),
+                Vec::new(),
+            ));
         }
         let recent: Vec<SiteRow> = input
             .recent
@@ -303,11 +513,7 @@ pub(crate) fn site_picker_vm(input: &SitePickerInputs<'_>) -> SitePickerVm {
             .map(|s| row(s, set, None))
             .collect();
         if !recent.is_empty() {
-            groups.push(SiteGroup {
-                kind: GroupKind::Recent,
-                title: "Recent".into(),
-                rows: recent,
-            });
+            groups.push(SiteGroup::plain(GroupKind::Recent, "Recent".into(), recent));
         }
         // All sites, grouped by state, states alphabetical, the rest last.
         let mut all = all_sites_sorted();
@@ -322,11 +528,11 @@ pub(crate) fn site_picker_vm(input: &SitePickerInputs<'_>) -> SitePickerVm {
                 if let Some(g) = current.take() {
                     groups.push(g);
                 }
-                current = Some(SiteGroup {
-                    kind: GroupKind::State(s.state),
-                    title: s.state.unwrap_or("Outside the US states").to_string(),
-                    rows: Vec::new(),
-                });
+                current = Some(SiteGroup::plain(
+                    GroupKind::State(s.state),
+                    s.state.unwrap_or("Outside the US states").to_string(),
+                    Vec::new(),
+                ));
             }
             if let Some(g) = current.as_mut() {
                 g.rows.push(row(s, set, None));
@@ -347,11 +553,7 @@ pub(crate) fn site_picker_vm(input: &SitePickerInputs<'_>) -> SitePickerVm {
             .cloned()
             .map(EnterAction::Pick)
             .unwrap_or(EnterAction::None);
-        groups.push(SiteGroup {
-            kind: GroupKind::Matches,
-            title: "Matches".into(),
-            rows,
-        });
+        groups.push(SiteGroup::plain(GroupKind::Matches, "Matches".into(), rows));
     }
 
     SitePickerVm {
@@ -449,7 +651,8 @@ mod tests {
         let v = vm("KDMX", &NearYou::Idle, &[]);
         let first = &v.groups[0].rows[0];
         assert_eq!(first.id, "KDMX");
-        assert_eq!(first.role, SiteRole::Primary);
+        assert_eq!(first.role, SiteRole::Focus);
+        assert_eq!(first.action, RowAction::OnTheMap);
         // Enter takes it: a first visit can keep the default site.
         assert!(matches!(&v.enter, EnterAction::Pick(r) if r.id == "KDMX"));
     }
@@ -521,23 +724,208 @@ mod tests {
         assert_eq!(f.location_error.as_deref(), Some("denied"));
     }
 
+    fn milton() -> SiteSet {
+        SiteSet {
+            sites: vec![
+                OnMap {
+                    id: "KTBW".into(),
+                    age_secs: Some(130.0),
+                    stream: Stream::Receiving,
+                },
+                OnMap {
+                    id: "KMLB".into(),
+                    age_secs: Some(190.0),
+                    stream: Stream::Waiting,
+                },
+                OnMap {
+                    id: "KJAX".into(),
+                    age_secs: Some(370.0),
+                    stream: Stream::Stalled,
+                },
+            ],
+            focus: 0,
+            cap: 3,
+        }
+    }
+
+    fn vm_for(set: &SiteSet, query: &str, recent: &[String]) -> SitePickerVm {
+        site_picker_vm(&SitePickerInputs {
+            query,
+            sites: set,
+            recent,
+            near: &NearYou::Idle,
+        })
+    }
+
     #[wasm_bindgen_test]
-    fn no_companions_no_on_the_map_group() {
+    fn one_site_has_no_on_the_map_group() {
         let v = vm("", &NearYou::Idle, &[]);
         assert!(v.groups.iter().all(|g| g.kind != GroupKind::OnTheMap));
+    }
+
+    #[wasm_bindgen_test]
+    fn several_sites_head_the_list_with_on_the_map() {
+        let v = vm_for(&milton(), "", &[]);
+        let g = &v.groups[0];
+        assert_eq!(g.kind, GroupKind::OnTheMap);
+        assert_eq!(g.title, "On the map");
+        let ids: Vec<_> = g.rows.iter().map(|r| r.id).collect();
+        assert_eq!(ids, ["KTBW", "KMLB", "KJAX"]);
+        assert_eq!(g.rows[0].role, SiteRole::Focus);
+        assert_eq!(g.rows[1].role, SiteRole::Shown);
+        assert_eq!(g.rows[2].role, SiteRole::Shown);
+        assert_eq!(
+            g.header_action,
+            Some(HeaderAction {
+                label: "Only KTBW".into(),
+                intent: Intent::OnlyFocus,
+            })
+        );
+        assert_eq!(g.note, Some(ON_THE_MAP_NOTE));
+        // The group's rows carry their status, not "+ Also show".
+        assert!(g.rows.iter().all(|r| r.action == RowAction::None));
+    }
+
+    #[wasm_bindgen_test]
+    fn on_the_map_rows_read_their_age_or_stall() {
+        let v = vm_for(&milton(), "", &[]);
+        let status: Vec<_> = v.groups[0]
+            .rows
+            .iter()
+            .map(|r| r.on_map.clone().unwrap())
+            .collect();
+        assert_eq!(status[0].text.as_deref(), Some("2 min old"));
+        assert_eq!(status[0].dot, Some(LiveDot::Streaming));
+        assert_eq!(status[1].text.as_deref(), Some("3 min old"));
+        assert_eq!(status[1].dot, Some(LiveDot::Streaming));
+        assert_eq!(status[2].text.as_deref(), Some("stalled \u{00B7} 6 min"));
+        assert_eq!(status[2].dot, Some(LiveDot::Stalled));
+        // Archive: the age alone, no dot.
+        let mut set = milton();
+        for s in &mut set.sites {
+            s.stream = Stream::Off;
+        }
+        let v = vm_for(&set, "", &[]);
+        let jax = v.groups[0].rows[2].on_map.clone().unwrap();
+        assert_eq!(jax.text.as_deref(), Some("6 min old"));
+        assert_eq!(jax.dot, None);
+        // No frame yet: nothing to say.
+        set.sites[1].age_secs = None;
+        let v = vm_for(&set, "", &[]);
+        assert_eq!(v.groups[0].rows[1].on_map.clone().unwrap().text, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn on_the_map_controls_move_the_focus_or_remove_the_site() {
+        let v = vm_for(&milton(), "", &[]);
+        let rows = &v.groups[0].rows;
+        // The focus's own circle does nothing; its box is the circle.
+        assert_eq!(rows[0].control_intents(), None);
+        assert_eq!(
+            rows[1].control_intents(),
+            Some((
+                Intent::SetFocus {
+                    site_id: "KMLB".into()
+                },
+                Intent::RemoveSite {
+                    site_id: "KMLB".into()
+                },
+            ))
+        );
+        // Moving the focus moves the filled circle and the "Only" label.
+        let mut set = milton();
+        set.focus = 2;
+        let v = vm_for(&set, "", &[]);
+        assert_eq!(v.groups[0].rows[2].role, SiteRole::Focus);
+        assert_eq!(
+            v.groups[0].header_action.as_ref().unwrap().label,
+            "Only KJAX"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn other_rows_offer_also_show_until_the_cap() {
         let set = SiteSet {
-            primary: "KTLX".into(),
-            companions: vec!["KINX".into()],
+            sites: vec![OnMap::idle("KTBW"), OnMap::idle("KMLB")],
+            focus: 0,
+            cap: 3,
         };
-        let v = site_picker_vm(&SitePickerInputs {
-            query: "",
-            sites: &set,
-            recent: &[],
-            near: &NearYou::Idle,
-        });
-        assert_eq!(v.groups[0].kind, GroupKind::OnTheMap);
-        assert_eq!(v.groups[0].rows[0].role, SiteRole::Primary);
-        assert_eq!(v.groups[0].rows[1].role, SiteRole::Companion);
+        let v = vm_for(&set, "KAMX", &[]);
+        let amx = &v.groups[1].rows[0];
+        assert_eq!(amx.id, "KAMX");
+        assert_eq!(amx.action, RowAction::AlsoShow);
+        assert_eq!(amx.action.label().as_deref(), Some("+ Also show"));
+        assert!(amx.action.on_hover_only());
+        assert_eq!(
+            amx.also_intent(),
+            Some(Intent::AddSite {
+                site_id: "KAMX".into(),
+                lat: amx.lat,
+                lon: amx.lon,
+            })
+        );
+        // At the cap the action says why and does nothing.
+        let v = vm_for(&milton(), "KAMX", &[]);
+        let amx = &v.groups[1].rows[0];
+        assert_eq!(amx.action, RowAction::AtCap("3 sites max".into()));
+        assert_eq!(
+            amx.action.label().as_deref(),
+            Some("+ Also show \u{00B7} 3 sites max")
+        );
+        assert!(amx.action.on_hover_only());
+        assert_eq!(amx.also_intent(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn rows_already_on_the_map_read_on_the_map() {
+        let recent = vec!["KMLB".to_string(), "KDMX".to_string()];
+        let v = vm_for(&milton(), "", &recent);
+        let recent_group = v
+            .groups
+            .iter()
+            .find(|g| g.kind == GroupKind::Recent)
+            .unwrap();
+        assert_eq!(recent_group.rows[0].action, RowAction::OnTheMap);
+        assert_eq!(
+            recent_group.rows[0].action.label().as_deref(),
+            Some("on the map")
+        );
+        assert_eq!(recent_group.rows[0].also_intent(), None);
+        assert_eq!(recent_group.rows[0].control_intents(), None);
+        assert_eq!(
+            recent_group.rows[1].action,
+            RowAction::AtCap("3 sites max".into())
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_plain_click_picks_the_site_alone() {
+        let v = vm_for(&milton(), "KAMX", &[]);
+        let amx = &v.groups[1].rows[0];
+        assert_eq!(
+            amx.pick_intent(),
+            Intent::SelectSite {
+                site_id: "KAMX".into(),
+                lat: amx.lat,
+                lon: amx.lon,
+            }
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_phone_keeps_the_single_site_picker() {
+        let set = SiteSet {
+            sites: vec![OnMap::idle("KTBW")],
+            focus: 0,
+            cap: 1,
+        };
+        let v = vm_for(&set, "", &["KMLB".to_string()]);
+        assert!(v.groups.iter().all(|g| g.kind != GroupKind::OnTheMap));
+        assert!(v
+            .groups
+            .iter()
+            .flat_map(|g| &g.rows)
+            .all(|r| r.action == RowAction::None));
     }
 
     #[wasm_bindgen_test]

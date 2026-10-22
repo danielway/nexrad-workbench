@@ -11,13 +11,14 @@
 //!
 //! | In the link | Key |
 //! |---|---|
-//! | site | `site` |
+//! | site (the focus) | `site` |
+//! | the other sites on the map, in order | `also` (`also=KMLB,KJAX`) |
 //! | playhead time (Unix seconds) | `t` |
 //! | selection: point, range, pinned or not | `sel` |
 //! | play mode (Frames / Rays) | `mode` |
 //! | product | `product` |
 //! | tilt (an angle, or Latest) | `tilt` |
-//! | map center | `lat`, `lon` |
+//! | map centre (the map's own, not a radar's) | `lat`, `lon` |
 //! | 2D/3D, camera, map and timeline zoom, volume rendering and cutoff | `v` |
 //! | storm cells on, at this envelope threshold (dBZ) | `cells` |
 //! | storm cell tracks on (`1`) or off (`0`) | `tracks` |
@@ -72,7 +73,10 @@ pub(crate) enum LinkTilt {
 /// on the way in: a link names only what it names.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct LinkState {
+    /// The focus site.
     pub site: Option<String>,
+    /// The other sites on the map, in list order (`also=KMLB,KJAX`).
+    pub also: Vec<String>,
     pub time: Option<f64>,
     pub selection: Option<LinkSelection>,
     pub play_mode: Option<PlaybackMode>,
@@ -121,6 +125,13 @@ pub(crate) fn parse(query: &str) -> LinkState {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         match key {
             "site" if !value.is_empty() => link.site = Some(value.to_uppercase()),
+            "also" => {
+                link.also = value
+                    .split(',')
+                    .map(|id| id.trim().to_uppercase())
+                    .filter(|id| !id.is_empty())
+                    .collect()
+            }
             "t" => link.time = value.parse().ok().filter(|t: &f64| t.is_finite()),
             "sel" => link.selection = parse_selection(value),
             "mode" => {
@@ -173,6 +184,9 @@ pub(crate) fn to_query(link: &LinkState) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(site) = &link.site {
         parts.push(format!("site={site}"));
+    }
+    if !link.also.is_empty() {
+        parts.push(format!("also={}", link.also.join(",")));
     }
     let pinned = link.selection.is_some_and(LinkSelection::is_pinned);
     if let (Some(t), false) = (link.time, pinned) {
@@ -320,10 +334,16 @@ impl BootStart {
 /// the preferred site.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BootPlan {
-    /// The site to open at. `None` opens the first-visit picker.
+    /// The site to open at, the focus. `None` opens the first-visit picker.
     pub site: Option<String>,
+    /// The other sites to show beside it, in order: the link's `also` with
+    /// unknown ids, repeats and the sites over the layout's cap dropped.
+    pub also: Vec<String>,
     /// The site came from the link (rather than the preference).
     pub site_from_link: bool,
+    /// The map centre: the link's `lat`/`lon` when it carries both. `None`
+    /// centres the map on the focus site.
+    pub map_centre: Option<(f64, f64)>,
     pub start: BootStart,
 }
 
@@ -337,10 +357,15 @@ pub(crate) struct BootPlan {
 ///
 /// `known_site` validates a site id; an unknown one in the link falls back
 /// to the preferred site rather than opening on a radar that does not exist.
+/// `cap` is how many sites the layout shows ([`crate::core::sites::cap`]):
+/// the link's `also` sites join the focus up to it, and unknown ids, repeats
+/// and sites past the cap are dropped without a word. A link whose focus is
+/// unknown opens no `also` sites.
 pub(crate) fn decide_boot(
     link: &LinkState,
     preferred_site: Option<&str>,
     known_site: impl Fn(&str) -> bool,
+    cap: usize,
 ) -> BootPlan {
     let link_site = link.site.as_deref().filter(|s| known_site(s));
     let (site, site_from_link) = match (link_site, preferred_site) {
@@ -348,6 +373,17 @@ pub(crate) fn decide_boot(
         (None, Some(p)) if known_site(p) => (Some(p.to_string()), false),
         _ => (None, false),
     };
+    let mut also: Vec<String> = Vec::new();
+    if let (Some(focus), true) = (link_site, site_from_link) {
+        for id in &link.also {
+            if also.len() + 1 >= cap {
+                break;
+            }
+            if id != focus && !also.contains(id) && known_site(id) {
+                also.push(id.clone());
+            }
+        }
+    }
 
     let start = match link.effective_selection() {
         Some(LinkSelection::PinnedNow) => BootStart::PinnedNow,
@@ -368,7 +404,9 @@ pub(crate) fn decide_boot(
 
     BootPlan {
         site,
+        also,
         site_from_link,
+        map_centre: link.lat.zip(link.lon),
         start,
     }
 }
@@ -385,6 +423,7 @@ mod tests {
     fn full() -> LinkState {
         LinkState {
             site: Some("KTLX".into()),
+            also: vec!["KDMX".into(), "KOAX".into()],
             time: Some(1_700_000_000.0),
             selection: Some(LinkSelection::Range {
                 start: 1_699_999_000.0,
@@ -592,7 +631,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn no_link_opens_pinned_live_at_the_preferred_site() {
-        let plan = decide_boot(&parse(""), Some("KDMX"), known);
+        let plan = decide_boot(&parse(""), Some("KDMX"), known, 3);
         assert_eq!(plan.site.as_deref(), Some("KDMX"));
         assert!(!plan.site_from_link);
         assert_eq!(plan.start, BootStart::PinnedNow);
@@ -600,14 +639,14 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn no_link_and_no_preference_asks_for_a_site_then_pins() {
-        let plan = decide_boot(&parse(""), None, known);
+        let plan = decide_boot(&parse(""), None, known, 3);
         assert_eq!(plan.site, None);
         assert_eq!(plan.start, BootStart::PinnedNow);
     }
 
     #[wasm_bindgen_test]
     fn a_time_opens_there_detached() {
-        let plan = decide_boot(&parse("?site=KTLX&t=1700000000"), Some("KDMX"), known);
+        let plan = decide_boot(&parse("?site=KTLX&t=1700000000"), Some("KDMX"), known, 3);
         assert_eq!(plan.site.as_deref(), Some("KTLX"));
         assert!(plan.site_from_link);
         assert_eq!(plan.start, BootStart::At(1_700_000_000.0));
@@ -616,14 +655,14 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn a_pinned_selection_opens_pinned_whatever_the_time() {
-        let plan = decide_boot(&parse("?site=KTLX&t=1700000000&sel=now"), None, known);
+        let plan = decide_boot(&parse("?site=KTLX&t=1700000000&sel=now"), None, known, 3);
         assert_eq!(plan.start, BootStart::PinnedNow);
-        let plan = decide_boot(&parse("?site=KTLX&t=1700000000&sel=last6f"), None, known);
+        let plan = decide_boot(&parse("?site=KTLX&t=1700000000&sel=last6f"), None, known, 3);
         assert_eq!(
             plan.start,
             BootStart::PinnedRange(LoopPreset::LastFrames(6))
         );
-        let plan = decide_boot(&parse("?sel=last3600s"), Some("KOAX"), known);
+        let plan = decide_boot(&parse("?sel=last3600s"), Some("KOAX"), known, 3);
         assert_eq!(
             plan.start,
             BootStart::PinnedRange(LoopPreset::LastDuration(3600.0))
@@ -633,7 +672,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn a_fixed_range_opens_detached_with_the_playhead_inside() {
-        let plan = decide_boot(&parse("?site=KTLX&sel=1000~2000&t=1500"), None, known);
+        let plan = decide_boot(&parse("?site=KTLX&sel=1000~2000&t=1500"), None, known, 3);
         assert_eq!(
             plan.start,
             BootStart::Range {
@@ -643,33 +682,110 @@ mod tests {
             }
         );
         // A time outside the range is clamped; no time starts at the start.
-        let plan = decide_boot(&parse("?sel=1000~2000&t=5000"), None, known);
+        let plan = decide_boot(&parse("?sel=1000~2000&t=5000"), None, known, 3);
         assert!(matches!(plan.start, BootStart::Range { playhead, .. } if playhead == 2000.0));
-        let plan = decide_boot(&parse("?sel=1000~2000"), None, known);
+        let plan = decide_boot(&parse("?sel=1000~2000"), None, known, 3);
         assert!(matches!(plan.start, BootStart::Range { playhead, .. } if playhead == 1000.0));
     }
 
     #[wasm_bindgen_test]
     fn a_site_alone_opens_pinned_there() {
-        let plan = decide_boot(&parse("?site=KOAX"), Some("KDMX"), known);
+        let plan = decide_boot(&parse("?site=KOAX"), Some("KDMX"), known, 3);
         assert_eq!(plan.site.as_deref(), Some("KOAX"));
         assert_eq!(plan.start, BootStart::PinnedNow);
     }
 
     #[wasm_bindgen_test]
     fn an_unknown_site_falls_back_to_the_preference() {
-        let plan = decide_boot(&parse("?site=ZZZZ"), Some("KDMX"), known);
+        let plan = decide_boot(&parse("?site=ZZZZ"), Some("KDMX"), known, 3);
         assert_eq!(plan.site.as_deref(), Some("KDMX"));
         assert!(!plan.site_from_link);
-        let plan = decide_boot(&parse("?site=ZZZZ"), None, known);
+        let plan = decide_boot(&parse("?site=ZZZZ"), None, known, 3);
         assert_eq!(plan.site, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn also_round_trips_after_the_site() {
+        let link = LinkState {
+            site: Some("KTBW".into()),
+            also: vec!["KMLB".into(), "KJAX".into()],
+            ..Default::default()
+        };
+        let q = to_query(&link);
+        assert_eq!(q, "?site=KTBW&also=KMLB,KJAX");
+        assert_eq!(parse(&q), link);
+        // One site writes no `also`.
+        assert_eq!(
+            to_query(&LinkState {
+                site: Some("KTBW".into()),
+                ..Default::default()
+            }),
+            "?site=KTBW"
+        );
+        // Lower case and empty entries are tidied.
+        assert_eq!(parse("?also=kmlb,,KJAX,").also, vec!["KMLB", "KJAX"]);
+        assert!(parse("?also=").also.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn boot_opens_the_also_sites_beside_the_focus() {
+        let plan = decide_boot(&parse("?site=KTLX&also=KDMX,KOAX"), None, known, 3);
+        assert_eq!(plan.site.as_deref(), Some("KTLX"));
+        assert_eq!(plan.also, vec!["KDMX", "KOAX"]);
+    }
+
+    #[wasm_bindgen_test]
+    fn boot_drops_unknown_repeated_and_over_cap_also_sites_silently() {
+        let plan = decide_boot(
+            &parse("?site=KTLX&also=ZZZZ,KTLX,KDMX,KDMX,KOAX"),
+            None,
+            known,
+            3,
+        );
+        assert_eq!(plan.also, vec!["KDMX", "KOAX"]);
+        // Past the cap: the first ones win.
+        let plan = decide_boot(&parse("?site=KTLX&also=KDMX,KOAX"), None, known, 2);
+        assert_eq!(plan.also, vec!["KDMX"]);
+        // A phone shows one site: `also` is ignored.
+        let phone =
+            crate::core::sites::cap(crate::core::phone::DeviceLayout::Phone { landscape: false });
+        let plan = decide_boot(&parse("?site=KTLX&also=KDMX,KOAX"), None, known, phone);
+        assert!(plan.also.is_empty());
+        assert_eq!(plan.site.as_deref(), Some("KTLX"));
+    }
+
+    #[wasm_bindgen_test]
+    fn boot_with_an_unknown_focus_opens_no_also_sites() {
+        let plan = decide_boot(&parse("?site=ZZZZ&also=KDMX"), Some("KOAX"), known, 3);
+        assert_eq!(plan.site.as_deref(), Some("KOAX"));
+        assert!(plan.also.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_links_lat_lon_are_the_map_centre() {
+        let plan = decide_boot(
+            &parse("?site=KTBW&also=KMLB&lat=28.2&lon=-81.9"),
+            None,
+            |s| matches!(s, "KTBW" | "KMLB"),
+            3,
+        );
+        assert_eq!(plan.map_centre, Some((28.2, -81.9)));
+        // Without both, the map centres on the focus site.
+        assert_eq!(
+            decide_boot(&parse("?site=KTLX"), None, known, 3).map_centre,
+            None
+        );
+        assert_eq!(
+            decide_boot(&parse("?site=KTLX&lat=35.0"), None, known, 3).map_centre,
+            None
+        );
     }
 
     #[wasm_bindgen_test]
     fn ui_basic_changes_nothing_about_the_boot() {
         assert_eq!(
-            decide_boot(&parse("?ui=basic"), Some("KDMX"), known),
-            decide_boot(&parse(""), Some("KDMX"), known)
+            decide_boot(&parse("?ui=basic"), Some("KDMX"), known, 3),
+            decide_boot(&parse(""), Some("KDMX"), known, 3)
         );
     }
 
@@ -681,7 +797,7 @@ mod tests {
         };
         let q = format!("?site=KTLX&t=1700000000&v={}", encode_view(&pinned));
         assert_eq!(
-            decide_boot(&parse(&q), None, known).start,
+            decide_boot(&parse(&q), None, known, 3).start,
             BootStart::PinnedNow
         );
         let q = format!(
@@ -689,7 +805,7 @@ mod tests {
             encode_view(&ViewState::default())
         );
         assert_eq!(
-            decide_boot(&parse(&q), None, known).start,
+            decide_boot(&parse(&q), None, known, 3).start,
             BootStart::At(1_700_000_000.0)
         );
     }

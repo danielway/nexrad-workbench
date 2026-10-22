@@ -39,6 +39,9 @@ pub(crate) fn render_canvas_with_geo(
     // focus; the radar discs are drawn for every site in `Sites::drawn`.
     let site = sites.focus();
     let gpu_renderer = site.gpu.radar.as_ref();
+    // Every site on the map, in list order: each is drawn highlighted with
+    // its id, and none is a pick target.
+    let on_map: Vec<&str> = sites.iter().map(|s| s.id.0.as_str()).collect();
     egui::CentralPanel::default().show(root_ui, |ui| {
         let available_size = ui.available_size();
 
@@ -67,7 +70,9 @@ pub(crate) fn render_canvas_with_geo(
                     ctx.request_repaint();
                 }
 
-                // Draw the 3D globe via PaintCallback
+                // Draw the 3D globe via PaintCallback. The 3D views draw the
+                // focus site only; every site joins them in PR 5 of the
+                // multi-site series.
                 draw_globe(ui, &rect, state, site, globe_renderer, geo_line_renderer);
 
                 // Corner-chrome overlays (color scale + info + compass)
@@ -115,7 +120,8 @@ pub(crate) fn render_canvas_with_geo(
                         state.viz_state.set_pan_offset(pan + egui::vec2(dx, dy));
                     }
                 }
-                let mut projection = MapProjection::new(site.lat, site.lon);
+                let (centre_lat, centre_lon) = state.viz_state.map_centre;
+                let mut projection = MapProjection::new(centre_lat, centre_lon);
                 projection.update(state.viz_state.zoom(), state.viz_state.pan_offset(), rect);
 
                 // Cache current visible bounds so non-canvas UI (top bar chip,
@@ -187,7 +193,7 @@ pub(crate) fn render_canvas_with_geo(
                 render_nexrad_sites(
                     &painter,
                     &projection,
-                    &site.id.0,
+                    &on_map,
                     &state.layer_state.geo,
                     crate::geo::GeoPass::Lines,
                     None,
@@ -231,8 +237,9 @@ pub(crate) fn render_canvas_with_geo(
                         processing.data_age_desaturation,
                         derived.effective_sweep_animation,
                     );
-                // The sweep reveal and chunk boundary are the focus's, the
-                // only site drawn so far.
+                // Every site's disc, older frame first so the newer one is
+                // on top (core::sites::draw_order). The sweep reveal and the
+                // chunk boundary are the focus's; per-disc Rays come later.
                 for drawn in sites.drawn() {
                     if let Some(renderer) = drawn.gpu.radar.as_ref() {
                         draw_radar_gpu(
@@ -383,7 +390,7 @@ pub(crate) fn render_canvas_with_geo(
                 render_nexrad_sites(
                     &painter,
                     &projection,
-                    &site.id.0,
+                    &on_map,
                     &state.layer_state.geo,
                     crate::geo::GeoPass::Labels,
                     Some(&SiteLabelRoom {
@@ -424,6 +431,8 @@ pub(crate) fn render_canvas_with_geo(
                     .storm_tracks_visible
                     .then(|| state.viz_state.storm_tracks.view(my_location))
                     .flatten();
+                // Storm cells are the focus site's only; the other discs
+                // gain theirs in PR 6 of the multi-site series.
                 let storm_cell_inputs = crate::core::storm_cell_view::StormCellViewInputs {
                     result: &site.cells.result,
                     visible: state.viz_state.storm_cells_visible,
@@ -553,6 +562,8 @@ pub(crate) fn render_canvas_with_geo(
                             geo.y,
                             geo.x,
                         );
+                        let site_lines = (on_map.len() > 1)
+                            .then(|| probe_site_lines(sites, geo.y, geo.x, state, gpu_sweep));
                         render_data_probe(
                             &painter,
                             &projection,
@@ -564,6 +575,7 @@ pub(crate) fn render_canvas_with_geo(
                             state.use_local_time,
                             gpu_sweep,
                             cell_line,
+                            site_lines,
                         );
                     }
                 }
@@ -594,6 +606,7 @@ pub(crate) fn render_canvas_with_geo(
                             &projection,
                             state,
                             site,
+                            &on_map,
                             playback,
                             diagnostics,
                             derived,
@@ -601,6 +614,13 @@ pub(crate) fn render_canvas_with_geo(
                         ) {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                             paint_pick_hover(&painter, &projection, &pick, pos, rect, diagnostics);
+                        } else if on_map.len() > 1 && !state.viz_state.data_probe_enabled {
+                            // A radar on the map reads its frame's time and age.
+                            if let Some(label) =
+                                radar_hover_label(sites, &projection, pos, state, &clock)
+                            {
+                                paint_hover_label(&painter, label, pos, rect);
+                            }
                         }
                     }
                 }
@@ -666,6 +686,7 @@ pub(crate) fn render_canvas_with_geo(
                         &rect,
                         state,
                         site,
+                        &on_map,
                         playback,
                         diagnostics,
                         derived,
@@ -1062,6 +1083,11 @@ fn paint_pick_hover(
     let Some(label) = pick.hover_label() else {
         return;
     };
+    paint_hover_label(painter, label, cursor, rect);
+}
+
+/// A hover label on a scrim beside the cursor, kept inside the canvas.
+fn paint_hover_label(painter: &egui::Painter, label: String, cursor: egui::Pos2, rect: Rect) {
     let galley = painter.layout_no_wrap(label, theme::readout_font(), theme::TEXT);
     let size = galley.size() + egui::vec2(10.0, 6.0);
     let mut min = cursor + egui::vec2(12.0, 12.0);
@@ -1076,4 +1102,78 @@ fn paint_pick_hover(
         egui::StrokeKind::Inside,
     );
     painter.galley(r.min + egui::vec2(5.0, 3.0), galley, theme::TEXT);
+}
+
+/// The label of the radar on the map nearest the cursor, within the site
+/// pick radius ([`crate::core::site_canvas::radar_hover_label`]).
+fn radar_hover_label(
+    sites: &crate::subsystem::Sites,
+    projection: &MapProjection,
+    cursor: egui::Pos2,
+    state: &AppState,
+    clock: &dyn crate::core::session::Clock,
+) -> Option<String> {
+    let radius = crate::core::canvas::pick_radii(state.is_mobile).site;
+    sites
+        .iter()
+        .map(|s| {
+            let at = projection.geo_to_screen(Coord { x: s.lon, y: s.lat });
+            (s, (at - cursor).length())
+        })
+        .filter(|&(_, d)| d <= radius)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(s, _)| {
+            let frame_time = s
+                .displayed
+                .as_ref()
+                .map(|d| (d.start_time + d.end_time) / 2.0);
+            crate::core::site_canvas::radar_hover_label(
+                &s.id.0,
+                frame_time,
+                s.data_staleness_secs,
+                clock,
+            )
+        })
+}
+
+/// One probe line per site whose disc is under the cursor, focus first
+/// ([`crate::core::site_canvas::probe_order`]).
+fn probe_site_lines(
+    sites: &crate::subsystem::Sites,
+    lat: f64,
+    lon: f64,
+    state: &AppState,
+    sweep: Option<(f32, f32)>,
+) -> Vec<String> {
+    use crate::core::site_canvas::{probe_order, probe_site_line, ProbeReading};
+    let readings: Vec<ProbeReading> = sites
+        .iter()
+        .map(|s| {
+            let (azimuth_deg, range_km) = crate::core::canvas::geo_to_polar(lat, lon, s.lat, s.lon);
+            let (max_range_km, value) = s
+                .gpu
+                .radar
+                .as_ref()
+                .map(|r| {
+                    let r = r.lock().expect("renderer mutex poisoned");
+                    (
+                        r.has_data().then(|| r.max_range_km()),
+                        r.value_at_polar(azimuth_deg as f32, range_km, sweep),
+                    )
+                })
+                .unwrap_or((None, None));
+            ProbeReading {
+                id: s.id.0.clone(),
+                azimuth_deg,
+                range_km,
+                max_range_km,
+                value,
+            }
+        })
+        .collect();
+    let product = &state.viz_state.product;
+    probe_order(&readings, sites.focus)
+        .into_iter()
+        .map(|i| probe_site_line(&readings[i], product.short_code(), product.unit()))
+        .collect()
 }

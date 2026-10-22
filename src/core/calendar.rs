@@ -825,6 +825,7 @@ pub(crate) fn landing_after(landing: Option<Landing>, intent: &Intent) -> Option
         | Intent::SetLoopPoint(_)
         | Intent::LoopFromScan(_)
         | Intent::SelectSite { .. }
+        | Intent::SetFocus { .. }
         | Intent::GoToDay(_)
         | Intent::GoToTime(_) => None,
         _ => landing,

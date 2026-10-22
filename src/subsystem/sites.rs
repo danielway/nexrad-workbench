@@ -20,12 +20,14 @@
 //! single-site app is a list of one with `focus == 0`.
 //!
 //! The list is never empty and `focus` is always one of its indices
-//! ([`crate::core::sites::focus_valid`]); nothing adds or removes sites yet.
+//! ([`crate::core::sites::focus_valid`]). Sites join and leave through the
+//! decisions in [`crate::core::sites`], carried out by [`Sites::apply`].
 
 use crate::core::acquisition::{IngestRetries, PrefetchSettle, RequestLedger};
 use crate::core::playback_manager::PlaybackManager;
 use crate::core::render::RenderTrack;
 use crate::core::render_loop::ScrubCache;
+use crate::core::sites::Change;
 use crate::core::storm_cells::StormCells;
 use crate::core::{DisplayedSweep, RadarTimeline, ScanBoundary};
 use crate::data::SiteId;
@@ -49,6 +51,26 @@ pub(crate) struct SiteGpu {
 }
 
 impl SiteGpu {
+    /// Delete this site's GL objects (textures, buffers, programs). Called
+    /// when the site leaves the map, before its `SiteState` is dropped.
+    pub(crate) fn release(&mut self, gl: &glow::Context) {
+        if let Some(r) = self.radar.take() {
+            if let Ok(r) = r.lock() {
+                r.release(gl);
+            }
+        }
+        if let Some(r) = self.globe_radar.take() {
+            if let Ok(r) = r.lock() {
+                r.release(gl);
+            }
+        }
+        if let Some(r) = self.volume_ray.take() {
+            if let Ok(r) = r.lock() {
+                r.release(gl);
+            }
+        }
+    }
+
     /// Create whichever renderers this site does not have yet. Cheap once
     /// they exist, so the frame loop calls it for every site.
     pub(crate) fn ensure(&mut self, gl: &Arc<glow::Context>) {
@@ -74,8 +96,8 @@ impl SiteGpu {
 pub(crate) struct SiteState {
     /// The radar's ICAO id (upper case, as the store keys it).
     pub id: SiteId,
-    /// The radar's latitude. Also the map's centre until the map has one of
-    /// its own (see `ARCHITECTURE.md`, State Management).
+    /// The radar's latitude. The map's centre is its own value
+    /// (`VizState::map_centre`).
     pub lat: f64,
     /// The radar's longitude (see [`Self::lat`]).
     pub lon: f64,
@@ -265,10 +287,72 @@ impl Sites {
         self.list.iter_mut()
     }
 
-    /// The sites the canvas draws, in draw order: the focus alone until the
-    /// canvas lays out more than one.
+    /// Carry out a change [`crate::core::sites`] decided. `added` is the
+    /// element a [`Change::Add`] pushes. Returns the elements that left the
+    /// list, for the shell to stop their streams and release their GPU
+    /// objects.
+    pub(crate) fn apply(&mut self, change: Change, added: Option<SiteState>) -> Vec<SiteState> {
+        match change {
+            Change::Add => {
+                self.list.extend(added);
+                Vec::new()
+            }
+            Change::Remove { index, focus } => {
+                let removed = self.list.remove(index);
+                self.focus = focus;
+                vec![removed]
+            }
+            Change::Focus { index } => {
+                self.focus = index;
+                Vec::new()
+            }
+            Change::Only { keep } => {
+                let kept = self.list.remove(keep);
+                let removed = std::mem::replace(&mut self.list, vec![kept]);
+                self.focus = 0;
+                removed
+            }
+        }
+    }
+
+    /// The sites the canvas draws, in [`crate::core::sites::draw_order`]:
+    /// older frame first, so the newer frame is on top.
     pub(crate) fn drawn(&self) -> impl Iterator<Item = &SiteState> {
-        std::iter::once(self.focus())
+        let times: Vec<Option<f64>> = self
+            .iter()
+            .map(|s| {
+                s.displayed
+                    .as_ref()
+                    .map(|d| (d.start_time + d.end_time) / 2.0)
+            })
+            .collect();
+        crate::core::sites::draw_order(&times)
+            .into_iter()
+            .map(move |i| &self.list[i])
+    }
+
+    /// The site set as the picker reads it: every site's id, frame age and
+    /// stream health, the focus, and the layout's cap. `phase` and
+    /// `last_exit` are the live session's.
+    pub(crate) fn picker_set(
+        &self,
+        phase: crate::core::LivePhase,
+        last_exit: Option<crate::core::LiveExitReason>,
+        cap: usize,
+    ) -> crate::core::site_picker::SiteSet {
+        use crate::core::session::Stream;
+        crate::core::site_picker::SiteSet {
+            sites: self
+                .iter()
+                .map(|s| crate::core::site_picker::OnMap {
+                    id: s.id.0.clone(),
+                    age_secs: s.displayed.as_ref().and(s.data_staleness_secs),
+                    stream: Stream::classify(s.live.frame_status.activity, phase, last_exit),
+                })
+                .collect(),
+            focus: self.focus,
+            cap,
+        }
     }
 
     /// The ids in list order, for [`crate::core::sites::route`].
@@ -334,12 +418,65 @@ mod tests {
         assert!(sites.iter().all(|s| s.shadows.len() == 1));
     }
 
+    fn ids_of(sites: &Sites) -> Vec<&str> {
+        sites.iter().map(|s| s.id.0.as_str()).collect()
+    }
+
     #[wasm_bindgen_test]
-    fn the_canvas_draws_the_focus_alone() {
+    fn the_canvas_draws_every_site_older_frame_first() {
+        let mut sites = two_sites();
+        sites.list[0].displayed = Some(sweep(500.0, 600.0));
+        sites.list[1].displayed = Some(sweep(100.0, 200.0));
+        let drawn: Vec<_> = sites.drawn().map(|s| s.id.0.as_str()).collect();
+        assert_eq!(drawn, ["KTLX", "KDMX"]);
+        // A site with no frame draws first.
+        sites.list[1].displayed = None;
+        let drawn: Vec<_> = sites.drawn().map(|s| s.id.0.as_str()).collect();
+        assert_eq!(drawn, ["KTLX", "KDMX"]);
+    }
+
+    #[wasm_bindgen_test]
+    fn apply_add_pushes_and_keeps_the_focus() {
+        let mut sites = two_sites();
+        let gone = sites.apply(Change::Add, Some(SiteState::new("KFWS", 32.57, -97.30)));
+        assert!(gone.is_empty());
+        assert_eq!(ids_of(&sites), ["KDMX", "KTLX", "KFWS"]);
+        assert_eq!(sites.focus, 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn apply_remove_hands_back_the_element_and_moves_the_focus() {
         let mut sites = two_sites();
         sites.focus = 1;
-        let drawn: Vec<_> = sites.drawn().map(|s| s.id.clone()).collect();
-        assert_eq!(drawn, vec![SiteId::new("KTLX")]);
+        let gone = sites.apply(Change::Remove { index: 1, focus: 0 }, None);
+        assert_eq!(gone.len(), 1);
+        assert_eq!(gone[0].id, SiteId::new("KTLX"));
+        assert_eq!(ids_of(&sites), ["KDMX"]);
+        assert_eq!(sites.focus, 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn apply_focus_moves_only_the_index() {
+        let mut sites = two_sites();
+        assert!(sites.apply(Change::Focus { index: 1 }, None).is_empty());
+        assert_eq!(sites.focus().id, SiteId::new("KTLX"));
+        assert_eq!(ids_of(&sites), ["KDMX", "KTLX"]);
+    }
+
+    #[wasm_bindgen_test]
+    fn apply_only_keeps_one_element_focused() {
+        let mut sites = two_sites();
+        sites.list.push(SiteState::new("KFWS", 32.57, -97.30));
+        sites.list[2]
+            .shadows
+            .push(ScanBoundary { start: 0, end: 1 });
+        let gone = sites.apply(Change::Only { keep: 2 }, None);
+        let gone: Vec<_> = gone.iter().map(|s| s.id.0.as_str()).collect();
+        assert_eq!(gone, ["KDMX", "KTLX"]);
+        assert_eq!(ids_of(&sites), ["KFWS"]);
+        assert_eq!(sites.focus, 0);
+        // The kept element is the same one, scans and all.
+        assert_eq!(sites.focus().shadows.len(), 1);
     }
 
     #[wasm_bindgen_test]
