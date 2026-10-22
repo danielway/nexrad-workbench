@@ -755,6 +755,17 @@ Interactive measurement and analysis affordances on the 2D canvas:
     echo that can belong to a cell. A cell needs a core 10 dB above it. The
     slider works over every product; off reflectivity it notes "Cells from
     reflectivity".
+  - **Several sites.** With more than one site on the map, the cells are
+    detected once on a composite of every site's lowest reflectivity cut:
+    one 500 m grid around the echo, taking the higher reflectivity where
+    discs overlap. A storm two radars see is one storm with one outline,
+    one chip and one letter, and the tracks, paths and arrows come from
+    one tracker over the whole map. The card measures bearing and range
+    from the nearest site that sees the cell and ends with the sites that
+    see it (`KTBW · KMLB`). In Rays a cell waits for the sweep line of
+    every site that sees it. Going from one site to several, or back,
+    starts the letters over. With one site nothing changes: cells come
+    from that radar's own sweep at full resolution.
   - **3D** draws no cells, card or probe line.
   - The link carries the overlay as `cells=<dbz>` and tracks as `tracks=1`
     (§13.4).

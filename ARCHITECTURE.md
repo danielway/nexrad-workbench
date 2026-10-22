@@ -230,6 +230,7 @@ Heavy computation (bzip2 decompression, NEXRAD decoding, sweep extraction, IDB I
 | `render_volume` | Main → Worker | Pack all elevations for 3D ray-marching |
 | `render_live` | Main → Worker | Read partial sweep from in-memory accumulator (synchronous); answered with `live_decoded`, or `live_superseded` when the elevation was stored after the request was sent (a no-op on the main thread) |
 | `detect` | Main → Worker | Storm cell detection on one reflectivity cut (the volume's lowest, see `core::storm_cells`), read from IDB (`stored`) or from the live accumulator (`live`, pinned to the live worker; falls back to IDB once the cut is flushed); answered with `detected`: the cells and groups, their source cut, and the worker's fetch/detect timing |
+| `detect_composite` | Main → Worker | Storm cell detection once on the composite grid of every shown site, used while more than one site is shown: each site's cut is read as for `detect`, resampled onto one 500 m Cartesian grid around the echo (highest dBZ where discs overlap, a mask of the sites with a valid gate) and detected there (`storm_cells::composite`); pinned to the live worker when any cut is live; answered with `detected`, whose azimuth and gate counts are the grid's rows and columns |
 
 The Rust side of this protocol lives in `nexrad/decode/worker_api/` (the
 `#[wasm_bindgen]` exports worker.js calls) and `nexrad/decode/decode_worker/`
