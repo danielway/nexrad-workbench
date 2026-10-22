@@ -468,8 +468,17 @@ impl Sites {
         resident_volumes(self.list.len(), self.focus, volume_budget(layout))
     }
 
-    /// The developer readout of the storm cells shown: the scene's while
-    /// more than one site is shown, else the focus's.
+    /// The storm cells the canvas draws: the scene's, detected on the
+    /// composite grid, while more than one site is shown, else the focus's.
+    pub(crate) fn shown_cells(&self) -> &crate::core::StormCellsResult {
+        if crate::core::storm_cells::uses_scene(self.list.len()) {
+            &self.scene.cells.result
+        } else {
+            &self.focus().cells.result
+        }
+    }
+
+    /// The developer readout of [`Self::shown_cells`].
     pub(crate) fn shown_cell_stats(&self) -> Option<crate::core::storm_cells::StormCellStats> {
         if crate::core::storm_cells::uses_scene(self.list.len()) {
             self.scene.cells.stats()
