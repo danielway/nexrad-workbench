@@ -108,6 +108,7 @@ fn draw_sheet(ctx: &mut LayoutCtx) {
                     RailTab::Events => super::super::right_panel::render_events_section(
                         ui,
                         ctx.state,
+                        ctx.sites,
                         ctx.live,
                         ctx.playback,
                         ctx.chrome,

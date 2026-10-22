@@ -27,20 +27,11 @@ pub(crate) struct VizState {
     /// Stored Fixed selection to restore when toggling off auto mode.
     pub last_fixed_selection: Option<(u8, f32)>,
 
-    /// Overlay info: radar site ID
-    pub site_id: String,
-
     /// Overlay info: current elevation/sweep, e.g. "0.5°". Timezone-independent,
     /// so it stays a baked string; the displayed-frame *timestamp* is NOT baked
     /// here — it is formatted at render time from `displayed` (spec §11.4) so a
     /// local/UTC flip reformats it the same frame.
     pub elevation: String,
-
-    /// Geographic center latitude (radar site location)
-    pub center_lat: f64,
-
-    /// Geographic center longitude (radar site location)
-    pub center_lon: f64,
 
     /// Staleness of the most recent radial (sweep end) in seconds.
     /// Recomputed every frame from `displayed.end_time` against wall clock.
@@ -131,10 +122,7 @@ impl Default for VizState {
             product: RadarProduct::default(),
             elevation_selection: ElevationSelection::default(),
             last_fixed_selection: None,
-            site_id: "KDMX".to_string(),
             elevation: "-- deg".to_string(),
-            center_lat: 41.7312,
-            center_lon: -93.7229,
             data_staleness_secs: None,
             data_staleness_start_secs: None,
             last_sweep_line_cache: None,

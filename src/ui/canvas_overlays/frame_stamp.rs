@@ -41,7 +41,7 @@ fn draw_frame_stamp(ui: &mut egui::Ui, ctx: &super::OverlayContext) -> Option<()
         let state = ctx.state;
         let stamp = crate::core::canvas::frame_stamp(
             crate::core::canvas::CANVAS_FALLBACKS,
-            &state.viz_state.site_id,
+            &ctx.site.id.0,
             state.viz_state.product,
             ctx.live.session.frame.as_ref(),
             state

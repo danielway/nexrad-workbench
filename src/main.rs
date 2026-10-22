@@ -197,9 +197,12 @@ pub struct WorkbenchApp {
     /// derived models (live radar model, top-level app mode).
     live: subsystem::Live,
 
-    /// Timeline subsystem: scan inventory + shadow scan boundaries
-    /// derived from the archive listing.
+    /// Timeline subsystem: the storm-activity book shared across sites.
     timeline: subsystem::Timeline,
+
+    /// The active radar sites (one today) and which one the single-valued
+    /// surfaces describe. Everything per site lives on its element.
+    sites: subsystem::Sites,
 
     /// Playback subsystem: cursor position, speed, mode, animation,
     /// realtime lock.
@@ -249,6 +252,7 @@ fn apply_link(
     link: &core::link::LinkState,
     prefs: &core::Preferences,
     state: &mut AppState,
+    site: &mut subsystem::SiteState,
     playback: &mut subsystem::Playback,
     chrome: &mut subsystem::Chrome,
 ) {
@@ -273,13 +277,11 @@ fn apply_link(
     }
 
     match plan.site.as_deref().and_then(data::get_site) {
-        Some(site) => {
-            state.viz_state.site_id = site.id.to_string();
-            state.viz_state.center_lat = site.lat;
-            state.viz_state.center_lon = site.lon;
+        Some(found) => {
             if state.recent_sites.is_empty() {
-                state.recent_sites = vec![site.id.to_string()];
+                state.recent_sites = vec![found.id.to_string()];
             }
+            site.retarget(found.id, found.lat, found.lon);
             if plan.site_from_link {
                 state.push_command(crate::core::Intent::RefreshTimeline {
                     auto_position: false,
@@ -294,16 +296,15 @@ fn apply_link(
             chrome.site_required = true;
         }
     }
+    // The link's `lat`/`lon` are the map centre; until the map has a centre
+    // of its own they land on the site's position, as they always have.
     if let Some(lat) = link.lat {
-        state.viz_state.center_lat = lat;
+        site.lat = lat;
     }
     if let Some(lon) = link.lon {
-        state.viz_state.center_lon = lon;
+        site.lon = lon;
     }
-    state
-        .viz_state
-        .camera
-        .center_on(state.viz_state.center_lat, state.viz_state.center_lon);
+    state.viz_state.camera.center_on(site.lat, site.lon);
 
     let pinned = plan.start.is_pinned();
 
@@ -478,9 +479,17 @@ impl WorkbenchApp {
         chrome.right_sidebar_visible = loaded_prefs.panel_open;
 
         let link = state::url_state::read_link();
-        apply_link(&link, &loaded_prefs, &mut state, &mut playback, &mut chrome);
+        let mut initial_site = subsystem::SiteState::default();
+        apply_link(
+            &link,
+            &loaded_prefs,
+            &mut state,
+            &mut initial_site,
+            &mut playback,
+            &mut chrome,
+        );
 
-        let initial_site_id = state.viz_state.site_id.clone();
+        let initial_site_id = initial_site.id.0.clone();
         let data_facade = MainThreadStore::new();
         let acquisition = subsystem::Acquisition::new(data_facade.clone());
         let realtime_channel =
@@ -572,6 +581,7 @@ impl WorkbenchApp {
             acquisition,
             live: subsystem::Live::new(realtime_channel),
             timeline: subsystem::Timeline::default(),
+            sites: subsystem::Sites::new(initial_site),
             playback,
             chrome,
             persistence: app::persistence_manager::PersistenceManager::new(
@@ -719,7 +729,7 @@ impl WorkbenchApp {
         let use_local = self.state.use_local_time;
         let elevations = self.state.current_elevation_list(
             &self.playback.state,
-            &self.timeline.scans,
+            &self.sites.focus().scans,
             self.live
                 .radar_model
                 .volume
@@ -731,7 +741,7 @@ impl WorkbenchApp {
             core::top_bar::TopBarInputs {
                 session: &self.live.session,
                 now_secs: now,
-                site_id: &self.state.viz_state.site_id,
+                site_id: &self.sites.focus().id.0,
                 product: self.state.viz_state.product,
                 elevation_selection: &self.state.viz_state.elevation_selection,
                 elevations: &elevations,
@@ -760,12 +770,14 @@ impl WorkbenchApp {
             .volume
             .as_ref()
             .and_then(|v| v.vcp_pattern.as_ref());
-        let entries =
-            self.state
-                .current_elevation_list(&self.playback.state, &self.timeline.scans, live_vcp);
+        let entries = self.state.current_elevation_list(
+            &self.playback.state,
+            &self.sites.focus().scans,
+            live_vcp,
+        );
         let view = core::TimelineView::build(
-            &self.timeline.scans,
-            &self.timeline.shadow_scan_boundaries,
+            &self.sites.focus().scans,
+            &self.sites.focus().shadows,
             Some(&self.live.mode_state),
             self.live.radar_model.position.as_ref(),
         );
@@ -864,6 +876,7 @@ impl WorkbenchApp {
             self.state.frame_now.secs(),
             &self.state,
             &self.playback.state,
+            self.sites.focus(),
             state::PanelPrefs {
                 tab: self.chrome.rail_tab,
                 open: self.chrome.right_sidebar_visible,
@@ -964,7 +977,7 @@ impl eframe::App for WorkbenchApp {
             mping_layer_visible: self.state.layer_state.geo.mping,
             mping_pinned_to_now: self.playback.state.is_pinned()
                 || self.playback.state.is_live_range(),
-            site_id: &self.state.viz_state.site_id,
+            site_id: &self.sites.focus().id.0,
             playback_secs: self.playback.state.playback_position(),
         };
         self.diagnostics
@@ -1044,7 +1057,7 @@ impl eframe::App for WorkbenchApp {
         // Live::refresh derives everything from this frame's shared `now`.
         self.live.refresh(subsystem::live::LiveRefreshInputs {
             playback: &self.playback.state,
-            archive_boundaries: &self.timeline.shadow_scan_boundaries,
+            archive_boundaries: &self.sites.focus().shadows,
             now: self.state.frame_now,
             elevation_selection: &self.state.viz_state.elevation_selection,
             displayed: self.state.viz_state.displayed.as_ref(),
@@ -1160,6 +1173,7 @@ impl eframe::App for WorkbenchApp {
             root_ui: ui,
             state: &mut self.state,
             timeline: &self.timeline,
+            sites: &mut self.sites,
             live: &mut self.live,
             playback: &mut self.playback,
             acquisition: &mut self.acquisition,
@@ -1192,7 +1206,7 @@ impl eframe::App for WorkbenchApp {
         ui::render_canvas_with_geo(
             ui,
             &mut self.state,
-            &self.timeline,
+            &self.sites,
             &self.live,
             &mut self.playback,
             &mut self.chrome,
@@ -1207,7 +1221,7 @@ impl eframe::App for WorkbenchApp {
             ctx,
             &mut self.state,
             &mut self.live,
-            &self.timeline,
+            &self.sites,
             &mut self.playback,
             &mut self.chrome,
         );

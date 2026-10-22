@@ -18,7 +18,7 @@ pub(crate) struct PersistenceManager {
     last_url_push_secs: f64,
     /// Last-saved user preferences snapshot (for change detection).
     last_saved_preferences: Preferences,
-    /// Previous site ID to detect site changes.
+    /// The focus site's id at the last check, to detect site changes.
     previous_site_id: String,
 }
 
@@ -33,7 +33,8 @@ impl PersistenceManager {
         }
     }
 
-    /// Returns true if the site has changed since last check, updating the internal tracker.
+    /// Returns true if the focus site's id has changed since the last check,
+    /// updating the internal tracker.
     pub(crate) fn detect_site_change(&mut self, current_site_id: &str) -> bool {
         if current_site_id != self.previous_site_id {
             log::info!(
@@ -52,6 +53,8 @@ impl PersistenceManager {
     /// the shell to execute (throttled URL push + conditional preference save).
     ///
     /// `now_secs` is the injected frame clock ([`crate::core::FrameNow::secs`]).
+    /// `focus` is the site the link names; its position is the link's map
+    /// centre until the map has a centre of its own.
     /// `mping_api_key` is the current value from the diagnostics subsystem;
     /// `playback` is the Playback subsystem's state. All are passed in so the persistence manager doesn't
     /// take back-references to subsystems.
@@ -60,6 +63,7 @@ impl PersistenceManager {
         now_secs: f64,
         state: &AppState,
         playback: &PlaybackState,
+        focus: &crate::subsystem::SiteState,
         panel: crate::state::PanelPrefs,
         mping_api_key: Option<String>,
     ) -> Vec<Effect> {
@@ -68,7 +72,12 @@ impl PersistenceManager {
         if !persist_due(now_secs, self.last_url_push_secs) {
             return Vec::new();
         }
-        let link = crate::state::url_state::build_link(state, playback);
+        let link = crate::state::url_state::build_link(
+            state,
+            playback,
+            &focus.id.0,
+            (focus.lat, focus.lon),
+        );
         let current_prefs = Preferences::from_app_state(
             state,
             playback,

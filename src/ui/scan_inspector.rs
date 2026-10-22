@@ -20,7 +20,7 @@ use crate::core::dialogs::{DialogId, DialogIntent};
 use crate::core::Intent;
 use crate::core::{FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView};
 use crate::state::{format_bytes, AppState};
-use crate::subsystem::{Acquisition, Chrome, Live, Playback, Timeline};
+use crate::subsystem::{Acquisition, Chrome, Live, Playback};
 use crate::ui::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, ScrollArea, Vec2};
 use egui_phosphor::regular as icons;
@@ -43,7 +43,7 @@ impl Layer for ScanInspectorLayer {
         draw_scan_inspector(
             ctx.ctx,
             ctx.state,
-            ctx.timeline,
+            ctx.sites.focus(),
             ctx.live,
             ctx.playback,
             ctx.acquisition,
@@ -88,7 +88,7 @@ fn anchor_for(ctx: &egui::Context, scan_start: f64) -> Rect {
 fn draw_scan_inspector(
     ctx: &egui::Context,
     state: &mut AppState,
-    timeline: &Timeline,
+    site: &crate::subsystem::SiteState,
     live: &mut Live,
     _playback: &mut Playback,
     acquisition: &Acquisition,
@@ -103,8 +103,8 @@ fn draw_scan_inspector(
     // breakdown), unlike the strip which filters to the selected tilt; the
     // per-cell state resolution (cached/in-flight/available/...) is identical.
     let view = TimelineView::build(
-        &timeline.scans,
-        &timeline.shadow_scan_boundaries,
+        &site.scans,
+        &site.shadows,
         Some(&live.mode_state),
         live.radar_model.position.as_ref(),
     );

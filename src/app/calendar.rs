@@ -16,10 +16,16 @@ impl DispatchState<'_> {
     /// day's stormiest volume (or its midday while the listing is out), and
     /// the calendar closed.
     pub(crate) fn go_to_day(&mut self, day: CalendarDay, intent: &Intent) {
-        let site = SiteId::new(self.state.viz_state.site_id.clone());
+        let site = SiteId::new(self.sites.focus().id.0.clone());
         let now = self.state.frame_now.secs();
         let listing = self.timeline.activity.listing(&site, day.start, day.end);
-        let (ts, landing) = land_on_day(&site, day, listing.as_deref(), &self.timeline.scans, now);
+        let (ts, landing) = land_on_day(
+            &site,
+            day,
+            listing.as_deref(),
+            &self.sites.focus().scans,
+            now,
+        );
         self.chrome.phone_strip_zoom =
             crate::core::phone_strip::strip_zoom_after(self.chrome.phone_strip_zoom, intent);
         if let Some(placement) =
@@ -83,7 +89,7 @@ impl crate::WorkbenchApp {
         let Some(landing) = self.chrome.go_to_day_landing.take() else {
             return;
         };
-        let site = SiteId::new(self.state.viz_state.site_id.clone());
+        let site = SiteId::new(self.sites.focus().id.0.clone());
         let listing =
             self.timeline
                 .activity
@@ -93,7 +99,7 @@ impl crate::WorkbenchApp {
             &LandingFacts {
                 site: &site,
                 listing: listing.as_deref(),
-                held: &self.timeline.scans,
+                held: &self.sites.focus().scans,
                 playhead: self.playback.state.playback_position(),
                 playing: self.playback.state.playing,
                 now: self.state.frame_now.secs(),
@@ -109,6 +115,7 @@ impl crate::WorkbenchApp {
                 diagnostics: &mut self.diagnostics,
                 chrome: &mut self.chrome,
                 timeline: &self.timeline,
+                sites: &mut self.sites,
             };
             s.transport(|env, slices| {
                 crate::core::transport::reduce_seek(env, slices, ts, SeekGesture::Typed)

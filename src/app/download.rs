@@ -75,10 +75,12 @@ impl WorkbenchApp {
                 // from timeline metadata (when available) and route both the
                 // scan key and elevation list through the single-owner
                 // helper.
-                let elev_nums: Vec<u8> = self
-                    .timeline
-                    .scans
-                    .find_recent_scan(scan_ts as f64, 1.0)
+                let elev_nums: Vec<u8> = crate::core::sites::route(&scan.key, &self.sites.ids())
+                    .and_then(|i| {
+                        self.sites.list[i]
+                            .scans
+                            .find_recent_scan(scan_ts as f64, 1.0)
+                    })
                     .map(|tl_scan| {
                         let mut nums: Vec<u8> =
                             tl_scan.sweeps.iter().map(|s| s.elevation_number).collect();
@@ -228,8 +230,8 @@ impl WorkbenchApp {
                 // Rebuild shadow scan boundaries for the timeline. Reactive
                 // prefetch re-evaluates on the next settle and will pick up the
                 // scans this listing exposes — no explicit resume needed.
-                if site_id == self.state.viz_state.site_id {
-                    self.timeline.shadow_scan_boundaries = self
+                if site_id == self.sites.focus().id.0 {
+                    self.sites.focus_mut().shadows = self
                         .acquisition
                         .coordinator
                         .archive_index

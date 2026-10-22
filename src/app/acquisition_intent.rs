@@ -77,7 +77,7 @@ impl WorkbenchApp {
                 .auto_fetch_cap_reached(),
             now_ms: js_sys::Date::now(),
             debounce_ms: crate::PREFETCH_DEBOUNCE_MS,
-            site_id: &self.state.viz_state.site_id,
+            site_id: &self.sites.focus().id.0,
             product_worker_string: self.state.viz_state.product.to_worker_string(),
             fallback_scan_duration_secs: crate::FALLBACK_SCAN_DURATION_SECS,
         };
@@ -126,7 +126,7 @@ impl WorkbenchApp {
                 .acquisition
                 .coordinator
                 .archive_index
-                .get(&self.state.viz_state.site_id, &date)
+                .get(&self.sites.focus().id.0, &date)
                 .map(snapshot_listing);
             let queued_scan_starts = self
                 .acquisition
@@ -148,7 +148,7 @@ impl WorkbenchApp {
                 ledger: &self.acquisition.request_ledger,
                 now_ms: js_sys::Date::now(),
             };
-            acquisition_core::decide_anchor_fast_path(&env, &self.timeline.scans)
+            acquisition_core::decide_anchor_fast_path(&env, &self.sites.focus().scans)
         };
         if let Some(intent) = intent {
             self.enqueue_intents(vec![intent], QueueOrigin::Reactive);
@@ -159,7 +159,7 @@ impl WorkbenchApp {
     /// and reduce it to concrete actions. Read-only input assembly; the caller
     /// executes the returned actions.
     fn reduce_window_plan(&self, plan: &WindowPlan) -> WindowIntentActions {
-        let site_id = &self.state.viz_state.site_id;
+        let site_id = &self.sites.focus().id.0;
         let now_ms = js_sys::Date::now();
         let days: Vec<WindowDayInput<'_>> = plan
             .dates
@@ -194,7 +194,7 @@ impl WorkbenchApp {
             &days,
             now_ms,
             &queued_scan_starts,
-            &self.timeline.scans,
+            &self.sites.focus().scans,
             crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
             &self.acquisition.request_ledger,
         )
@@ -211,7 +211,7 @@ impl WorkbenchApp {
         actions: WindowIntentActions,
         origin: QueueOrigin,
     ) -> bool {
-        let site_id = self.state.viz_state.site_id.clone();
+        let site_id = self.sites.focus().id.0.clone();
         for date in actions.fetch_listings {
             self.acquisition.coordinator.download_channel.fetch_listing(
                 ctx.clone(),
@@ -232,7 +232,7 @@ impl WorkbenchApp {
         if intents.is_empty() {
             return;
         }
-        let site_id = self.state.viz_state.site_id.clone();
+        let site_id = self.sites.focus().id.0.clone();
         let now_ms = js_sys::Date::now();
         let items: Vec<QueueItem> = intents
             .into_iter()
@@ -295,7 +295,7 @@ impl WorkbenchApp {
         let signature = acquisition_core::visible_listing_signature(
             view_start,
             view_start + span,
-            &self.state.viz_state.site_id,
+            &self.sites.focus().id.0,
         );
         if !self.acquisition.visible_listing_settle.poll(
             signature,
@@ -309,7 +309,7 @@ impl WorkbenchApp {
         let today = chrono::DateTime::from_timestamp(now_secs as i64, 0)
             .map(|dt| dt.date_naive())
             .unwrap_or_else(|| chrono::Utc::now().date_naive());
-        let site_id = self.state.viz_state.site_id.clone();
+        let site_id = self.sites.focus().id.0.clone();
 
         let days: Vec<acquisition_core::VisibleListingDay> =
             acquisition_core::dates_in_range(view_start as i64, (view_start + span) as i64)
@@ -372,12 +372,12 @@ impl WorkbenchApp {
                 // Priced now, from the listing, so the confirmation says the
                 // real size rather than an estimate.
                 let view = crate::core::TimelineView::build(
-                    &self.timeline.scans,
-                    &self.timeline.shadow_scan_boundaries,
+                    &self.sites.focus().scans,
+                    &self.sites.focus().shadows,
                     Some(&self.live.mode_state),
                     self.live.radar_model.position.as_ref(),
                 );
-                let site = crate::data::SiteId::new(self.state.viz_state.site_id.clone());
+                let site = crate::data::SiteId::new(self.sites.focus().id.0.clone());
                 let (lo, hi) = (start.min(end), start.max(end));
                 let sizes = self.timeline.activity.scans(&site, lo, hi);
                 self.chrome.range_download_modal = Some(acquisition_core::RangeDownloadPrompt {

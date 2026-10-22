@@ -118,21 +118,31 @@ impl WorkbenchApp {
                 // Update cache size in session stats
                 self.state.session_stats.cache_size_bytes = total_cache_size;
 
+                // A load for a site no longer in the list is dropped.
+                let Some(i) = crate::core::sites::route_site(
+                    &crate::data::SiteId::new(site_id),
+                    &self.sites.ids(),
+                ) else {
+                    return;
+                };
+                let site = &mut self.sites.list[i];
+
                 // Build timeline from metadata
-                self.timeline.scans = RadarTimeline::from_metadata(metadata);
+                site.scans = RadarTimeline::from_metadata(metadata);
 
                 // Reconcile the request ledger against what the timeline now
                 // actually holds: satisfied requests retire, ingested-but-
                 // missing cuts become Unavailable, stale entries age out.
                 self.acquisition.request_ledger.observe_timeline(
-                    &self.timeline.scans,
+                    &site.scans,
                     crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
                     js_sys::Date::now(),
                 );
 
-                // Get time ranges (may be non-contiguous)
-                let ranges = self.timeline.scans.time_ranges();
-                if !ranges.is_empty() {
+                // Get time ranges (may be non-contiguous). The playhead is
+                // shared, so only the focus site's load positions it.
+                let ranges = site.scans.time_ranges();
+                if !ranges.is_empty() && i == self.sites.focus {
                     // Position playback at the end of the most recent range
                     let most_recent_end = ranges.last().unwrap().end;
 
@@ -291,7 +301,7 @@ impl WorkbenchApp {
         let actions = {
             let env = ChunkIngestEnv {
                 is_live,
-                site_id: &self.state.viz_state.site_id,
+                site_id: &self.sites.focus().id.0,
                 product_worker_string: self.state.viz_state.product.to_worker_string(),
                 now_secs: self.state.frame_now.secs(),
                 had_elevations,
@@ -356,7 +366,7 @@ impl WorkbenchApp {
         let actions = {
             let env = DecodedEnv {
                 dev_mode: self.state.dev_mode,
-                site_id: &self.state.viz_state.site_id,
+                site_id: &self.sites.focus().id.0,
                 playback_position: self.playback.state.playback_position(),
                 elevation_selection: &self.state.viz_state.elevation_selection,
                 product: self.state.viz_state.product,
@@ -374,7 +384,7 @@ impl WorkbenchApp {
             let slices = DecodedSlices {
                 playback_manager: &mut self.render.playback_manager,
             };
-            reduce_decoded(env, slices, &self.timeline.scans, &result)
+            reduce_decoded(env, slices, &self.sites.focus().scans, &result)
         };
 
         // Execute the described actions in the struct's field order.
@@ -535,8 +545,8 @@ impl WorkbenchApp {
                     &volume_data.buffer,
                     volume_data.word_size,
                     &volume_data.sweeps,
-                    self.state.viz_state.center_lat,
-                    self.state.viz_state.center_lon,
+                    self.sites.focus().lat,
+                    self.sites.focus().lon,
                 );
             }
         }

@@ -86,7 +86,7 @@ impl WorkbenchApp {
     pub(crate) fn sync_to_active_site(&mut self) {
         if !self
             .persistence
-            .detect_site_change(&self.state.viz_state.site_id)
+            .detect_site_change(&self.sites.focus().id.0)
         {
             return;
         }
@@ -114,7 +114,7 @@ impl WorkbenchApp {
         self.render.coordinator.clear_for_site_change();
         self.state.viz_state.displayed = None;
         self.state.viz_state.previous_displayed = None;
-        self.timeline.shadow_scan_boundaries.clear();
+        self.sites.focus_mut().shadows.clear();
         self.state.viz_state.storm_cells.reset();
         self.state.viz_state.storm_tracks.reset();
     }
@@ -136,8 +136,8 @@ impl WorkbenchApp {
             viz.storm_cells_visible,
             viz.view_mode(),
             viz.storm_cell_threshold_dbz,
-            viz.center_lat,
-            viz.center_lon,
+            self.sites.focus().lat,
+            self.sites.focus().lon,
         );
         // A live partial is displayed under a placeholder scan key (live
         // renders are not bound to a stored scan); its volume is the one the
@@ -159,7 +159,8 @@ impl WorkbenchApp {
             .or(self.state.viz_state.displayed.as_ref());
         let displayed_ms = displayed.map(|d| d.identity.scan_key.scan_start.0);
         let volume = displayed_ms.and_then(|ms| {
-            self.timeline
+            self.sites
+                .focus()
                 .scans
                 .scans
                 .iter()
@@ -180,7 +181,7 @@ impl WorkbenchApp {
         let tracks_on = visible && viz.storm_tracks_visible;
         let history = match displayed {
             Some(d) if tracks_on => history_keys(
-                &self.timeline.scans.scans,
+                &self.sites.focus().scans.scans,
                 &d.identity.scan_key,
                 threshold_dbz,
             ),

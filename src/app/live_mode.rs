@@ -11,7 +11,7 @@ use eframe::egui;
 
 impl WorkbenchApp {
     pub(crate) fn start_live_mode(&mut self, ctx: &egui::Context) {
-        let site_id = self.state.viz_state.site_id.clone();
+        let site_id = self.sites.focus().id.0.clone();
         log::info!("Starting live mode for site: {}", site_id);
 
         let now = self.state.frame_now.secs();
@@ -190,10 +190,11 @@ impl WorkbenchApp {
     ) -> (f64, f64) {
         match basis {
             crate::core::LoopBasis::FrameCount(n) => self
-                .timeline
+                .sites
+                .focus()
                 .scans
                 .lookback_window(
-                    &self.timeline.shadow_scan_boundaries,
+                    &self.sites.focus().shadows,
                     self.live_volume_frames(),
                     &self.state.viz_state.elevation_selection,
                     self.state.viz_state.product.to_worker_string(),
@@ -265,11 +266,11 @@ impl WorkbenchApp {
         use crate::core::playback_manager::DesiredDisplay;
 
         let desired = crate::core::playback_manager::resolve_desired_display(
-            &self.state.viz_state.site_id,
+            &self.sites.focus().id.0,
             self.playback.state.playback_position(),
             &self.state.viz_state.elevation_selection,
             self.state.viz_state.product,
-            &self.timeline.scans,
+            &self.sites.focus().scans,
             MAX_SCAN_AGE_SECS,
             self.live_render_sources(),
             self.live_shows_whole_sweeps(),
@@ -315,7 +316,8 @@ impl WorkbenchApp {
                 // IS present but the selected elevation/product isn't in it (the
                 // honest "nothing here for your filter" case).
                 let scan_covers_playhead = self
-                    .timeline
+                    .sites
+                    .focus()
                     .scans
                     .find_recent_scan(self.playback.state.playback_position(), MAX_SCAN_AGE_SECS)
                     .is_some();
@@ -471,7 +473,7 @@ impl WorkbenchApp {
                 );
 
                 // Track realtime chunk as an acquisition operation
-                let rt_site_id = self.state.viz_state.site_id.clone();
+                let rt_site_id = self.sites.focus().id.0.clone();
                 let op_id =
                     self.acquisition
                         .state
@@ -496,7 +498,7 @@ impl WorkbenchApp {
                 }
 
                 // Forward chunk to worker for incremental ingest
-                let site_id = self.state.viz_state.site_id.clone();
+                let site_id = self.sites.focus().id.0.clone();
                 let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
                 if is_start {
                     self.state.session_stats.pipeline.processing = true;
@@ -536,7 +538,7 @@ impl WorkbenchApp {
                 self.live.mode_state.error_message = Some(msg.clone());
 
                 // Track error as a failed acquisition operation
-                let err_site_id = self.state.viz_state.site_id.clone();
+                let err_site_id = self.sites.focus().id.0.clone();
                 let op_id =
                     self.acquisition
                         .state

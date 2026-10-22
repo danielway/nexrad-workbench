@@ -286,6 +286,7 @@ pub(super) fn render_timeline(
     ui: &mut egui::Ui,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
+    site: &crate::subsystem::SiteState,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     acquisition: &crate::subsystem::Acquisition,
@@ -314,7 +315,7 @@ pub(super) fn render_timeline(
     // allocated widget (distinct response id) so its drag/click never shares a
     // hit-test layer with the main strip's press-seek/scrub. Desktop only —
     // the mini timeline plays this role on phones.
-    overview::render_overview(ui, state, timeline, live, playback);
+    overview::render_overview(ui, state, timeline, site, live, playback);
 
     // The main strip widget covers the tick rail, the selection strip and the
     // main track; the overview above is its own allocated widget. The
@@ -400,8 +401,8 @@ pub(super) fn render_timeline(
     // `TimelineView::build`.
     let frame = TimelineFrame {
         view: crate::core::TimelineView::build(
-            &timeline.scans,
-            &timeline.shadow_scan_boundaries,
+            &site.scans,
+            &site.shadows,
             Some(&live.mode_state),
             live.radar_model.position.as_ref(),
         ),
@@ -522,17 +523,11 @@ pub(super) fn render_timeline(
     render_tick_marks(&painter, &frame);
 
     // Draw saved event overlays (behind the selection range).
-    render_saved_events(
-        &painter,
-        &frame,
-        &state.saved_events,
-        &state.viz_state.site_id,
-    );
+    render_saved_events(&painter, &frame, &state.saved_events, &site.id.0);
 
     // The range as the core places it: a pinned range runs to the now line.
     let range_marks = playback.state.selection_range().and_then(|(s, e)| {
-        let site = crate::data::SiteId::new(state.viz_state.site_id.clone());
-        let sizes = timeline.activity.scans(&site, s.min(e), s.max(e));
+        let sizes = timeline.activity.scans(&site.id, s.min(e), s.max(e));
         let cost = frame.view.range_cost_sized(s, e, &sizes);
         crate::core::timeline_view::range_marks(
             Some((s, e)),

@@ -31,7 +31,7 @@ impl WorkbenchApp {
             AdvancePlaybackEnv {
                 live_active: self.live.mode_state.is_active(),
                 has_worker: self.render.coordinator.has_worker(),
-                site_id: &self.state.viz_state.site_id,
+                site_id: &self.sites.focus().id.0,
                 product: self.state.viz_state.product,
                 volume_3d_active: self.volume_3d_active(),
                 coordinator_scan_key: self.render.coordinator.scan_key(),
@@ -42,7 +42,7 @@ impl WorkbenchApp {
                 elevation_selection: &mut self.state.viz_state.elevation_selection,
                 scrub_cache: &mut self.render.scrub_cache,
             },
-            &self.timeline.scans,
+            &self.sites.focus().scans,
         );
         self.execute_advance_playback_actions(actions);
 
@@ -51,10 +51,10 @@ impl WorkbenchApp {
                 live_active: self.live.mode_state.is_active(),
                 has_worker: self.render.coordinator.has_worker(),
                 product: self.state.viz_state.product,
-                site_id: &self.state.viz_state.site_id,
+                site_id: &self.sites.focus().id.0,
                 elevation_selection: &self.state.viz_state.elevation_selection,
                 volume_3d_active: self.volume_3d_active(),
-                archive_boundaries: &self.timeline.shadow_scan_boundaries,
+                archive_boundaries: &self.sites.focus().shadows,
                 displayed: self.state.viz_state.displayed.as_ref(),
                 coordinator_scan_key: self.render.coordinator.scan_key(),
                 active_download_ranges: &self.state.download_progress.active_scans,
@@ -64,7 +64,7 @@ impl WorkbenchApp {
                 prefetch_lookahead_secs: PREFETCH_LOOKAHEAD_SECS,
             },
             &self.playback.state,
-            &self.timeline.scans,
+            &self.sites.focus().scans,
         );
         if let Some(prefetch) = followup.prefetch {
             log::debug!(
@@ -161,14 +161,14 @@ impl WorkbenchApp {
             playback_ts_bits: playback_ts.to_bits(),
             displayed_elev,
             is_auto,
-            scan_count: self.timeline.scans.scans.len(),
+            scan_count: self.sites.focus().scans.scans.len(),
         };
         let prev_info = if self.state.render_cache.prev_sweep_cache_key.as_ref() == Some(&cache_key)
         {
             self.state.render_cache.prev_sweep_cache_value
         } else {
             let computed = PlaybackManager::find_prev_sweep(
-                &self.timeline.scans,
+                &self.sites.focus().scans,
                 playback_ts,
                 displayed_elev,
                 crate::core::tilt::TiltFilter::from(&self.state.viz_state.elevation_selection),
@@ -195,7 +195,7 @@ impl WorkbenchApp {
         };
 
         let prev_scan_key =
-            data::ScanKey::from_secs_f64(&self.state.viz_state.site_id, prev_scan_key_ts);
+            data::ScanKey::from_secs_f64(&self.sites.focus().id.0, prev_scan_key_ts);
 
         // Mirror the prev-sweep slot into viz_state so the timeline's
         // secondary border and the prev-sweep overlay panel reflect what

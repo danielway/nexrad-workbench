@@ -16,6 +16,7 @@ pub(crate) fn draw_globe(
     ui: &mut egui::Ui,
     rect: &Rect,
     state: &AppState,
+    site: &crate::subsystem::SiteState,
     globe_renderer: Option<&Arc<Mutex<GlobeRenderer>>>,
     geo_line_renderer: Option<&Arc<Mutex<GeoLineRenderer>>>,
     gpu_renderer: Option<&Arc<Mutex<RadarGpuRenderer>>>,
@@ -32,8 +33,8 @@ pub(crate) fn draw_globe(
 
     let camera = state.viz_state.camera.clone();
     let processing = state.render_processing.clone();
-    let radar_lat = state.viz_state.center_lat;
-    let radar_lon = state.viz_state.center_lon;
+    let radar_lat = site.lat;
+    let radar_lon = site.lon;
     let volume_enabled = state.viz_state.volume_3d_enabled;
     let volume_density_cutoff = state.viz_state.volume_density_cutoff;
     let geo_vis = crate::geo::geo_line_renderer::VisibleLayers {

@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 pub(crate) fn render_canvas_with_geo(
     root_ui: &mut egui::Ui,
     state: &mut AppState,
-    timeline: &crate::subsystem::Timeline,
+    sites: &crate::subsystem::Sites,
     live: &crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
@@ -38,6 +38,7 @@ pub(crate) fn render_canvas_with_geo(
     let globe_radar_renderer = gpu.globe_radar.as_ref();
     let volume_ray_renderer = gpu.volume_ray.as_ref();
     let ctx = root_ui.ctx().clone();
+    let site = sites.focus();
     egui::CentralPanel::default().show(root_ui, |ui| {
         let available_size = ui.available_size();
 
@@ -71,6 +72,7 @@ pub(crate) fn render_canvas_with_geo(
                     ui,
                     &rect,
                     state,
+                    site,
                     globe_renderer,
                     geo_line_renderer,
                     gpu_renderer,
@@ -85,6 +87,7 @@ pub(crate) fn render_canvas_with_geo(
                     let overlay_ctx = OverlayContext {
                         rect,
                         state,
+                        site,
                         live,
                         derived,
                         mping_reports: &diagnostics.mping.reports,
@@ -122,8 +125,7 @@ pub(crate) fn render_canvas_with_geo(
                         state.viz_state.set_pan_offset(pan + egui::vec2(dx, dy));
                     }
                 }
-                let mut projection =
-                    MapProjection::new(state.viz_state.center_lat, state.viz_state.center_lon);
+                let mut projection = MapProjection::new(site.lat, site.lon);
                 projection.update(state.viz_state.zoom(), state.viz_state.pan_offset(), rect);
 
                 // Cache current visible bounds so non-canvas UI (top bar chip,
@@ -163,11 +165,8 @@ pub(crate) fn render_canvas_with_geo(
                     let r = renderer.lock().expect("renderer mutex poisoned");
                     r.has_data().then(|| r.max_range_km())
                 });
-                let site_screen = super::canvas_overlays::SiteScreen::new(
-                    &projection,
-                    state.viz_state.center_lat,
-                    state.viz_state.center_lon,
-                );
+                let site_screen =
+                    super::canvas_overlays::SiteScreen::new(&projection, site.lat, site.lon);
                 let coverage_km =
                     crate::core::canvas::product_max_range_km(state.viz_state.product);
                 let radar_cutout = data_range_km.map(|_| RadarCutout {
@@ -198,7 +197,7 @@ pub(crate) fn render_canvas_with_geo(
                 render_nexrad_sites(
                     &painter,
                     &projection,
-                    &state.viz_state.site_id,
+                    &site.id.0,
                     &state.layer_state.geo,
                     crate::geo::GeoPass::Lines,
                     None,
@@ -221,9 +220,9 @@ pub(crate) fn render_canvas_with_geo(
                     );
                 }
 
-                let sweep_info = compute_sweep_line_azimuth(state, timeline, playback);
+                let sweep_info = compute_sweep_line_azimuth(site, playback);
                 let (gpu_sweep, between_sweeps, live_partial) =
-                    compute_gpu_sweep_state(state, timeline, live, playback, derived, sweep_info);
+                    compute_gpu_sweep_state(state, site, live, playback, derived, sweep_info);
 
                 // Age desaturation needs the estimated antenna azimuth; only
                 // supply it while the view's sweep animation is active so a
@@ -248,8 +247,8 @@ pub(crate) fn render_canvas_with_geo(
                         &projection,
                         renderer,
                         &rect,
-                        state.viz_state.center_lat,
-                        state.viz_state.center_lon,
+                        site.lat,
+                        site.lon,
                         &processing,
                         gpu_sweep,
                         chunk_boundary,
@@ -325,6 +324,7 @@ pub(crate) fn render_canvas_with_geo(
                     &OverlayContext {
                         rect,
                         state,
+                        site,
                         live,
                         derived,
                         mping_reports: &diagnostics.mping.reports,
@@ -386,7 +386,7 @@ pub(crate) fn render_canvas_with_geo(
                 render_nexrad_sites(
                     &painter,
                     &projection,
-                    &state.viz_state.site_id,
+                    &site.id.0,
                     &state.layer_state.geo,
                     crate::geo::GeoPass::Labels,
                     Some(&SiteLabelRoom {
@@ -431,8 +431,8 @@ pub(crate) fn render_canvas_with_geo(
                     result: &state.viz_state.storm_cells.result,
                     visible: state.viz_state.storm_cells_visible,
                     view_mode: ViewMode::Flat2D,
-                    radar: (state.viz_state.center_lat, state.viz_state.center_lon),
-                    site_id: &state.viz_state.site_id,
+                    radar: (site.lat, site.lon),
+                    site_id: &site.id.0,
                     sweep: gpu_sweep,
                     provisional: live_partial,
                     phone: state.is_mobile,
@@ -538,8 +538,8 @@ pub(crate) fn render_canvas_with_geo(
                             &painter,
                             &projection,
                             hover_pos,
-                            state.viz_state.center_lat,
-                            state.viz_state.center_lon,
+                            site.lat,
+                            site.lon,
                             gpu_renderer,
                             &state.viz_state.product,
                             state.use_local_time,
@@ -557,6 +557,7 @@ pub(crate) fn render_canvas_with_geo(
                             pos,
                             &projection,
                             state,
+                            &site.id.0,
                             playback,
                             diagnostics,
                             derived,
@@ -575,8 +576,8 @@ pub(crate) fn render_canvas_with_geo(
                         &projection,
                         &diagnostics.mping.reports,
                         diagnostics.mping.selected_report_id,
-                        state.viz_state.center_lat,
-                        state.viz_state.center_lon,
+                        site.lat,
+                        site.lon,
                         playback.state.playback_position(),
                         state.use_local_time,
                     );
@@ -591,6 +592,7 @@ pub(crate) fn render_canvas_with_geo(
                     &OverlayContext {
                         rect,
                         state,
+                        site,
                         live,
                         derived,
                         mping_reports: &diagnostics.mping.reports,
@@ -627,6 +629,7 @@ pub(crate) fn render_canvas_with_geo(
                         &response,
                         &rect,
                         state,
+                        &site.id.0,
                         playback,
                         diagnostics,
                         derived,
@@ -775,7 +778,7 @@ fn draw_radar_gpu(
 #[allow(clippy::too_many_arguments)]
 fn compute_gpu_sweep_state(
     state: &mut AppState,
-    timeline: &crate::subsystem::Timeline,
+    site: &crate::subsystem::SiteState,
     live: &crate::subsystem::Live,
     playback: &crate::subsystem::Playback,
     derived: &crate::subsystem::Derived,
@@ -801,8 +804,7 @@ fn compute_gpu_sweep_state(
     );
     let playback_ts = playback.state.playback_position();
     let sweep_bounds = if live_range.is_none() && derived.effective_sweep_animation {
-        timeline
-            .scans
+        site.scans
             .find_recent_scan(playback_ts, crate::core::recency::RECENCY_SECS)
             .and_then(|scan| {
                 let displayed_elev = state
@@ -852,8 +854,7 @@ fn compute_gpu_sweep_state(
 }
 
 fn compute_sweep_line_azimuth(
-    _state: &AppState,
-    timeline: &crate::subsystem::Timeline,
+    site: &crate::subsystem::SiteState,
     playback: &crate::subsystem::Playback,
 ) -> Option<(f32, f32)> {
     if playback.state.speed.timeline_seconds_per_real_second() > 30.0 {
@@ -863,8 +864,7 @@ fn compute_sweep_line_azimuth(
     let ts = playback.state.playback_position();
 
     // Find the sweep the playhead is in, then interpolate its azimuth (pure).
-    timeline
-        .scans
+    site.scans
         .find_scan_at_timestamp(ts)
         .and_then(|scan| scan.find_sweep_at_timestamp(ts))
         .and_then(|(_, sweep)| crate::core::canvas::sweep_line_azimuth(sweep, ts))
