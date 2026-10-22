@@ -115,7 +115,8 @@ pub(crate) fn render_canvas_with_geo(
                         state.viz_state.set_pan_offset(pan + egui::vec2(dx, dy));
                     }
                 }
-                let mut projection = MapProjection::new(site.lat, site.lon);
+                let (centre_lat, centre_lon) = state.viz_state.map_centre;
+                let mut projection = MapProjection::new(centre_lat, centre_lon);
                 projection.update(state.viz_state.zoom(), state.viz_state.pan_offset(), rect);
 
                 // Cache current visible bounds so non-canvas UI (top bar chip,

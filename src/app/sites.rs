@@ -6,7 +6,8 @@
 //! the change implies: a site that joins gets its stream while the session is
 //! live (its anchor fetch and listings come from the per-site pumps on the
 //! next frame), a site that leaves stops its stream and releases its GPU
-//! objects, and a new focus recentres the map and becomes the preferred site.
+//! objects, and a new focus moves the map centre onto it and becomes the
+//! preferred site.
 
 use crate::core::sites::{self as sites_core, Change, Select};
 use crate::data::SiteId;
@@ -44,8 +45,7 @@ impl WorkbenchApp {
         let elevation = focus.displayed.as_ref().map(|d| d.elevation_deg);
         self.persistence.adopt_site(&id);
         self.state.preferred_site = Some(id);
-        self.state.viz_state.set_pan_offset(egui::Vec2::ZERO);
-        self.state.viz_state.camera.center_on(lat, lon);
+        self.state.viz_state.centre_map_on(lat, lon);
         self.state.viz_state.storm_tracks.reset();
         if let Some(deg) = elevation {
             self.state.viz_state.set_elevation_label(deg);
@@ -162,8 +162,7 @@ impl WorkbenchApp {
             self.persistence.adopt_site(&id);
         }
         self.sites.focus_mut().retarget(site_id, lat, lon);
-        self.state.viz_state.set_pan_offset(egui::Vec2::ZERO);
-        self.state.viz_state.camera.center_on(lat, lon);
+        self.state.viz_state.centre_map_on(lat, lon);
         self.state
             .push_command(crate::core::Intent::RefreshTimeline {
                 auto_position: true,

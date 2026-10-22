@@ -73,8 +73,7 @@ pub(crate) struct DispatchState<'a> {
     pub chrome: &'a mut subsystem::Chrome,
     /// Read-only: the storm-activity book (the calendar's landing reads it).
     pub timeline: &'a subsystem::Timeline,
-    /// The sites: a step lands on the focus site's frames, and "show on map"
-    /// moves the focus site's position (the map centre, for now).
+    /// The sites: a step lands on the focus site's frames.
     pub sites: &'a mut subsystem::Sites,
 }
 
@@ -562,18 +561,8 @@ impl DispatchState<'_> {
         } else {
             self.state.layer_state.geo.alerts_other = true;
         }
-        if let Some((center_lat, center_lon)) = focus.center {
-            // The map centre is still the focus site's position.
-            let focus = self.sites.focus_mut();
-            focus.lat = center_lat;
-            focus.lon = center_lon;
-            self.state
-                .viz_state
-                .set_pan_offset(eframe::egui::Vec2::ZERO);
-            self.state
-                .viz_state
-                .camera
-                .center_on(center_lat, center_lon);
+        if let Some((lat, lon)) = focus.center {
+            self.state.viz_state.centre_map_on(lat, lon);
         }
         // Both surfaces must close so a detail opened from the list exposes the
         // newly focused map instead of immediately resurfacing the list.
@@ -2060,8 +2049,11 @@ mod dispatch_tests {
             !f.state.layer_state.geo.alerts_other,
             "a warning must not switch on the watches/advisories layer"
         );
-        assert!((f.sites.focus().lat - 42.0).abs() < 1e-9);
-        assert!((f.sites.focus().lon + 93.0).abs() < 1e-9);
+        let (lat, lon) = f.state.viz_state.map_centre;
+        assert!((lat - 42.0).abs() < 1e-9);
+        assert!((lon + 93.0).abs() < 1e-9);
+        // The map moved; the radar did not.
+        assert!((f.sites.focus().lat - 41.7312).abs() < 1e-9);
         assert_eq!(f.diagnostics.alerts.selected_alert_id, None);
         assert!(!f.diagnostics.alerts.list_modal_open);
     }

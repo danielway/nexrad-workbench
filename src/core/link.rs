@@ -341,6 +341,9 @@ pub(crate) struct BootPlan {
     pub also: Vec<String>,
     /// The site came from the link (rather than the preference).
     pub site_from_link: bool,
+    /// The map centre: the link's `lat`/`lon` when it carries both. `None`
+    /// centres the map on the focus site.
+    pub map_centre: Option<(f64, f64)>,
     pub start: BootStart,
 }
 
@@ -403,6 +406,7 @@ pub(crate) fn decide_boot(
         site,
         also,
         site_from_link,
+        map_centre: link.lat.zip(link.lon),
         start,
     }
 }
@@ -755,6 +759,26 @@ mod tests {
         let plan = decide_boot(&parse("?site=ZZZZ&also=KDMX"), Some("KOAX"), known, 3);
         assert_eq!(plan.site.as_deref(), Some("KOAX"));
         assert!(plan.also.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_links_lat_lon_are_the_map_centre() {
+        let plan = decide_boot(
+            &parse("?site=KTBW&also=KMLB&lat=28.2&lon=-81.9"),
+            None,
+            |s| matches!(s, "KTBW" | "KMLB"),
+            3,
+        );
+        assert_eq!(plan.map_centre, Some((28.2, -81.9)));
+        // Without both, the map centres on the focus site.
+        assert_eq!(
+            decide_boot(&parse("?site=KTLX"), None, known, 3).map_centre,
+            None
+        );
+        assert_eq!(
+            decide_boot(&parse("?site=KTLX&lat=35.0"), None, known, 3).map_centre,
+            None
+        );
     }
 
     #[wasm_bindgen_test]

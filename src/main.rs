@@ -307,15 +307,9 @@ fn apply_link(
     for extra in &also {
         crate::core::site_picker::push_recent(&mut state.recent_sites, extra.id);
     }
-    // The link's `lat`/`lon` are the map centre; until the map has a centre
-    // of its own they land on the site's position, as they always have.
-    if let Some(lat) = link.lat {
-        site.lat = lat;
-    }
-    if let Some(lon) = link.lon {
-        site.lon = lon;
-    }
-    state.viz_state.camera.center_on(site.lat, site.lon);
+    // The map centre: the link's `lat`/`lon`, else the focus site.
+    let (lat, lon) = plan.map_centre.unwrap_or((site.lat, site.lon));
+    state.viz_state.centre_map_on(lat, lon);
 
     let pinned = plan.start.is_pinned();
 
@@ -1005,7 +999,7 @@ impl eframe::App for WorkbenchApp {
             mping_layer_visible: self.state.layer_state.geo.mping,
             mping_pinned_to_now: self.playback.state.is_pinned()
                 || self.playback.state.is_live_range(),
-            site_id: &self.sites.focus().id.0,
+            map_centre: self.state.viz_state.map_centre,
             playback_secs: self.playback.state.playback_position(),
         };
         self.diagnostics

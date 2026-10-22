@@ -93,7 +93,7 @@ impl PersistenceManager {
             playback,
             &sites.focus().id.0,
             also,
-            (sites.focus().lat, sites.focus().lon),
+            state.viz_state.map_centre,
         );
         let current_prefs = Preferences::from_app_state(
             state,

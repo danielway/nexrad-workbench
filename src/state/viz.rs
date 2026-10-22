@@ -17,6 +17,14 @@ pub(crate) struct VizState {
     /// / [`VizState::set_zoom`] / [`VizState::set_pan_offset`].
     pub camera: Camera,
 
+    /// Where the map is: the `(lat, lon)` the 2D projection centres on (the
+    /// pan offset moves the view from it), the 3D camera is centred over, the
+    /// link's `lat`/`lon` carry, and the scale bar and the mPING query read.
+    /// Set by a site pick, a focus change, "Show on map" and the boot (from
+    /// the link, else the focus site). The radars' own positions are on
+    /// their `SiteState`s; this is not one of them.
+    pub map_centre: (f64, f64),
+
     /// Selected radar product
     pub product: RadarProduct,
 
@@ -90,6 +98,7 @@ impl Default for VizState {
     fn default() -> Self {
         Self {
             camera: Camera::centered_on(41.7312, -93.7229),
+            map_centre: (41.7312, -93.7229),
             product: RadarProduct::default(),
             elevation_selection: ElevationSelection::default(),
             last_fixed_selection: None,
@@ -113,6 +122,15 @@ impl Default for VizState {
 }
 
 impl VizState {
+    /// Put the map's centre at `(lat, lon)` and centre the view on it: the
+    /// 2D pan is reset and the 3D camera hovers over it as it does over a
+    /// site.
+    pub(crate) fn centre_map_on(&mut self, lat: f64, lon: f64) {
+        self.map_centre = (lat, lon);
+        self.set_pan_offset(Vec2::ZERO);
+        self.camera.center_on(lat, lon);
+    }
+
     /// The active [`ViewMode`], derived from the camera variant.
     pub(crate) fn view_mode(&self) -> ViewMode {
         self.camera.view_mode()
@@ -275,6 +293,21 @@ mod coverage_tests {
         assert_eq!(viz.elevation, "0.5\u{00B0}");
         viz.set_elevation_label(12.34);
         assert_eq!(viz.elevation, "12.3\u{00B0}");
+    }
+
+    #[wasm_bindgen_test]
+    fn centre_map_on_moves_the_centre_resets_the_pan_and_the_camera() {
+        let mut viz = VizState::default();
+        viz.set_pan_offset(Vec2::new(40.0, -12.0));
+        viz.centre_map_on(28.2, -81.9);
+        assert_eq!(viz.map_centre, (28.2, -81.9));
+        assert_eq!(viz.pan_offset(), Vec2::ZERO);
+        // The 3D camera hovers over the centre.
+        let snap = viz.camera.url_snapshot();
+        assert!((snap.center_lat - 28.2).abs() < 1e-4);
+        assert!((snap.center_lon + 81.9).abs() < 1e-4);
+        // The 2D zoom is left alone.
+        assert!((viz.zoom() - crate::geo::DEFAULT_FLAT_ZOOM).abs() < 1e-6);
     }
 
     // ---- VizState 2D/3D accessor no-ops ----------------------------------
