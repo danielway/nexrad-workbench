@@ -60,6 +60,7 @@ pub(crate) mod render_loop;
 pub(crate) mod selection_chip;
 pub(crate) mod selection_strip;
 pub(crate) mod session;
+pub(crate) mod site_canvas;
 pub(crate) mod site_picker;
 pub(crate) mod sites;
 pub(crate) mod storm_activity;

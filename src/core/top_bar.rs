@@ -573,6 +573,7 @@ mod tests {
             caption_context: crate::core::canvas::CaptionContext::default(),
             loop_mode: crate::core::LoopMode::Loop,
             volume_3d_active: false,
+            others: Vec::new(),
         })
     }
 

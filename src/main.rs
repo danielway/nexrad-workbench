@@ -1085,6 +1085,7 @@ impl eframe::App for WorkbenchApp {
                 elevation_selection: &self.state.viz_state.elevation_selection,
                 caption_context: self.state.viz_state.caption_context,
                 volume_3d_active: self.state.viz_state.volume_3d_active(),
+                flat: self.state.viz_state.view_mode() == geo::ViewMode::Flat2D,
             },
         );
         // The touch-screen fact is re-read when the viewport changes size, so

@@ -1,8 +1,8 @@
 //! NEXRAD site marker overlay.
 //!
 //! Renders colored dots and optional labels for all 156+ NEXRAD sites
-//! within the visible map bounds. The active site is drawn larger and
-//! highlighted; off-screen sites are culled for performance. Which labels
+//! within the visible map bounds. The sites on the map are drawn larger and
+//! highlighted, each with its id label; off-screen sites are culled for performance. Which labels
 //! print is the core's ([`crate::core::map_chrome::select_site_labels`]):
 //! a label gives way to a nearby city label or site label and never prints
 //! under the map's chrome; the dot always stays.
@@ -29,7 +29,7 @@ pub(crate) struct SiteLabelRoom<'a> {
     pub viewport: ScreenBounds,
 }
 
-/// A site on screen: its id, dot position, and whether it is the current one.
+/// A site on screen: its id, dot position, and whether it is on the map.
 struct OnScreen {
     id: &'static str,
     pos: Pos2,
@@ -38,14 +38,14 @@ struct OnScreen {
 
 fn sites_on_screen(
     projection: &dyn Projection,
-    current_site_id_upper: &str,
+    current_upper: &[String],
     visibility: &GeoLayerVisibility,
 ) -> Vec<OnScreen> {
     let bounds = projection.visible_bounds();
     let mut out = Vec::new();
     if visibility.nexrad_sites {
         for site in NEXRAD_SITES.iter() {
-            if site.id == current_site_id_upper {
+            if current_upper.iter().any(|c| c == site.id) {
                 continue;
             }
 
@@ -72,7 +72,7 @@ fn sites_on_screen(
             }
         }
     }
-    if let Some(site) = get_site(current_site_id_upper) {
+    for site in current_upper.iter().filter_map(|id| get_site(id)) {
         if let Some(pos) = projection.geo_to_screen(site.lat, site.lon) {
             out.push(OnScreen {
                 id: site.id,
@@ -87,13 +87,13 @@ fn sites_on_screen(
 pub(crate) fn render_nexrad_sites(
     painter: &Painter,
     projection: &dyn Projection,
-    current_site_id: &str,
+    current_site_ids: &[&str],
     visibility: &GeoLayerVisibility,
     pass: GeoPass,
     room: Option<&SiteLabelRoom>,
 ) {
-    let current_site_id_upper = current_site_id.to_uppercase();
-    let sites = sites_on_screen(projection, &current_site_id_upper, visibility);
+    let current_upper: Vec<String> = current_site_ids.iter().map(|s| s.to_uppercase()).collect();
+    let sites = sites_on_screen(projection, &current_upper, visibility);
 
     match pass {
         GeoPass::Lines => {
@@ -116,8 +116,8 @@ pub(crate) fn render_nexrad_sites(
             }
         }
         GeoPass::Labels => {
-            // Other sites' labels follow the labels toggle; the current
-            // site's always prints.
+            // Other sites' labels follow the labels toggle; the id of each
+            // site on the map always prints.
             let labels: Vec<_> = sites
                 .iter()
                 .filter(|s| s.current || visibility.labels)

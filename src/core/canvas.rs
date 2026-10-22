@@ -587,9 +587,7 @@ pub(crate) fn decide_canvas_caption(
             reason,
         };
     };
-    let start = 2.0 * f.time_secs - f.end_secs;
-    let gap = (target - f.end_secs).max(start - target).max(0.0);
-    if gap > ctx.frame_step_secs.max(MIN_FRAME_STEP_SECS) {
+    if frame_disagrees(f.time_secs, f.end_secs, target, ctx.frame_step_secs) {
         CanvasCaption::Discrepancy {
             showing: f.time_secs,
             playhead: target,
@@ -599,6 +597,15 @@ pub(crate) fn decide_canvas_caption(
     } else {
         CanvasCaption::None
     }
+}
+
+/// Whether a frame (its midpoint and end, Unix seconds) sits more than one
+/// frame (`frame_step_secs`, floored at [`MIN_FRAME_STEP_SECS`]) away from
+/// `target`. The caption rule asks it of the focus and of every other site.
+pub(crate) fn frame_disagrees(mid: f64, end: f64, target: f64, frame_step_secs: f64) -> bool {
+    let start = 2.0 * mid - end;
+    let gap = (target - end).max(start - target).max(0.0);
+    gap > frame_step_secs.max(MIN_FRAME_STEP_SECS)
 }
 
 /// "One frame" for the caption rule: the expected seconds between

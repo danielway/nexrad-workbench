@@ -96,8 +96,8 @@ impl SiteGpu {
 pub(crate) struct SiteState {
     /// The radar's ICAO id (upper case, as the store keys it).
     pub id: SiteId,
-    /// The radar's latitude. Also the map's centre until the map has one of
-    /// its own (see `ARCHITECTURE.md`, State Management).
+    /// The radar's latitude. The map's centre is its own value
+    /// (`VizState::map_centre`).
     pub lat: f64,
     /// The radar's longitude (see [`Self::lat`]).
     pub lon: f64,
