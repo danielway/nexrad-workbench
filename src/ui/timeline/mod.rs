@@ -368,7 +368,7 @@ pub(super) fn render_timeline(
     // intent, which may have a render in flight). Now applies in the Micro
     // tier (frames-first).
     let active_sweep = if tier == TimelineTier::Micro {
-        state.viz_state.displayed.as_ref().map(|d| {
+        site.displayed.as_ref().map(|d| {
             (
                 d.identity.scan_timestamp_secs(),
                 d.identity.elevation_number,
@@ -378,7 +378,7 @@ pub(super) fn render_timeline(
         None
     };
     let prev_active_sweep = if derived.effective_sweep_animation && tier == TimelineTier::Micro {
-        state.viz_state.previous_displayed.as_ref().map(|d| {
+        site.previous_displayed.as_ref().map(|d| {
             (
                 d.identity.scan_timestamp_secs(),
                 d.identity.elevation_number,

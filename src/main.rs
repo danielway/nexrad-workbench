@@ -711,7 +711,7 @@ impl WorkbenchApp {
                             .state
                             .latency_summary()
                             .map(|l| (l.avg_fetch_ms, l.p95_fetch_ms, l.avg_e2e_ms)),
-                        storm_cells: self.state.viz_state.storm_cells.stats(),
+                        storm_cells: self.sites.focus().cells.stats(),
                     }),
             },
             settle,
@@ -792,9 +792,11 @@ impl WorkbenchApp {
                 volume: volume.as_ref(),
                 clock,
                 antenna_azimuth: self.live.radar_model.estimated_azimuth,
-                on_screen: viz.displayed.as_ref().map(|d| core::ladder::OnScreenCut {
-                    elevation_number: d.identity.elevation_number,
-                    start_secs: d.start_time,
+                on_screen: self.sites.focus().displayed.as_ref().map(|d| {
+                    core::ladder::OnScreenCut {
+                        elevation_number: d.identity.elevation_number,
+                        start_secs: d.start_time,
+                    }
                 }),
                 role: viz.tilt_role(),
                 fetching: viz.caption_context.fetch_covers_playhead,
@@ -1060,7 +1062,7 @@ impl eframe::App for WorkbenchApp {
             archive_boundaries: &self.sites.focus().shadows,
             now: self.state.frame_now,
             elevation_selection: &self.state.viz_state.elevation_selection,
-            displayed: self.state.viz_state.displayed.as_ref(),
+            displayed: self.sites.focus().displayed.as_ref(),
             caption_context: self.state.viz_state.caption_context,
             volume_3d_active: self.state.viz_state.volume_3d_active(),
         });

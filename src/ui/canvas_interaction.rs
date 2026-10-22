@@ -117,7 +117,7 @@ pub(crate) fn handle_canvas_interaction(
     response: &egui::Response,
     rect: &Rect,
     state: &mut AppState,
-    site_id: &str,
+    site: &crate::subsystem::SiteState,
     playback: &crate::subsystem::Playback,
     diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
@@ -142,7 +142,7 @@ pub(crate) fn handle_canvas_interaction(
                 click_pos,
                 projection,
                 state,
-                site_id,
+                site,
                 playback,
                 diagnostics,
                 derived,
@@ -234,7 +234,7 @@ pub(crate) fn pick_at(
     pos: egui::Pos2,
     projection: &MapProjection,
     state: &AppState,
-    site_id: &str,
+    site: &crate::subsystem::SiteState,
     playback: &crate::subsystem::Playback,
     diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
@@ -254,7 +254,7 @@ pub(crate) fn pick_at(
     let candidates = crate::core::canvas::PickCandidates {
         site: layers
             .sites
-            .then(|| pick_site_at(pos, projection, site_id, radii.site))
+            .then(|| pick_site_at(pos, projection, &site.id.0, radii.site))
             .flatten(),
         mping: layers
             .mping
@@ -295,7 +295,7 @@ pub(crate) fn pick_at(
             .then(|| {
                 let geo = projection.screen_to_geo(pos);
                 crate::core::storm_cell_view::cell_at(
-                    &state.viz_state.storm_cells.result,
+                    &site.cells.result,
                     &storm_cells.shown,
                     geo.y,
                     geo.x,

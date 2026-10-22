@@ -66,7 +66,7 @@ impl WorkbenchApp {
                 elevation_selection: &self.state.viz_state.elevation_selection,
                 volume_3d_active: self.volume_3d_active(),
                 archive_boundaries: &target.shadows,
-                displayed: self.state.viz_state.displayed.as_ref(),
+                displayed: target.displayed.as_ref(),
                 track_scan_key: target.render.scan_key(),
                 active_download_ranges: &self.state.download_progress.active_scans,
                 in_flight_download_ranges: &self.state.download_progress.in_flight_scans,
@@ -156,7 +156,7 @@ impl WorkbenchApp {
             self.live.canvas_follows_live(&self.playback.state),
             &self.live.radar_model,
         ) {
-            self.state.viz_state.previous_displayed = None;
+            self.sites.list[site].previous_displayed = None;
             self.state.viz_state.last_sweep_line_cache = None;
             return;
         }
@@ -165,9 +165,7 @@ impl WorkbenchApp {
         // Anchor "previous" to the on-GPU main slot (i.e., what's
         // actually on screen), not the resolver's intent — otherwise
         // the prev-sweep upload races ahead of the main upload.
-        let displayed_elev = match self
-            .state
-            .viz_state
+        let displayed_elev = match self.sites.list[site]
             .displayed
             .as_ref()
             .map(|d| d.identity.elevation_number)
@@ -207,7 +205,7 @@ impl WorkbenchApp {
         {
             Some(info) => info,
             None => {
-                self.state.viz_state.previous_displayed = None;
+                self.sites.list[site].previous_displayed = None;
                 // Clear GPU previous sweep so shader composites against black
                 if let Some(ref renderer) = self.gpu.gpu {
                     if let Ok(mut r) = renderer.lock() {
@@ -221,13 +219,13 @@ impl WorkbenchApp {
         let prev_scan_key =
             data::ScanKey::from_secs_f64(&self.sites.list[site].id.0, prev_scan_key_ts);
 
-        // Mirror the prev-sweep slot into viz_state so the timeline's
+        // Mirror the prev-sweep slot onto the site so the timeline's
         // secondary border and the prev-sweep overlay panel reflect what
         // we're driving into the prev-sweep GPU texture. Product matches
         // the current main-slot product (prev animation only makes sense
         // within a single product channel).
         let prev_product = self.state.viz_state.product.to_worker_string().to_string();
-        self.state.viz_state.previous_displayed = Some(crate::core::DisplayedSweep {
+        self.sites.list[site].previous_displayed = Some(crate::core::DisplayedSweep {
             identity: SweepIdentity::new(prev_scan_key.clone(), prev_elev_num, prev_product),
             start_time: prev_start,
             end_time: prev_end,
@@ -316,37 +314,34 @@ impl WorkbenchApp {
             }
         }
         self.clear_active_scan(site);
-        self.state.viz_state.data_staleness_secs = None;
-        self.state.viz_state.data_staleness_start_secs = None;
-        self.state.viz_state.elevation = "-- deg".to_string();
+        if site == self.sites.focus {
+            self.state.viz_state.elevation = "-- deg".to_string();
+        }
         // clear_data() drops both GPU textures; match the prev-sweep state
         // so the timeline highlight and canvas overlay don't point at state
         // that no longer has backing pixels. `displayed = None` is the canonical
         // "no frame" signal the overlay/readout read to drop the timestamp.
-        self.state.viz_state.displayed = None;
-        self.state.viz_state.previous_displayed = None;
-        self.sites.list[site].scrub.last_active_scan_ts = None;
-        self.state.viz_state.storm_cells.clear();
+        let target = &mut self.sites.list[site];
+        target.clear_display();
+        target.scrub.last_active_scan_ts = None;
     }
 
     /// Clear the on-canvas sweep when the selected (elevation, product) isn't
     /// available for the current scan, but the scan itself is still valid.
     /// Leaves the scan key intact so other elevations/products can still render.
-    pub(crate) fn clear_display_no_sweep(&mut self) {
+    pub(crate) fn clear_display_no_sweep(&mut self, site: usize) {
         if let Some(ref renderer) = self.gpu.gpu {
             if let Ok(mut r) = renderer.lock() {
                 r.clear_data();
             }
         }
-        self.state.viz_state.data_staleness_secs = None;
-        self.state.viz_state.data_staleness_start_secs = None;
-        self.state.viz_state.elevation = "-- deg".to_string();
+        if site == self.sites.focus {
+            self.state.viz_state.elevation = "-- deg".to_string();
+        }
         // clear_data() drops both GPU textures. sync_prev_sweep_texture
         // early-returns while `displayed` is None, so clearing it here
         // also keeps the prev slot from drifting until a new sweep lands.
-        self.state.viz_state.displayed = None;
-        self.state.viz_state.previous_displayed = None;
-        self.state.viz_state.storm_cells.clear();
+        self.sites.list[site].clear_display();
         // Keep `last_render` set to the failed identity. A "no pre-computed
         // sweep" answer is permanent for that exact (scan, elev, product), so
         // the dedup must suppress the next frame's identical request — clearing

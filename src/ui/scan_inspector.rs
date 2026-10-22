@@ -115,7 +115,7 @@ fn draw_scan_inspector(
     // Failed scan-starts come from the acquisition operations — the same source
     // the strip's failed-cell ticks use (so a retry clears it here too).
     let failed_secs = acquisition.state.failed_scan_starts();
-    let active = state.viz_state.displayed.as_ref().map(|d| {
+    let active = site.displayed.as_ref().map(|d| {
         (
             d.identity.scan_timestamp_secs(),
             d.identity.elevation_number,

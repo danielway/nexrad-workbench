@@ -428,7 +428,7 @@ pub(crate) fn render_canvas_with_geo(
                     .then(|| state.viz_state.storm_tracks.view(my_location))
                     .flatten();
                 let storm_cell_inputs = crate::core::storm_cell_view::StormCellViewInputs {
-                    result: &state.viz_state.storm_cells.result,
+                    result: &site.cells.result,
                     visible: state.viz_state.storm_cells_visible,
                     view_mode: ViewMode::Flat2D,
                     radar: (site.lat, site.lon),
@@ -557,7 +557,7 @@ pub(crate) fn render_canvas_with_geo(
                             pos,
                             &projection,
                             state,
-                            &site.id.0,
+                            site,
                             playback,
                             diagnostics,
                             derived,
@@ -629,7 +629,7 @@ pub(crate) fn render_canvas_with_geo(
                         &response,
                         &rect,
                         state,
-                        &site.id.0,
+                        site,
                         playback,
                         diagnostics,
                         derived,
@@ -807,11 +807,7 @@ fn compute_gpu_sweep_state(
         site.scans
             .find_recent_scan(playback_ts, crate::core::recency::RECENCY_SECS)
             .and_then(|scan| {
-                let displayed_elev = state
-                    .viz_state
-                    .displayed
-                    .as_ref()
-                    .map(|d| d.identity.elevation_number);
+                let displayed_elev = site.displayed.as_ref().map(|d| d.identity.elevation_number);
                 scan.sweeps
                     .iter()
                     .filter(|s| Some(s.elevation_number) == displayed_elev)

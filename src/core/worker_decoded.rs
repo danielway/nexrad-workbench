@@ -84,7 +84,7 @@ pub(crate) struct DecodedActions {
     pub upload_to_gpu: bool,
     /// `set_current_sweep_id(Some(..))` inside the upload block.
     pub gpu_sweep_id: String,
-    /// Assign to `viz_state.displayed` iff the shell's GPU upload succeeded.
+    /// Assign to the site's `displayed` iff the shell's GPU upload succeeded.
     /// Always populated; only meaningful when `upload_to_gpu`.
     pub displayed_on_upload: Option<DisplayedSweep>,
     /// dev-mode: store `last_render_detail` (the shell adds the measured

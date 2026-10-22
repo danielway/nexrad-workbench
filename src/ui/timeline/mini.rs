@@ -132,7 +132,7 @@ fn draw_strip(
     let failed: Vec<i64> = Vec::new();
     let mut in_flight = state.download_progress.in_flight_scans.clone();
     in_flight.extend_from_slice(&state.download_progress.active_scans);
-    let active = state.viz_state.displayed.as_ref().map(|d| {
+    let active = site.displayed.as_ref().map(|d| {
         (
             d.identity.scan_timestamp_secs(),
             d.identity.elevation_number,

@@ -340,7 +340,7 @@ pub(crate) struct FrameFollowupEnv<'a> {
     /// Archive listing boundaries (`timeline.shadow_scan_boundaries`): scans
     /// the archive has, cached or not.
     pub archive_boundaries: &'a [ScanBoundary],
-    /// `viz_state.displayed`, re-read post-effects.
+    /// the site's `displayed`, re-read post-effects.
     pub displayed: Option<&'a DisplayedSweep>,
     /// The site's `render.scan_key()`, re-read post-effects.
     pub track_scan_key: Option<&'a ScanKey>,

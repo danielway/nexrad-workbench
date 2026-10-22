@@ -244,11 +244,20 @@ impl WorkbenchApp {
         }
     }
 
-    /// Update the canvas overlay text with sweep timing and elevation info.
-    pub(crate) fn update_overlay_from_sweep(&mut self, start: f64, end: f64, elevation_deg: f32) {
-        self.state
-            .viz_state
-            .update_overlay(start, end, elevation_deg, self.state.frame_now.secs());
+    /// Set site `site`'s staleness from a sweep's timing and, for the focus,
+    /// the elevation readout.
+    pub(crate) fn update_overlay_from_sweep(
+        &mut self,
+        site: usize,
+        start: f64,
+        end: f64,
+        elevation_deg: f32,
+    ) {
+        if site == self.sites.focus {
+            self.state.viz_state.set_elevation_label(elevation_deg);
+        }
+        let now = self.state.frame_now.secs();
+        self.sites.list[site].set_staleness(start, end, now);
     }
 
     /// Send a render request to the worker for site `site`'s
@@ -328,7 +337,7 @@ impl WorkbenchApp {
                     .find_recent_scan(self.playback.state.playback_position(), MAX_SCAN_AGE_SECS)
                     .is_some();
                 if !protecting_live_partial && scan_covers_playhead {
-                    self.clear_display_no_sweep();
+                    self.clear_display_no_sweep(site);
                 }
             }
         }

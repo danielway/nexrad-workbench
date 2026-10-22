@@ -49,17 +49,32 @@ impl WorkbenchApp {
                     self.handle_volume_decoded_outcome(volume_data);
                 }
                 nexrad::WorkerOutcome::Detected(reply) => {
-                    let disposition = self.state.viz_state.storm_cells.accept(reply);
-                    log::debug!("storm cells: reply {:?}", disposition);
-                    self.sync_storm_cells();
+                    // The site whose request this answers; a reply nobody
+                    // awaits any more (a site change reset it) is dropped.
+                    let id = reply.request_id;
+                    match self.sites.list.iter().position(|s| s.cells.awaits(id)) {
+                        Some(site) => {
+                            let disposition = self.sites.list[site].cells.accept(reply);
+                            log::debug!("storm cells: reply {:?}", disposition);
+                            self.sync_storm_cells_for(site);
+                        }
+                        None => log::debug!("storm cells: reply {id} dropped"),
+                    }
                 }
                 nexrad::WorkerOutcome::DetectFailed {
                     request_id,
                     message,
                 } => {
                     log::warn!("storm cells: detection failed: {message}");
-                    self.state.viz_state.storm_cells.fail(request_id);
-                    self.sync_storm_cells();
+                    let owner = self
+                        .sites
+                        .list
+                        .iter()
+                        .position(|s| s.cells.awaits(request_id));
+                    if let Some(site) = owner {
+                        self.sites.list[site].cells.fail(request_id);
+                        self.sync_storm_cells_for(site);
+                    }
                 }
                 nexrad::WorkerOutcome::WorkerError {
                     id,
@@ -452,10 +467,10 @@ impl WorkbenchApp {
         let gpu_upload_ms = t_gpu.elapsed().as_secs_f64() * 1000.0;
 
         if gpu_upload_succeeded {
-            self.state.viz_state.displayed = actions.displayed_on_upload;
+            self.sites.list[site].displayed = actions.displayed_on_upload;
             // Detection for the new sweep, decided by the same rule as the
             // per-frame check (which then sees it as already computed).
-            self.sync_storm_cells();
+            self.sync_storm_cells_for(site);
         }
 
         // Store detailed render timing for the detail modal (dev mode only).
@@ -480,7 +495,7 @@ impl WorkbenchApp {
         }
 
         if let Some((start, end, angle)) = actions.update_overlay {
-            self.update_overlay_from_sweep(start, end, angle);
+            self.update_overlay_from_sweep(site, start, end, angle);
         }
     }
 
@@ -549,22 +564,22 @@ impl WorkbenchApp {
                     // canonical source for overlay/timeline prev info),
                     // else overwrite in place.
                     if let Some(new_displayed) = actions.new_displayed.take() {
+                        let focus = self.sites.focus_mut();
                         if actions.promote_prev_texture {
-                            let prior = self.state.viz_state.displayed.replace(new_displayed);
-                            self.state.viz_state.previous_displayed = prior;
+                            focus.previous_displayed = focus.displayed.replace(new_displayed);
                         } else {
-                            self.state.viz_state.displayed = Some(new_displayed);
+                            focus.displayed = Some(new_displayed);
                         }
                     }
                 }
             }
             // Detection for the new chunk, decided by the same rule as the
             // per-frame check. Runs after the lock above is released.
-            self.sync_storm_cells();
+            self.sync_storm_cells_for(self.sites.focus);
         }
 
         if let Some((start, end, angle)) = actions.update_overlay {
-            self.update_overlay_from_sweep(start, end, angle);
+            self.update_overlay_from_sweep(self.sites.focus, start, end, angle);
         }
 
         // Phase 2: azimuth bookkeeping — runs attached or detached, after
@@ -661,7 +676,7 @@ impl WorkbenchApp {
         // Dispatch on the typed kind so transient errors (worker disconnect,
         // IDB failure) keep the last-good view instead of blanking.
         if kind == crate::core::WorkerErrorKind::NotFound {
-            self.clear_display_no_sweep();
+            self.clear_display_no_sweep(self.sites.focus);
         }
 
         // Clean up the "processing" timeline ghost for the failed scan.

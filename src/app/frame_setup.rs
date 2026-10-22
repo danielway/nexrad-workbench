@@ -50,13 +50,9 @@ impl WorkbenchApp {
         // Recompute data staleness every frame against wall-clock time.
         // This ensures archive data correctly shows its true age (days/years)
         // rather than a misleading "few minutes" relative to playback position.
-        if let Some(displayed) = self.state.viz_state.displayed.as_ref() {
-            let now = self.state.frame_now.secs();
-            let end_age = now - displayed.end_time;
-            let start_age = now - displayed.start_time;
-            self.state.viz_state.data_staleness_secs = (end_age >= 0.0).then_some(end_age);
-            self.state.viz_state.data_staleness_start_secs =
-                (start_age >= 0.0).then_some(start_age);
+        let now = self.state.frame_now.secs();
+        for site in &mut self.sites.list {
+            site.refresh_staleness(now);
         }
 
         // Ensure continuous repainting for time-dependent UI elements (the "now"
@@ -114,13 +110,20 @@ impl WorkbenchApp {
         // the timeline/canvas don't keep highlighting the old site.
         focus.render.clear_for_site_change();
         focus.shadows.clear();
-        self.state.viz_state.displayed = None;
-        self.state.viz_state.previous_displayed = None;
-        self.state.viz_state.storm_cells.reset();
+        focus.displayed = None;
+        focus.previous_displayed = None;
+        focus.cells.reset();
         self.state.viz_state.storm_tracks.reset();
     }
 
-    /// Bring the storm cell result in line with what is displayed. The
+    /// [`Self::sync_storm_cells_for`] for every site.
+    pub(crate) fn sync_storm_cells(&mut self) {
+        for site in 0..self.sites.list.len() {
+            self.sync_storm_cells_for(site);
+        }
+    }
+
+    /// Bring site `site`'s storm cell result in line with what it displays. The
     /// decision (keep, clear, show a cached result, or ask a worker) is
     /// [`crate::core::storm_cells::decide`]; this assembles its inputs and
     /// executes the action, posting the described [`DetectRequest`] to the
@@ -128,46 +131,41 @@ impl WorkbenchApp {
     /// after each detect reply, so a cached or fresh result shows at once.
     ///
     /// [`DetectRequest`]: crate::core::storm_cells::DetectRequest
-    pub(crate) fn sync_storm_cells(&mut self) {
+    ///
+    /// Storm tracks stay single-valued on `VizState` and follow the focus.
+    pub(crate) fn sync_storm_cells_for(&mut self, site: usize) {
         use crate::core::storm_cells::{decide, LiveCutProgress, StormCellEnv};
         use crate::core::storm_tracks::history_keys;
 
+        let is_focus = site == self.sites.focus;
         let viz = &self.state.viz_state;
+        // Disjoint borrows of the one site: the env reads its frame and
+        // scans while the reducer writes its cells.
+        let target = &mut self.sites.list[site];
+        let (shown, scans, cells) = (&target.displayed, &target.scans, &mut target.cells);
         let (visible, view_mode, threshold_dbz, radar_lat, radar_lon) = (
             viz.storm_cells_visible,
             viz.view_mode(),
             viz.storm_cell_threshold_dbz,
-            self.sites.focus().lat,
-            self.sites.focus().lon,
+            target.lat,
+            target.lon,
         );
         // A live partial is displayed under a placeholder scan key (live
         // renders are not bound to a stored scan); its volume is the one the
-        // stream is collecting.
-        let live_anchor = self
-            .live
-            .mode_state
-            .is_active()
+        // stream is collecting. The stream belongs to the focus.
+        let live_anchor = (is_focus && self.live.mode_state.is_active())
             .then_some(self.live.mode_state.current_volume.as_ref())
             .flatten();
-        let live_partial = self.state.viz_state.displayed.as_ref().and_then(|d| {
+        let live_partial = shown.as_ref().and_then(|d| {
             let anchor = live_anchor.filter(|_| d.identity.scan_key.site.0.is_empty())?;
             let mut d = d.clone();
             d.identity.scan_key = anchor.scan_key.clone();
             Some(d)
         });
-        let displayed = live_partial
-            .as_ref()
-            .or(self.state.viz_state.displayed.as_ref());
+        let displayed = live_partial.as_ref().or(shown.as_ref());
         let displayed_ms = displayed.map(|d| d.identity.scan_key.scan_start.0);
-        let volume = displayed_ms.and_then(|ms| {
-            self.sites
-                .focus()
-                .scans
-                .scans
-                .iter()
-                .rev()
-                .find(|s| s.key_ms() == ms)
-        });
+        let volume =
+            displayed_ms.and_then(|ms| scans.scans.iter().rev().find(|s| s.key_ms() == ms));
         // The cut the live stream is filling, keyed to the live volume.
         let live_cut = live_anchor.and_then(|anchor| {
             let engine = self.live.engine.borrow();
@@ -179,13 +177,9 @@ impl WorkbenchApp {
             })
         });
         // Tracks need the cells of the volumes before the displayed one.
-        let tracks_on = visible && viz.storm_tracks_visible;
+        let tracks_on = is_focus && visible && viz.storm_tracks_visible;
         let history = match displayed {
-            Some(d) if tracks_on => history_keys(
-                &self.sites.focus().scans.scans,
-                &d.identity.scan_key,
-                threshold_dbz,
-            ),
+            Some(d) if tracks_on => history_keys(&scans.scans, &d.identity.scan_key, threshold_dbz),
             _ => Vec::new(),
         };
         let live_vcp = live_anchor
@@ -205,29 +199,26 @@ impl WorkbenchApp {
             now_ms: self.state.frame_now.millis(),
             history: &history,
         };
-        let cells = &mut self.state.viz_state.storm_cells;
         let action = decide(&env, cells);
         let request = cells.apply(action, &env);
-        let observations = self.state.viz_state.storm_tracks.observations();
-        let tracks = self.state.viz_state.storm_tracks.sync(
-            tracks_on,
-            &self.state.viz_state.storm_cells,
-            &history,
-        );
-        let st = &self.state.viz_state.storm_tracks;
-        if st.observations() != observations {
-            log::debug!(
-                "storm tracks: {tracks:?}, newest letter {:?}",
-                st.newest_label()
-            );
-        } else if tracks != crate::core::storm_tracks::TrackSync::Off {
-            log::trace!("storm tracks: {tracks:?}");
+        if is_focus {
+            let st = &mut self.state.viz_state.storm_tracks;
+            let observations = st.observations();
+            let tracks = st.sync(tracks_on, cells, &history);
+            if st.observations() != observations {
+                log::debug!(
+                    "storm tracks: {tracks:?}, newest letter {:?}",
+                    st.newest_label()
+                );
+            } else if tracks != crate::core::storm_tracks::TrackSync::Off {
+                log::trace!("storm tracks: {tracks:?}");
+            }
         }
         if let Some(request) = request {
             log::debug!("storm cells: requesting {:?}", request.key);
             let id = request.request_id;
             if !self.render.coordinator.detect(request) {
-                self.state.viz_state.storm_cells.fail(id);
+                self.sites.list[site].cells.fail(id);
             }
         }
     }

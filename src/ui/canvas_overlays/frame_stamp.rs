@@ -44,8 +44,7 @@ fn draw_frame_stamp(ui: &mut egui::Ui, ctx: &super::OverlayContext) -> Option<()
             &ctx.site.id.0,
             state.viz_state.product,
             ctx.live.session.frame.as_ref(),
-            state
-                .viz_state
+            ctx.site
                 .previous_displayed
                 .as_ref()
                 .map(|p| (p.start_time + p.end_time) / 2.0),

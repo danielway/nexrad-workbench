@@ -321,6 +321,14 @@ impl StormCells {
         ReplyDisposition::Cached
     }
 
+    /// Whether `request_id` is the request in flight, i.e. its reply would
+    /// be accepted. Routes a reply to the site that sent it.
+    pub(crate) fn awaits(&self, request_id: u64) -> bool {
+        self.in_flight
+            .as_ref()
+            .is_some_and(|f| f.request_id == request_id)
+    }
+
     fn take_in_flight(&mut self, request_id: u64) -> Option<StormCellKey> {
         match &self.in_flight {
             Some(f) if f.request_id == request_id => self.in_flight.take().map(|f| f.key),
@@ -452,7 +460,7 @@ pub(crate) struct StormCellEnv<'a> {
     pub visible: bool,
     /// `viz_state.view_mode()`.
     pub view_mode: ViewMode,
-    /// `viz_state.displayed` — what is on the GPU main slot. Its volume is
+    /// the site's `displayed` — what is on the GPU main slot. Its volume is
     /// the volume cells are shown for.
     pub displayed: Option<&'a DisplayedSweep>,
     /// `viz_state.storm_cell_threshold_dbz`.
@@ -1105,6 +1113,23 @@ mod tests {
         // Request ids keep increasing across the reset.
         let third = requested(&mut state, &env(Some(&d), Some(&vol)));
         assert!(third.request_id > second.request_id);
+    }
+
+    #[wasm_bindgen_test]
+    fn awaits_only_the_request_in_flight() {
+        let vol = volume(0, &[1]);
+        let d = displayed(0, 1, "reflectivity");
+        let mut state = StormCells::default();
+        assert!(!state.awaits(1), "nothing in flight");
+        let req = requested(&mut state, &env(Some(&d), Some(&vol)));
+        assert!(state.awaits(req.request_id));
+        assert!(!state.awaits(req.request_id + 1));
+        state.accept(reply(&req, cells(1), true));
+        assert!(!state.awaits(req.request_id), "answered");
+        let (vol1, d1) = (volume(1, &[1]), displayed(1, 1, "reflectivity"));
+        let again = requested(&mut state, &env(Some(&d1), Some(&vol1)));
+        state.reset();
+        assert!(!state.awaits(again.request_id), "reset drops it");
     }
 
     #[wasm_bindgen_test]
