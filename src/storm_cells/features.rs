@@ -1,13 +1,14 @@
 //! Per-cell feature extraction.
 //!
-//! Takes a component (a list of (az_idx, gate_idx) pixels) and computes the
+//! Takes a component (a list of (row, column) pixels) and computes the
 //! fields the UI/state layer needs: reflectivity-weighted centroid in
 //! lat/lon, lat/lon bounding box, physical area in km², max/mean dBZ,
-//! bearing and range from the radar, and a 2×2 PCA for major-axis
-//! orientation + elongation.
+//! bearing and range from the local origin (the radar on a polar sweep),
+//! and a 2×2 PCA for major-axis orientation + elongation. Positions and
+//! areas come from the grid's geometry (`geometry::Frame`).
 
 use super::components::Pixel;
-use super::{DetectionInput, KM_PER_DEG};
+use super::geometry::{Frame, Grid};
 
 /// Summary of one component's gates.
 #[derive(Clone, Debug, PartialEq)]
@@ -25,21 +26,22 @@ pub(super) struct Footprint {
     pub gate_count: u32,
 }
 
-pub(super) fn summarize(
+pub(super) fn summarize<'a>(
     pixels: &[Pixel],
     grid: &[f32],
-    input: &DetectionInput,
+    input: impl Into<Grid<'a>>,
     edge_threshold_dbz: f32,
 ) -> Footprint {
-    let cos_lat = input.radar_lat.to_radians().cos().max(1e-6);
-    let az_spacing_rad = (radial_width_deg(input) as f64).to_radians();
+    let geometry: Grid<'a> = input.into();
+    let cols = geometry.shape().1;
+    let frame = Frame::new(geometry);
 
     let mut max_dbz = f32::NEG_INFINITY;
     let mut sum_dbz = 0.0_f64;
     let mut area_km2 = 0.0_f64;
 
-    // Weighted centroid and covariance accumulators in radar-local
-    // Cartesian (km): x = east, y = north.
+    // Weighted centroid and covariance accumulators in local Cartesian
+    // (km): x = east, y = north.
     let mut sum_w = 0.0_f64;
     let mut sum_wx = 0.0_f64;
     let mut sum_wy = 0.0_f64;
@@ -53,24 +55,15 @@ pub(super) fn summarize(
     let mut min_lon = f64::INFINITY;
     let mut max_lon = f64::NEG_INFINITY;
 
-    for &(az_idx, g) in pixels {
-        let idx = az_idx as usize * input.gate_count + g as usize;
+    for &(row, col) in pixels {
+        let idx = row as usize * cols + col as usize;
         let dbz = grid[idx];
         if dbz.is_nan() {
             continue;
         }
 
-        let az_deg = input.azimuths[az_idx as usize];
-        let az_rad = (az_deg as f64).to_radians();
-        let range_km = input.first_gate_km + (g as f64 + 0.5) * input.gate_interval_km;
-
-        // Polar → radar-local Cartesian.
-        let x_km = range_km * az_rad.sin();
-        let y_km = range_km * az_rad.cos();
-
-        // Gate footprint on the ground ≈ range · dθ · dr (annular sector).
-        let gate_area_km2 = range_km * az_spacing_rad * input.gate_interval_km;
-        area_km2 += gate_area_km2;
+        let (x_km, y_km, pixel_area_km2) = frame.pixel(row, col);
+        area_km2 += pixel_area_km2;
 
         // Weight = reflectivity above the edge threshold. Linear-Z would be
         // more physical (10^(dbz/10)), but this dampens extreme cores that
@@ -89,8 +82,7 @@ pub(super) fn summarize(
         sum_dbz += dbz as f64;
 
         // Per-pixel lat/lon for the bounding box.
-        let lat = input.radar_lat + y_km / KM_PER_DEG;
-        let lon = input.radar_lon + x_km / (KM_PER_DEG * cos_lat);
+        let (lat, lon) = frame.lat_lon(x_km, y_km);
         if lat < min_lat {
             min_lat = lat;
         }
@@ -111,12 +103,11 @@ pub(super) fn summarize(
         (sum_dbz / pixels.len() as f64) as f32
     };
 
-    // Weighted centroid in radar-local Cartesian, then to lat/lon.
+    // Weighted centroid in local Cartesian, then to lat/lon.
     let inv_w = if sum_w > 0.0 { 1.0 / sum_w } else { 0.0 };
     let cx_km = sum_wx * inv_w;
     let cy_km = sum_wy * inv_w;
-    let centroid_lat = input.radar_lat + cy_km / KM_PER_DEG;
-    let centroid_lon = input.radar_lon + cx_km / (KM_PER_DEG * cos_lat);
+    let (centroid_lat, centroid_lon) = frame.lat_lon(cx_km, cy_km);
 
     let range_from_radar_km = (cx_km * cx_km + cy_km * cy_km).sqrt() as f32;
     let bearing_from_radar_deg = ((cx_km.atan2(cy_km).to_degrees() + 360.0) % 360.0) as f32;
@@ -147,44 +138,6 @@ pub(super) fn summarize(
     }
 }
 
-/// Angular width of one radial in degrees: the caller's spacing when given,
-/// else the median gap between the supplied azimuths, else `360 / count`.
-/// Using the real spacing keeps a partial sweep (only the radials received
-/// so far) from counting each radial as wider than it is.
-pub(super) fn radial_width_deg(input: &DetectionInput) -> f32 {
-    if let Some(spacing) = input.azimuth_spacing_deg.filter(|s| *s > 0.0) {
-        return spacing;
-    }
-    // Negative azimuths mark padded rows; they are not radials.
-    let received: Vec<f32> = input
-        .azimuths
-        .iter()
-        .copied()
-        .filter(|a| *a >= 0.0)
-        .collect();
-    let median = median_gap_deg(&received);
-    if median > 0.0 {
-        median
-    } else {
-        360.0 / input.azimuth_count.max(1) as f32
-    }
-}
-
-/// Median forward gap between consecutive azimuths, wrap-aware and
-/// including the closing gap from the last back to the first, so a full
-/// rotation reports its true spacing. 0 when there is nothing to measure.
-fn median_gap_deg(azimuths: &[f32]) -> f32 {
-    let n = azimuths.len();
-    if n < 2 {
-        return 0.0;
-    }
-    let mut gaps: Vec<f32> = (0..n)
-        .map(|i| (azimuths[(i + 1) % n] - azimuths[i]).rem_euclid(360.0))
-        .collect();
-    gaps.sort_by(f32::total_cmp);
-    gaps[n / 2]
-}
-
 /// Principal-axis orientation (compass degrees in [0, 180)) and elongation
 /// (√(λ_major / λ_minor)) from a 2×2 covariance matrix expressed in
 /// radar-local Cartesian coords (x = east, y = north).
@@ -213,6 +166,7 @@ fn pca(sxx: f64, syy: f64, sxy: f64) -> (f32, f32) {
 
 #[cfg(test)]
 mod coverage_tests {
+    use super::super::DetectionInput;
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 

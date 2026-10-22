@@ -6,7 +6,8 @@
 //! point (`nexrad::decode::worker_api::detect`) feeds it a stored or live
 //! sweep, and `core` re-exports its result types.
 //!
-//! Pipeline, all in polar (azimuth × gate) index space:
+//! Pipeline, all in index space (rows × columns, here azimuth × gate). Only
+//! the geometry (`geometry`) knows where a pixel is and how big.
 //!
 //! 1. Decode raw gate codes to dBZ and apply a 3×3 median filter
 //!    (`median`), so single-gate spikes cannot set a cell's peak. The peak of a cell is the maximum of the filtered field.
@@ -28,6 +29,7 @@ mod components;
 #[cfg(test)]
 mod corpus_tests;
 mod features;
+mod geometry;
 mod median;
 mod model;
 mod outline;
@@ -35,6 +37,7 @@ mod segment;
 pub(crate) mod track;
 mod watershed;
 
+use geometry::Grid;
 pub(crate) use model::{DetectionSource, StormCell, StormCellsResult, StormGroup};
 
 /// Approximate kilometres per degree of latitude: the flat
@@ -111,6 +114,10 @@ impl Default for DetectionParams {
 /// Run detection over the provided sweep. The result's `source` carries
 /// `params`; the caller fills in the sweep identity it knows.
 pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> StormCellsResult {
+    detect(input.into(), params)
+}
+
+fn detect(input: Grid<'_>, params: &DetectionParams) -> StormCellsResult {
     let mut result = StormCellsResult {
         source: DetectionSource {
             params: params.clone(),
@@ -118,51 +125,28 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
         },
         ..StormCellsResult::default()
     };
-    if input.azimuth_count == 0 || input.gate_count == 0 || input.azimuths.is_empty() {
+    let Some(values) = input.values() else {
         return result;
-    }
-    if input.gate_values.len() < input.azimuth_count * input.gate_count
-        || input.azimuths.len() < input.azimuth_count
-    {
-        return result;
-    }
-
-    let az_adjacent = components::precompute_az_adjacency(input.azimuths, input.azimuth_count);
-    let decoder = median::Decoder {
-        scale: input.data_scale,
-        offset: input.data_offset,
     };
-    // Rows with a negative azimuth are padding from partial sweeps.
-    let row_valid: Vec<bool> = input.azimuths[..input.azimuth_count]
-        .iter()
-        .map(|a| *a >= 0.0)
-        .collect();
+    let (_, gate_count) = input.shape();
+
+    let az_adjacent = input.row_adjacency();
+    let decoder = input.decoder();
+    let row_valid = input.row_valid();
     let filtered = median::median3x3(
-        input.gate_values,
+        values,
         &decoder,
         &row_valid,
         &az_adjacent,
-        input.gate_count,
+        gate_count,
         params.threshold_dbz,
     );
 
-    let az_spacing_rad = (features::radial_width_deg(input) as f64).to_radians();
-    let gate_area_km2: Vec<f64> = (0..input.gate_count)
-        .map(|g| {
-            let range_km = input.first_gate_km + (g as f64 + 0.5) * input.gate_interval_km;
-            range_km * az_spacing_rad * input.gate_interval_km
-        })
-        .collect();
+    let gate_area_km2 = input.column_area_km2();
 
-    let seg = segment::segment(
-        &filtered,
-        &az_adjacent,
-        input.gate_count,
-        &gate_area_km2,
-        params,
-    );
-    let half_spacing = components::median_spacing_deg(input.azimuths, input.azimuth_count) * 0.5;
-    let mut shed = watershed::Watershed::new(&filtered, &az_adjacent, input.gate_count);
+    let seg = segment::segment(&filtered, &az_adjacent, gate_count, &gate_area_km2, params);
+    let half_spacing = input.half_spacing_deg();
+    let mut shed = watershed::Watershed::new(&filtered, &az_adjacent, gate_count);
     // A lone storm's cell is its envelope; its drawn core is the component
     // around its peak at the core level (the lowest rung at or above the
     // envelope + core margin), labeled here because segmentation keeps
@@ -172,7 +156,7 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
         .iter()
         .copied()
         .find(|l| *l >= params.threshold_dbz + params.core_margin_dbz);
-    let mut core_labeler = components::Labeler::new(&filtered, &az_adjacent, input.gate_count);
+    let mut core_labeler = components::Labeler::new(&filtered, &az_adjacent, gate_count);
 
     // Cells, tagged with the index of their envelope while it is a group.
     let mut cells: Vec<(StormCell, Option<usize>)> = Vec::new();
@@ -223,7 +207,7 @@ pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> 
             } else {
                 let peak_gate = pixels
                     .iter()
-                    .map(|&(a, g)| a as usize * input.gate_count + g as usize)
+                    .map(|&(a, g)| a as usize * gate_count + g as usize)
                     .max_by(|&x, &y| filtered[x].total_cmp(&filtered[y]));
                 core_level
                     .zip(peak_gate)
