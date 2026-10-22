@@ -12,7 +12,7 @@
 //! ascending elevation-angle order with no duplicates, and rows on a uniform
 //! azimuth grid. See `docs/RENDERING.md` for the full pipeline.
 
-use crate::core::volume_plan::{derive_shell_extents, ShellExtents};
+use crate::core::volume_plan::{derive_shell_extents, site_unit_position, ShellExtents};
 use crate::core::RenderProcessing;
 use crate::core::VolumeSweepMeta;
 use crate::geo::Camera;
@@ -940,9 +940,7 @@ impl VolumeRayRenderer {
             // Site position on unit sphere
             let lat_rad = self.site_lat.to_radians();
             let lon_rad = self.site_lon.to_radians();
-            let site_x = (lat_rad.cos() * lon_rad.sin()) as f32;
-            let site_y = lat_rad.sin() as f32;
-            let site_z = (lat_rad.cos() * lon_rad.cos()) as f32;
+            let [site_x, site_y, site_z] = site_unit_position(self.site_lat, self.site_lon);
             gl.uniform_3_f32(self.u_site_pos.as_ref(), site_x, site_y, site_z);
             gl.uniform_1_f32(self.u_site_lat_rad.as_ref(), lat_rad as f32);
             gl.uniform_1_f32(self.u_site_lon_rad.as_ref(), lon_rad as f32);

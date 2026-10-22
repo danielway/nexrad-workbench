@@ -5,6 +5,7 @@
 //! optional 3D volumetric ray-marching, all within a single
 //! `egui::PaintCallback`.
 
+use crate::core::volume_plan::{GlobeDraw, GlobeSite};
 use crate::geo::{GeoLineRenderer, GlobeRenderer};
 use crate::nexrad::{GlobeRadarRenderer, RadarGpuRenderer, VolumeRayRenderer};
 use crate::state::AppState;
@@ -46,14 +47,17 @@ pub(crate) fn draw_globe(
         return;
     };
     let geo_r = geo_line_renderer.cloned();
-    // Every site drapes its own sweep, older frame first as in 2D.
-    let patches: Vec<SitePaint> = sites.drawn().map(SitePaint::of).collect();
-    // The volume is still the focus site's alone.
-    let focus = SitePaint::of(sites.focus());
+    let volume_enabled = state.viz_state.volume_3d_enabled;
+    let camera_pos = state.viz_state.camera.camera_world_pos();
+    let plan = crate::core::volume_plan::globe_draw_plan(
+        &sites.iter().map(globe_site).collect::<Vec<_>>(),
+        volume_enabled,
+        [camera_pos.x, camera_pos.y, camera_pos.z],
+    );
+    let paints: Vec<SitePaint> = sites.iter().map(SitePaint::of).collect();
 
     let camera = state.viz_state.camera.clone();
     let processing = state.render_processing.clone();
-    let volume_enabled = state.viz_state.volume_3d_enabled;
     let volume_density_cutoff = state.viz_state.volume_density_cutoff;
     let geo_vis = crate::geo::geo_line_renderer::VisibleLayers {
         states: state.layer_state.geo.states,
@@ -79,34 +83,13 @@ pub(crate) fn draw_globe(
                 }
             }
 
-            // 3. Draw radar data on sphere
-            let mut drew_volume = false;
-            if volume_enabled {
-                if let (Some(ref vr), Some(ref rr)) = (&focus.volume_ray, &focus.radar) {
-                    if let (Ok(mut v), Ok(flat_r)) = (vr.lock(), rr.lock()) {
-                        if v.has_data() {
-                            // Get current viewport dimensions for FBO sizing
-                            let mut vp = [0i32; 4];
-                            unsafe { gl.get_parameter_i32_slice(glow::VIEWPORT, &mut vp) };
-                            v.paint(
-                                gl,
-                                &camera,
-                                flat_r.lut_texture(),
-                                &processing,
-                                flat_r.value_min(),
-                                flat_r.value_range(),
-                                volume_density_cutoff,
-                                vp[2], // viewport width
-                                vp[3], // viewport height
-                            );
-                            drew_volume = true;
-                        }
+            // 3. Each site's patch or volume, in the plan's order.
+            for step in &plan {
+                match *step {
+                    GlobeDraw::Surface(i) => paint_surface(gl, &paints[i], &camera, &processing),
+                    GlobeDraw::Volume(i) => {
+                        paint_volume(gl, &paints[i], &camera, &processing, volume_density_cutoff)
                     }
-                }
-            }
-            if !drew_volume {
-                for site in &patches {
-                    paint_surface(gl, site, &camera, &processing);
                 }
             }
 
@@ -137,5 +120,58 @@ fn paint_surface(
                 globe_r.paint(gl, camera, &flat_r, processing);
             }
         }
+    }
+}
+
+/// Ray-march one site's volume, coloured by its own flat renderer's table.
+fn paint_volume(
+    gl: &glow::Context,
+    site: &SitePaint,
+    camera: &crate::geo::Camera,
+    processing: &crate::core::RenderProcessing,
+    density_cutoff: f32,
+) {
+    if let (Some(ref vr), Some(ref rr)) = (&site.volume_ray, &site.radar) {
+        if let (Ok(mut v), Ok(flat_r)) = (vr.lock(), rr.lock()) {
+            // Current viewport dimensions, for FBO sizing.
+            let mut vp = [0i32; 4];
+            unsafe { gl.get_parameter_i32_slice(glow::VIEWPORT, &mut vp) };
+            v.paint(
+                gl,
+                camera,
+                flat_r.lut_texture(),
+                processing,
+                flat_r.value_min(),
+                flat_r.value_range(),
+                density_cutoff,
+                vp[2],
+                vp[3],
+            );
+        }
+    }
+}
+
+/// What the draw plan needs to know about one site: its frame time and
+/// position, and what its renderers hold.
+fn globe_site(site: &crate::subsystem::SiteState) -> GlobeSite {
+    let held = |r: Option<bool>| r.unwrap_or(false);
+    GlobeSite {
+        frame_secs: site
+            .displayed
+            .as_ref()
+            .map(|d| (d.start_time + d.end_time) / 2.0),
+        position: crate::core::volume_plan::site_unit_position(site.lat, site.lon),
+        surface_ready: held(
+            site.gpu
+                .radar
+                .as_ref()
+                .and_then(|r| r.lock().ok().map(|r| r.has_data())),
+        ),
+        volume_ready: held(
+            site.gpu
+                .volume_ray
+                .as_ref()
+                .and_then(|r| r.lock().ok().map(|r| r.has_data())),
+        ),
     }
 }

@@ -328,6 +328,82 @@ pub(crate) fn derive_shell_extents(sweeps: &[crate::core::VolumeSweepMeta]) -> S
     }
 }
 
+/// A radar's position on the unit globe, in the frame the globe renderers
+/// use: `x` toward 0° N 90° E, `y` toward the north pole, `z` toward
+/// 0° N 0° E.
+pub(crate) fn site_unit_position(lat_deg: f64, lon_deg: f64) -> [f32; 3] {
+    let lat = lat_deg.to_radians();
+    let lon = lon_deg.to_radians();
+    [
+        (lat.cos() * lon.sin()) as f32,
+        lat.sin() as f32,
+        (lat.cos() * lon.cos()) as f32,
+    ]
+}
+
+/// The order the volumes are drawn in, as indices into `sites` (unit-globe
+/// positions): farthest from the camera first, so each nearer volume
+/// composites over the ones behind it and two overlapping shells read as
+/// two translucent bodies. Ties keep list order.
+pub(crate) fn volume_draw_order(camera: [f32; 3], sites: &[[f32; 3]]) -> Vec<usize> {
+    let dist = |p: &[f32; 3]| {
+        let d = [p[0] - camera[0], p[1] - camera[1], p[2] - camera[2]];
+        d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+    };
+    let mut order: Vec<usize> = (0..sites.len()).collect();
+    order.sort_by(|&a, &b| dist(&sites[b]).total_cmp(&dist(&sites[a])));
+    order
+}
+
+/// One site as the globe's draw plan reads it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GlobeSite {
+    /// Midpoint of the frame on the site's flat textures, Unix seconds;
+    /// `None` when it holds none. Orders the surface patches.
+    pub frame_secs: Option<f64>,
+    /// The radar on the unit globe ([`site_unit_position`]).
+    pub position: [f32; 3],
+    /// The flat textures hold a sweep, so the surface patch can draw.
+    pub surface_ready: bool,
+    /// The site may hold a volume ([`resident_volumes`]) and its volume
+    /// texture is loaded.
+    pub volume_ready: bool,
+}
+
+/// One step of the globe's radar pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GlobeDraw {
+    /// Drape site `i`'s sweep on the sphere.
+    Surface(usize),
+    /// Ray-march site `i`'s volume.
+    Volume(usize),
+}
+
+/// What the globe draws over the sphere and geographic lines, in order.
+///
+/// A site draws its volume when volume rendering is on and its volume is
+/// ready, else its surface patch when it has a sweep. The patches go first,
+/// in [`crate::core::sites::draw_order`] (older frame first, as in 2D); the
+/// volumes follow in [`volume_draw_order`] from `camera`.
+pub(crate) fn globe_draw_plan(
+    sites: &[GlobeSite],
+    volume_on: bool,
+    camera: [f32; 3],
+) -> Vec<GlobeDraw> {
+    let volume = |s: &GlobeSite| volume_on && s.volume_ready;
+    let times: Vec<Option<f64>> = sites.iter().map(|s| s.frame_secs).collect();
+    let surfaces = crate::core::sites::draw_order(&times)
+        .into_iter()
+        .filter(|&i| !volume(&sites[i]) && sites[i].surface_ready)
+        .map(GlobeDraw::Surface);
+    let with_volume: Vec<usize> = (0..sites.len()).filter(|&i| volume(&sites[i])).collect();
+    let positions: Vec<[f32; 3]> = with_volume.iter().map(|&i| sites[i].position).collect();
+    let volumes = volume_draw_order(camera, &positions)
+        .into_iter()
+        .map(|k| GlobeDraw::Volume(with_volume[k]));
+    surfaces.chain(volumes).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -812,5 +888,110 @@ mod extent_tests {
         assert_eq!(e.max_range_km, 0.0);
         assert_eq!(e.bound_radius, 0.0);
         assert!(e.outer_radius >= e.inner_radius);
+    }
+
+    // ── Globe draw plan ─────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn site_unit_position_matches_the_globe_frame() {
+        let p = site_unit_position(0.0, 0.0);
+        assert!((p[2] - 1.0).abs() < 1e-6 && p[0].abs() < 1e-6 && p[1].abs() < 1e-6);
+        let p = site_unit_position(0.0, 90.0);
+        assert!((p[0] - 1.0).abs() < 1e-6);
+        let p = site_unit_position(90.0, 0.0);
+        assert!((p[1] - 1.0).abs() < 1e-6);
+        let p = site_unit_position(28.11, -80.65);
+        let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        assert!((r - 1.0).abs() < 1e-5);
+    }
+
+    #[wasm_bindgen_test]
+    fn volumes_draw_farthest_from_the_camera_first() {
+        let camera = [0.0, 0.0, 3.0];
+        let sites = [[0.0, 0.0, 1.0], [0.6, 0.0, 0.8], [0.0, 0.8, 0.6]];
+        assert_eq!(volume_draw_order(camera, &sites), vec![2, 1, 0]);
+        // From the other side the order turns round.
+        let camera = [0.0, 3.0, 1.0];
+        assert_eq!(volume_draw_order(camera, &sites), vec![1, 0, 2]);
+    }
+
+    #[wasm_bindgen_test]
+    fn equally_far_volumes_keep_list_order() {
+        let camera = [0.0, 0.0, 3.0];
+        let sites = [[0.6, 0.0, 0.8], [-0.6, 0.0, 0.8]];
+        assert_eq!(volume_draw_order(camera, &sites), vec![0, 1]);
+        assert!(volume_draw_order(camera, &[]).is_empty());
+        assert_eq!(volume_draw_order(camera, &[[0.0, 0.0, 1.0]]), vec![0]);
+    }
+
+    fn globe_site(frame_secs: Option<f64>, position: [f32; 3], volume_ready: bool) -> GlobeSite {
+        GlobeSite {
+            frame_secs,
+            position,
+            surface_ready: frame_secs.is_some(),
+            volume_ready,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn one_site_draws_its_volume_or_its_patch_as_before() {
+        let camera = [0.0, 0.0, 3.0];
+        let ready = [globe_site(Some(100.0), [0.0, 0.0, 1.0], true)];
+        assert_eq!(
+            globe_draw_plan(&ready, true, camera),
+            vec![GlobeDraw::Volume(0)]
+        );
+        assert_eq!(
+            globe_draw_plan(&ready, false, camera),
+            vec![GlobeDraw::Surface(0)]
+        );
+        // Volume rendering on but no volume yet: the patch stands in.
+        let waiting = [globe_site(Some(100.0), [0.0, 0.0, 1.0], false)];
+        assert_eq!(
+            globe_draw_plan(&waiting, true, camera),
+            vec![GlobeDraw::Surface(0)]
+        );
+        // No sweep and no volume: nothing.
+        let empty = [globe_site(None, [0.0, 0.0, 1.0], false)];
+        assert!(globe_draw_plan(&empty, true, camera).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn surface_patches_draw_older_frame_first() {
+        let camera = [0.0, 0.0, 3.0];
+        let sites = [
+            globe_site(Some(500.0), [0.0, 0.0, 1.0], false),
+            globe_site(Some(100.0), [0.6, 0.0, 0.8], false),
+            globe_site(Some(300.0), [0.0, 0.6, 0.8], false),
+        ];
+        assert_eq!(
+            globe_draw_plan(&sites, false, camera),
+            vec![
+                GlobeDraw::Surface(1),
+                GlobeDraw::Surface(2),
+                GlobeDraw::Surface(0)
+            ]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn patches_go_under_the_volumes_and_volumes_go_back_to_front() {
+        let camera = [0.0, 0.0, 3.0];
+        let sites = [
+            // Nearest the camera, newest frame.
+            globe_site(Some(500.0), [0.0, 0.0, 1.0], true),
+            // No volume yet: its patch draws.
+            globe_site(Some(100.0), [0.6, 0.0, 0.8], false),
+            // Farthest.
+            globe_site(Some(300.0), [0.0, 0.8, 0.6], true),
+        ];
+        assert_eq!(
+            globe_draw_plan(&sites, true, camera),
+            vec![
+                GlobeDraw::Surface(1),
+                GlobeDraw::Volume(2),
+                GlobeDraw::Volume(0)
+            ]
+        );
     }
 }
