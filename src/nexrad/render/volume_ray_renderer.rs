@@ -448,6 +448,22 @@ pub(crate) struct VolumeRayRenderer {
 }
 
 impl VolumeRayRenderer {
+    /// Delete every GL object this renderer owns (see
+    /// [`crate::nexrad::RadarGpuRenderer::release`]).
+    pub(crate) fn release(&self, gl: &glow::Context) {
+        unsafe {
+            if let Some(tex) = self.volume_texture {
+                gl.delete_texture(tex);
+            }
+            gl.delete_texture(self.fbo_color);
+            gl.delete_framebuffer(self.fbo);
+            gl.delete_vertex_array(self.quad_vao);
+            gl.delete_buffer(self._quad_vbo);
+            gl.delete_program(self.blit_program);
+            gl.delete_program(self.program);
+        }
+    }
+
     pub(crate) fn new(gl: &Arc<glow::Context>) -> Self {
         unsafe { Self::new_inner(gl) }
     }

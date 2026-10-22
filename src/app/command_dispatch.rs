@@ -322,6 +322,10 @@ pub(crate) fn dispatch_state_only(
         // about which half of the partition owns it. The reason each one
         // is here:
         //   SelectSite ........ tears down GPU/render/stream state
+        //   AddSite ........... starts the new site's stream
+        //   RemoveSite ........ stops its stream, releases its GPU objects
+        //   SetFocus .......... recentres the camera, moves the latch
+        //   OnlyFocus ......... RemoveSite for every other site
         //   OpenExternalUrl ... web_sys window.open
         //   LocateMeForSite ... browser geolocation
         //   SubmitZip ......... network geocode lookup
@@ -336,6 +340,10 @@ pub(crate) fn dispatch_state_only(
         //   RetryWorker ....... constructs the decode worker
         //   Diagnostics ....... reducer effects (geolocation / URL open)
         shell @ (Intent::SelectSite { .. }
+        | Intent::AddSite { .. }
+        | Intent::RemoveSite { .. }
+        | Intent::SetFocus { .. }
+        | Intent::OnlyFocus
         | Intent::OpenExternalUrl(_)
         | Intent::LocateMeForSite
         | Intent::SubmitZip(_)
@@ -736,6 +744,10 @@ impl WorkbenchApp {
             Intent::SelectSite { site_id, lat, lon } => {
                 self.apply_site_selection(&site_id, lat, lon)
             }
+            Intent::AddSite { site_id, lat, lon } => self.add_site(ctx, &site_id, lat, lon),
+            Intent::RemoveSite { site_id } => self.remove_site(&site_id),
+            Intent::SetFocus { site_id } => self.set_focus(&site_id),
+            Intent::OnlyFocus => self.only_focus(),
             Intent::OpenExternalUrl(url) => {
                 self.apply_effects(ctx, vec![crate::core::Effect::OpenUrl(url)])
             }
@@ -830,60 +842,6 @@ impl WorkbenchApp {
                 unreachable!("state-only intent was not consumed by dispatch_state_only")
             }
         }
-    }
-
-    /// Apply a site selection: retarget viz, center the camera, remember the
-    /// preference, close the modal, and queue the timeline/alerts refresh.
-    ///
-    /// Every site-picking surface (modal list, zip/geolocation result, canvas
-    /// marker click) routes here through [`Intent::SelectSite`], so this is the
-    /// single place a site change happens.
-    fn apply_site_selection(&mut self, site_id: &str, lat: f64, lon: f64) {
-        // Every pick — list, search, zip, location or map — completes the
-        // first visit and ends "Pick on map" (restoring the Sites layer).
-        self.chrome.site_required = false;
-        if let Some(was_on) = self.chrome.site_map_pick.take() {
-            self.state.layer_state.geo.nexrad_sites = was_on;
-        }
-        crate::core::site_picker::push_recent(&mut self.state.recent_sites, site_id);
-        self.state.preferred_site = Some(site_id.to_string());
-        self.chrome.site_modal_open = false;
-        if site_id == self.sites.focus().id.0 {
-            // Picking the current site is allowed (a first visit can keep the
-            // default site); nothing to retarget, but a deferred boot tether
-            // still starts.
-            if std::mem::take(&mut self.state.start_live_on_site_select) {
-                self.state.push_command(crate::core::Intent::StartLive);
-            }
-            return;
-        }
-        self.sites.focus_mut().retarget(site_id, lat, lon);
-        self.state
-            .viz_state
-            .set_pan_offset(eframe::egui::Vec2::ZERO);
-        self.state.viz_state.camera.center_on(lat, lon);
-        self.state
-            .push_command(crate::core::Intent::RefreshTimeline {
-                auto_position: true,
-            });
-        self.state.push_command(crate::core::Intent::Diagnostics(
-            crate::core::diagnostics::DiagnosticsIntent::RefreshAlerts,
-        ));
-        self.state.preferred_site = Some(site_id.to_string());
-        self.chrome.site_modal_open = false;
-
-        // Boot-tether deferred from a first visit (no site at launch): now that
-        // a site exists, open tethered to live (spec §7). One-shot — consumed
-        // here so later mid-session site re-selections don't auto-tether.
-        if std::mem::take(&mut self.state.start_live_on_site_select) {
-            self.state.push_command(crate::core::Intent::StartLive);
-        }
-
-        // Tear down the previous radar's stream/GPU/cache state now, in the
-        // same step that retargeted `viz_state` — otherwise the frame between
-        // here and the next `apply_frame_setup` would paint the old site's
-        // sweep under the new site's projection.
-        self.sync_to_active_site();
     }
 
     /// Apply a diagnostics overlay intent through the pure
@@ -1291,6 +1249,18 @@ mod dispatch_tests {
                 lat: 45.0,
                 lon: -98.0,
             },
+            Intent::AddSite {
+                site_id: "KMLB".to_string(),
+                lat: 28.1,
+                lon: -80.65,
+            },
+            Intent::RemoveSite {
+                site_id: "KMLB".to_string(),
+            },
+            Intent::SetFocus {
+                site_id: "KMLB".to_string(),
+            },
+            Intent::OnlyFocus,
             Intent::OpenExternalUrl("https://example.com/changelog"),
             Intent::LocateMeForSite,
             Intent::SubmitZip("50309".to_string()),
@@ -1307,7 +1277,7 @@ mod dispatch_tests {
             Intent::RetryWorker,
             Intent::Diagnostics(crate::core::diagnostics::DiagnosticsIntent::RefreshAlerts),
         ];
-        assert_eq!(shell.len(), 14);
+        assert_eq!(shell.len(), 18);
         for intent in shell {
             let mut f = Fixture::new();
             let left = f.dispatch(intent.clone());

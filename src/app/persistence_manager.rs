@@ -33,8 +33,17 @@ impl PersistenceManager {
         }
     }
 
+    /// Take `site_id` as the focus without reporting a change: the focus
+    /// moved to another element of the site list (or the list changed), so
+    /// nothing tied to the old radar needs tearing down.
+    pub(crate) fn adopt_site(&mut self, site_id: &str) {
+        self.previous_site_id = site_id.to_string();
+    }
+
     /// Returns true if the focus site's id has changed since the last check,
-    /// updating the internal tracker.
+    /// updating the internal tracker. Only a retarget of the focus element
+    /// (`SelectSite`, a saved event on another site) changes it; focus moves
+    /// within the list call [`Self::adopt_site`].
     pub(crate) fn detect_site_change(&mut self, current_site_id: &str) -> bool {
         if current_site_id != self.previous_site_id {
             log::info!(
@@ -53,8 +62,8 @@ impl PersistenceManager {
     /// the shell to execute (throttled URL push + conditional preference save).
     ///
     /// `now_secs` is the injected frame clock ([`crate::core::FrameNow::secs`]).
-    /// `focus` is the site the link names; its position is the link's map
-    /// centre until the map has a centre of its own.
+    /// `sites` names the link's `site` (the focus) and `also` (the others,
+    /// in list order).
     /// `mping_api_key` is the current value from the diagnostics subsystem;
     /// `playback` is the Playback subsystem's state. All are passed in so the persistence manager doesn't
     /// take back-references to subsystems.
@@ -63,7 +72,7 @@ impl PersistenceManager {
         now_secs: f64,
         state: &AppState,
         playback: &PlaybackState,
-        focus: &crate::subsystem::SiteState,
+        sites: &crate::subsystem::Sites,
         panel: crate::state::PanelPrefs,
         mping_api_key: Option<String>,
     ) -> Vec<Effect> {
@@ -72,11 +81,19 @@ impl PersistenceManager {
         if !persist_due(now_secs, self.last_url_push_secs) {
             return Vec::new();
         }
+        let focus = sites.focus;
+        let also = sites
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != focus)
+            .map(|(_, s)| s.id.0.clone())
+            .collect();
         let link = crate::state::url_state::build_link(
             state,
             playback,
-            &focus.id.0,
-            (focus.lat, focus.lon),
+            &sites.focus().id.0,
+            also,
+            (sites.focus().lat, sites.focus().lon),
         );
         let current_prefs = Preferences::from_app_state(
             state,

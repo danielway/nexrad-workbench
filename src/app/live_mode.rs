@@ -32,25 +32,32 @@ impl WorkbenchApp {
             self.playback.state.center_view_on(now);
         }
 
-        // Every listed site streams from its own channel, started with that
-        // site's id and projection engine.
-        for site in self.sites.iter_mut() {
-            log::info!("Starting live mode for site: {}", site.id.0);
-            site.live.volume.begin();
-            // Push the current elevation filter into the channel before
-            // starting so the streaming loop's init-time backfill targets the
-            // user's selected elevation rather than a default.
-            site.live.channel.sync_filter(
-                &self.state.viz_state.elevation_selection,
-                site.live.radar_model.vcp_pattern(),
-            );
-            site.live.channel.start(
-                ctx.clone(),
-                site.id.0.clone(),
-                self.acquisition.coordinator.facade().clone(),
-                site.live.engine.clone(),
-            );
+        // Every listed site streams from its own channel.
+        for site in 0..self.sites.list.len() {
+            self.start_site_stream(ctx, site);
         }
+    }
+
+    /// Start site `site`'s stream, with that site's id and projection
+    /// engine: at session start for every site, and for a site added while
+    /// the session is live.
+    pub(crate) fn start_site_stream(&mut self, ctx: &egui::Context, site: usize) {
+        let site = &mut self.sites.list[site];
+        log::info!("Starting live mode for site: {}", site.id.0);
+        site.live.volume.begin();
+        // Push the current elevation filter into the channel before
+        // starting so the streaming loop's init-time backfill targets the
+        // user's selected elevation rather than a default.
+        site.live.channel.sync_filter(
+            &self.state.viz_state.elevation_selection,
+            site.live.radar_model.vcp_pattern(),
+        );
+        site.live.channel.start(
+            ctx.clone(),
+            site.id.0.clone(),
+            self.acquisition.coordinator.facade().clone(),
+            site.live.engine.clone(),
+        );
     }
 
     /// Re-pin the playhead to the live edge (the `ReturnToLive` command).

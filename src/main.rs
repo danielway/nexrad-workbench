@@ -243,6 +243,9 @@ static COUNTIES_DBF: &[u8] =
 /// following the pure [`core::link::BootPlan`]. Extracted from
 /// `WorkbenchApp::new` to keep the constructor focused on wiring up
 /// subsystems rather than restoring view state.
+///
+/// Returns the sites the link shows beside the focus (`also`), already
+/// limited to the layout's cap of `cap` sites.
 fn apply_link(
     link: &core::link::LinkState,
     prefs: &core::Preferences,
@@ -250,12 +253,21 @@ fn apply_link(
     site: &mut subsystem::SiteState,
     playback: &mut subsystem::Playback,
     chrome: &mut subsystem::Chrome,
-) {
+    cap: usize,
+) -> Vec<&'static data::sites::NexradSite> {
     use core::link::{BootStart, LinkTilt};
 
-    let plan = core::link::decide_boot(link, state.preferred_site.as_deref(), |id| {
-        data::get_site(id).is_some()
-    });
+    let plan = core::link::decide_boot(
+        link,
+        state.preferred_site.as_deref(),
+        |id| data::get_site(id).is_some(),
+        cap,
+    );
+    let also: Vec<&'static data::sites::NexradSite> = plan
+        .also
+        .iter()
+        .filter_map(|id| data::get_site(id))
+        .collect();
 
     // The link's developer flag wins for this session without being saved.
     if let Some(dev) = link.dev {
@@ -290,6 +302,10 @@ fn apply_link(
             chrome.site_modal_open = true;
             chrome.site_required = true;
         }
+    }
+    // The Recent list learns every site the link shows.
+    for extra in &also {
+        crate::core::site_picker::push_recent(&mut state.recent_sites, extra.id);
     }
     // The link's `lat`/`lon` are the map centre; until the map has a centre
     // of its own they land on the site's position, as they always have.
@@ -410,6 +426,27 @@ fn apply_link(
             state.push_command(crate::core::Intent::ApplyLoopPreset(preset));
         }
     }
+    also
+}
+
+/// The layout the session opens in, read from the window before egui has
+/// measured anything (the per-frame `refresh_mobile_mode` takes over from
+/// the first frame). Only the boot's site cap reads it.
+fn boot_layout(state: &AppState, touch_screen: bool) -> core::phone::DeviceLayout {
+    let size = web_sys::window().map(|w| {
+        let read = |v: Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>| {
+            v.ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32
+        };
+        (read(w.inner_width()), read(w.inner_height()))
+    });
+    let (width, height) = size.unwrap_or((0.0, 0.0));
+    core::phone::device_layout(core::phone::LayoutInputs {
+        width,
+        height,
+        touch_seen: false,
+        touch_screen,
+        forced: state.mobile_override,
+    })
 }
 
 impl WorkbenchApp {
@@ -475,22 +512,32 @@ impl WorkbenchApp {
 
         let link = state::url_state::read_link();
         let mut initial_site = subsystem::SiteState::default();
-        apply_link(
+        let cap = core::sites::cap(boot_layout(&state, chrome.touch_screen));
+        let also = apply_link(
             &link,
             &loaded_prefs,
             &mut state,
             &mut initial_site,
             &mut playback,
             &mut chrome,
+            cap,
         );
 
         let initial_site_id = initial_site.id.0.clone();
         let data_facade = MainThreadStore::new();
         let acquisition = subsystem::Acquisition::new(data_facade.clone());
-        // The site's stream counts its bytes in the shared download stats.
+        // Each site's stream counts its bytes in the shared download stats.
         initial_site.live = subsystem::SiteLive::new(nexrad::RealtimeChannel::with_stats(
             acquisition.coordinator.download_stats(),
         ));
+        let mut sites = subsystem::Sites::new(initial_site);
+        for extra in also {
+            let mut site = subsystem::SiteState::new(extra.id, extra.lat, extra.lon);
+            site.live = subsystem::SiteLive::new(nexrad::RealtimeChannel::with_stats(
+                acquisition.coordinator.download_stats(),
+            ));
+            sites.list.push(site);
+        }
 
         // Open the record cache database
         {
@@ -554,7 +601,7 @@ impl WorkbenchApp {
             acquisition,
             live: subsystem::Live::new(),
             timeline: subsystem::Timeline::default(),
-            sites: subsystem::Sites::new(initial_site),
+            sites,
             playback,
             chrome,
             persistence: app::persistence_manager::PersistenceManager::new(
@@ -856,7 +903,7 @@ impl WorkbenchApp {
             self.state.frame_now.secs(),
             &self.state,
             &self.playback.state,
-            self.sites.focus(),
+            &self.sites,
             state::PanelPrefs {
                 tab: self.chrome.rail_tab,
                 open: self.chrome.right_sidebar_visible,

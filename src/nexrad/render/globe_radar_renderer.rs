@@ -159,6 +159,17 @@ pub(crate) struct GlobeRadarRenderer {
 }
 
 impl GlobeRadarRenderer {
+    /// Delete every GL object this renderer owns (see
+    /// [`crate::nexrad::RadarGpuRenderer::release`]).
+    pub(crate) fn release(&self, gl: &glow::Context) {
+        unsafe {
+            gl.delete_vertex_array(self.vao);
+            gl.delete_buffer(self._vbo);
+            gl.delete_buffer(self.ibo);
+            gl.delete_program(self.program);
+        }
+    }
+
     pub(crate) fn new(gl: &Arc<glow::Context>) -> Self {
         unsafe { Self::new_inner(gl) }
     }
