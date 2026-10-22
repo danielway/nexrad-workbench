@@ -966,7 +966,7 @@ pub(crate) struct ReactivePrefetchEnv<'a> {
     pub now_ms: f64,
     /// `crate::PREFETCH_DEBOUNCE_MS`.
     pub debounce_ms: f64,
-    /// `viz_state.site_id`.
+    /// The planning site's id (`SiteState::id`).
     pub site_id: &'a str,
     /// `viz_state.product.to_worker_string()`.
     pub product_worker_string: &'a str,

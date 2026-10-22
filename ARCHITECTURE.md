@@ -190,7 +190,7 @@ wrappers.
 | `RadarGpuRenderer` | `nexrad/render/gpu_renderer/` | WebGL2 renderer: polar data texture + LUT + fragment shader |
 | `GlobeRadarRenderer` | `nexrad/render/globe_radar_renderer.rs` | Radar projection onto 3D globe surface mesh |
 | `VolumeRayRenderer` | `nexrad/render/volume_ray_renderer.rs` | 3D volumetric ray-marching through all elevations |
-| `SweepIdentity` / `VolumeRenderRequest` | `core/domain/viz.rs`, `nexrad/render/render_request.rs` | Dedup identities checked by `core::render::should_dispatch` |
+| `SweepIdentity` / `VolumeRenderRequest` | `core/domain/viz.rs`, `core/render.rs` | Dedup identities checked by `core::render::should_dispatch` |
 
 ### Coordination Types
 | Type | Where | Description |
@@ -309,11 +309,22 @@ then UI layout.
   settings, saved events, theme, mobile/width-tier resolution, the recent-error
   ring, and the **command queue** (`VecDeque<Intent>`).
 - **Subsystems** (`subsystem/`) own their domains: `Acquisition` (download
-  pipeline + operation tracking), `Render` (worker pool + scan/elevation
-  tracking), `Timeline` (scan inventory), `Playback` (cursor/speed/mode),
+  pipeline + operation tracking), `Render` (the worker pool), `Timeline`
+  (the storm-activity book), `Playback` (cursor/speed/mode),
   `Live` (streaming channel + live-mode state + per-frame derived models),
   `Chrome` (UI visibility flags + modal booleans), `Diagnostics` (alerts,
   mPING, GPS, network monitor), and `Derived` (the per-frame view-model cache).
+- **`Sites`** (`subsystem/sites.rs`) holds one `SiteState` per radar and a
+  `focus` index. A `SiteState` owns what differs between radars: the id and
+  position, the scan inventory and archive shadows, the render track
+  (`core::render::RenderTrack`), the crossfade and scrub caches, the displayed
+  frame and its age, storm cells, the GPU renderers (`SiteGpu`; the GL
+  context, globe and geo lines stay on `GpuResources`), and the request
+  ledger, retries and prefetch settle. Worker replies find their site with
+  `core::sites::route` and are dropped when it is gone; per-frame shells loop
+  over the list, and single-valued surfaces (ladder, readouts, timeline,
+  links, preferences) read the focus. Today the list holds one site. The
+  site position also serves as the map centre until the map has its own.
 
 ### Intent Pattern
 State mutations from UI actions are expressed as `Intent` variants

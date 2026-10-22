@@ -58,7 +58,7 @@ pub(crate) struct AdvancePlaybackEnv<'a> {
     pub live_active: bool,
     /// `render.coordinator.has_worker()`.
     pub has_worker: bool,
-    /// `viz_state.site_id`.
+    /// The site's id (`SiteState::id`).
     pub site_id: &'a str,
     /// `viz_state.product`.
     pub product: RadarProduct,
@@ -331,7 +331,7 @@ pub(crate) struct FrameFollowupEnv<'a> {
     pub has_worker: bool,
     /// `viz_state.product`.
     pub product: RadarProduct,
-    /// `viz_state.site_id`.
+    /// The site's id (`SiteState::id`).
     pub site_id: &'a str,
     /// `viz_state.elevation_selection`.
     pub elevation_selection: &'a ElevationSelection,

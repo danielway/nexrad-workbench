@@ -615,7 +615,7 @@ impl Camera {
     ///
     /// Records the new site and resets the orbit camera to hover above
     /// it. In 2D this updates the *saved* camera (the 2D projection
-    /// re-centers off `viz_state.center_lat/lon`); switching to 3D later
+    /// re-centers off the focus site's `lat`/`lon`); switching to 3D later
     /// picks it up.
     pub fn center_on(&mut self, lat_deg: f64, lon_deg: f64) {
         let s = self.orbit_or_saved_mut();

@@ -44,7 +44,7 @@ use crate::core::{
 pub(crate) struct DecodedEnv<'a> {
     /// `state.dev_mode`.
     pub dev_mode: bool,
-    /// `viz_state.site_id`.
+    /// The decoding site's id (`SiteState::id`).
     pub site_id: &'a str,
     /// `playback.state.playback_position()`.
     pub playback_position: f64,
