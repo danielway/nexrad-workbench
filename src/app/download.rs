@@ -233,8 +233,9 @@ impl WorkbenchApp {
                 // Rebuild shadow scan boundaries for the timeline. Reactive
                 // prefetch re-evaluates on the next settle and will pick up the
                 // scans this listing exposes — no explicit resume needed.
-                if site_id == self.sites.focus().id.0 {
-                    self.sites.focus_mut().shadows = self
+                let id = crate::data::SiteId::new(site_id.clone());
+                if let Some(site) = crate::core::sites::route_site(&id, &self.sites.ids()) {
+                    self.sites.list[site].shadows = self
                         .acquisition
                         .coordinator
                         .archive_index
