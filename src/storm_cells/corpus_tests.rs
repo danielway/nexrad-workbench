@@ -6,7 +6,9 @@
 //! lowest reflectivity surveillance cut (elevation 1, 0.5°) of a NOAA
 //! archive volume, decimated 2× in azimuth (1° radials) and 2× in range
 //! (0.5 km gates), cropped to 300 km. Peaks after the median filter run a
-//! few dB below the full-resolution labels quoted in the study.
+//! few dB below the full-resolution labels quoted in the study. One volume
+//! fixture (`_vol.bin`) holds the Greenfield volume's upper tilts, cropped
+//! to the line's sector, for the cells' columns.
 //!
 //! Boxes are (min_lat, max_lat, min_lon, max_lon).
 
@@ -504,4 +506,157 @@ fn greenfield_named_storms_keep_their_letters_through_fragmenting() {
         );
         assert!(now.area_km2 >= 0.5 * before.area_km2, "{name}: {now:?}");
     }
+}
+
+// --- Volume: Greenfield's columns over its upper tilts (#178) -----------
+
+/// The upper reflectivity tilts of the Greenfield volume, cropped to the
+/// line's sector (`_vol.bin`, see the README).
+const GREENFIELD_VOLUME: &[u8] =
+    include_bytes!("../../tests/fixtures/storm_cells/KDMX20240521_201727_V06_vol.bin");
+
+struct Tilt {
+    number: u8,
+    elevation: f32,
+    first_gate_km: f64,
+    gate_km: f64,
+    scale: f32,
+    offset: f32,
+    azimuths: Vec<f32>,
+    codes: Vec<u8>,
+    gate_count: usize,
+}
+
+fn load_tilts(bytes: &[u8]) -> Vec<Tilt> {
+    let mut p = Vec::new();
+    flate2::read::ZlibDecoder::new(bytes)
+        .read_to_end(&mut p)
+        .expect("fixture inflates");
+    assert_eq!(&p[0..4], b"NXSV");
+    assert_eq!(p[4], 1, "fixture version");
+    let f32_at = |o: usize| f32::from_le_bytes(p[o..o + 4].try_into().unwrap());
+    let u16_at = |o: usize| u16::from_le_bytes([p[o], p[o + 1]]) as usize;
+    // magic 4, version 1, site 4
+    let count = p[9] as usize;
+    let mut o = 10;
+    (0..count)
+        .map(|_| {
+            let number = p[o];
+            let elevation = f32_at(o + 1);
+            let first_gate_km = f32_at(o + 5) as f64;
+            let gate_km = f32_at(o + 9) as f64;
+            let (scale, offset) = (f32_at(o + 13), f32_at(o + 17));
+            let (az, gc) = (u16_at(o + 21), u16_at(o + 23));
+            o += 25;
+            let azimuths = (0..az).map(|i| f32_at(o + 4 * i)).collect();
+            o += 4 * az;
+            let codes = p[o..o + az * gc].to_vec();
+            o += az * gc;
+            Tilt {
+                number,
+                elevation,
+                first_gate_km,
+                gate_km,
+                scale,
+                offset,
+                azimuths,
+                codes,
+                gate_count: gc,
+            }
+        })
+        .collect()
+}
+
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn greenfield_columns_reach_supercell_heights() {
+    use super::volume::{TiltInput, TiltValues};
+    use super::{detect_cells_for_volume, VolumeStructure};
+
+    let f = load(GREENFIELD);
+    let input = DetectionInput {
+        azimuths: &f.azimuths,
+        gate_values: &f.gates,
+        azimuth_count: f.azimuths.len(),
+        gate_count: f.gate_count,
+        first_gate_km: f.first_gate_km,
+        gate_interval_km: f.gate_km,
+        data_scale: f.scale,
+        data_offset: f.offset,
+        radar_lat: f.radar_lat,
+        radar_lon: f.radar_lon,
+        azimuth_spacing_deg: None,
+    };
+    let tilts = load_tilts(GREENFIELD_VOLUME);
+    let run = || -> (StormCellsResult, VolumeStructure) {
+        let (r, mut sampler) = detect_cells_for_volume(&input, &DetectionParams::default(), 1, 0.5);
+        for t in &tilts {
+            sampler.add_tilt(&TiltInput {
+                elevation_number: t.number,
+                elevation_deg: t.elevation,
+                azimuths: &t.azimuths,
+                values: TiltValues::U8(&t.codes),
+                azimuth_count: t.azimuths.len(),
+                gate_count: t.gate_count,
+                first_gate_km: t.first_gate_km,
+                gate_interval_km: t.gate_km,
+                data_scale: t.scale,
+                data_offset: t.offset,
+            });
+        }
+        (r, sampler.finish(true))
+    };
+    let (r, v) = run();
+    assert_eq!(run().1, v, "deterministic");
+    // The cells are those of the lowest cut alone.
+    assert_eq!(r, detect(GREENFIELD, 35.0).0);
+    assert_eq!(v.cells.len(), r.cells.len());
+    assert_eq!(v.tilts.len(), tilts.len() + 1);
+    assert!(v
+        .tilts
+        .windows(2)
+        .all(|w| w[0].elevation_deg < w[1].elevation_deg));
+    assert!(v.cells.iter().all(|c| c.profile.len() == v.tilts.len()));
+
+    let mut report = Vec::new();
+    for (name, pos) in [
+        ("Calhoun", (42.32, -94.67)),
+        ("Carroll", (42.01, -94.82)),
+        ("Audubon", (41.64, -94.89)),
+        ("Cass/Adair (Greenfield)", (41.28, -94.73)),
+        ("Adams", (40.87, -94.71)),
+    ] {
+        let cell = r
+            .cells
+            .iter()
+            .find(|c| km((c.lat, c.lon), pos) < 12.0 && c.peak_dbz >= 50.0)
+            .unwrap_or_else(|| panic!("{name}"));
+        let col = &v.cells[cell.id as usize];
+        report.push(format!(
+            "{name}: top {:?} capped {} max {:?} at {:?} profile {:?}",
+            col.echo_top_km, col.echo_top_capped, col.max_dbz, col.max_dbz_height_km, col.profile
+        ));
+        let top = col.echo_top_km.unwrap_or(0.0);
+        let max = col.max_dbz.unwrap_or(0.0);
+        let at = col.max_dbz_height_km.unwrap_or(0.0);
+        // Supercells: tops well into the upper troposphere, the strongest
+        // echo aloft and at least the lowest cut's peak.
+        assert!((12.0..=15.5).contains(&top), "{}", report.join("\n"));
+        assert!(max >= cell.peak_dbz, "{}", report.join("\n"));
+        assert!((1.0..=9.0).contains(&at), "{}", report.join("\n"));
+        // Echo on most tilts.
+        let with_echo = col.profile.iter().filter(|p| p.is_some()).count();
+        assert!(with_echo * 2 > col.profile.len(), "{}", report.join("\n"));
+    }
+    // Reviewed values (decimated fixture): tops 12.6-14.5 km; the
+    // Greenfield storm has the strongest column, 63 dBZ about 3 km up,
+    // above its 60 dBZ at the lowest cut.
+    let greenfield = r
+        .cells
+        .iter()
+        .find(|c| km((c.lat, c.lon), (41.28, -94.73)) < 12.0 && c.peak_dbz >= 50.0)
+        .unwrap();
+    let col = &v.cells[greenfield.id as usize];
+    assert_eq!(col.max_dbz, Some(63.0), "{}", report.join("\n"));
+    assert!((2.5..=3.5).contains(&col.max_dbz_height_km.unwrap()));
+    assert!((13.5..=15.0).contains(&col.echo_top_km.unwrap()));
 }

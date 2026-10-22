@@ -435,6 +435,7 @@ pub(super) fn send_detect_request(
         params: &request.params,
         radar_lat: request.radar_lat,
         radar_lon: request.radar_lon,
+        volume_cuts: &request.volume_cuts,
     };
     let msg = match serde_wasm_bindgen::to_value(&msg) {
         Ok(v) => v,

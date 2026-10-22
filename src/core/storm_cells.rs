@@ -23,6 +23,15 @@
 //!   ([`StormCellKey`]: volume, cut, input, threshold) in a small LRU, so
 //!   nothing re-runs on a repaint, a drag, a 3D frame or a tilt change, and
 //!   flipping back to a volume shows its cells at once.
+//! - **Volume.** Once the displayed volume's cells are shown from the stored
+//!   lowest cut, a second request samples the volume's other reflectivity
+//!   tilts over the cells' footprints ([`volume_cuts`] picks one cut per
+//!   tilt) for each cell's column: echo top, composite peak and its height.
+//!   It goes after the cells, so their latency does not change, and is
+//!   asked again when more of the volume's cuts are on device. The columns
+//!   are provisional ([`crate::storm_cells::VolumeStructure::complete`])
+//!   until every planned tilt is sampled. Only the displayed volume gets
+//!   one; history volumes (for tracking) do not.
 //! - **Staleness.** One request is in flight at a time and replies carry its
 //!   id; a reply whose request is no longer in flight (a site change reset the
 //!   state, or the request timed out) is dropped. A cached result is shown
@@ -117,6 +126,69 @@ pub(crate) struct DetectTiming {
     pub gate_count: u32,
 }
 
+/// The cuts a volume request samples: one reflectivity cut per distinct
+/// tilt, lowest angle first, so the first is the lowest reflectivity cut.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct VolumeCuts {
+    /// Elevation numbers, lowest angle first.
+    pub cuts: Vec<u8>,
+    /// Every tilt of the volume's plan has a cut here (without a plan, the
+    /// stored tilts are taken as the whole volume).
+    pub complete: bool,
+}
+
+/// One stored reflectivity cut per distinct tilt of the volume, and whether
+/// that covers the plan.
+///
+/// Tilts are angles within [`SAME_TILT_DEG`] of each other (the VCP's
+/// commanded angle when the plan is known, else the measured one), so a
+/// split cut's two halves and SAILS/MRLE rescans count once; of a tilt's
+/// stored cuts the first collected (the lowest elevation number) is taken,
+/// the surveillance half of a split cut, as for [`lowest_reflectivity_cut`].
+pub(crate) fn volume_cuts(vcp: Option<&ExtractedVcp>, sweeps: &[Sweep]) -> VolumeCuts {
+    let plan = vcp.filter(|v| !v.elevations.is_empty());
+    let angle_of = |s: &Sweep| -> f32 {
+        plan.and_then(|v| v.elevations.get(s.elevation_number as usize - 1))
+            .map_or(s.elevation, |e| e.angle)
+    };
+    let mut stored: Vec<(f32, u8)> = sweeps
+        .iter()
+        .filter(|s| has_reflectivity(s) && s.elevation_number > 0)
+        .map(|s| (angle_of(s), s.elevation_number))
+        .filter(|(a, _)| a.is_finite())
+        .collect();
+    stored.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut planned: Vec<f32> = match plan {
+        Some(v) => v.elevations.iter().map(|e| e.angle).collect(),
+        None => stored.iter().map(|&(a, _)| a).collect(),
+    };
+    planned.retain(|a| a.is_finite());
+    planned.sort_by(f32::total_cmp);
+    // Group the planned angles into tilts: (lowest, highest) of each.
+    let mut tilts: Vec<(f32, f32)> = Vec::new();
+    for a in planned {
+        match tilts.last_mut() {
+            Some(t) if a - t.1 <= SAME_TILT_DEG => t.1 = a,
+            _ => tilts.push((a, a)),
+        }
+    }
+    let mut cuts = Vec::new();
+    let mut complete = true;
+    for (lo, hi) in tilts {
+        let cut = stored
+            .iter()
+            .filter(|(a, _)| *a >= lo - SAME_TILT_DEG && *a <= hi + SAME_TILT_DEG)
+            .map(|&(_, n)| n)
+            .min();
+        match cut {
+            Some(n) if !cuts.contains(&n) => cuts.push(n),
+            Some(_) => {}
+            None => complete = false,
+        }
+    }
+    VolumeCuts { cuts, complete }
+}
+
 /// Effect: ask a decode worker to run detection. The shell posts it as a
 /// `detect` message and feeds the reply to [`StormCells::accept`] (or a
 /// failure to [`StormCells::fail`]).
@@ -128,6 +200,9 @@ pub(crate) struct DetectRequest {
     pub params: DetectionParams,
     pub radar_lat: f64,
     pub radar_lon: f64,
+    /// For a volume request, the cuts to sample, the detected cut first
+    /// ([`VolumeCuts::cuts`]); empty for cells alone.
+    pub volume_cuts: Vec<u8>,
 }
 
 /// A worker's answer to a [`DetectRequest`].
@@ -159,6 +234,9 @@ struct CacheEntry {
     /// `None` for a failed run (cached as empty so it is not retried).
     timing: Option<DetectTiming>,
     complete: bool,
+    /// The cuts the volume part was last asked for (answered, failed or
+    /// not attachable), so it is not asked again until more are on device.
+    volume_for: Option<VolumeCuts>,
 }
 
 #[derive(Clone, Debug)]
@@ -166,6 +244,8 @@ struct InFlight {
     request_id: u64,
     key: StormCellKey,
     sent_ms: f64,
+    /// A volume request for these cuts.
+    volume: Option<VolumeCuts>,
 }
 
 /// The shown detection result, the cache behind it, and the request in
@@ -180,6 +260,9 @@ pub(crate) struct StormCells {
     pub timing: Option<DetectTiming>,
     /// The shown result was computed on a complete cut.
     complete: bool,
+    /// The cache entry's `volume_for` when the result was shown, to tell
+    /// when a newer volume part has landed.
+    shown_volume_for: Option<VolumeCuts>,
     /// Least recently used first.
     cache: Vec<CacheEntry>,
     in_flight: Option<InFlight>,
@@ -194,6 +277,7 @@ impl StormCells {
         self.computed_for = None;
         self.timing = None;
         self.complete = false;
+        self.shown_volume_for = None;
     }
 
     /// Forget everything: the shown result, the cache, and the request in
@@ -248,40 +332,80 @@ impl StormCells {
                     self.result = entry.result.clone();
                     self.timing = entry.timing;
                     self.complete = entry.complete;
+                    self.shown_volume_for = entry.volume_for.clone();
                     self.computed_for = Some(key);
                     self.cache.push(entry);
                 }
                 None
             }
-            StormCellAction::Request(key) => {
-                self.next_request_id += 1;
-                let request_id = self.next_request_id;
-                self.in_flight = Some(InFlight {
-                    request_id,
-                    key: key.clone(),
-                    sent_ms: env.now_ms,
-                });
-                Some(DetectRequest {
-                    request_id,
-                    params: DetectionParams {
-                        threshold_dbz: key.threshold_dbz,
-                        ..DetectionParams::default()
-                    },
-                    key,
-                    radar_lat: env.radar_lat,
-                    radar_lon: env.radar_lon,
-                })
-            }
+            StormCellAction::Request(key) => Some(self.request(key, None, env)),
+            StormCellAction::RequestVolume(key, cuts) => Some(self.request(key, Some(cuts), env)),
+        }
+    }
+
+    fn request(
+        &mut self,
+        key: StormCellKey,
+        volume: Option<VolumeCuts>,
+        env: &StormCellEnv<'_>,
+    ) -> DetectRequest {
+        self.next_request_id += 1;
+        let request_id = self.next_request_id;
+        let volume_cuts = volume.as_ref().map_or_else(Vec::new, |v| v.cuts.clone());
+        self.in_flight = Some(InFlight {
+            request_id,
+            key: key.clone(),
+            sent_ms: env.now_ms,
+            volume,
+        });
+        DetectRequest {
+            request_id,
+            params: DetectionParams {
+                threshold_dbz: key.threshold_dbz,
+                ..DetectionParams::default()
+            },
+            key,
+            radar_lat: env.radar_lat,
+            radar_lon: env.radar_lon,
+            volume_cuts,
         }
     }
 
     /// Take a worker reply. It is cached only if it answers the request in
     /// flight. It is not shown here: the next [`decide`] shows it if
     /// its key is still the one wanted.
+    ///
+    /// A volume reply adds its columns to the cached result for its key
+    /// (marked complete or not by the cuts asked for). The worker detects
+    /// the stored cut again to sample over the footprints, so its cells are
+    /// the cached ones; should they differ, the columns are not attached
+    /// (they would describe other cells), and either way the cuts are not
+    /// asked for again.
     pub(crate) fn accept(&mut self, reply: DetectReply) -> ReplyDisposition {
-        let Some(key) = self.take_in_flight(reply.request_id) else {
+        let Some((key, volume)) = self.take_in_flight(reply.request_id) else {
             return ReplyDisposition::Dropped;
         };
+        if let Some(cuts) = volume {
+            let mut result = reply.result;
+            if let Some(v) = result.volume.as_mut() {
+                v.complete = cuts.complete;
+            }
+            match self.cache.iter_mut().find(|e| e.key == key) {
+                Some(entry) => {
+                    if entry.result.cells == result.cells {
+                        entry.result.volume = result.volume;
+                    }
+                    entry.volume_for = Some(cuts);
+                }
+                None => {
+                    self.insert(key.clone(), result, Some(reply.timing), reply.complete);
+                    if let Some(entry) = self.cache.last_mut() {
+                        entry.volume_for = Some(cuts);
+                    }
+                }
+            }
+            return ReplyDisposition::Cached;
+        }
         // A live cut that finished before the worker read it is the stored
         // cut's final answer too.
         let stored_twin = (reply.complete && key.input != CutInput::Stored).then(|| StormCellKey {
@@ -303,10 +427,18 @@ impl StormCells {
     /// The request failed in the worker. Cache an empty result for its key so
     /// the failure is not retried every frame; a different key (the next live
     /// chunk, the cut once stored) asks again.
+    /// A failed volume request leaves the cells alone and is not retried
+    /// for the same cuts.
     pub(crate) fn fail(&mut self, request_id: u64) -> ReplyDisposition {
-        let Some(key) = self.take_in_flight(request_id) else {
+        let Some((key, volume)) = self.take_in_flight(request_id) else {
             return ReplyDisposition::Dropped;
         };
+        if let Some(cuts) = volume {
+            if let Some(entry) = self.cache.iter_mut().find(|e| e.key == key) {
+                entry.volume_for = Some(cuts);
+            }
+            return ReplyDisposition::Cached;
+        }
         let result = StormCellsResult {
             source: crate::storm_cells::DetectionSource {
                 params: DetectionParams {
@@ -329,9 +461,11 @@ impl StormCells {
             .is_some_and(|f| f.request_id == request_id)
     }
 
-    fn take_in_flight(&mut self, request_id: u64) -> Option<StormCellKey> {
+    fn take_in_flight(&mut self, request_id: u64) -> Option<(StormCellKey, Option<VolumeCuts>)> {
         match &self.in_flight {
-            Some(f) if f.request_id == request_id => self.in_flight.take().map(|f| f.key),
+            Some(f) if f.request_id == request_id => {
+                self.in_flight.take().map(|f| (f.key, f.volume))
+            }
             _ => None,
         }
     }
@@ -357,6 +491,7 @@ impl StormCells {
             result,
             timing,
             complete,
+            volume_for: None,
         });
         if self.cache.len() > CACHE_CAPACITY {
             let excess = self.cache.len() - CACHE_CAPACITY;
@@ -495,6 +630,9 @@ pub(crate) enum StormCellAction {
     /// Ask a worker to detect for this key ([`StormCells::apply`] returns
     /// the request).
     Request(StormCellKey),
+    /// Ask a worker for the columns of the shown key's cells through these
+    /// cuts of its volume.
+    RequestVolume(StormCellKey, VolumeCuts),
 }
 
 /// The elevation number of a volume's lowest reflectivity cut: the lowest
@@ -618,9 +756,12 @@ fn wanted(env: &StormCellEnv<'_>, displayed: &DisplayedSweep, state: &StormCells
 ///   displayed reflectivity sweep when that cut is unavailable): keep it if
 ///   shown, show it if cached, else request it, one request at a time. While
 ///   a request is in flight the previous result stays.
-/// - Once it is shown, request the [`StormCellEnv::history`] cuts that are
-///   not cached, nearest volume first, still one at a time. The displayed
-///   volume always goes first.
+/// - Once it is shown from the stored cut, request its volume part when
+///   higher tilts are on device and the cached result lacks it for exactly
+///   those cuts ([`wanted_volume`]); show a volume part once it lands.
+/// - Then request the [`StormCellEnv::history`] cuts that are not cached,
+///   nearest volume first, still one at a time. The displayed volume always
+///   goes first.
 pub(crate) fn decide(env: &StormCellEnv<'_>, state: &StormCells) -> StormCellAction {
     let clear = || {
         if state.shows_nothing() {
@@ -660,6 +801,20 @@ pub(crate) fn decide(env: &StormCellEnv<'_>, state: &StormCells) -> StormCellAct
         .as_ref()
         .is_some_and(|f| env.now_ms - f.sent_ms < REQUEST_TIMEOUT_MS);
     if state.computed_for.as_ref() == Some(&key) {
+        let entry = state.cached(&key);
+        // A newer volume part landed for the shown cells.
+        if let Some(e) = entry.filter(|e| e.volume_for != state.shown_volume_for) {
+            return StormCellAction::Show(e.key.clone());
+        }
+        if let Some(cuts) = wanted_volume(env, &key) {
+            if entry.is_some_and(|e| e.volume_for.as_ref() != Some(&cuts)) {
+                return if busy {
+                    StormCellAction::Keep
+                } else {
+                    StormCellAction::RequestVolume(key, cuts)
+                };
+            }
+        }
         let missing = env.history.iter().rev().find(|h| state.cached(h).is_none());
         return match missing {
             Some(h) if !busy => StormCellAction::Request(h.clone()),
@@ -673,6 +828,19 @@ pub(crate) fn decide(env: &StormCellEnv<'_>, state: &StormCells) -> StormCellAct
         return StormCellAction::Keep;
     }
     StormCellAction::Request(key)
+}
+
+/// The cuts to sample for the columns of `key`'s cells: the displayed
+/// volume's [`volume_cuts`], when the cells come from its stored lowest cut
+/// and at least one higher tilt is on device.
+fn wanted_volume(env: &StormCellEnv<'_>, key: &StormCellKey) -> Option<VolumeCuts> {
+    if key.input != CutInput::Stored || key.fallback {
+        return None;
+    }
+    let scan = env.volume?;
+    let vcp = scan.vcp_pattern.as_ref().or(env.live_vcp);
+    let cuts = volume_cuts(vcp, &scan.sweeps);
+    (cuts.cuts.len() >= 2 && cuts.cuts[0] == key.elevation_number).then_some(cuts)
 }
 
 /// View-model for the threshold slider under the Storm cells checkbox.
@@ -926,6 +1094,12 @@ mod tests {
         // The next frame shows it.
         assert!(frame(&mut state, &env(Some(&d1), Some(&vol))).is_none());
         assert_eq!(state.result.cells.len(), 3);
+        // The volume part follows once; then nothing more is asked.
+        let req = requested(&mut state, &env(Some(&d1), Some(&vol)));
+        assert_eq!(req.volume_cuts, vec![1, 3, 5]);
+        state.accept(reply(&req, with_columns(cells(3)), true));
+        assert!(frame(&mut state, &env(Some(&d1), Some(&vol))).is_none());
+        assert!(state.result.volume.is_some());
         // Walk the tilt ladder: nothing changes, nothing runs.
         for elev in 2..=5 {
             let d = displayed(0, elev, "reflectivity");
@@ -1492,6 +1666,216 @@ mod tests {
         state.seed(stored_key(3), cells(1), true, true);
         assert_eq!(
             decide(&env(Some(&d), Some(&vol)), &state),
+            StormCellAction::Keep
+        );
+    }
+
+    // ── Volume ──────────────────────────────────────────────────────
+
+    /// `result` as a volume reply carries it: a column per cell.
+    fn with_columns(mut result: StormCellsResult) -> StormCellsResult {
+        result.volume = Some(crate::storm_cells::VolumeStructure {
+            tilts: Vec::new(),
+            cells: result
+                .cells
+                .iter()
+                .map(|_| crate::storm_cells::CellColumn {
+                    echo_top_km: Some(12.0),
+                    ..Default::default()
+                })
+                .collect(),
+            // The worker does not know the plan.
+            complete: false,
+        });
+        result
+    }
+
+    #[wasm_bindgen_test]
+    fn volume_cuts_take_one_cut_per_tilt_and_know_the_plan() {
+        // Split cuts at 0.5 and 0.9, then 1.3, all stored.
+        let vol = volume(0, &[1, 2, 3, 4, 5]);
+        let all = volume_cuts(vol.vcp_pattern.as_ref(), &vol.sweeps);
+        assert_eq!(
+            all,
+            VolumeCuts {
+                cuts: vec![1, 3, 5],
+                complete: true
+            }
+        );
+        // Only the Doppler half of 0.9 stored, 1.3 missing: partial.
+        let vol = volume(0, &[1, 2, 4]);
+        let part = volume_cuts(vol.vcp_pattern.as_ref(), &vol.sweeps);
+        assert_eq!(part.cuts, vec![1, 4]);
+        assert!(!part.complete);
+        // A SAILS rescan of the lowest tilt counts once, as the first cut.
+        let plan = vcp(&[0.5, 0.5, 0.9, 0.5, 1.8]);
+        let sweeps = [
+            stored(1, 0.48, &["reflectivity"]),
+            stored(3, 0.91, &["reflectivity"]),
+            stored(4, 0.52, &["reflectivity"]),
+            stored(5, 1.79, &["reflectivity"]),
+            stored(2, 0.5, &["velocity"]),
+        ];
+        let sails = volume_cuts(Some(&plan), &sweeps);
+        assert_eq!(sails.cuts, vec![1, 3, 5]);
+        assert!(sails.complete);
+        // Without a plan the stored tilts are the volume.
+        let none = volume_cuts(None, &sweeps);
+        assert_eq!(none.cuts, vec![1, 3, 5]);
+        assert!(none.complete);
+        assert!(volume_cuts(None, &[]).cuts.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_volume_part_follows_the_cells_and_is_attached_to_them() {
+        let vol = volume(0, &[1, 2, 3, 4, 5]);
+        let d = displayed(0, 1, "reflectivity");
+        let e = env(Some(&d), Some(&vol));
+        let mut state = StormCells::default();
+        // The cells first, alone: their latency is unchanged.
+        let req = requested(&mut state, &e);
+        assert!(req.volume_cuts.is_empty());
+        state.accept(reply(&req, cells(2), true));
+        assert!(frame(&mut state, &e).is_none(), "shows the cells");
+        assert_eq!(state.result.volume, None);
+        // Then the volume, for the same key, one at a time.
+        let req = requested(&mut state, &e);
+        assert_eq!(req.key, stored_key(0));
+        assert_eq!(req.volume_cuts, vec![1, 3, 5]);
+        assert_eq!(decide(&e, &state), StormCellAction::Keep, "in flight");
+        assert_eq!(
+            state.accept(reply(&req, with_columns(cells(2)), true)),
+            ReplyDisposition::Cached
+        );
+        // The next frame shows the columns, marked complete from the plan.
+        assert_eq!(decide(&e, &state), StormCellAction::Show(stored_key(0)));
+        assert!(frame(&mut state, &e).is_none());
+        let v = state.result.volume.as_ref().expect("columns shown");
+        assert!(v.complete);
+        assert_eq!(v.cells.len(), 2);
+        assert_eq!(state.result.cells, cells(2).cells);
+        // Nothing more to ask.
+        assert_eq!(decide(&e, &state), StormCellAction::Keep);
+        // Away and back: the cached result carries its columns.
+        state.clear();
+        assert!(frame(&mut state, &e).is_none());
+        assert!(state.result.volume.is_some());
+    }
+
+    #[wasm_bindgen_test]
+    fn a_partial_volume_is_asked_again_as_cuts_arrive() {
+        let d = displayed(0, 1, "reflectivity");
+        let mut state = StormCells::default();
+        // Only the lowest tilt: no volume request.
+        let vol = volume(0, &[1, 2]);
+        let req = requested(&mut state, &env(Some(&d), Some(&vol)));
+        state.accept(reply(&req, cells(1), true));
+        assert!(frame(&mut state, &env(Some(&d), Some(&vol))).is_none());
+        assert_eq!(
+            decide(&env(Some(&d), Some(&vol)), &state),
+            StormCellAction::Keep
+        );
+        // 0.9 lands: a provisional column.
+        let vol = volume(0, &[1, 2, 3]);
+        let req = requested(&mut state, &env(Some(&d), Some(&vol)));
+        assert_eq!(req.volume_cuts, vec![1, 3]);
+        state.accept(reply(&req, with_columns(cells(1)), true));
+        assert!(frame(&mut state, &env(Some(&d), Some(&vol))).is_none());
+        assert!(!state.result.volume.as_ref().unwrap().complete);
+        assert_eq!(
+            decide(&env(Some(&d), Some(&vol)), &state),
+            StormCellAction::Keep
+        );
+        // 1.3 lands: asked again, and the columns become final.
+        let vol = volume(0, &[1, 2, 3, 5]);
+        let req = requested(&mut state, &env(Some(&d), Some(&vol)));
+        assert_eq!(req.volume_cuts, vec![1, 3, 5]);
+        state.accept(reply(&req, with_columns(cells(1)), true));
+        assert!(frame(&mut state, &env(Some(&d), Some(&vol))).is_none());
+        assert!(state.result.volume.as_ref().unwrap().complete);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_failed_or_mismatched_volume_keeps_the_cells_and_is_not_retried() {
+        let vol = volume(0, &[1, 3, 5]);
+        let d = displayed(0, 1, "reflectivity");
+        let e = env(Some(&d), Some(&vol));
+        let mut state = StormCells::default();
+        let req = requested(&mut state, &e);
+        state.accept(reply(&req, cells(2), true));
+        frame(&mut state, &e);
+        let req = requested(&mut state, &e);
+        assert!(!req.volume_cuts.is_empty());
+        assert_eq!(state.fail(req.request_id), ReplyDisposition::Cached);
+        assert!(frame(&mut state, &e).is_none(), "not retried");
+        assert_eq!(state.result.cells.len(), 2, "cells kept");
+        assert_eq!(state.result.volume, None);
+
+        // A reply whose cells are not the cached ones is not attached.
+        let mut state = StormCells::default();
+        let req = requested(&mut state, &e);
+        state.accept(reply(&req, cells(2), true));
+        frame(&mut state, &e);
+        let req = requested(&mut state, &e);
+        state.accept(reply(&req, with_columns(cells(3)), true));
+        assert!(frame(&mut state, &e).is_none());
+        assert_eq!(state.result.cells.len(), 2);
+        assert_eq!(state.result.volume, None);
+        assert_eq!(decide(&e, &state), StormCellAction::Keep);
+    }
+
+    #[wasm_bindgen_test]
+    fn only_the_displayed_stored_cut_gets_a_volume_and_it_goes_before_history() {
+        let vol = volume(3, &[1, 3, 5]);
+        let d = displayed(3, 1, "reflectivity");
+        let history = [stored_key(2)];
+        let e = StormCellEnv {
+            history: &history,
+            ..env(Some(&d), Some(&vol))
+        };
+        let mut state = StormCells::default();
+        let req = requested(&mut state, &e);
+        state.accept(reply(&req, cells(1), true));
+        frame(&mut state, &e);
+        // Volume before history.
+        let req = requested(&mut state, &e);
+        assert_eq!((req.key.clone(), req.volume_cuts.len()), (stored_key(3), 3));
+        state.accept(reply(&req, with_columns(cells(1)), true));
+        frame(&mut state, &e);
+        // The history volume is detected without a volume part, and never
+        // gets one.
+        let req = requested(&mut state, &e);
+        assert_eq!(req.key, stored_key(2));
+        assert!(req.volume_cuts.is_empty());
+        state.accept(reply(&req, cells(1), true));
+        assert_eq!(decide(&e, &state), StormCellAction::Keep);
+        assert_eq!(state.cached_result(&stored_key(2)).unwrap().volume, None);
+
+        // A live cut or the displayed-tilt fallback gets no volume part.
+        let plan = vcp(&[0.5, 0.9, 1.3]);
+        let progress = LiveCutProgress {
+            scan_key: scan_key(5),
+            elevation_number: 1,
+            radials: 200,
+        };
+        let dl = displayed(5, 1, "reflectivity");
+        let mut state = StormCells::default();
+        let req = requested(&mut state, &live(&dl, &plan, &progress));
+        state.accept(reply(&req, cells(1), false));
+        frame(&mut state, &live(&dl, &plan, &progress));
+        assert_eq!(
+            decide(&live(&dl, &plan, &progress), &state),
+            StormCellAction::Keep
+        );
+        let fixed = volume(6, &[3, 5]);
+        let df = displayed(6, 3, "reflectivity");
+        let mut state = StormCells::default();
+        let req = requested(&mut state, &env(Some(&df), Some(&fixed)));
+        assert!(req.key.fallback);
+        state.accept(reply(&req, cells(1), true));
+        frame(&mut state, &env(Some(&df), Some(&fixed)));
+        assert_eq!(
+            decide(&env(Some(&df), Some(&fixed)), &state),
             StormCellAction::Keep
         );
     }

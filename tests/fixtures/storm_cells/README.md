@@ -20,6 +20,7 @@ enough to check in:
 | `KDMX20240521_200338_V06_el1.bin` | [KDMX 2024-05-21 20:03:38Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/05/21/KDMX/KDMX20240521_200338_V06) | Greenfield, two volumes before (tracking history) | 95 KB |
 | `KDMX20240521_201032_V06_el1.bin` | [KDMX 2024-05-21 20:10:32Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/05/21/KDMX/KDMX20240521_201032_V06) | Greenfield, the volume before (tracking history) | 95 KB |
 | `KDMX20240521_202422_V06_el1.bin` | [KDMX 2024-05-21 20:24:22Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/05/21/KDMX/KDMX20240521_202422_V06) | Greenfield, the next volume (tracking) | 95 KB |
+| `KDMX20240521_201727_V06_vol.bin` | [KDMX 2024-05-21 20:17:27Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/05/21/KDMX/KDMX20240521_201727_V06) | Greenfield, the volume's 13 upper reflectivity tilts over the line's sector (columns, #178) | 118 KB |
 | `KDMX20240715_115714_V06_el1.bin` | [KDMX 2024-07-15 11:57:14Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/07/15/KDMX/KDMX20240715_115714_V06) | Clear-air control (wind-farm clutter, Minnesota storms at range) | 89 KB |
 
 Source: NOAA NEXRAD Level II archive, served by the NOAA Open Data
@@ -65,6 +66,34 @@ gates        u8  × az_count × gate_count, row-major by azimuth
 Raw codes 0 (below threshold) and 1 (range folded) keep their sentinel
 meaning.
 
+### Volume fixtures (`_vol.bin`)
+
+The other reflectivity tilts of a volume, for the cells' columns: one cut
+per distinct angle above the lowest (the first collected), each cropped to
+an azimuth sector and slant range window, 1° radials (every second radial
+of a 0.5° cut) and every second gate. zlib stream of (little-endian):
+
+```
+magic        4  "NXSV"
+version      u8 1
+site         4  ASCII ICAO
+tilt_count   u8
+per tilt:
+  elevation_number u8
+  elevation    f32 degrees
+  first_gate   f32 km (range of the first kept gate)
+  gate_step    f32 km (after decimation)
+  scale        f32
+  offset       f32
+  az_count     u16
+  gate_count   u16
+  azimuths     f32 × az_count
+  gates        u8  × az_count × gate_count
+```
+
+The Greenfield one covers azimuths 212-318° and 55-155 km, the line from
+Adams to Calhoun County.
+
 ## Regenerating
 
 The generator is a small native program in `tools/corpus/` (its own Cargo
@@ -87,6 +116,14 @@ cargo run --release --target "$(rustc -vV | sed -n 's/^host: //p')" -- \
   ../../tests/fixtures/storm_cells /tmp/volumes/*_V06
 ```
 
+The volume fixture:
+
+```bash
+cargo run --release --target "$(rustc -vV | sed -n 's/^host: //p')" -- \
+  --volume 212 318 55 155 ../../tests/fixtures/storm_cells \
+  /tmp/volumes/KDMX20240521_201727_V06
+```
+
 `--max-range-km N` before the output directory changes the crop. The output
 is deterministic: rerunning on the same volumes reproduces the files byte for
 byte.
@@ -107,6 +144,9 @@ The expectations encode the study's observations
 - Greenfield 20:24Z, tracked from 20:17Z (`track.rs`): the Calhoun,
   Carroll, Cass/Adair and Adams storms keep their tracks and move
   north-east; every match stays within the search radius.
+- Greenfield columns (`_vol.bin`): every storm on the line has an echo
+  top of 12-15.5 km and echo on most tilts; the Greenfield storm has the
+  strongest column, 63 dBZ about 3 km up.
 - Clear air: cells only at the Minnesota complex plus exactly one clutter
   cluster (Greene County). A correlation coefficient filter in a later
   change should bring the clutter count to zero.

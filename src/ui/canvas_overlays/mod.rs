@@ -41,6 +41,7 @@ pub(crate) use globe::draw_globe;
 pub(crate) use gps_location::render_gps_location;
 pub(crate) use mping::{render_mping_detail, render_mping_reports};
 pub(crate) use national_mosaic::{draw_national_mosaic, RadarCutout};
+pub(crate) use scale_bar::compute_km_per_pixel;
 pub(crate) use sites::{render_nexrad_sites, SiteLabelRoom};
 pub(crate) use sweep::{render_radar_sweep, render_site_sweep_marks, SiteScreen, SweepPaint};
 

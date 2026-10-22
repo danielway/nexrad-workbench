@@ -115,123 +115,126 @@ fn paint_probe(painter: &Painter, hover_pos: Pos2, text: &str) {
     );
 }
 
+/// Paint the distance tool's view-model ([`crate::core::measure::view`]):
+/// the snap hint ring, the line, the endpoint markers (a snapped end with
+/// its track letter beside it, an ended track's end muted) and the readout
+/// just past the end point.
 pub(crate) fn render_distance_measurement(
     painter: &Painter,
     projection: &MapProjection,
-    start: Option<(f64, f64)>,
-    end: Option<(f64, f64)>,
+    vm: &crate::core::measure::MeasureVm,
+    // Whether a screen rectangle is on the canvas and clear of the chrome.
+    clear: &dyn Fn(Rect) -> bool,
 ) {
-    let Some((start_lat, start_lon)) = start else {
-        return;
-    };
+    let screen = |lat: f64, lon: f64| projection.geo_to_screen(Coord { x: lon, y: lat });
 
-    let start_screen = projection.geo_to_screen(Coord {
-        x: start_lon,
-        y: start_lat,
-    });
+    if let Some(h) = &vm.snap_hint {
+        let p = screen(h.lat, h.lon);
+        painter.circle_stroke(p, 11.0, Stroke::new(3.0_f32, theme::map::HALO));
+        painter.circle_stroke(p, 11.0, Stroke::new(1.5_f32, theme::map::TOOL));
+    }
 
-    // Draw start marker
-    painter.circle_filled(start_screen, 5.0, theme::map::TOOL);
-    painter.circle_stroke(start_screen, 5.0, Stroke::new(1.5_f32, theme::map::OUTLINE));
-
-    if let Some((end_lat, end_lon)) = end {
-        let end_screen = projection.geo_to_screen(Coord {
-            x: end_lon,
-            y: end_lat,
-        });
-
-        // Draw line
+    if let Some((a, b)) = vm.line {
         painter.line_segment(
-            [start_screen, end_screen],
+            [screen(a.0, a.1), screen(b.0, b.1)],
             Stroke::new(2.0_f32, theme::map::TOOL),
         );
+    }
 
-        // Draw end marker
-        painter.circle_filled(end_screen, 5.0, theme::map::TOOL);
-        painter.circle_stroke(end_screen, 5.0, Stroke::new(1.5_f32, theme::map::OUTLINE));
+    for e in &vm.ends {
+        let p = screen(e.lat, e.lon);
+        let (fill, text) = if e.muted {
+            (theme::TEXT_DIM, theme::TEXT_DIM)
+        } else {
+            (theme::map::TOOL, theme::TEXT)
+        };
+        painter.circle_filled(p, 5.0, fill);
+        painter.circle_stroke(p, 5.0, Stroke::new(1.5_f32, theme::map::OUTLINE));
+        if let Some(label) = &e.label {
+            let galley = painter.layout_no_wrap(label.clone(), egui::FontId::monospace(11.0), text);
+            let pos = p + Vec2::new(8.0, -8.0 - galley.size().y / 2.0);
+            let bg = Rect::from_min_size(pos, galley.size()).expand2(Vec2::new(3.0, 1.0));
+            painter.rect_filled(bg, 3.0, theme::alpha(theme::RAISED, 220));
+            painter.rect_stroke(bg, 3.0, Stroke::new(1.0_f32, fill), StrokeKind::Outside);
+            painter.galley(pos, galley, text);
+        }
+    }
 
-        // Compute great-circle distance using Haversine formula
-        let distance_km = haversine_km(start_lat, start_lon, end_lat, end_lon);
-        let distance_nm = distance_km * 0.539957; // nautical miles
-        let distance_mi = distance_km * 0.621371; // statute miles
-
-        // Draw label at midpoint
-        let mid = Pos2::new(
-            (start_screen.x + end_screen.x) / 2.0,
-            (start_screen.y + end_screen.y) / 2.0,
+    if let (Some((a, b)), false) = (vm.line, vm.readout.is_empty()) {
+        let (sa, sb) = (screen(a.0, a.1), screen(b.0, b.1));
+        let galley = painter.layout_no_wrap(
+            vm.readout.join("\n"),
+            egui::FontId::monospace(11.0),
+            theme::TEXT,
         );
-        let label = format!(
-            "{:.1} km / {:.1} nm / {:.1} mi",
-            distance_km, distance_nm, distance_mi
-        );
-
-        let font_id = egui::FontId::monospace(11.0);
-        let galley = painter.layout_no_wrap(label, font_id, theme::TEXT);
-        let label_size = galley.size();
+        let size = galley.size();
         let padding = Vec2::new(5.0, 3.0);
-        let label_pos = mid - Vec2::new(label_size.x / 2.0, label_size.y + 8.0);
-        let bg_rect = Rect::from_min_size(label_pos - padding, label_size + padding * 2.0);
-
-        painter.rect_filled(bg_rect, 3.0, theme::alpha(theme::RAISED, 220));
+        // Just past the end point, along the line, so it covers neither
+        // the line nor the start (a snapped storm and its letter); failing
+        // that past the start, beside the middle, or above, below or beside
+        // either end: the first spot on the canvas, clear of the chrome and
+        // of the end markers and their letters.
+        let along = (sb - sa).normalized();
+        let along = if along.is_finite() && along != Vec2::ZERO {
+            along
+        } else {
+            Vec2::new(0.0, -1.0)
+        };
+        let half = size / 2.0 + padding;
+        let reach = |d: Vec2| (half.x / d.x.abs()).min(half.y / d.y.abs()) + 16.0;
+        let mid = sa + (sb - sa) / 2.0;
+        let perp = Vec2::new(-along.y, along.x);
+        let up = if perp.y <= 0.0 { perp } else { -perp };
+        let clip = painter.clip_rect().shrink2(padding + Vec2::splat(4.0));
+        // The end markers and their letters stay uncovered.
+        let marks: Vec<Rect> = vm
+            .ends
+            .iter()
+            .map(|e| {
+                let p = screen(e.lat, e.lon);
+                match e.label {
+                    Some(_) => {
+                        Rect::from_min_max(p + Vec2::new(-8.0, -26.0), p + Vec2::new(40.0, 8.0))
+                    }
+                    None => Rect::from_center_size(p, Vec2::splat(16.0)),
+                }
+            })
+            .collect();
+        let (dx, dy) = (Vec2::new(half.x + 16.0, 0.0), Vec2::new(0.0, half.y + 16.0));
+        let candidates = [
+            sb + along * reach(along),
+            sa - along * reach(along),
+            mid + up * reach(up),
+            mid - up * reach(up),
+            sb - dy,
+            sb + dy,
+            sa - dy,
+            sa + dy,
+            sb - dx,
+            sb + dx,
+            sa - dx,
+            sa + dx,
+        ];
+        let fits = |c: &Pos2| {
+            let bg = Rect::from_center_size(*c, size + padding * 2.0);
+            clear(bg) && !marks.iter().any(|m| m.intersects(bg))
+        };
+        let center = candidates
+            .iter()
+            .copied()
+            .find(fits)
+            .unwrap_or(candidates[0]);
+        let mut pos = center - size / 2.0;
+        pos.x = pos.x.min(clip.right() - size.x).max(clip.left());
+        pos.y = pos.y.min(clip.bottom() - size.y).max(clip.top());
+        let bg = Rect::from_min_size(pos - padding, size + padding * 2.0);
+        painter.rect_filled(bg, 3.0, theme::alpha(theme::RAISED, 220));
         painter.rect_stroke(
-            bg_rect,
+            bg,
             3.0,
             Stroke::new(1.0_f32, theme::map::TOOL),
             StrokeKind::Outside,
         );
-        painter.galley(label_pos, galley, theme::TEXT);
-    }
-}
-
-fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    let r = 6371.0; // Earth radius in km
-    let dlat = (lat2 - lat1).to_radians();
-    let dlon = (lon2 - lon1).to_radians();
-    let a = (dlat / 2.0).sin().powi(2)
-        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
-    let c = 2.0 * a.sqrt().asin();
-    r * c
-}
-
-#[cfg(test)]
-mod coverage_tests {
-    use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test;
-
-    #[wasm_bindgen_test]
-    fn haversine_identical_points_is_zero() {
-        let d = haversine_km(41.73111, -93.72278, 41.73111, -93.72278);
-        assert!(d.abs() < 1e-9, "expected ~0, got {d}");
-    }
-
-    #[wasm_bindgen_test]
-    fn haversine_one_degree_longitude_at_equator() {
-        // 1 deg of longitude at the equator: r*pi/180 with r=6371.
-        let d = haversine_km(0.0, 0.0, 0.0, 1.0);
-        assert!((d - 111.19492664455873).abs() < 1e-6, "got {d}");
-    }
-
-    #[wasm_bindgen_test]
-    fn haversine_one_degree_latitude() {
-        // 1 deg of latitude (meridian arc) equals 1 deg of equatorial longitude.
-        let d = haversine_km(0.0, 0.0, 1.0, 0.0);
-        assert!((d - 111.19492664455873).abs() < 1e-6, "got {d}");
-    }
-
-    #[wasm_bindgen_test]
-    fn haversine_longitude_shrinks_with_latitude() {
-        // 1 deg of longitude at 45N is cos(45) of the equatorial span.
-        let d = haversine_km(45.0, 0.0, 45.0, 1.0);
-        assert!((d - 78.62618767687454).abs() < 1e-6, "got {d}");
-        // And it is strictly less than the equatorial 1-degree span.
-        assert!(d < 111.19492664455873);
-    }
-
-    #[wasm_bindgen_test]
-    fn haversine_is_symmetric() {
-        let ab = haversine_km(40.7128, -74.0060, 34.0522, -118.2437);
-        let ba = haversine_km(34.0522, -118.2437, 40.7128, -74.0060);
-        assert!((ab - 3935.746254609723).abs() < 1e-4, "got {ab}");
-        assert!((ab - ba).abs() < 1e-9, "asymmetry: {ab} vs {ba}");
+        painter.galley(pos, galley, theme::TEXT);
     }
 }
