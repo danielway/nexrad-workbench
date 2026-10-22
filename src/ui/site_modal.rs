@@ -200,43 +200,52 @@ fn draw_site_picker(
             .max_height((room - 90.0).max(120.0))
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                for group in &vm.groups {
-                    ui.add_space(6.0);
-                    match &group.header_action {
-                        Some(action) => {
-                            ui.horizontal(|ui| {
-                                dialog::group_heading(ui, &group.title);
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if ui.link(&action.label).clicked() {
-                                            state.push_command(action.intent.clone());
-                                        }
-                                    },
+                // Room on the right for the scroll bar, so the rows' right
+                // column stays clear of it.
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        right: 10,
+                        ..Default::default()
+                    })
+                    .show(ui, |ui| {
+                        for group in &vm.groups {
+                            ui.add_space(6.0);
+                            match &group.header_action {
+                                Some(action) => {
+                                    ui.horizontal(|ui| {
+                                        dialog::group_heading(ui, &group.title);
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui.link(&action.label).clicked() {
+                                                    state.push_command(action.intent.clone());
+                                                }
+                                            },
+                                        );
+                                    });
+                                }
+                                None => dialog::group_heading(ui, &group.title),
+                            }
+                            if group.kind == GroupKind::NearYou && group.rows.is_empty() {
+                                near_you_actions(ui, state, &vm);
+                            }
+                            for row in &group.rows {
+                                if let Some(intent) = site_row(ui, row) {
+                                    state.push_command(intent);
+                                }
+                            }
+                            if let Some(note) = group.note {
+                                ui.label(
+                                    RichText::new(note)
+                                        .size(theme::CAPTION)
+                                        .color(theme::TEXT_FAINT),
                                 );
-                            });
+                            }
                         }
-                        None => dialog::group_heading(ui, &group.title),
-                    }
-                    if group.kind == GroupKind::NearYou && group.rows.is_empty() {
-                        near_you_actions(ui, state, &vm);
-                    }
-                    for row in &group.rows {
-                        if let Some(intent) = site_row(ui, row) {
-                            state.push_command(intent);
+                        if vm.match_count == 0 && vm.zip_query.is_none() {
+                            ui.label(RichText::new("No site matches").color(theme::TEXT_DIM));
                         }
-                    }
-                    if let Some(note) = group.note {
-                        ui.label(
-                            RichText::new(note)
-                                .size(theme::CAPTION)
-                                .color(theme::TEXT_FAINT),
-                        );
-                    }
-                }
-                if vm.match_count == 0 && vm.zip_query.is_none() {
-                    ui.label(RichText::new("No site matches").color(theme::TEXT_DIM));
-                }
+                    });
             });
 
         ui.add_space(8.0);
@@ -445,12 +454,20 @@ fn site_row(ui: &mut egui::Ui, row: &SiteRow) -> Option<Intent> {
         let action = row.action.label();
         let right_w = if action.is_some() { 150.0 } else { 0.0 };
         let width = (ui.available_width() - right_w).max(80.0);
+        // Left-aligned, filling the row up to the action.
         let pick = ui
-            .add_sized(
-                [width, 22.0],
-                egui::Button::selectable(focus, job.clone())
-                    .wrap_mode(egui::TextWrapMode::Truncate),
+            .allocate_ui_with_layout(
+                Vec2::new(width, 22.0),
+                egui::Layout::top_down_justified(egui::Align::Min),
+                |ui| {
+                    ui.add(
+                        egui::Button::selectable(focus, job.clone())
+                            .wrap_mode(egui::TextWrapMode::Truncate)
+                            .min_size(Vec2::new(0.0, 22.0)),
+                    )
+                },
             )
+            .inner
             .on_hover_text(hover);
         if pick.clicked() {
             out = Some(row.pick_intent());
