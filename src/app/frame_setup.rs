@@ -222,7 +222,15 @@ impl WorkbenchApp {
             log::trace!("storm tracks: {tracks:?}");
         }
         if let Some(request) = request {
-            log::debug!("storm cells: requesting {:?}", request.key);
+            if request.volume_cuts.is_empty() {
+                log::debug!("storm cells: requesting {:?}", request.key);
+            } else {
+                log::debug!(
+                    "storm cells: requesting columns over cuts {:?} for {:?}",
+                    request.volume_cuts,
+                    request.key
+                );
+            }
             let id = request.request_id;
             if !self.render.coordinator.detect(request) {
                 self.state.viz_state.storm_cells.fail(id);
