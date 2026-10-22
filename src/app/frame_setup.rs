@@ -129,6 +129,8 @@ impl WorkbenchApp {
         focus.cells.reset();
         self.state.viz_state.storm_tracks.reset();
         self.sites.scene.reset();
+        // Letters restart with the tracks: let snapped endpoints go.
+        self.state.viz_state.measurement.release_tracks();
     }
 
     /// Bring the storm cells in line with what the sites display. With one
@@ -146,6 +148,8 @@ impl WorkbenchApp {
             } else {
                 self.sites.scene.reset();
             }
+            // The letters start over: let snapped endpoints go.
+            self.state.viz_state.measurement.release_tracks();
         }
         if scene {
             self.sync_scene_cells();
@@ -154,6 +158,29 @@ impl WorkbenchApp {
                 self.sync_storm_cells_for(site);
             }
         }
+    }
+
+    /// A measurement endpoint snapped to a track (or "My location") follows
+    /// it to the shown volume ([`crate::core::measure::follow`]), on the
+    /// tracks the canvas shows ([`crate::subsystem::Sites::shown_tracks_view`]),
+    /// each time the tracker that feeds them has run.
+    fn follow_measurement(&mut self) {
+        if !self.state.viz_state.measurement.follows_anything() {
+            return;
+        }
+        let my_location = self
+            .state
+            .layer_state
+            .geo
+            .gps_location
+            .then_some(self.diagnostics.gps.coords)
+            .flatten();
+        let viz = &mut self.state.viz_state;
+        let tracks_on = viz.storm_cells_visible && viz.storm_tracks_visible;
+        let view = tracks_on
+            .then(|| self.sites.shown_tracks_view(&viz.storm_tracks, None))
+            .flatten();
+        crate::core::measure::follow(&mut viz.measurement, tracks_on, view.as_ref(), my_location);
     }
 
     /// Bring site `site`'s storm cell result in line with what it displays. The
@@ -197,9 +224,18 @@ impl WorkbenchApp {
             let observations = st.observations();
             let tracks = st.sync(tracks_on, cells, &history);
             log_tracks(tracks, st.observations() != observations, st.newest_label());
+            self.follow_measurement();
         }
         if let Some(request) = request {
-            log::debug!("storm cells: requesting {:?}", request.key);
+            if request.volume_cuts.is_empty() {
+                log::debug!("storm cells: requesting {:?}", request.key);
+            } else {
+                log::debug!(
+                    "storm cells: requesting columns over cuts {:?} for {:?}",
+                    request.volume_cuts,
+                    request.key
+                );
+            }
             let id = request.request_id;
             if !self.render.coordinator.detect(request) {
                 self.sites.list[site].cells.fail(id);
@@ -269,6 +305,7 @@ impl WorkbenchApp {
             scene.tracks.observations() != observations,
             scene.tracks.newest_label(),
         );
+        self.follow_measurement();
         if let Some(request) = request {
             log::debug!("storm cells: requesting the scene {:?}", request.key);
             let id = request.request_id;

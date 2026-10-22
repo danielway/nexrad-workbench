@@ -177,6 +177,17 @@ impl Motion {
             .to_degrees()
             .rem_euclid(360.0)
     }
+
+    /// A motion of `speed_kmh` toward compass `direction_deg`: the inverse
+    /// of [`Motion::speed_kmh`] and [`Motion::direction_deg`].
+    pub(crate) fn toward(direction_deg: f64, speed_kmh: f64, confidence: f64) -> Motion {
+        let rad = direction_deg.to_radians();
+        Motion {
+            east_kmh: speed_kmh * rad.sin(),
+            north_kmh: speed_kmh * rad.cos(),
+            confidence,
+        }
+    }
 }
 
 /// How a track ended.
@@ -992,6 +1003,45 @@ pub(crate) fn closest_approach(pos: (f64, f64), motion: &Motion, point: (f64, f6
     }
 }
 
+/// How fast the distance between two moving points changes, km/h:
+/// negative while they close, positive while they part, in the flat
+/// projection around `a`. Zero when they coincide.
+pub(crate) fn separation_rate_kmh(
+    a: (f64, f64),
+    a_motion: &Motion,
+    b: (f64, f64),
+    b_motion: &Motion,
+) -> f64 {
+    let (rx, ry) = offset_km(a, b);
+    let d = rx.hypot(ry);
+    if d < 1e-9 {
+        return 0.0;
+    }
+    let (vx, vy) = (
+        b_motion.east_kmh - a_motion.east_kmh,
+        b_motion.north_kmh - a_motion.north_kmh,
+    );
+    (rx * vx + ry * vy) / d
+}
+
+/// Closest approach of two points that both move at constant velocity:
+/// `b` moving relative to `a`, so the same rules as [`closest_approach`]
+/// (0 minutes when they are parting). The relative motion's confidence is
+/// the weaker of the two.
+pub(crate) fn pair_closest_approach(
+    a: (f64, f64),
+    a_motion: &Motion,
+    b: (f64, f64),
+    b_motion: &Motion,
+) -> Approach {
+    let relative = Motion {
+        east_kmh: b_motion.east_kmh - a_motion.east_kmh,
+        north_kmh: b_motion.north_kmh - a_motion.north_kmh,
+        confidence: a_motion.confidence.min(b_motion.confidence),
+    };
+    closest_approach(b, &relative, a)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1634,5 +1684,49 @@ mod tests {
         assert!((b - 45.0).abs() < 0.1 && (d - 200f64.sqrt()).abs() < 0.05);
         let (b, _) = bearing_distance(ORIGIN, displace(ORIGIN, -1.0, 0.0));
         assert!((b - 270.0).abs() < 0.1);
+    }
+
+    #[wasm_bindgen_test]
+    fn motion_toward_inverts_speed_and_direction() {
+        for (dir, speed) in [(0.0, 30.0), (90.0, 40.0), (225.0, 12.5), (300.0, 55.0)] {
+            let m = Motion::toward(dir, speed, 0.7);
+            assert!((m.speed_kmh() - speed).abs() < 1e-9, "{m:?}");
+            assert!((m.direction_deg() - dir).abs() < 1e-9, "{m:?}");
+            assert_eq!(m.confidence, 0.7);
+        }
+        let east = Motion::toward(90.0, 40.0, 1.0);
+        assert!((east.east_kmh - 40.0).abs() < 1e-9 && east.north_kmh.abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn two_storms_converge_diverge_and_pass() {
+        let still = Motion::default();
+        let a = ORIGIN;
+        // B 20 km east of A, moving west at 30 km/h: closing at 30 km/h,
+        // meeting in 40 minutes.
+        let b = displace(a, 20.0, 0.0);
+        let west = Motion::toward(270.0, 30.0, 1.0);
+        let rate = separation_rate_kmh(a, &still, b, &west);
+        assert!((rate + 30.0).abs() < 0.05, "{rate}");
+        let p = pair_closest_approach(a, &still, b, &west);
+        assert!((p.minutes - 40.0).abs() < 0.2, "{p:?}");
+        assert!(p.distance_km < 0.05, "{p:?}");
+        // Both moving west at 30 km/h: the gap holds.
+        let rate = separation_rate_kmh(a, &west, b, &west);
+        assert!(rate.abs() < 1e-9, "{rate}");
+        // B moving east: parting at 30 km/h, closest is now.
+        let east = Motion::toward(90.0, 30.0, 0.5);
+        let rate = separation_rate_kmh(a, &still, b, &east);
+        assert!((rate - 30.0).abs() < 0.05, "{rate}");
+        let p = pair_closest_approach(a, &west, b, &east);
+        assert_eq!(p.minutes, 0.0);
+        assert!((p.distance_km - 20.0).abs() < 0.05, "{p:?}");
+        // A passing pair: B 5 km north of A's line, both closing east-west.
+        let b = displace(a, 20.0, 5.0);
+        let p = pair_closest_approach(a, &Motion::toward(90.0, 20.0, 1.0), b, &west);
+        assert!((p.minutes - 24.0).abs() < 0.2, "{p:?}");
+        assert!((p.distance_km - 5.0).abs() < 0.05, "{p:?}");
+        // Coincident points: no rate.
+        assert_eq!(separation_rate_kmh(a, &still, a, &west), 0.0);
     }
 }

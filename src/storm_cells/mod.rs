@@ -25,6 +25,9 @@
 //!    cell's footprint is its whole envelope.
 //! 4. Summarize each cell's and group's footprint (`features`) and trace
 //!    its outline (`outline`).
+//! 5. Optionally, sample the volume's higher tilts over each footprint for
+//!    the cell's column: echo top, composite peak and its height, per-tilt
+//!    peaks (`volume`, via [`detect_cells_for_volume`]).
 //!
 //! The envelope threshold (the user's slider, default 35 dBZ) is the weakest
 //! echo that can belong to a cell; a cell needs a core of envelope + 10 dB.
@@ -40,10 +43,13 @@ mod model;
 mod outline;
 mod segment;
 pub(crate) mod track;
+pub(crate) mod volume;
 mod watershed;
 
 pub(crate) use geometry::CartesianInput;
 use geometry::Grid;
+#[cfg(test)]
+pub(crate) use model::{CellColumn, VolumeStructure};
 pub(crate) use model::{DetectionSource, StormCell, StormCellsResult, StormGroup};
 
 /// Approximate kilometres per degree of latitude: the flat
@@ -120,7 +126,7 @@ impl Default for DetectionParams {
 /// Run detection over the provided sweep. The result's `source` carries
 /// `params`; the caller fills in the sweep identity it knows.
 pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> StormCellsResult {
-    detect(input.into(), params)
+    detect(input.into(), params).result
 }
 
 /// Run detection over a Cartesian grid (the composite of several radars).
@@ -130,10 +136,42 @@ pub(crate) fn detect_cells_cartesian(
     input: &CartesianInput,
     params: &DetectionParams,
 ) -> StormCellsResult {
-    detect(input.into(), params)
+    detect(input.into(), params).result
 }
 
-fn detect(input: Grid<'_>, params: &DetectionParams) -> StormCellsResult {
+/// Run detection on the volume's lowest reflectivity cut (elevation number
+/// `elevation_number`, measured at `elevation_deg`) and return, beside the
+/// result, a sampler over the cells' footprints. Feed it the volume's higher
+/// tilts ([`volume::VolumeSampler::add_tilt`]) and store
+/// [`volume::VolumeSampler::finish`] in the result's `volume`. One radar
+/// only: cells found on the composite grid have no column.
+pub(crate) fn detect_cells_for_volume(
+    input: &DetectionInput,
+    params: &DetectionParams,
+    elevation_number: u8,
+    elevation_deg: f32,
+) -> (StormCellsResult, volume::VolumeSampler) {
+    let d = detect(input.into(), params);
+    let sampler = volume::VolumeSampler::new(
+        input,
+        elevation_number,
+        elevation_deg,
+        &d.footprints,
+        &d.filtered,
+    );
+    (d.result, sampler)
+}
+
+/// What one detection run produced.
+struct Detection {
+    result: StormCellsResult,
+    /// Each cell's footprint gates, `footprints[cell.id]`.
+    footprints: Vec<Vec<components::Pixel>>,
+    /// The median-filtered dBZ field the cells were found in.
+    filtered: Vec<f32>,
+}
+
+fn detect(input: Grid<'_>, params: &DetectionParams) -> Detection {
     let mut result = StormCellsResult {
         source: DetectionSource {
             params: params.clone(),
@@ -142,7 +180,11 @@ fn detect(input: Grid<'_>, params: &DetectionParams) -> StormCellsResult {
         ..StormCellsResult::default()
     };
     let Some(values) = input.values() else {
-        return result;
+        return Detection {
+            result,
+            footprints: Vec::new(),
+            filtered: Vec::new(),
+        };
     };
     let (_, gate_count) = input.shape();
 
@@ -174,8 +216,9 @@ fn detect(input: Grid<'_>, params: &DetectionParams) -> StormCellsResult {
         .find(|l| *l >= params.threshold_dbz + params.core_margin_dbz);
     let mut core_labeler = components::Labeler::new(&filtered, &az_adjacent, gate_count);
 
-    // Cells, tagged with the index of their envelope while it is a group.
-    let mut cells: Vec<(StormCell, Option<usize>)> = Vec::new();
+    // Cells, tagged with the index of their envelope while it is a group,
+    // and their footprint gates.
+    let mut cells: Vec<(StormCell, Option<usize>, Vec<components::Pixel>)> = Vec::new();
     let mut groups: Vec<StormGroup> = Vec::new();
     for (envelope, members) in &seg.envelopes {
         let group_idx = (members.len() >= 2).then(|| {
@@ -209,7 +252,8 @@ fn detect(input: Grid<'_>, params: &DetectionParams) -> StormCellsResult {
             &cores,
             params.threshold_dbz,
         );
-        for (&c, pixels) in members.iter().zip(&footprints) {
+        for (&c, owned) in members.iter().zip(footprints) {
+            let pixels = owned.as_slice();
             let level = seg.levels[seg.components[c].level_idx];
             // Weights are measured from the envelope level, the weakest
             // value a footprint gate can have, as for groups.
@@ -269,7 +313,7 @@ fn detect(input: Grid<'_>, params: &DetectionParams) -> StormCellsResult {
                 }),
                 sites: seen.into_iter().map(|s| s.site).collect(),
             };
-            cells.push((cell, group_idx));
+            cells.push((cell, group_idx, owned));
         }
     }
 
@@ -289,13 +333,13 @@ fn detect(input: Grid<'_>, params: &DetectionParams) -> StormCellsResult {
     for (new_id, &old) in group_order.iter().enumerate() {
         group_id[old] = new_id as u32;
     }
-    cells.sort_by(|(a, _), (b, _)| {
+    cells.sort_by(|(a, _, _), (b, _, _)| {
         order(
             (a.peak_dbz, a.area_km2, a.lat, a.lon),
             (b.peak_dbz, b.area_km2, b.lat, b.lon),
         )
     });
-    for (i, (cell, group)) in cells.iter_mut().enumerate() {
+    for (i, (cell, group, _)) in cells.iter_mut().enumerate() {
         cell.id = i as u32;
         if let Some(g) = group {
             cell.group_id = Some(group_id[*g]);
@@ -307,9 +351,14 @@ fn detect(input: Grid<'_>, params: &DetectionParams) -> StormCellsResult {
     }
     groups.sort_by_key(|g| g.id);
 
-    result.cells = cells.into_iter().map(|(c, _)| c).collect();
+    let (cells, footprints) = cells.into_iter().map(|(c, _, px)| (c, px)).unzip();
+    result.cells = cells;
     result.groups = groups;
-    result
+    Detection {
+        result,
+        footprints,
+        filtered,
+    }
 }
 
 #[cfg(test)]
