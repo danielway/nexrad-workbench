@@ -54,7 +54,17 @@ impl WorkbenchApp {
                 nexrad::WorkerOutcome::VolumeDecoded(volume_data) => {
                     self.handle_volume_decoded_outcome(volume_data);
                 }
-                nexrad::WorkerOutcome::Detected(reply) => {
+                nexrad::WorkerOutcome::Detected { scene: true, reply } => {
+                    let disposition = self.sites.scene.cells.accept(reply);
+                    log::debug!("storm cells: scene reply {:?}", disposition);
+                    if self.sites.scene.active {
+                        self.sync_scene_cells();
+                    }
+                }
+                nexrad::WorkerOutcome::Detected {
+                    scene: false,
+                    reply,
+                } => {
                     // The site whose request this answers; a reply nobody
                     // awaits any more (a site change reset it) is dropped.
                     let id = reply.request_id;
@@ -68,14 +78,22 @@ impl WorkbenchApp {
                     }
                 }
                 nexrad::WorkerOutcome::DetectFailed {
+                    scene,
                     request_id,
                     message,
                 } => {
                     log::warn!("storm cells: detection failed: {message}");
-                    let owner = self.sites.iter().position(|s| s.cells.awaits(request_id));
-                    if let Some(site) = owner {
-                        self.sites.list[site].cells.fail(request_id);
-                        self.sync_storm_cells_for(site);
+                    if scene {
+                        self.sites.scene.cells.fail(request_id);
+                        if self.sites.scene.active {
+                            self.sync_scene_cells();
+                        }
+                    } else {
+                        let owner = self.sites.iter().position(|s| s.cells.awaits(request_id));
+                        if let Some(site) = owner {
+                            self.sites.list[site].cells.fail(request_id);
+                            self.sync_storm_cells_for(site);
+                        }
                     }
                 }
                 nexrad::WorkerOutcome::WorkerError {
@@ -490,7 +508,7 @@ impl WorkbenchApp {
             self.sites.list[site].displayed = actions.displayed_on_upload;
             // Detection for the new sweep, decided by the same rule as the
             // per-frame check (which then sees it as already computed).
-            self.sync_storm_cells_for(site);
+            self.sync_storm_cells();
         }
 
         // Store detailed render timing for the detail modal (dev mode only).
@@ -604,7 +622,7 @@ impl WorkbenchApp {
             }
             // Detection for the new chunk, decided by the same rule as the
             // per-frame check. Runs after the lock above is released.
-            self.sync_storm_cells_for(site);
+            self.sync_storm_cells();
         }
 
         if let Some((start, end, angle)) = actions.update_overlay {

@@ -6,8 +6,12 @@
 //! point (`nexrad::decode::worker_api::detect`) feeds it a stored or live
 //! sweep, and `core` re-exports its result types.
 //!
-//! Pipeline, all in index space (rows × columns, here azimuth × gate). Only
-//! the geometry (`geometry`) knows where a pixel is and how big.
+//! Pipeline, all in index space (rows × columns) over one of two
+//! geometries (`geometry`): a radar's polar sweep (azimuth × gate, the
+//! single-site path, [`detect_cells`]) or the Cartesian composite grid of
+//! several radars (`composite`, [`detect_cells_cartesian`]). Only the
+//! geometry knows where a pixel is and how big; the steps below are the
+//! same on both.
 //!
 //! 1. Decode raw gate codes to dBZ and apply a 3×3 median filter
 //!    (`median`), so single-gate spikes cannot set a cell's peak. The peak of a cell is the maximum of the filtered field.
@@ -26,6 +30,7 @@
 //! echo that can belong to a cell; a cell needs a core of envelope + 10 dB.
 
 mod components;
+pub(crate) mod composite;
 #[cfg(test)]
 mod corpus_tests;
 mod features;
@@ -37,6 +42,7 @@ mod segment;
 pub(crate) mod track;
 mod watershed;
 
+pub(crate) use geometry::CartesianInput;
 use geometry::Grid;
 pub(crate) use model::{DetectionSource, StormCell, StormCellsResult, StormGroup};
 
@@ -114,6 +120,16 @@ impl Default for DetectionParams {
 /// Run detection over the provided sweep. The result's `source` carries
 /// `params`; the caller fills in the sweep identity it knows.
 pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> StormCellsResult {
+    detect(input.into(), params)
+}
+
+/// Run detection over a Cartesian grid (the composite of several radars).
+/// Each cell names the radars that see it, nearest first, and its bearing
+/// and range are from the first of them.
+pub(crate) fn detect_cells_cartesian(
+    input: &CartesianInput,
+    params: &DetectionParams,
+) -> StormCellsResult {
     detect(input.into(), params)
 }
 
@@ -213,6 +229,14 @@ fn detect(input: Grid<'_>, params: &DetectionParams) -> StormCellsResult {
                     .zip(peak_gate)
                     .and_then(|(l, seed)| core_labeler.fill(seed, l, 1))
             };
+            // On a composite grid the radars that see the footprint, and
+            // its bearing and range from the nearest of them.
+            let seen = input.sightings(pixels, (fp.lat, fp.lon));
+            let (bearing_from_radar_deg, range_from_radar_km) = seen
+                .first()
+                .map_or((fp.bearing_from_radar_deg, fp.range_from_radar_km), |s| {
+                    (s.bearing_deg, s.range_km)
+                });
             let cell = StormCell {
                 id: 0,
                 group_id: None,
@@ -224,8 +248,8 @@ fn detect(input: Grid<'_>, params: &DetectionParams) -> StormCellsResult {
                 lat: fp.lat,
                 lon: fp.lon,
                 bounds: fp.bounds,
-                bearing_from_radar_deg: fp.bearing_from_radar_deg,
-                range_from_radar_km: fp.range_from_radar_km,
+                bearing_from_radar_deg,
+                range_from_radar_km,
                 orientation_deg: fp.orientation_deg,
                 elongation: fp.elongation,
                 // A lone cell's footprint is its envelope, drawn as a faint
@@ -243,6 +267,7 @@ fn detect(input: Grid<'_>, params: &DetectionParams) -> StormCellsResult {
                 core_outline: core.map_or_else(Vec::new, |px| {
                     outline::outline(&px, input, half_spacing, outline::TOLERANCE_KM)
                 }),
+                sites: seen.into_iter().map(|s| s.site).collect(),
             };
             cells.push((cell, group_idx));
         }

@@ -1,4 +1,6 @@
-//! WASM export for storm cell detection on one cut of a volume.
+//! WASM exports for storm cell detection: on one cut of a volume
+//! (`worker_detect`, one site on the map) and on the composite grid of
+//! several sites' cuts (`worker_detect_composite`).
 //!
 //! The main thread decides which cut (the volume's lowest reflectivity cut,
 //! see `core::storm_cells`) and where to read it: the stored sweep blob in
@@ -132,6 +134,135 @@ pub fn worker_detect(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         };
         serde_wasm_bindgen::to_value(&response)
             .map_err(|e| JsValue::from_str(&format!("Failed to serialize detect response: {}", e)))
+    })
+}
+
+/// One site's cut in a `worker_detect_composite` request.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CompositeSiteParams {
+    pub scan_key: String,
+    pub elevation_number: u8,
+    /// `"stored"` or `"live"`, as for `worker_detect`.
+    pub input: String,
+    pub radar_lat: f64,
+    pub radar_lon: f64,
+}
+
+/// Parameters for `worker_detect_composite`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DetectCompositeParams {
+    pub sites: Vec<CompositeSiteParams>,
+    pub params: DetectionParams,
+}
+
+/// Detect storm cells on the composite grid of several sites' cuts
+/// (`crate::storm_cells::composite`). Each cut is read as `worker_detect`
+/// reads it. The reply has `worker_detect`'s shape; `azimuthCount` and
+/// `gateCount` are the grid's rows and columns (0 with no echo), and
+/// `complete` is whether every cut was complete.
+///
+/// Parameters (JS object): `{ sites: [{ scanKey, elevationNumber, input,
+/// radarLat, radarLon }], params: DetectionParams }`
+#[allow(unreachable_pub)] // wasm_bindgen export invoked from worker.js; must stay pub
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn worker_detect_composite(params: wasm_bindgen::JsValue) -> js_sys::Promise {
+    use crate::storm_cells::composite::{detect_composite, CompositeCut};
+    init_logger();
+    wasm_bindgen_futures::future_to_promise(async move {
+        let t_total = web_time::Instant::now();
+        let p: DetectCompositeParams = serde_wasm_bindgen::from_value(params)
+            .map_err(|e| JsValue::from_str(&format!("Invalid detect_composite params: {}", e)))?;
+
+        let t_fetch = web_time::Instant::now();
+        let mut cuts: Vec<(String, CutData, &CompositeSiteParams)> = Vec::new();
+        let mut complete = true;
+        for site in &p.sites {
+            let scan_key = ScanKey::from_storage_key(&site.scan_key)
+                .map_err(|e| JsValue::from_str(&format!("Invalid scanKey: {e}")))?;
+            let live = if site.input == "live" {
+                live_cut(&scan_key.site.0, site.elevation_number)
+            } else {
+                None
+            };
+            complete &= live.is_none();
+            let id = scan_key.site.0.clone();
+            let cut = match live {
+                Some(cut) => cut,
+                None => stored_cut(scan_key, site.elevation_number).await?,
+            };
+            cuts.push((id, cut, site));
+        }
+        let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
+
+        let t_detect = web_time::Instant::now();
+        let inputs: Vec<CompositeCut> = cuts
+            .iter()
+            .map(|(id, cut, site)| CompositeCut {
+                site: id,
+                sweep: DetectionInput {
+                    azimuths: &cut.azimuths,
+                    gate_values: &cut.gate_values,
+                    azimuth_count: cut.azimuth_count,
+                    gate_count: cut.gate_count,
+                    first_gate_km: cut.first_gate_km,
+                    gate_interval_km: cut.gate_interval_km,
+                    data_scale: cut.scale,
+                    data_offset: cut.offset,
+                    radar_lat: site.radar_lat,
+                    radar_lon: site.radar_lon,
+                    azimuth_spacing_deg: None,
+                },
+            })
+            .collect();
+        let (mut result, grid) = detect_composite(&inputs, &p.params);
+        let detect_ms = t_detect.elapsed().as_secs_f64() * 1000.0;
+        let (rows, cols) = grid.unwrap_or((0, 0));
+        result.source.sweep_id = Some(
+            p.sites
+                .iter()
+                .map(|s| format!("{}|{}", s.scan_key, s.elevation_number))
+                .collect::<Vec<_>>()
+                .join(" + "),
+        );
+        result.source.product = Some("Reflectivity".to_string());
+        result.source.elevation_deg = cuts
+            .iter()
+            .map(|(_, c, _)| c.elevation_deg)
+            .reduce(f32::min);
+
+        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+        log::debug!(
+            "detect_composite: {} sites ({}) grid {}x{} ({} cells of 0.5 km), {} cells in {} groups (envelope {:.0} dBZ) | detect {:.1}ms, fetch {:.1}ms, total {:.1}ms",
+            cuts.len(),
+            if complete { "complete" } else { "partial" },
+            rows,
+            cols,
+            rows * cols,
+            result.cells.len(),
+            result.groups.len(),
+            p.params.threshold_dbz,
+            detect_ms,
+            fetch_ms,
+            total_ms,
+        );
+
+        let response = DetectResponse {
+            result,
+            fetch_ms,
+            detect_ms,
+            total_ms,
+            azimuth_count: rows as u32,
+            gate_count: cols as u32,
+            complete,
+        };
+        serde_wasm_bindgen::to_value(&response).map_err(|e| {
+            JsValue::from_str(&format!(
+                "Failed to serialize detect_composite response: {}",
+                e
+            ))
+        })
     })
 }
 
@@ -288,5 +419,35 @@ mod tests {
                 ..DetectionParams::default()
             }
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn detect_composite_params_parse_per_site() {
+        let json = serde_json::json!({
+            "sites": [
+                {
+                    "scanKey": "KMLB|1728528900000",
+                    "elevationNumber": 1,
+                    "input": "stored",
+                    "radarLat": 28.11,
+                    "radarLon": -80.65,
+                },
+                {
+                    "scanKey": "KTBW|1728529000000",
+                    "elevationNumber": 2,
+                    "input": "live",
+                    "radarLat": 27.7,
+                    "radarLon": -82.4,
+                },
+            ],
+            "params": serde_json::to_value(DetectionParams::default()).unwrap(),
+        });
+        let p: DetectCompositeParams = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(p.sites.len(), 2);
+        assert_eq!(p.sites[1].scan_key, "KTBW|1728529000000");
+        assert_eq!(p.sites[1].elevation_number, 2);
+        assert_eq!(p.sites[1].input, "live");
+        assert_eq!(p.sites[0].radar_lon, -80.65);
+        assert_eq!(p.params, DetectionParams::default());
     }
 }

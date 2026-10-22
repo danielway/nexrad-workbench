@@ -27,6 +27,7 @@ pub(super) enum RequestType {
     RenderLive,
     RenderVolume,
     Detect,
+    DetectComposite,
 }
 
 impl RequestType {
@@ -43,6 +44,7 @@ impl RequestType {
         Self::RenderLive,
         Self::RenderVolume,
         Self::Detect,
+        Self::DetectComposite,
     ];
 
     /// Compile-time completeness check for [`Self::ALL`]: this match must list
@@ -58,6 +60,7 @@ impl RequestType {
             Self::RenderLive => 4,
             Self::RenderVolume => 5,
             Self::Detect => 6,
+            Self::DetectComposite => 7,
         }
     }
 
@@ -70,6 +73,7 @@ impl RequestType {
             Self::RenderLive => "render_live",
             Self::RenderVolume => "render_volume",
             Self::Detect => "detect",
+            Self::DetectComposite => "detect_composite",
         }
     }
 }
@@ -87,7 +91,7 @@ pub(super) enum ResponseType {
     /// A `render_live` request whose elevation was stored before it ran.
     LiveSuperseded,
     VolumeDecoded,
-    /// A `detect` request's storm cells.
+    /// A `detect` or `detect_composite` request's storm cells.
     Detected,
     Error,
 }
@@ -454,6 +458,30 @@ pub(super) struct DetectRequestMsg<'a> {
     pub radar_lon: f64,
 }
 
+/// One site's cut in a [`DetectCompositeRequestMsg`].
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DetectCompositeSiteMsg {
+    pub scan_key: String,
+    pub elevation_number: u8,
+    /// `"stored"` or `"live"`.
+    pub input: &'static str,
+    pub radar_lat: f64,
+    pub radar_lon: f64,
+}
+
+/// Request message sent to the worker for storm cell detection on the
+/// composite grid of several sites.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DetectCompositeRequestMsg<'a> {
+    #[serde(rename = "type")]
+    pub msg_type: &'a str,
+    pub id: f64,
+    pub sites: Vec<DetectCompositeSiteMsg>,
+    pub params: &'a crate::storm_cells::DetectionParams,
+}
+
 /// Request message sent to the worker for live render operations.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -472,6 +500,15 @@ pub(super) struct RenderLiveRequestMsg<'a> {
 
 /// Unique ID for tracking worker requests.
 pub(super) type RequestId = u64;
+
+/// Whose storm cell request a pending detection is: a site's or the
+/// scene's (several sites on the composite grid), with the core's request
+/// id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DetectFor {
+    pub request_id: u64,
+    pub scene: bool,
+}
 
 // The pure outcome vocabulary — `IngestContext`/`IngestResult`,
 // `ChunkIngestContext`/`ChunkIngestResult`, `RenderContext`/`DecodeResult`,
@@ -495,11 +532,19 @@ pub(crate) enum WorkerOutcome {
     },
     /// Volume decode completed (all elevations packed for ray marching).
     VolumeDecoded(VolumeData),
-    /// Storm cell detection completed.
-    Detected(crate::core::storm_cells::DetectReply),
+    /// Storm cell detection completed, for a site or (`scene`) for the
+    /// composite of several.
+    Detected {
+        scene: bool,
+        reply: crate::core::storm_cells::DetectReply,
+    },
     /// Storm cell detection failed in the worker (or its reply did not
     /// parse). Carries the core's request id, not the wire id.
-    DetectFailed { request_id: u64, message: String },
+    DetectFailed {
+        scene: bool,
+        request_id: u64,
+        message: String,
+    },
     /// Error from any operation.
     WorkerError {
         id: u64,
@@ -817,6 +862,7 @@ mod detect_wire_tests {
                     (41.3, -94.45),
                     (41.25, -94.55),
                 ],
+                sites: vec!["KDMX".into()],
             }],
             ..StormCellsResult::default()
         };

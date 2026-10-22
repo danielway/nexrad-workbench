@@ -166,6 +166,21 @@ impl WorkerPool {
         self.workers[idx].detect(request);
     }
 
+    /// Submit a composite storm cell detection: to the live worker when any
+    /// of its cuts reads an accumulator, else round-robined.
+    pub(crate) fn detect_composite(
+        &mut self,
+        request: crate::core::storm_cells::SceneDetectRequest,
+    ) {
+        use crate::core::storm_cells::CellKey;
+        let idx = if request.key.is_live() {
+            LIVE_WORKER_INDEX
+        } else {
+            self.next_render_index()
+        };
+        self.workers[idx].detect_composite(request);
+    }
+
     /// Drain pending outcomes from every worker.
     pub(crate) fn try_recv(&mut self) -> Vec<WorkerOutcome> {
         let mut out = Vec::new();

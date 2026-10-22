@@ -46,9 +46,11 @@ pub(crate) struct StormCell {
     pub lon: f64,
     /// Bounding box of the footprint (min_lat, min_lon, max_lat, max_lon).
     pub bounds: (f64, f64, f64, f64),
-    /// Compass bearing (0° = N, clockwise) from radar to centroid.
+    /// Compass bearing (0° = N, clockwise) from radar to centroid. On the
+    /// composite grid, from the first of [`Self::sites`].
     pub bearing_from_radar_deg: f32,
-    /// Distance from radar to centroid, km.
+    /// Distance from radar to centroid, km (from the first of
+    /// [`Self::sites`] on the composite grid).
     pub range_from_radar_km: f32,
     /// Orientation of the footprint's major axis in compass degrees, in
     /// [0, 180), from the same weighted covariance as the centroid.
@@ -72,6 +74,12 @@ pub(crate) struct StormCell {
     /// that level, which the core minimum rules out; such a cell draws
     /// `outline` instead.
     pub core_outline: Vec<(f64, f64)>,
+    /// The radars that see the footprint (a valid gate somewhere in it), by
+    /// id, nearest to the centroid first. Filled on the composite grid of
+    /// several radars; empty on one radar's sweep, where the radar is the
+    /// caller's.
+    #[serde(default)]
+    pub sites: Vec<String>,
 }
 
 /// A group: one envelope component that resolved into two or more cells

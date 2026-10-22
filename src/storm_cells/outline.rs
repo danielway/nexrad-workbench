@@ -12,7 +12,8 @@
 //! one ring. A component that touches every radial (a rain shield around
 //! the radar) is cut at radial 0, which gives a ring with a zero-width slit
 //! along that radial; drawn filled or stroked it still covers the right
-//! area.
+//! area. A Cartesian grid does not wrap, so its walk starts at the
+//! component's southmost row and corners map to the ground linearly.
 
 use super::components::Pixel;
 use super::geometry::{Frame, Grid};
@@ -56,7 +57,10 @@ pub(super) fn outline<'a>(
         gmin = gmin.min(g);
         gmax = gmax.max(g);
     }
-    let start = unroll_start(&occupied);
+    let start = match geometry {
+        Grid::Polar(_) => unroll_start(&occupied),
+        Grid::Cartesian(_) => occupied.iter().position(|o| *o).unwrap_or(0),
+    };
     let width = occupied.iter().filter(|o| **o).count();
     let height = (gmax - gmin) as usize + 1;
     let mut mask = vec![false; width * height];
@@ -95,6 +99,16 @@ pub(super) fn outline<'a>(
                 })
                 .collect()
         }
+        // Rows run north, columns east, from the grid's south-west corner.
+        Grid::Cartesian(input) => ring
+            .iter()
+            .map(|&(x, y)| {
+                (
+                    (gmin as f64 + y as f64) * input.cell_km,
+                    ((start + x as usize) as f64) * input.cell_km,
+                )
+            })
+            .collect(),
     };
 
     let simplified = simplify_ring(&km, tolerance_km, MAX_EDGE_KM, MAX_OUTLINE_VERTICES);

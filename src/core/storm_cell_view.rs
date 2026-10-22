@@ -955,6 +955,7 @@ mod tests {
             elongation: 1.0,
             outline: square(lat, lon, h),
             core_outline: Vec::new(),
+            sites: Vec::new(),
         }
     }
 
