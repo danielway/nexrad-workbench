@@ -43,6 +43,7 @@ pub(crate) mod live_mode;
 pub(crate) mod live_radar_model;
 pub(crate) mod live_status;
 pub(crate) mod map_chrome;
+pub(crate) mod measure;
 pub(crate) mod overview;
 pub(crate) mod panels;
 pub(crate) mod persist;
