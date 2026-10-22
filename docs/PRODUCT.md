@@ -665,7 +665,8 @@ Interactive measurement and analysis affordances on the 2D canvas:
   and the radial's collection timestamp. (Named "Data probe" to free "inspector"
   for the scan inspector in §4.)
 - **Distance Measure** — click two points to read the great-circle distance
-  (km, nm and mi at the line's middle). A third click starts over. Dragging
+  (km, nm and mi; the readout sits past the end point, or the first spot
+  beside the line that covers neither end nor the map chrome). A third click starts over. Dragging
   an end moves it; the map pans only when the drag starts away from both
   ends.
   - **Snap.** With storm cells and Tracks on, an end placed or dropped

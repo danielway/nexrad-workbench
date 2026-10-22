@@ -539,7 +539,13 @@ pub(crate) fn render_canvas_with_geo(
                         hover: measure_hover,
                         snap_km,
                     });
-                render_distance_measurement(&painter, &projection, &measure_vm);
+                render_distance_measurement(&painter, &projection, &measure_vm, &|r| {
+                    crate::core::map_chrome::label_clear_of_chrome(
+                        super::canvas_overlays::viewport_bounds(r),
+                        &keep_out,
+                        viewport,
+                    )
+                });
 
                 if state.viz_state.data_probe_enabled {
                     if let Some(hover_pos) = response.hover_pos() {

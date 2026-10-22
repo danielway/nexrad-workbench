@@ -104,11 +104,13 @@ pub(crate) fn render_data_probe(
 /// Paint the distance tool's view-model ([`crate::core::measure::view`]):
 /// the snap hint ring, the line, the endpoint markers (a snapped end with
 /// its track letter beside it, an ended track's end muted) and the readout
-/// at the line's middle.
+/// just past the end point.
 pub(crate) fn render_distance_measurement(
     painter: &Painter,
     projection: &MapProjection,
     vm: &crate::core::measure::MeasureVm,
+    // Whether a screen rectangle is on the canvas and clear of the chrome.
+    clear: &dyn Fn(Rect) -> bool,
 ) {
     let screen = |lat: f64, lon: f64| projection.geo_to_screen(Coord { x: lon, y: lat });
 
@@ -146,7 +148,6 @@ pub(crate) fn render_distance_measurement(
 
     if let (Some((a, b)), false) = (vm.line, vm.readout.is_empty()) {
         let (sa, sb) = (screen(a.0, a.1), screen(b.0, b.1));
-        let mid = Pos2::new((sa.x + sb.x) / 2.0, (sa.y + sb.y) / 2.0);
         let galley = painter.layout_no_wrap(
             vm.readout.join("\n"),
             egui::FontId::monospace(11.0),
@@ -154,9 +155,62 @@ pub(crate) fn render_distance_measurement(
         );
         let size = galley.size();
         let padding = Vec2::new(5.0, 3.0);
-        // Above the middle, kept on the canvas.
+        // Just past the end point, along the line, so it covers neither
+        // the line nor the start (a snapped storm and its letter); failing
+        // that past the start, beside the middle, or above, below or beside
+        // either end: the first spot on the canvas, clear of the chrome and
+        // of the end markers and their letters.
+        let along = (sb - sa).normalized();
+        let along = if along.is_finite() && along != Vec2::ZERO {
+            along
+        } else {
+            Vec2::new(0.0, -1.0)
+        };
+        let half = size / 2.0 + padding;
+        let reach = |d: Vec2| (half.x / d.x.abs()).min(half.y / d.y.abs()) + 16.0;
+        let mid = sa + (sb - sa) / 2.0;
+        let perp = Vec2::new(-along.y, along.x);
+        let up = if perp.y <= 0.0 { perp } else { -perp };
         let clip = painter.clip_rect().shrink2(padding + Vec2::splat(4.0));
-        let mut pos = mid - Vec2::new(size.x / 2.0, size.y + 8.0);
+        // The end markers and their letters stay uncovered.
+        let marks: Vec<Rect> = vm
+            .ends
+            .iter()
+            .map(|e| {
+                let p = screen(e.lat, e.lon);
+                match e.label {
+                    Some(_) => {
+                        Rect::from_min_max(p + Vec2::new(-8.0, -26.0), p + Vec2::new(40.0, 8.0))
+                    }
+                    None => Rect::from_center_size(p, Vec2::splat(16.0)),
+                }
+            })
+            .collect();
+        let (dx, dy) = (Vec2::new(half.x + 16.0, 0.0), Vec2::new(0.0, half.y + 16.0));
+        let candidates = [
+            sb + along * reach(along),
+            sa - along * reach(along),
+            mid + up * reach(up),
+            mid - up * reach(up),
+            sb - dy,
+            sb + dy,
+            sa - dy,
+            sa + dy,
+            sb - dx,
+            sb + dx,
+            sa - dx,
+            sa + dx,
+        ];
+        let fits = |c: &Pos2| {
+            let bg = Rect::from_center_size(*c, size + padding * 2.0);
+            clear(bg) && !marks.iter().any(|m| m.intersects(bg))
+        };
+        let center = candidates
+            .iter()
+            .copied()
+            .find(fits)
+            .unwrap_or(candidates[0]);
+        let mut pos = center - size / 2.0;
         pos.x = pos.x.min(clip.right() - size.x).max(clip.left());
         pos.y = pos.y.min(clip.bottom() - size.y).max(clip.top());
         let bg = Rect::from_min_size(pos - padding, size + padding * 2.0);

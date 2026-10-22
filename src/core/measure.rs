@@ -338,7 +338,7 @@ pub(crate) struct MeasureVm {
     pub ends: Vec<EndVm>,
     /// The line, start to end, when both are placed.
     pub line: Option<((f64, f64), (f64, f64))>,
-    /// The readout at the line's middle, one entry per line of text.
+    /// The readout beside the line, one entry per line of text.
     pub readout: Vec<String>,
     pub snap_hint: Option<SnapHintVm>,
 }
