@@ -386,3 +386,122 @@ fn clear_air_control_finds_only_minnesota_storms_and_known_clutter() {
     assert_eq!(near.len(), 1, "{near:#?}");
     assert!(km((near[0].lat, near[0].lon), (42.11, -94.16)) < 10.0);
 }
+
+// --- Tracking: KDMX 20:17Z → 20:24Z ---------------------------------------
+
+const GREENFIELD_NEXT: &[u8] =
+    include_bytes!("../../tests/fixtures/storm_cells/KDMX20240521_202422_V06_el1.bin");
+
+/// Volume start times of the two fixtures.
+const T_2017: i64 = 1_716_322_647_000;
+const T_2024: i64 = 1_716_323_062_000;
+
+/// The Greenfield line seven minutes later: the strong storms keep their
+/// tracks and move north-east, as they did that afternoon, and no match
+/// jumps farther than the search radius.
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn greenfield_storms_keep_their_tracks_into_the_next_volume() {
+    use super::track::{bearing_distance, distance_km, TrackParams, Tracker};
+    let (a, _) = detect(GREENFIELD, 35.0);
+    let (b, _) = detect(GREENFIELD_NEXT, 35.0);
+    check_invariants(&b);
+    let run = || {
+        let mut tr = Tracker::default();
+        let f0 = tr.observe(T_2017, &a, false).unwrap();
+        let f1 = tr.observe(T_2024, &b, false).unwrap();
+        (f0, f1)
+    };
+    let (f0, f1) = run();
+    assert_eq!((f0.clone(), f1.clone()), run(), "deterministic");
+    assert!(f0.cell_tracks.iter().all(Option::is_some));
+    assert!(f1.cell_tracks.iter().all(Option::is_some));
+
+    let params = TrackParams::default();
+    let radius = params.base_radius_km + params.max_speed_kmh * (T_2024 - T_2017) as f64 / 3.6e6;
+    for cell in &b.cells {
+        let track = f1.track_of_cell(cell.id).unwrap();
+        if track.age_volumes == 2 {
+            let (lat, lon) = track.trail[0];
+            assert!(distance_km((lat, lon), (cell.lat, cell.lon)) <= radius);
+        }
+    }
+
+    for (name, pos) in [
+        ("Calhoun", (42.32, -94.67)),
+        ("Carroll", (42.01, -94.82)),
+        ("Cass/Adair (Greenfield)", (41.28, -94.73)),
+        ("Adams", (40.87, -94.71)),
+    ] {
+        let before = a
+            .cells
+            .iter()
+            .find(|c| km((c.lat, c.lon), pos) < 12.0 && c.peak_dbz >= 50.0)
+            .unwrap_or_else(|| panic!("{name} at 20:17"));
+        let id = f0.cell_tracks[before.id as usize].unwrap();
+        let track = f1.track(id).unwrap_or_else(|| panic!("{name} track"));
+        let now = track
+            .cell_id
+            .unwrap_or_else(|| panic!("{name} matched at 20:24"));
+        let now = &b.cells[now as usize];
+        let (bearing, dist) = bearing_distance((before.lat, before.lon), (now.lat, now.lon));
+        assert!(dist <= radius, "{name}: {dist} km");
+        assert!(
+            (0.0..=120.0).contains(&bearing),
+            "{name}: moved toward {bearing}"
+        );
+        assert!(now.peak_dbz >= 50.0, "{name}: {now:?}");
+        assert_eq!(track.age_volumes, 2);
+    }
+}
+
+const GREENFIELD_2003: &[u8] =
+    include_bytes!("../../tests/fixtures/storm_cells/KDMX20240521_200338_V06_el1.bin");
+const GREENFIELD_2010: &[u8] =
+    include_bytes!("../../tests/fixtures/storm_cells/KDMX20240521_201032_V06_el1.bin");
+const T_2003: i64 = 1_716_321_818_000;
+const T_2010: i64 = 1_716_322_232_000;
+
+/// With 20:03 and 20:10 as history (so the tracks have a motion), each of
+/// the five
+/// named storms keeps its letter from 20:17 to 20:24, matched to the piece
+/// that holds most of it. Audubon is the hard one: at 20:24 the
+/// segmentation leaves a small fragment 3 km from its old centroid while
+/// the storm itself has moved 16 km north-east; nearest-centroid matching
+/// alone takes the fragment.
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn greenfield_named_storms_keep_their_letters_through_fragmenting() {
+    use super::track::{bearing_distance, Tracker};
+    let mut tr = Tracker::default();
+    for (bytes, t) in [(GREENFIELD_2003, T_2003), (GREENFIELD_2010, T_2010)] {
+        tr.observe(t, &detect(bytes, 35.0).0, false).unwrap();
+    }
+    let (a, _) = detect(GREENFIELD, 35.0);
+    let (b, _) = detect(GREENFIELD_NEXT, 35.0);
+    let f0 = tr.observe(T_2017, &a, false).unwrap();
+    let f1 = tr.observe(T_2024, &b, false).unwrap();
+    for (name, pos) in [
+        ("Calhoun", (42.32, -94.67)),
+        ("Carroll", (42.01, -94.82)),
+        ("Audubon", (41.64, -94.89)),
+        ("Cass/Adair (Greenfield)", (41.28, -94.73)),
+        ("Adams", (40.87, -94.71)),
+    ] {
+        let before = a
+            .cells
+            .iter()
+            .find(|c| km((c.lat, c.lon), pos) < 12.0 && c.peak_dbz >= 50.0)
+            .unwrap_or_else(|| panic!("{name} at 20:17"));
+        let id = f0.cell_tracks[before.id as usize].unwrap();
+        let now = f1
+            .track(id)
+            .and_then(|t| t.cell_id)
+            .unwrap_or_else(|| panic!("{name} keeps its letter"));
+        let now = &b.cells[now as usize];
+        let (bearing, dist) = bearing_distance((before.lat, before.lon), (now.lat, now.lon));
+        assert!(
+            (0.0..=120.0).contains(&bearing) && dist <= 20.0,
+            "{name}: {dist:.1} km toward {bearing:.0}"
+        );
+        assert!(now.area_km2 >= 0.5 * before.area_km2, "{name}: {now:?}");
+    }
+}

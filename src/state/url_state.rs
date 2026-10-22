@@ -80,6 +80,8 @@ pub(crate) fn build_link(
             .viz_state
             .storm_cells_visible
             .then_some(state.viz_state.storm_cell_threshold_dbz),
+        tracks: (state.viz_state.storm_cells_visible && state.viz_state.storm_tracks_visible)
+            .then_some(true),
         dev: Some(state.dev_mode),
     }
 }
@@ -116,6 +118,13 @@ mod tests {
         state.viz_state.storm_cell_threshold_dbz = 45.0;
         let q = crate::core::link::to_query(&build_link(&state, &playback));
         assert!(q.contains("cells=45"), "{q}");
+        assert!(!q.contains("tracks"), "{q}");
+        state.viz_state.storm_tracks_visible = true;
+        let q = crate::core::link::to_query(&build_link(&state, &playback));
+        assert!(q.contains("cells=45&tracks=1"), "{q}");
+        // Tracks without cells draw nothing, so the link leaves them out.
+        state.viz_state.storm_cells_visible = false;
+        assert_eq!(build_link(&state, &playback).tracks, None);
     }
 
     #[wasm_bindgen_test]

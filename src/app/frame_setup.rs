@@ -116,6 +116,7 @@ impl WorkbenchApp {
         self.state.viz_state.previous_displayed = None;
         self.timeline.shadow_scan_boundaries.clear();
         self.state.viz_state.storm_cells.reset();
+        self.state.viz_state.storm_tracks.reset();
     }
 
     /// Bring the storm cell result in line with what is displayed. The
@@ -128,6 +129,7 @@ impl WorkbenchApp {
     /// [`DetectRequest`]: crate::core::storm_cells::DetectRequest
     pub(crate) fn sync_storm_cells(&mut self) {
         use crate::core::storm_cells::{decide, LiveCutProgress, StormCellEnv};
+        use crate::core::storm_tracks::history_keys;
 
         let viz = &self.state.viz_state;
         let (visible, view_mode, threshold_dbz, radar_lat, radar_lon) = (
@@ -174,6 +176,16 @@ impl WorkbenchApp {
                 radials: obs.current_in_progress_radials?,
             })
         });
+        // Tracks need the cells of the volumes before the displayed one.
+        let tracks_on = visible && viz.storm_tracks_visible;
+        let history = match displayed {
+            Some(d) if tracks_on => history_keys(
+                &self.timeline.scans.scans,
+                &d.identity.scan_key,
+                threshold_dbz,
+            ),
+            _ => Vec::new(),
+        };
         let live_vcp = live_anchor
             .filter(|a| Some(a.scan_key.scan_start.0) == displayed_ms)
             .and(self.live.radar_model.volume.as_ref())
@@ -189,10 +201,26 @@ impl WorkbenchApp {
             radar_lat,
             radar_lon,
             now_ms: self.state.frame_now.millis(),
+            history: &history,
         };
         let cells = &mut self.state.viz_state.storm_cells;
         let action = decide(&env, cells);
         let request = cells.apply(action, &env);
+        let observations = self.state.viz_state.storm_tracks.observations();
+        let tracks = self.state.viz_state.storm_tracks.sync(
+            tracks_on,
+            &self.state.viz_state.storm_cells,
+            &history,
+        );
+        let st = &self.state.viz_state.storm_tracks;
+        if st.observations() != observations {
+            log::debug!(
+                "storm tracks: {tracks:?}, newest letter {:?}",
+                st.newest_label()
+            );
+        } else if tracks != crate::core::storm_tracks::TrackSync::Off {
+            log::trace!("storm tracks: {tracks:?}");
+        }
         if let Some(request) = request {
             log::debug!("storm cells: requesting {:?}", request.key);
             let id = request.request_id;

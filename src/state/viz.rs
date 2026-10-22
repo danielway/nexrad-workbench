@@ -3,6 +3,7 @@
 use crate::core::canvas::CaptionContext;
 use crate::core::storm_cell_view::StormCellPointer;
 use crate::core::storm_cells::StormCells;
+use crate::core::storm_tracks::StormTracks;
 use crate::core::{DisplayedSweep, ElevationSelection, RadarProduct};
 use crate::geo::{Camera, Flat2DState, ViewMode};
 use eframe::egui::Vec2;
@@ -82,6 +83,13 @@ pub(crate) struct VizState {
     /// computed for (see `crate::core::storm_cells`).
     pub storm_cells: StormCells,
 
+    /// Whether storm cell tracks (trails and forecast arrows) are on. Needs
+    /// `storm_cells_visible` too.
+    pub storm_tracks_visible: bool,
+
+    /// Tracks across volumes for the active site (see
+    /// `crate::core::storm_tracks`).
+    pub storm_tracks: StormTracks,
     /// The desktop pointer and the phone's selected point over the storm
     /// cell overlay (see `crate::core::storm_cell_view`).
     pub storm_cell_pointer: StormCellPointer,
@@ -139,6 +147,8 @@ impl Default for VizState {
             storm_cells_visible: false,
             storm_cell_threshold_dbz: 35.0,
             storm_cells: StormCells::default(),
+            storm_tracks_visible: false,
+            storm_tracks: StormTracks::default(),
             storm_cell_pointer: StormCellPointer::default(),
             last_visible_bounds: None,
             displayed: None,

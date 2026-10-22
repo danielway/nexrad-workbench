@@ -227,6 +227,7 @@ pub(crate) fn dispatch_state_only(
                 crate::core::storm_cell_view::StormCellControls {
                     visible: &mut viz.storm_cells_visible,
                     threshold_dbz: &mut viz.storm_cell_threshold_dbz,
+                    tracks: &mut viz.storm_tracks_visible,
                     pointer: &mut viz.storm_cell_pointer,
                 },
                 intent,

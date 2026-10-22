@@ -414,6 +414,19 @@ pub(crate) fn render_canvas_with_geo(
                         ui.ctx().request_repaint();
                     }
                 }
+                // Tracks on these cells, with closest approach to "My
+                // location" when that layer has a fix.
+                let my_location = state
+                    .layer_state
+                    .geo
+                    .gps_location
+                    .then_some(diagnostics.gps.coords)
+                    .flatten();
+                let storm_tracks_view = state
+                    .viz_state
+                    .storm_tracks_visible
+                    .then(|| state.viz_state.storm_tracks.view(my_location))
+                    .flatten();
                 let storm_cell_inputs = crate::core::storm_cell_view::StormCellViewInputs {
                     result: &state.viz_state.storm_cells.result,
                     visible: state.viz_state.storm_cells_visible,
@@ -425,6 +438,7 @@ pub(crate) fn render_canvas_with_geo(
                     phone: state.is_mobile,
                     pointer: &state.viz_state.storm_cell_pointer,
                     probe_on: state.viz_state.data_probe_enabled,
+                    tracks: storm_tracks_view.as_ref(),
                 };
                 let storm_cells_vm =
                     crate::core::storm_cell_view::build(&storm_cell_inputs, |lat, lon| {

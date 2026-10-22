@@ -62,6 +62,8 @@ pub(crate) struct ToolPrefs {
     pub storm_cells: bool,
     #[serde(default = "default_storm_cell_dbz")]
     pub storm_cell_dbz: f32,
+    #[serde(default)]
+    pub storm_tracks: bool,
 }
 
 impl Default for ToolPrefs {
@@ -71,6 +73,7 @@ impl Default for ToolPrefs {
             distance: false,
             storm_cells: false,
             storm_cell_dbz: default_storm_cell_dbz(),
+            storm_tracks: false,
         }
     }
 }
@@ -416,6 +419,7 @@ mod tests {
                 distance: false,
                 storm_cells: true,
                 storm_cell_dbz: 45.0,
+                storm_tracks: true,
             },
             developer_mode: true,
             mping_api_key: Some("abc".into()),

@@ -691,8 +691,9 @@ Interactive measurement and analysis affordances on the 2D canvas:
   - **Chip.** The cell's peak dBZ sits in a small mono chip at the outline's
     top-right (11 px; 12 px on the phone). Chips are placed strongest first
     and skipped when they would crowd one already placed; an outline smaller
-    than about 14 px on screen carries none. There is no track letter or
-    trend mark yet: a cell's id lasts one volume until tracking lands.
+    than about 14 px on screen carries none. With Tracks on the chip leads
+    with the track's letter (`B 58`) and ends with ↑ or ↓ when the peak
+    moved more than 3 dB over the last three volumes.
   - **Card.** On the desktop, hovering inside a footprint opens a card beside
     the pointer: peak, area, mean dBZ, the level at which the cell became
     distinct from its neighbours ("Distinct at 50 dBZ"), group membership
@@ -700,8 +701,38 @@ Interactive measurement and analysis affordances on the 2D canvas:
     phone a tap inside a cell selects it (its outline thickens) and a compact
     card sits above the bottom of the map; a tap anywhere else closes it.
     When footprints nest, the strongest cell wins. With the data probe on,
-    the probe names the cell instead (`Cell 62 dBZ · 48 km²`) and the hover
-    card stays away.
+    the probe names the cell instead (`Cell 62 dBZ · 48 km²`, `Cell B …`
+    when tracked) and the hover card stays away. With Tracks on the card
+    also gives the trend in its title (`D · 64 dBZ peak ↑ from 60`), motion
+    (`Moving NE 47 km/h, high confidence`, or `Stationary`), age (`Tracked
+    6 volumes · 25 min`) and, when My location is on, the cell's distance
+    and bearing from you and its closest approach (`Closest to you: 14 km
+    in 22 min`; withheld beyond an hour, "Moving away from you" when it
+    is). The phone's card folds motion and age into one line ("Moving NE 82 km/h, high confidence · 34 min").
+  - **Tracks** (the checkbox under the slider). Cells are tracked across
+    volumes (SCIT-style: predicted from their recent motion, matched by
+    distance, area and peak, coasting two volumes before a track ends).
+    A track gets a letter (A–Z, then AA, AB…) once it has been seen in
+    two volumes, or at once when it splits off a lettered storm; a cell
+    seen only once shows its peak alone and uses no letter up, so letters
+    go only to storms that last. A letter stays with its storm and is
+    never handed out again while the site is open. The storm's path, every
+    centroid seen (up to 24, about two hours), draws as small dots on a thin
+    line that fades with age, newest strongest; a track that split off
+    another starts with a short dashed join to the parent's centroid at the
+    split. A dashed arrow points to where the cell will be in 30 minutes
+    once its motion is confident (three volumes on a steady course).
+    Turning tracks on also detects up to twelve volumes (about an hour)
+    before the one on screen, nearest first, among those already on the
+    device; it never downloads volumes just for a path. The volume on
+    screen does not wait for them: its tracks gain motion and path as they
+    land.
+    Scrubbing back over volumes already seen, or a loop wrapping, shows
+    the same letters. A volume whose cells arrive late (a loop that runs
+    ahead of detection) is tracked when they do, and the volumes after it
+    are tracked again; letters already shown stay with their storms.
+    Scrubbing more than 20 minutes before the first volume seen
+    starts over with new letters.
   - **Rays and live.** Rays shows the previous sweep ahead of the sweep line
     and the current one behind it; cells belong to the current sweep, so a
     cell draws only once its whole footprint is behind the line and never
@@ -711,10 +742,10 @@ Interactive measurement and analysis affordances on the 2D canvas:
   - **Slider.** "Min dBZ" (20–60, default 35) is the envelope: the weakest
     echo that can belong to a cell. A cell needs a core 10 dB above it. The
     slider works over every product; off reflectivity it notes "Cells from
-    reflectivity". A "Tracks" checkbox is shown
-    disabled until tracking lands.
+    reflectivity".
   - **3D** draws no cells, card or probe line.
-  - The link carries the overlay as `cells=<dbz>` (§13.4).
+  - The link carries the overlay as `cells=<dbz>` and tracks as `tracks=1`
+    (§13.4).
 
 ### 13.3 Responsive behavior
 
@@ -883,6 +914,7 @@ decision are `core::link`; preferences are `core::prefs`.
 | Map center | `lat`, `lon` | |
 | 2D/3D, camera, map and timeline zoom, volume rendering and cutoff | `v` | Base64 JSON blob; its old `rt` flag is read as `sel=now` |
 | Storm cells | `cells` | Present means on; the value is the envelope threshold in dBZ (`cells=35`). Absent leaves the preference |
+| Storm cell tracks | `tracks` | `tracks=1` on, `tracks=0` off; written only while cells and tracks are both on. Absent leaves the preference |
 | Developer flag | `dev=true` | Wins for that session without being saved |
 
 A link with a pinned selection opens pinned; one with a time (or a fixed
