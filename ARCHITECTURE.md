@@ -356,6 +356,7 @@ executed by the `Effect` runtime (`app/effects.rs`).
 │          │                             │ • 3D Options    │
 ├──────────┴─────────────────────────────┴─────────────────┤
 │ Bottom: Timeline | Playback Controls | Activity chip     │
+│         Track (focus) + one 11 px lane per other site    │
 └──────────────────────────────────────────────────────────┘
 ```
 
