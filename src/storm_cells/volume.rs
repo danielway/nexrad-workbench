@@ -10,10 +10,12 @@
 //! overhangs it.
 //!
 //! Per cell and tilt the sampler keeps the strongest echo and the highest
-//! sample at or above [`ECHO_TOP_DBZ`]. Values pass a three-gate median
-//! along the radial first, so a single-gate spike cannot set a column's peak
-//! or its top, and a tilt counts towards the echo top only with at least
-//! [`MIN_ECHO_TOP_GATES`] such gates in the footprint.
+//! sample at or above [`ECHO_TOP_DBZ`]. Values of the higher tilts pass a
+//! three-gate median along the radial first, so a single-gate spike cannot
+//! set a column's peak or its top, and a tilt counts towards the echo top
+//! only with at least [`MIN_ECHO_TOP_GATES`] such gates in the footprint.
+//! The lowest cut is read from the 3×3-median field detection ran on, so a
+//! column's peak is never below its cell's.
 //!
 //! The crate's `nexrad-process` has a composite reflectivity product and
 //! `nexrad-model` a beam height model, but both work on its `Scan` /
@@ -55,6 +57,8 @@ pub(crate) fn ground_range_km(slant_km: f64, elevation_deg: f64) -> f64 {
 pub(crate) enum TiltValues<'a> {
     U8(&'a [u8]),
     U16(&'a [u16]),
+    /// Already decoded or synthetic values (tests).
+    #[cfg(test)]
     F32(&'a [f32]),
 }
 
@@ -63,6 +67,7 @@ impl TiltValues<'_> {
         match self {
             Self::U8(v) => v.len(),
             Self::U16(v) => v.len(),
+            #[cfg(test)]
             Self::F32(v) => v.len(),
         }
     }
@@ -72,6 +77,7 @@ impl TiltValues<'_> {
         match self {
             Self::U8(v) => v[i] as f32,
             Self::U16(v) => v[i] as f32,
+            #[cfg(test)]
             Self::F32(v) => v[i],
         }
     }
@@ -136,12 +142,14 @@ pub(crate) struct VolumeSampler {
 impl VolumeSampler {
     /// A sampler over `footprints[cell_id]` of the lowest cut `input`
     /// (taken at `elevation_deg`, elevation number `elevation_number`),
-    /// which is sampled as the first tilt.
+    /// which is the first tilt, read from `filtered` (the median-filtered
+    /// field detection ran on).
     pub(super) fn new(
         input: &DetectionInput,
         elevation_number: u8,
         elevation_deg: f32,
         footprints: &[Vec<Pixel>],
+        filtered: &[f32],
     ) -> Self {
         let gate_count = input.gate_count;
         let azimuth_count = input.azimuth_count;
@@ -157,15 +165,40 @@ impl VolumeSampler {
             }
         }
         let el = elevation_deg as f64;
+        let slant = |g: usize| input.first_gate_km + (g as f64 + 0.5) * input.gate_interval_km;
         let ground_km = (0..gate_count)
-            .map(|g| {
-                let slant = input.first_gate_km + (g as f64 + 0.5) * input.gate_interval_km;
-                ground_range_km(slant, el)
-            })
+            .map(|g| ground_range_km(slant(g), el))
             .collect();
         let spacing = super::components::median_spacing_deg(input.azimuths, azimuth_count);
         let az_lookup = az_lookup(&input.azimuths[..azimuth_count], spacing);
-        let mut sampler = Self {
+
+        // The lowest cut is read from the field the cells were found in
+        // (the 3×3 median), so its peak is the cell's peak.
+        let lowest: Vec<TiltAcc> = footprints
+            .iter()
+            .map(|pixels| {
+                let mut c = TiltAcc::default();
+                for &(a, g) in pixels {
+                    let v = filtered
+                        .get(a as usize * gate_count + g as usize)
+                        .copied()
+                        .unwrap_or(f32::NAN);
+                    if v.is_nan() {
+                        continue;
+                    }
+                    let h = beam_height_km(slant(g as usize), el) as f32;
+                    if c.max.is_none_or(|(m, _)| v > m) {
+                        c.max = Some((v, h));
+                    }
+                    if v >= ECHO_TOP_DBZ {
+                        c.top_gates += 1;
+                        c.top_km = c.top_km.max(h);
+                    }
+                }
+                c
+            })
+            .collect();
+        Self {
             cell_count: footprints.len(),
             labels,
             gate_count,
@@ -173,22 +206,12 @@ impl VolumeSampler {
             az_lookup,
             row_used,
             gate_span,
-            tilts: Vec::new(),
-            acc: Vec::new(),
-        };
-        sampler.add_tilt(&TiltInput {
-            elevation_number,
-            elevation_deg,
-            azimuths: input.azimuths,
-            values: TiltValues::F32(input.gate_values),
-            azimuth_count,
-            gate_count,
-            first_gate_km: input.first_gate_km,
-            gate_interval_km: input.gate_interval_km,
-            data_scale: input.data_scale,
-            data_offset: input.data_offset,
-        });
-        sampler
+            tilts: vec![VolumeTilt {
+                elevation_number,
+                elevation_deg,
+            }],
+            acc: vec![lowest],
+        }
     }
 
     /// Sample one tilt over the footprints. A tilt whose buffers are short

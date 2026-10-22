@@ -117,7 +117,7 @@ impl Default for DetectionParams {
 /// Run detection over the provided sweep. The result's `source` carries
 /// `params`; the caller fills in the sweep identity it knows.
 pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> StormCellsResult {
-    detect(input, params).0
+    detect(input, params).result
 }
 
 /// Run detection on the volume's lowest reflectivity cut (elevation number
@@ -131,16 +131,27 @@ pub(crate) fn detect_cells_for_volume(
     elevation_number: u8,
     elevation_deg: f32,
 ) -> (StormCellsResult, volume::VolumeSampler) {
-    let (result, footprints) = detect(input, params);
-    let sampler = volume::VolumeSampler::new(input, elevation_number, elevation_deg, &footprints);
-    (result, sampler)
+    let d = detect(input, params);
+    let sampler = volume::VolumeSampler::new(
+        input,
+        elevation_number,
+        elevation_deg,
+        &d.footprints,
+        &d.filtered,
+    );
+    (d.result, sampler)
 }
 
-/// Detection, plus each cell's footprint gates (`footprints[cell.id]`).
-fn detect(
-    input: &DetectionInput,
-    params: &DetectionParams,
-) -> (StormCellsResult, Vec<Vec<components::Pixel>>) {
+/// What one detection run produced.
+struct Detection {
+    result: StormCellsResult,
+    /// Each cell's footprint gates, `footprints[cell.id]`.
+    footprints: Vec<Vec<components::Pixel>>,
+    /// The median-filtered dBZ field the cells were found in.
+    filtered: Vec<f32>,
+}
+
+fn detect(input: &DetectionInput, params: &DetectionParams) -> Detection {
     let mut result = StormCellsResult {
         source: DetectionSource {
             params: params.clone(),
@@ -149,12 +160,20 @@ fn detect(
         ..StormCellsResult::default()
     };
     if input.azimuth_count == 0 || input.gate_count == 0 || input.azimuths.is_empty() {
-        return (result, Vec::new());
+        return Detection {
+            result,
+            footprints: Vec::new(),
+            filtered: Vec::new(),
+        };
     }
     if input.gate_values.len() < input.azimuth_count * input.gate_count
         || input.azimuths.len() < input.azimuth_count
     {
-        return (result, Vec::new());
+        return Detection {
+            result,
+            footprints: Vec::new(),
+            filtered: Vec::new(),
+        };
     }
 
     let az_adjacent = components::precompute_az_adjacency(input.azimuths, input.azimuth_count);
@@ -333,7 +352,11 @@ fn detect(
     let (cells, footprints) = cells.into_iter().map(|(c, _, px)| (c, px)).unzip();
     result.cells = cells;
     result.groups = groups;
-    (result, footprints)
+    Detection {
+        result,
+        footprints,
+        filtered,
+    }
 }
 
 #[cfg(test)]
