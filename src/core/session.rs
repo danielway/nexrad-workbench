@@ -72,6 +72,14 @@ pub(crate) enum Stream {
     Failed,
 }
 
+/// The session's one aggregate stream fact: a stream runs while any listed
+/// site's stream runs. Each site's [`Stream`] is classified from its own
+/// activity; the session phase and last exit are shared. With one site this
+/// is that site's `is_running`.
+pub(crate) fn any_site_streams(streams: impl IntoIterator<Item = Stream>) -> bool {
+    streams.into_iter().any(Stream::is_running)
+}
+
 impl Stream {
     /// Classify the stream from the live state machine's activity, phase and
     /// last exit. A stream that died on a connection error reads as failed
@@ -275,8 +283,12 @@ impl TiltRole {
 /// Everything [`SessionVm::build`] reads: plain data from existing state.
 pub(crate) struct SessionInputs<'a> {
     pub now: FrameNow,
-    /// This frame's stream measurements (activity, countdown, expected cut).
+    /// This frame's stream measurements for the focus site (activity,
+    /// countdown, expected cut).
     pub live_status: &'a LiveStatus,
+    /// Whether any listed site streams ([`any_site_streams`]): what the now
+    /// cap, the caption and `live_now` ask of the session.
+    pub any_site_streams: bool,
     pub live_phase: LivePhase,
     pub last_exit: Option<LiveExitReason>,
     pub selection: Selection,
@@ -407,7 +419,7 @@ impl SessionVm {
             .then_some(inputs.loop_mode);
         let now_cap = if selection_pinned {
             NowCap::Live
-        } else if stream.is_running() {
+        } else if inputs.any_site_streams {
             NowCap::Rejoin
         } else {
             NowCap::GoLive
@@ -427,13 +439,13 @@ impl SessionVm {
             frame.as_ref(),
             playhead,
             now,
-            stream.is_running(),
+            inputs.any_site_streams,
             inputs.live_cut.as_ref().and_then(|c| c.elevation_angle),
             &inputs.caption_context,
         );
         let activity_chip = stream_line(stream, status, inputs.live_cut.as_ref(), now);
         let activity_hover = stream_hover(stream, status);
-        let live_now = stream.is_running() && selection_pinned;
+        let live_now = inputs.any_site_streams && selection_pinned;
 
         Self {
             stream,
@@ -823,6 +835,8 @@ mod tests {
         live_cut: Option<LiveCut>,
         caption: CaptionContext,
         volume_3d_active: bool,
+        /// The other listed sites' streams, beside the focus one.
+        other_sites: Vec<Stream>,
     }
 
     impl<'a> S<'a> {
@@ -839,6 +853,7 @@ mod tests {
                 live_cut: None,
                 caption: CaptionContext::default(),
                 volume_3d_active: false,
+                other_sites: Vec::new(),
             }
         }
 
@@ -854,9 +869,13 @@ mod tests {
         }
 
         fn vm(&self) -> SessionVm {
+            let focus = Stream::classify(self.status.activity, self.phase, self.last_exit);
             SessionVm::build(SessionInputs {
                 now: FrameNow(self.now),
                 live_status: &self.status,
+                any_site_streams: any_site_streams(
+                    std::iter::once(focus).chain(self.other_sites.iter().copied()),
+                ),
                 live_phase: self.phase,
                 last_exit: self.last_exit,
                 selection: self.selection,
@@ -1634,5 +1653,57 @@ mod tests {
         // A point has no loop to style.
         s.selection = POINT;
         assert_eq!(s.vm().loop_style, None);
+    }
+
+    // ── The aggregate stream fact ──────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn a_session_streams_while_any_site_streams() {
+        assert!(!any_site_streams(std::iter::empty()));
+        assert!(!any_site_streams([Stream::Off]));
+        assert!(!any_site_streams([Stream::Off, Stream::Failed]));
+        assert!(any_site_streams([Stream::Off, Stream::Waiting]));
+        assert!(any_site_streams([Stream::Stalled, Stream::Off]));
+        for stream in [
+            Stream::Connecting,
+            Stream::Receiving,
+            Stream::Waiting,
+            Stream::Stalled,
+        ] {
+            assert!(any_site_streams([stream]), "{stream:?}");
+        }
+    }
+
+    /// With one site the aggregate is that site's own `is_running`, so every
+    /// surface reads as it did before the sites were listed.
+    #[wasm_bindgen_test]
+    fn one_site_aggregate_is_that_sites_stream() {
+        for stream in [
+            Stream::Off,
+            Stream::Connecting,
+            Stream::Receiving,
+            Stream::Waiting,
+            Stream::Stalled,
+            Stream::Failed,
+        ] {
+            assert_eq!(
+                any_site_streams([stream]),
+                stream.is_running(),
+                "{stream:?}"
+            );
+        }
+    }
+
+    /// Another site's stream keeps the session's now cap and caption on the
+    /// stream even when the focus site's line reads off.
+    #[wasm_bindgen_test]
+    fn another_sites_stream_offers_rejoin() {
+        let mut s = S::at(t(12, 0, 0));
+        s.playhead = t(11, 30, 0);
+        assert_eq!(s.vm().now_cap, NowCap::GoLive);
+        s.other_sites = vec![Stream::Waiting];
+        let vm = s.vm();
+        assert_eq!(vm.now_cap, NowCap::Rejoin);
+        assert_eq!(vm.stream, Stream::Off);
     }
 }

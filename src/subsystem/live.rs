@@ -18,7 +18,7 @@
 
 use crate::core::live_mode::SiteStreamSlice;
 use crate::core::projection::{new_shared_engine, Projection, SharedProjectionEngine};
-use crate::core::session::{LiveCut, SessionInputs, SessionVm};
+use crate::core::session::{any_site_streams, LiveCut, SessionInputs, SessionVm, Stream};
 use crate::core::PlaybackState;
 use crate::core::{ElevationSelection, StreamingFilter};
 use crate::core::{ExpectedSweep, LiveModeState, LiveRadarModel, LiveVolumeState};
@@ -464,10 +464,18 @@ impl Live {
                 now,
             );
         }
+        let phase = self.mode_state.phase;
+        let last_exit = self.mode_state.last_exit_reason;
+        let any_site_streams = any_site_streams(
+            sites
+                .iter()
+                .map(|site| Stream::classify(site.live.frame_status.activity, phase, last_exit)),
+        );
         let focus = sites.focus();
         self.session = SessionVm::build(SessionInputs {
             now: inputs.now,
             live_status: &focus.live.frame_status,
+            any_site_streams,
             live_phase: self.mode_state.phase,
             last_exit: self.mode_state.last_exit_reason,
             selection: inputs.playback.selection,
