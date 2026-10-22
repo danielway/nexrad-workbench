@@ -1,21 +1,44 @@
 //! 3D globe rendering orchestration.
 //!
 //! Coordinates the WebGL2 paint callbacks for the globe sphere, geographic
-//! line overlays, 2D radar projection onto the sphere surface, and optional
-//! 3D volumetric ray-marching — all within a single `egui::PaintCallback`.
+//! line overlays, each site's radar projected onto the sphere surface, and
+//! optional 3D volumetric ray-marching, all within a single
+//! `egui::PaintCallback`.
 
 use crate::geo::{GeoLineRenderer, GlobeRenderer};
+use crate::nexrad::{GlobeRadarRenderer, RadarGpuRenderer, VolumeRayRenderer};
 use crate::state::AppState;
 use eframe::egui::{self, Rect};
 use glow::HasContext;
 use std::sync::{Arc, Mutex};
+
+/// One site's renderers and position, cloned into the paint callback.
+struct SitePaint {
+    lat: f64,
+    lon: f64,
+    radar: Option<Arc<Mutex<RadarGpuRenderer>>>,
+    globe_radar: Option<Arc<Mutex<GlobeRadarRenderer>>>,
+    volume_ray: Option<Arc<Mutex<VolumeRayRenderer>>>,
+}
+
+impl SitePaint {
+    fn of(site: &crate::subsystem::SiteState) -> Self {
+        Self {
+            lat: site.lat,
+            lon: site.lon,
+            radar: site.gpu.radar.clone(),
+            globe_radar: site.gpu.globe_radar.clone(),
+            volume_ray: site.gpu.volume_ray.clone(),
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_globe(
     ui: &mut egui::Ui,
     rect: &Rect,
     state: &AppState,
-    site: &crate::subsystem::SiteState,
+    sites: &crate::subsystem::Sites,
     globe_renderer: Option<&Arc<Mutex<GlobeRenderer>>>,
     geo_line_renderer: Option<&Arc<Mutex<GeoLineRenderer>>>,
 ) {
@@ -23,15 +46,13 @@ pub(crate) fn draw_globe(
         return;
     };
     let geo_r = geo_line_renderer.cloned();
-    // The globe drapes and ray-marches the focus site alone.
-    let radar_r = site.gpu.radar.clone();
-    let globe_rr = site.gpu.globe_radar.clone();
-    let vol_r = site.gpu.volume_ray.clone();
+    // Every site drapes its own sweep, older frame first as in 2D.
+    let patches: Vec<SitePaint> = sites.drawn().map(SitePaint::of).collect();
+    // The volume is still the focus site's alone.
+    let focus = SitePaint::of(sites.focus());
 
     let camera = state.viz_state.camera.clone();
     let processing = state.render_processing.clone();
-    let radar_lat = site.lat;
-    let radar_lon = site.lon;
     let volume_enabled = state.viz_state.volume_3d_enabled;
     let volume_density_cutoff = state.viz_state.volume_density_cutoff;
     let geo_vis = crate::geo::geo_line_renderer::VisibleLayers {
@@ -61,7 +82,7 @@ pub(crate) fn draw_globe(
             // 3. Draw radar data on sphere
             let mut drew_volume = false;
             if volume_enabled {
-                if let (Some(ref vr), Some(ref rr)) = (&vol_r, &radar_r) {
+                if let (Some(ref vr), Some(ref rr)) = (&focus.volume_ray, &focus.radar) {
                     if let (Ok(mut v), Ok(flat_r)) = (vr.lock(), rr.lock()) {
                         if v.has_data() {
                             // Get current viewport dimensions for FBO sizing
@@ -84,15 +105,8 @@ pub(crate) fn draw_globe(
                 }
             }
             if !drew_volume {
-                if let (Some(ref rr), Some(ref grr)) = (&radar_r, &globe_rr) {
-                    if let (Ok(flat_r), Ok(mut globe_r)) = (rr.lock(), grr.lock()) {
-                        if flat_r.has_data() {
-                            // Rebuild mesh if site changed
-                            globe_r.update_site(gl, radar_lat, radar_lon, flat_r.max_range_km());
-                            // Paint radar on sphere
-                            globe_r.paint(gl, &camera, &flat_r, &processing);
-                        }
-                    }
+                for site in &patches {
+                    paint_surface(gl, site, &camera, &processing);
                 }
             }
 
@@ -106,4 +120,22 @@ pub(crate) fn draw_globe(
     };
 
     ui.painter().add(callback);
+}
+
+/// Drape one site's sweep on the sphere from its own flat textures.
+fn paint_surface(
+    gl: &glow::Context,
+    site: &SitePaint,
+    camera: &crate::geo::Camera,
+    processing: &crate::core::RenderProcessing,
+) {
+    if let (Some(ref rr), Some(ref grr)) = (&site.radar, &site.globe_radar) {
+        if let (Ok(flat_r), Ok(mut globe_r)) = (rr.lock(), grr.lock()) {
+            if flat_r.has_data() {
+                // Rebuild mesh if site changed
+                globe_r.update_site(gl, site.lat, site.lon, flat_r.max_range_km());
+                globe_r.paint(gl, camera, &flat_r, processing);
+            }
+        }
+    }
 }
