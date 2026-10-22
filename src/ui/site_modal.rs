@@ -387,6 +387,13 @@ fn site_row(ui: &mut egui::Ui, row: &SiteRow) -> Option<Intent> {
     };
 
     let mut out = None;
+    // The whole row, action included, so the action stays while the pointer
+    // crosses from the name to the right edge.
+    let row_rect = {
+        let r = ui.available_rect_before_wrap();
+        egui::Rect::from_min_size(r.min, Vec2::new(r.width(), 22.0))
+    };
+    let row_hovered = ui.rect_contains_pointer(row_rect);
     ui.horizontal(|ui| {
         // The On the map control: the focus's circle, the others' box.
         if let Some(status) = &row.on_map {
@@ -473,13 +480,12 @@ fn site_row(ui: &mut egui::Ui, row: &SiteRow) -> Option<Intent> {
             out = Some(row.pick_intent());
         }
         if let Some(label) = action {
-            let row_hovered = ui.rect_contains_pointer(ui.min_rect());
-            let show = !row.action.on_hover_only() || row_hovered;
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !show {
-                    return;
-                }
-                match row.also_intent() {
+            if row.action.on_hover_only() && !row_hovered {
+                return;
+            }
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| match row.also_intent() {
                     Some(intent) => {
                         if ui
                             .add(
@@ -503,8 +509,8 @@ fn site_row(ui: &mut egui::Ui, row: &SiteRow) -> Option<Intent> {
                                 .color(theme::TEXT_FAINT),
                         );
                     }
-                }
-            });
+                },
+            );
         }
     });
     out

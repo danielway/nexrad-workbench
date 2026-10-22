@@ -126,6 +126,11 @@ pub(crate) struct StormCellsResult {
     /// Groups sorted strongest first; `groups[i].id == i`.
     pub groups: Vec<StormGroup>,
     pub source: DetectionSource,
+    /// The cells' columns through the volume's higher tilts; `None` until
+    /// the volume part has been computed (only the lowest cut seen, or a
+    /// result that is not the displayed volume's).
+    #[serde(default)]
+    pub volume: Option<VolumeStructure>,
 }
 
 impl StormCellsResult {
@@ -138,6 +143,49 @@ impl StormCellsResult {
     pub(crate) fn clear(&mut self) {
         *self = Self::default();
     }
+}
+
+/// The vertical structure of a result's cells (`storm_cells::volume`):
+/// each cell's column sampled over its footprint on every reflectivity tilt
+/// of the volume that was on hand.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct VolumeStructure {
+    /// The tilts sampled, lowest angle first; the lowest cut is the first.
+    pub tilts: Vec<VolumeTilt>,
+    /// One column per cell, `cells[i]` for cell id `i`.
+    pub cells: Vec<CellColumn>,
+    /// Every tilt of the volume's plan was sampled. False while a live
+    /// volume is still arriving or only some cuts are on device: the
+    /// columns are then provisional (the top may be higher).
+    pub complete: bool,
+}
+
+/// One sampled tilt.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct VolumeTilt {
+    pub elevation_number: u8,
+    /// Measured angle, degrees.
+    pub elevation_deg: f32,
+}
+
+/// A cell's column. Heights are of the beam centre above the radar, in km
+/// (4/3 earth radius model).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct CellColumn {
+    /// Highest sample at or above 18 dBZ over the footprint, from tilts with
+    /// at least three such gates. `None` when no tilt qualifies.
+    pub echo_top_km: Option<f32>,
+    /// The highest tilt sampled still has 18 dBZ echo over the footprint:
+    /// the real top is above `echo_top_km`.
+    pub echo_top_capped: bool,
+    /// Strongest echo in the column (composite peak), after a three-gate
+    /// median along each radial.
+    pub max_dbz: Option<f32>,
+    /// Height of `max_dbz`.
+    pub max_dbz_height_km: Option<f32>,
+    /// Strongest echo per tilt, parallel to [`VolumeStructure::tilts`];
+    /// `None` where the tilt has no echo over the footprint.
+    pub profile: Vec<Option<f32>>,
 }
 
 /// Upper bound on distinct vertices in an outline ring. Generous: the

@@ -61,6 +61,8 @@ impl WorkbenchApp {
         self.state.preferred_site = Some(id);
         self.state.viz_state.centre_map_on(lat, lon);
         self.state.viz_state.storm_tracks.reset();
+        // Letters restart with the tracks: let snapped endpoints go.
+        self.state.viz_state.measurement.release_tracks();
         if let Some(deg) = elevation {
             self.state.viz_state.set_elevation_label(deg);
         }

@@ -248,7 +248,9 @@ self.onmessage = async function (e) {
     if (msg.type === 'detect') {
         try {
             // worker_detect: JsValue -> Promise<JsValue>. A live request reads
-            // the accumulator synchronously; a stored one awaits IDB.
+            // the accumulator synchronously; a stored one awaits IDB. A
+            // non-empty volumeCuts also samples those tilts for the cells'
+            // columns (the reply's result.volume).
             const result = await wasm.worker_detect({
                 scanKey: msg.scanKey,
                 elevationNumber: msg.elevationNumber,
@@ -256,6 +258,7 @@ self.onmessage = async function (e) {
                 params: msg.params,
                 radarLat: msg.radarLat,
                 radarLon: msg.radarLon,
+                volumeCuts: msg.volumeCuts || [],
             });
             const payload = Object.assign({}, result, { type: 'detected', id: msg.id });
             self.postMessage(payload);

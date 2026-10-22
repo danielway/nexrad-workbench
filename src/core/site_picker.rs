@@ -115,7 +115,7 @@ pub(crate) enum SiteRole {
 pub(crate) enum RowAction {
     /// No second action (a phone).
     None,
-    /// "+ Also show" on hover.
+    /// "+ Also show", shown while the pointer is anywhere on the row.
     AlsoShow,
     /// The set is full: "+ Also show · 3 sites max", disabled. Carries the
     /// refusal's words.
@@ -136,8 +136,9 @@ impl RowAction {
         }
     }
 
-    /// The action shows only while the row is hovered ("on the map" always
-    /// shows).
+    /// The action shows only while the pointer is anywhere on the row, the
+    /// action's own words included, so it can be reached ("on the map"
+    /// always shows).
     pub(crate) fn on_hover_only(&self) -> bool {
         matches!(self, RowAction::AlsoShow | RowAction::AtCap(_))
     }
@@ -871,6 +872,7 @@ mod tests {
             amx.action.label().as_deref(),
             Some("+ Also show \u{00B7} 3 sites max")
         );
+        assert!(amx.action.on_hover_only());
         assert_eq!(amx.also_intent(), None);
     }
 
@@ -888,7 +890,6 @@ mod tests {
             recent_group.rows[0].action.label().as_deref(),
             Some("on the map")
         );
-        assert!(!recent_group.rows[0].action.on_hover_only());
         assert_eq!(recent_group.rows[0].also_intent(), None);
         assert_eq!(recent_group.rows[0].control_intents(), None);
         assert_eq!(

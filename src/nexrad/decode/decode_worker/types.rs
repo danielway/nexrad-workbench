@@ -461,6 +461,8 @@ pub(super) struct DetectRequestMsg<'a> {
     pub params: &'a crate::storm_cells::DetectionParams,
     pub radar_lat: f64,
     pub radar_lon: f64,
+    /// Cuts to sample for the cells' columns; empty for cells alone.
+    pub volume_cuts: &'a [u8],
 }
 
 /// One site's cut in a [`DetectCompositeRequestMsg`].

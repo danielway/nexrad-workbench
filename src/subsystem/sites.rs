@@ -507,6 +507,21 @@ impl Sites {
         }
     }
 
+    /// The lettered tracks on [`Self::shown_cells`], which the canvas draws
+    /// and the distance tool snaps to: the scene's tracker while more than
+    /// one site is shown, else `focus_tracks` (the focus's, on `VizState`).
+    pub(crate) fn shown_tracks_view(
+        &self,
+        focus_tracks: &StormTracks,
+        reference: Option<(f64, f64)>,
+    ) -> Option<crate::core::storm_tracks::TracksView> {
+        if crate::core::storm_cells::uses_scene(self.list.len()) {
+            self.scene.tracks.view(reference)
+        } else {
+            focus_tracks.view(reference)
+        }
+    }
+
     /// The developer readout of [`Self::shown_cells`].
     pub(crate) fn shown_cell_stats(&self) -> Option<crate::core::storm_cells::StormCellStats> {
         if crate::core::storm_cells::uses_scene(self.list.len()) {
