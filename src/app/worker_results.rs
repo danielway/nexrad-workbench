@@ -696,7 +696,13 @@ impl WorkbenchApp {
             None => Some(self.sites.focus),
         };
         if let Some(site) = site {
-            self.note_worker_error(site, kind, &message, failed_scan_timestamp_secs);
+            self.note_worker_error(
+                site,
+                kind,
+                &message,
+                failed_scan_timestamp_secs,
+                failed_site.map(|id| id.0),
+            );
         }
 
         // Clean up the "processing" timeline ghost for the failed scan.
@@ -738,6 +744,7 @@ impl WorkbenchApp {
         kind: crate::core::WorkerErrorKind,
         message: &str,
         failed_scan_timestamp_secs: Option<f64>,
+        error_site: Option<String>,
     ) {
         let site_id = self.sites.list[site].id.clone();
         let focus = &mut self.sites.list[site];
@@ -763,6 +770,7 @@ impl WorkbenchApp {
                 self.state.errors.push(crate::core::AppError::Worker {
                     kind,
                     message: message.to_string(),
+                    site: error_site,
                     scan_timestamp_secs: failed_scan_timestamp_secs,
                 });
 

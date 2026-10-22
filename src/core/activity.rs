@@ -62,9 +62,9 @@ pub(crate) struct ActivityInputs<'a> {
     pub operations: &'a VecDeque<AcquisitionOperation>,
     pub queue_paused: bool,
     pub ledger: LedgerSummary,
-    /// Scan starts in the ingest→timeline blackout, used to subtract entries a
-    /// live operation already accounts for.
-    pub awaiting_scan_starts: &'a [i64],
+    /// Every site's scans in the ingest→timeline blackout, used to subtract
+    /// entries a live operation for the same site already accounts for.
+    pub awaiting: &'a [AwaitingScan],
     pub worker: WorkerLoad,
     pub last_worker_outcome_ms: f64,
     pub gpu_render_in_flight: bool,
@@ -119,6 +119,14 @@ pub(crate) struct ActivityDevInputs {
     pub storm_cells: Option<crate::core::storm_cells::StormCellStats>,
     /// Every site's volume texture, in list order.
     pub volume_textures: Vec<crate::core::volume_plan::VolumeTexture>,
+}
+
+/// A scan in one site's ingest→timeline blackout (its ledger's
+/// `awaiting_scan_starts`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AwaitingScan {
+    pub site: String,
+    pub scan_start: i64,
 }
 
 /// One site's stream, as the chip and the sheet read it.
@@ -307,8 +315,15 @@ pub(crate) struct ErrorSummary {
 pub(crate) const SHEET_ERRORS: usize = 10;
 
 /// Summarize the errors for the chip and the sheet. `acked` is the pushed
-/// count when the sheet last showed them.
-pub(crate) fn error_summary(errors: &ErrorContext, acked: u64, sheet_open: bool) -> ErrorSummary {
+/// count when the sheet last showed them. With `name_sites` (more than one
+/// site on the map) an error that knows its site leads with it
+/// ([`sheet_error_text`]).
+pub(crate) fn error_summary(
+    errors: &ErrorContext,
+    acked: u64,
+    sheet_open: bool,
+    name_sites: bool,
+) -> ErrorSummary {
     let fresh = (errors.pushed_count().saturating_sub(acked) as usize).min(errors.len());
     let unseen = errors
         .iter()
@@ -319,13 +334,25 @@ pub(crate) fn error_summary(errors: &ErrorContext, acked: u64, sheet_open: bool)
         errors
             .iter()
             .rev()
-            .filter_map(|e| crate::core::toast::error_text(&e.error))
+            .filter_map(|e| sheet_error_text(&e.error, name_sites))
             .take(SHEET_ERRORS)
             .collect()
     } else {
         Vec::new()
     };
     ErrorSummary { unseen, recent }
+}
+
+/// An error's line in the sheet: the toast's words, led by the error's site
+/// (`KMLB · Decode worker: …`) when `name_sites` and the error knows it.
+pub(crate) fn sheet_error_text(error: &crate::core::AppError, name_sites: bool) -> Option<String> {
+    let text = crate::core::toast::error_text(error)?;
+    match error {
+        crate::core::AppError::Worker {
+            site: Some(site), ..
+        } if name_sites => Some(format!("{site} \u{00B7} {text}")),
+        _ => Some(text),
+    }
 }
 
 /// The acknowledged count after this frame: an open sheet has shown every
@@ -667,7 +694,12 @@ impl ActivityVm {
                 },
             ],
             failed,
-            errors: error_summary(inputs.errors, inputs.errors_acked, inputs.sheet_open),
+            errors: error_summary(
+                inputs.errors,
+                inputs.errors_acked,
+                inputs.sheet_open,
+                inputs.sites.len() > 1,
+            ),
             throughput: inputs
                 .throughput
                 .rate_bytes_per_sec(inputs.now_ms)
@@ -867,23 +899,28 @@ fn stage_counts(inputs: &ActivityInputs<'_>) -> StageCounts {
 /// freshly ingested would appear in both Downloading and Finishing, which is
 /// exactly the double-counting this module exists to prevent.
 fn settling_count(inputs: &ActivityInputs<'_>) -> u32 {
-    let live_scan_starts: Vec<i64> = inputs
+    let live_scans: Vec<(&str, i64)> = inputs
         .operations
         .iter()
         .filter(|op| matches!(op.status, OperationStatus::Queued | OperationStatus::Active))
         .filter_map(|op| match &op.kind {
-            OperationKind::ArchiveDownload { scan_start, .. } => Some(*scan_start),
+            OperationKind::ArchiveDownload {
+                site_id,
+                scan_start,
+                ..
+            } => Some((site_id.as_str(), *scan_start)),
             _ => None,
         })
         .collect();
 
     inputs
-        .awaiting_scan_starts
+        .awaiting
         .iter()
-        .filter(|&&awaiting| {
-            !live_scan_starts
-                .iter()
-                .any(|&live| (live - awaiting).abs() <= SCAN_JOIN_TOLERANCE_SECS)
+        .filter(|awaiting| {
+            !live_scans.iter().any(|&(site, start)| {
+                site == awaiting.site
+                    && (start - awaiting.scan_start).abs() <= SCAN_JOIN_TOLERANCE_SECS
+            })
         })
         .count() as u32
 }
@@ -1091,7 +1128,7 @@ mod coverage_tests {
     /// Fixture owning the borrowed inputs, so tests can build a VM in one line.
     struct Fixture {
         operations: VecDeque<AcquisitionOperation>,
-        awaiting: Vec<i64>,
+        awaiting: Vec<AwaitingScan>,
         throughput: ThroughputWindow,
         aggregate: NetworkAggregate,
         requests: VecDeque<NetworkRequest>,
@@ -1143,7 +1180,7 @@ mod coverage_tests {
                 operations: &self.operations,
                 queue_paused: self.queue_paused,
                 ledger: LedgerSummary::default(),
-                awaiting_scan_starts: &self.awaiting,
+                awaiting: &self.awaiting,
                 worker: self.worker,
                 last_worker_outcome_ms: self.last_worker_outcome_ms,
                 gpu_render_in_flight: self.gpu_render_in_flight,
@@ -1373,12 +1410,35 @@ mod coverage_tests {
         f.operations
             .push_back(download(1, 1000, OperationStatus::Active));
         // Within the join tolerance of the live op's scan_start.
-        f.awaiting = vec![1000 + SCAN_JOIN_TOLERANCE_SECS - 1];
+        f.awaiting = vec![awaiting("KDMX", 1000 + SCAN_JOIN_TOLERANCE_SECS - 1)];
         assert_eq!(f.vm().stages[3].count, 0);
 
         // A different scan, well outside the tolerance, does count.
-        f.awaiting = vec![9_000];
+        f.awaiting = vec![awaiting("KDMX", 9_000)];
         assert_eq!(f.vm().stages[3].count, 1);
+    }
+
+    fn awaiting(site: &str, scan_start: i64) -> AwaitingScan {
+        AwaitingScan {
+            site: site.into(),
+            scan_start,
+        }
+    }
+
+    /// Finishing sums every site's ledger, and another site's download at the
+    /// same time does not cover a scan of this one.
+    #[wasm_bindgen_test]
+    fn settling_counts_every_site_and_matches_operations_by_site() {
+        let mut f = Fixture::new();
+        f.operations
+            .push_back(download(1, 1000, OperationStatus::Active));
+        f.awaiting = vec![
+            awaiting("KDMX", 1000),
+            awaiting("KTLX", 1000),
+            awaiting("KFWS", 4000),
+        ];
+        // KDMX's scan is still downloading; KTLX's and KFWS's are finishing.
+        assert_eq!(f.vm().stages[3].count, 2);
     }
 
     /// With downloads drained, a settling scan keeps the app in Processing so
@@ -1386,7 +1446,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn settling_alone_reads_as_processing() {
         let mut f = Fixture::new();
-        f.awaiting = vec![1000];
+        f.awaiting = vec![awaiting("KDMX", 1000)];
         let vm = f.vm();
         assert_eq!(vm.state, ActivityState::Processing);
         assert_eq!(vm.stages[3].count, 1);
@@ -1428,7 +1488,7 @@ mod coverage_tests {
         let before = f.vm().headline.count;
 
         f.worker = ingesting(4);
-        f.awaiting = vec![50_000];
+        f.awaiting = vec![awaiting("KDMX", 50_000)];
         let after = f.vm();
         assert_eq!(after.headline.count, before);
         assert_eq!(after.headline.count, Some(1));
@@ -1651,7 +1711,7 @@ mod coverage_tests {
                 operations: &f.operations,
                 queue_paused: false,
                 ledger: LedgerSummary::default(),
-                awaiting_scan_starts: &f.awaiting,
+                awaiting: &f.awaiting,
                 worker: f.worker,
                 last_worker_outcome_ms: f.last_worker_outcome_ms,
                 gpu_render_in_flight: false,
@@ -1819,6 +1879,40 @@ mod coverage_tests {
             message: "404".into(),
             scan_start_secs: None,
         }
+    }
+
+    fn worker_error(site: Option<&str>) -> crate::core::AppError {
+        crate::core::AppError::Worker {
+            kind: crate::core::WorkerErrorKind::IdbFailure,
+            message: "IDB write failed".into(),
+            site: site.map(Into::into),
+            scan_timestamp_secs: None,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn the_sheet_names_an_errors_site_only_with_several_sites() {
+        let mut f = Fixture::new();
+        f.sheet_open = true;
+        f.errors.push(worker_error(Some("KMLB")));
+        f.errors.push(worker_error(None));
+        // One site: the words are the toast's.
+        assert_eq!(
+            f.vm().errors.recent,
+            vec![
+                "Decode worker: IDB write failed".to_string(),
+                "Decode worker: IDB write failed".to_string(),
+            ]
+        );
+        // Several: an error that knows its site leads with it.
+        f.sites.push(site("KMLB", Stream::Off));
+        assert_eq!(
+            f.vm().errors.recent,
+            vec![
+                "Decode worker: IDB write failed".to_string(),
+                "KMLB \u{00B7} Decode worker: IDB write failed".to_string(),
+            ]
+        );
     }
 
     #[wasm_bindgen_test]

@@ -336,6 +336,7 @@ mod tests {
         errors.push(AppError::Worker {
             kind: WorkerErrorKind::IdbFailure,
             message: "IDB write failed".into(),
+            site: Some("KTBW".into()),
             scan_timestamp_secs: None,
         });
         errors.push(AppError::Download {

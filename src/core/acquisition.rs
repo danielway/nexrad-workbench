@@ -471,6 +471,17 @@ pub(crate) struct LedgerSummary {
     pub failed_backoff: u32,
 }
 
+impl LedgerSummary {
+    /// Two ledgers' counts together: the activity surface sums every site's.
+    pub(crate) fn merge(self, other: Self) -> Self {
+        Self {
+            awaiting_timeline: self.awaiting_timeline + other.awaiting_timeline,
+            unavailable: self.unavailable + other.unavailable,
+            failed_backoff: self.failed_backoff + other.failed_backoff,
+        }
+    }
+}
+
 /// In-memory ledger of recently requested scans, keyed by listing
 /// `scan_start`. Third dedup input to [`prefetch_already_satisfied`],
 /// alongside the queue snapshot and the timeline: it survives the queue's
@@ -2402,6 +2413,29 @@ mod reducer_tests {
         let mut led = RequestLedger::default();
         led.note_enqueued(1300, Some(1), 0.0);
         assert_eq!(led.summarize(1.0), LedgerSummary::default());
+    }
+
+    #[wasm_bindgen_test]
+    fn summaries_merge_by_adding_each_count() {
+        let a = LedgerSummary {
+            awaiting_timeline: 2,
+            unavailable: 1,
+            failed_backoff: 0,
+        };
+        let b = LedgerSummary {
+            awaiting_timeline: 1,
+            unavailable: 0,
+            failed_backoff: 3,
+        };
+        assert_eq!(
+            a.merge(b),
+            LedgerSummary {
+                awaiting_timeline: 3,
+                unavailable: 1,
+                failed_backoff: 3,
+            }
+        );
+        assert_eq!(a.merge(LedgerSummary::default()), a);
     }
 
     /// An entry past its TTL no longer suppresses anything, so it must not be

@@ -382,7 +382,10 @@ transport rows; the phone folds its words) opens the activity sheet
 (`ui/activity_sheet.rs`), which carries the stage strip, throughput, download
 list, the recent errors other than downloads, policy toggles, and a collapsed
 Details disclosure. The chip's ⚠ tick counts failed downloads and the errors
-the sheet has not shown yet (`core::activity::ErrorSummary`). Both render a single per-frame projection,
+the sheet has not shown yet (`core::activity::ErrorSummary`); with more
+than one site on the map a decode error that knows its site leads with it
+(`KMLB · Decode worker: …`), and the Finishing stage sums every site's
+request ledger (`Sites::ledger_summary`, `Sites::awaiting_scans`). Both render a single per-frame projection,
 `core::activity::ActivityVm`, so they cannot disagree. The former dev-only
 surfaces — the DL/PROC/GPU pipeline lamps, the Performance modal, the network
 log modal, and the expandable acquisition drawer — were folded into it; what

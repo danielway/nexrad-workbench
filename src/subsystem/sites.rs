@@ -461,6 +461,30 @@ impl Sites {
             .collect()
     }
 
+    /// Every site's request ledger counts, summed, for the activity surface.
+    pub(crate) fn ledger_summary(&self, now_ms: f64) -> crate::core::acquisition::LedgerSummary {
+        self.iter().map(|s| s.ledger.summarize(now_ms)).fold(
+            Default::default(),
+            crate::core::acquisition::LedgerSummary::merge,
+        )
+    }
+
+    /// Every site's scans in the ingest→timeline blackout, for the
+    /// activity surface's Finishing count.
+    pub(crate) fn awaiting_scans(&self, now_ms: f64) -> Vec<crate::core::activity::AwaitingScan> {
+        self.iter()
+            .flat_map(|s| {
+                s.ledger
+                    .awaiting_scan_starts(now_ms)
+                    .into_iter()
+                    .map(|scan_start| crate::core::activity::AwaitingScan {
+                        site: s.id.0.clone(),
+                        scan_start,
+                    })
+            })
+            .collect()
+    }
+
     /// Which sites may hold a volume on `layout`, in list order
     /// ([`crate::core::volume_plan::resident_volumes`]).
     pub(crate) fn volume_residency(&self, layout: crate::core::phone::DeviceLayout) -> Vec<bool> {
@@ -705,6 +729,18 @@ mod tests {
         assert_eq!(textures.len(), 2);
         assert_eq!(textures[1].site, "KTLX");
         assert!(textures.iter().all(|t| t.bytes == 0));
+    }
+
+    #[wasm_bindgen_test]
+    fn the_activity_surface_reads_every_sites_ledger() {
+        let mut sites = two_sites();
+        sites.list[0].ledger.note_ingested(1_000, 60, 0.0);
+        sites.list[1].ledger.note_ingested(1_000, 60, 0.0);
+        sites.list[1].ledger.note_ingested(2_000, 60, 0.0);
+        assert_eq!(sites.ledger_summary(10.0).awaiting_timeline, 3);
+        let awaiting = sites.awaiting_scans(10.0);
+        assert_eq!(awaiting.len(), 3);
+        assert_eq!(awaiting.iter().filter(|a| a.site == "KTLX").count(), 2);
     }
 
     #[wasm_bindgen_test]
