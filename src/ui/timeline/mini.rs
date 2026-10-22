@@ -59,13 +59,15 @@ fn lookback_secs(stop: StripZoom) -> f64 {
     }
 }
 
-/// Draw the row at the available width and apply its gestures.
+/// Draw the row at the available width and apply its gestures. The row
+/// shows the focus site; a scrub seeks over every site's stream once the row
+/// is drawn.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::ui) fn render_mini_timeline(
     ui: &mut egui::Ui,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
-    site: &crate::subsystem::SiteState,
+    sites: &mut crate::subsystem::Sites,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
@@ -83,15 +85,35 @@ pub(in crate::ui) fn render_mini_timeline(
         Pos2::new(panel_clip.left(), panel_clip.top() - STRIP_REACH_PX),
         panel_clip.max,
     );
-    egui::Area::new(ui.id().with("mini_strip"))
+    let scrub_to = egui::Area::new(ui.id().with("mini_strip"))
         .order(egui::Order::Middle)
         .fixed_pos(reach.min)
         .constrain(false)
         .interactable(true)
         .show(ui.ctx(), |ui| {
             ui.set_clip_rect(clip);
-            draw_strip(ui, strip, state, timeline, site, live, playback, chrome);
-        });
+            draw_strip(
+                ui,
+                strip,
+                state,
+                timeline,
+                sites.focus(),
+                live,
+                playback,
+                chrome,
+            )
+        })
+        .inner;
+    if let Some(ts) = scrub_to {
+        live.seek(
+            sites,
+            &mut playback.state,
+            state.frame_now.secs(),
+            state.pause_stream_while_reviewing,
+            ts,
+            SeekGesture::Scrub,
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -104,7 +126,7 @@ fn draw_strip(
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
-) {
+) -> Option<f64> {
     let stop = chrome.phone_strip_zoom;
     let top = strip.top();
     let lane = Rect::from_min_max(
@@ -121,12 +143,7 @@ fn draw_strip(
     );
 
     let now = state.frame_now.secs();
-    let view = crate::core::TimelineView::build(
-        &site.scans,
-        &site.shadows,
-        Some(&live.mode_state),
-        live.radar_model.position.as_ref(),
-    );
+    let view = site.timeline_view(live.mode_state.is_active());
     // The same join the desktop strip makes: queued, in flight, the
     // selected product and tilt, and the frame on screen.
     let failed: Vec<i64> = Vec::new();
@@ -267,11 +284,11 @@ fn draw_strip(
             view.scan_start_at(ts),
             &RangeFacts::of(&playback.state, now),
         )));
-        return;
+        return None;
     }
     state.pointer_scrub_active = response.dragged() && out.may_seek;
     if !out.may_seek {
-        return;
+        return None;
     }
     if let Some(p) = pos {
         // A still finger does not seek again (the playhead holds while the
@@ -279,15 +296,10 @@ fn draw_strip(
         let moved = response.dragged() && touch.scrub_moved(p.x);
         ui.ctx().memory_mut(|m| m.data.insert_temp(key, touch));
         if moved {
-            // A scrub runs the seek reducer synchronously so the playhead
-            // keeps up with the finger.
-            live.seek(
-                &mut playback.state,
-                now,
-                state.pause_stream_while_reviewing,
-                snap_scrub(stop, x_to_ts(p.x), &units, now),
-                SeekGesture::Scrub,
-            );
+            // A scrub runs the seek reducer in this frame so the playhead
+            // keeps up with the finger: the caller seeks once the strip's
+            // view of the focus site is done.
+            return Some(snap_scrub(stop, x_to_ts(p.x), &units, now));
         } else if response.clicked() && !response.dragged() {
             // A tap goes to the volume: its first cut.
             state.push_command(Intent::Seek {
@@ -296,6 +308,7 @@ fn draw_strip(
             });
         }
     }
+    None
 }
 
 /// Paint the row's view-model: marks, labels, the bracket and the now line.

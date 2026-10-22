@@ -35,7 +35,7 @@ pub(super) fn setup_onmessage(
     pending_ingest: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     pending_chunk_ingest: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     pending_render: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
-    pending_render_live: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending_render_live: &Rc<RefCell<HashMap<RequestId, LiveRenderContext>>>,
     pending_volume: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
     pending_detect: &Rc<RefCell<HashMap<RequestId, u64>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
@@ -454,10 +454,13 @@ fn handle_decoded_message(
 fn handle_live_decoded_message(
     id: RequestId,
     data: &JsValue,
-    pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending: &Rc<RefCell<HashMap<RequestId, LiveRenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let context = match take_pending_context(id, "live_decoded", pending) {
+    let LiveRenderContext {
+        site,
+        render: context,
+    } = match take_pending_context(id, "live_decoded", pending) {
         Some(ctx) => ctx,
         None => return,
     };
@@ -487,15 +490,10 @@ fn handle_live_decoded_message(
         r.total_ms,
     );
 
-    results
-        .borrow_mut()
-        .push(WorkerOutcome::LiveDecoded(build_decode_result(
-            context,
-            r,
-            azimuths,
-            gate_values,
-            radial_times,
-        )));
+    results.borrow_mut().push(WorkerOutcome::LiveDecoded {
+        site,
+        result: build_decode_result(context, r, azimuths, gate_values, radial_times),
+    });
 }
 
 /// A `render_live` whose elevation the worker stored before the request ran
@@ -505,7 +503,7 @@ fn handle_live_decoded_message(
 fn handle_live_superseded_message(
     id: RequestId,
     data: &JsValue,
-    pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending: &Rc<RefCell<HashMap<RequestId, LiveRenderContext>>>,
 ) {
     let Some(context) = take_pending_context(id, "live_superseded", pending) else {
         return;
@@ -515,7 +513,7 @@ fn handle_live_superseded_message(
         .and_then(|v| v.as_f64());
     log::debug!(
         "Worker live_superseded: elev={} already stored (accumulator current={:?}), nothing to draw",
-        context.elevation_number,
+        context.render.elevation_number,
         current,
     );
 }
@@ -642,7 +640,7 @@ fn handle_error_message(
     pending_ingest: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     pending_chunk_ingest: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     pending_render: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
-    pending_render_live: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending_render_live: &Rc<RefCell<HashMap<RequestId, LiveRenderContext>>>,
     pending_volume: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
@@ -702,7 +700,7 @@ fn cleanup_pending_by_id(
     pending_ingest: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     pending_chunk_ingest: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     pending_render: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
-    pending_render_live: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending_render_live: &Rc<RefCell<HashMap<RequestId, LiveRenderContext>>>,
     pending_volume: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
 ) -> Option<f64> {
     if let Some(ctx) = pending_ingest.borrow_mut().remove(&id) {
@@ -712,7 +710,7 @@ fn cleanup_pending_by_id(
     } else if let Some(ctx) = pending_render.borrow_mut().remove(&id) {
         Some(ctx.scan_key.scan_start.as_secs_f64())
     } else if let Some(ctx) = pending_render_live.borrow_mut().remove(&id) {
-        Some(ctx.scan_key.scan_start.as_secs_f64())
+        Some(ctx.render.scan_key.scan_start.as_secs_f64())
     } else if let Some(ctx) = pending_volume.borrow_mut().remove(&id) {
         Some(ctx.scan_key.scan_start.as_secs_f64())
     } else {
@@ -807,7 +805,7 @@ mod coverage_tests {
         Rc<RefCell<HashMap<RequestId, IngestContext>>>,
         Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
         Rc<RefCell<HashMap<RequestId, RenderContext>>>,
-        Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+        Rc<RefCell<HashMap<RequestId, LiveRenderContext>>>,
         Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
     );
 

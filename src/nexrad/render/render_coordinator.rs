@@ -100,10 +100,16 @@ impl RenderCoordinator {
         true
     }
 
-    /// Send a live render request (partial sweep, no dedup).
-    pub(crate) fn render_live(&mut self, elevation_number: u8, product: String) {
+    /// Send a live render request (partial sweep, no dedup) for `site`'s
+    /// stream.
+    pub(crate) fn render_live(
+        &mut self,
+        site: crate::data::SiteId,
+        elevation_number: u8,
+        product: String,
+    ) {
         if let Some(ref mut worker) = self.worker {
-            worker.render_live(elevation_number, product);
+            worker.render_live(site, elevation_number, product);
         }
     }
 

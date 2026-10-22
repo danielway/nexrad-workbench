@@ -115,9 +115,15 @@ pub(crate) fn dispatch_state_only(
         } => {
             let now = s.state.frame_now.secs();
             let pause = s.state.pause_stream_while_reviewing;
-            if s.live
-                .select_range(&mut s.playback.state, start, end, to_live, now, pause)
-            {
+            if s.live.select_range(
+                s.sites,
+                &mut s.playback.state,
+                start,
+                end,
+                to_live,
+                now,
+                pause,
+            ) {
                 // Arm the bulk fetch for the new range (selection = the fetch).
                 s.state.selection_just_finalized = s.playback.state.selection_range();
             }
@@ -126,7 +132,7 @@ pub(crate) fn dispatch_state_only(
             let now = s.state.frame_now.secs();
             let pause = s.state.pause_stream_while_reviewing;
             if s.live
-                .select_fixed_range(&mut s.playback.state, start, end, now, pause)
+                .select_fixed_range(s.sites, &mut s.playback.state, start, end, now, pause)
             {
                 s.state.selection_just_finalized = s.playback.state.selection_range();
             }
@@ -347,31 +353,41 @@ pub(crate) fn dispatch_state_only(
 }
 
 /// The body of [`DispatchState::transport_with`] over just the fields a
-/// transport reducer touches, so a caller can hold a borrow of another field
-/// (the focus site's scans, for a step) across the call.
+/// transport reducer touches. The reducer also gets the focus site's scans,
+/// lent beside every site's stream (a step walks them).
 fn transport_over<R>(
     state: &state::AppState,
     playback: &mut subsystem::Playback,
     live: &mut subsystem::Live,
+    sites: &mut subsystem::Sites,
     reduce: impl FnOnce(
         &crate::core::transport::TransportEnv,
         crate::core::transport::TransportSlices<'_>,
+        &crate::core::RadarTimeline,
     ) -> (crate::core::transport::TransportActions, R),
 ) -> R {
-    let (actions, out) = reduce(
-        &crate::core::transport::TransportEnv {
-            now_secs: state.frame_now.secs(),
-            pause_stream_while_reviewing: state.pause_stream_while_reviewing,
-            frame_secs: playback.state.median_frame_spacing(),
-        },
-        crate::core::transport::TransportSlices {
-            live_mode: &mut live.mode_state,
-            engine: &mut live.engine.borrow_mut(),
-            playback: &mut playback.state,
-        },
-    );
+    let env = crate::core::transport::TransportEnv {
+        now_secs: state.frame_now.secs(),
+        pause_stream_while_reviewing: state.pause_stream_while_reviewing,
+        frame_secs: playback.state.median_frame_spacing(),
+    };
+    let live_mode = &mut live.mode_state;
+    let (actions, out) =
+        subsystem::live::with_site_streams_and_focus_scans(sites, |streams, scans| {
+            reduce(
+                &env,
+                crate::core::transport::TransportSlices {
+                    live_mode,
+                    sites: streams,
+                    playback: &mut playback.state,
+                },
+                scans,
+            )
+        });
     if actions.stop_channel {
-        live.channel.stop();
+        for site in sites.iter() {
+            site.live.channel.stop();
+        }
     }
     out
 }
@@ -401,7 +417,13 @@ impl DispatchState<'_> {
             crate::core::transport::TransportSlices<'_>,
         ) -> (crate::core::transport::TransportActions, R),
     ) -> R {
-        transport_over(self.state, self.playback, self.live, reduce)
+        transport_over(
+            self.state,
+            self.playback,
+            self.live,
+            self.sites,
+            |env, slices, _| reduce(env, slices),
+        )
     }
 
     /// Apply a top-bar intent. Every arm is a plain state write; the one
@@ -417,7 +439,9 @@ impl DispatchState<'_> {
                 let entries = self.state.current_elevation_list(
                     &self.playback.state,
                     &self.sites.focus().scans,
-                    self.live
+                    self.sites
+                        .focus()
+                        .live
                         .radar_model
                         .volume
                         .as_ref()
@@ -475,17 +499,24 @@ impl DispatchState<'_> {
         let viz = &self.state.viz_state;
         let volumetric = viz.volume_3d_active();
         let tilt = crate::core::tilt::TiltFilter::from(&viz.elevation_selection);
-        let index = crate::core::transport::ScanFrames {
-            scans: &self.sites.focus().scans,
-            tilt,
-            volumes: volumetric || unit == crate::core::transport::StepUnit::Volume,
-        };
-        transport_over(self.state, self.playback, self.live, |env, slices| {
-            (
-                crate::core::transport::reduce_step(env, slices, &index, dir),
-                (),
-            )
-        });
+        let volumes = volumetric || unit == crate::core::transport::StepUnit::Volume;
+        transport_over(
+            self.state,
+            self.playback,
+            self.live,
+            self.sites,
+            |env, slices, scans| {
+                let index = crate::core::transport::ScanFrames {
+                    scans,
+                    tilt,
+                    volumes,
+                };
+                (
+                    crate::core::transport::reduce_step(env, slices, &index, dir),
+                    (),
+                )
+            },
+        );
     }
 
     /// The distance tool: place, drag or clear an endpoint. What it lands
@@ -1015,7 +1046,7 @@ mod probe_tests {
         let _t = crate::subsystem::Timeline::default();
         let _c = crate::subsystem::Chrome::new();
         let _d = crate::subsystem::Diagnostics::new();
-        let _l = crate::subsystem::Live::new(crate::nexrad::live::realtime::RealtimeChannel::new());
+        let _l = crate::subsystem::Live::new();
     }
 }
 
@@ -1063,7 +1094,7 @@ mod dispatch_tests {
                 state: crate::state::AppState::default(),
                 playback: crate::subsystem::Playback::default(),
                 acquisition: crate::subsystem::Acquisition::new(crate::data::MainThreadStore::new()),
-                live: crate::subsystem::Live::new(crate::nexrad::RealtimeChannel::new()),
+                live: crate::subsystem::Live::new(),
                 diagnostics: crate::subsystem::Diagnostics::new(),
                 chrome: crate::subsystem::Chrome::new(),
                 timeline: crate::subsystem::Timeline::default(),

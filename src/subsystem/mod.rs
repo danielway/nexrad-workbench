@@ -26,7 +26,7 @@ pub(crate) use acquisition::Acquisition;
 pub(crate) use chrome::Chrome;
 pub(crate) use derived::Derived;
 pub(crate) use diagnostics::Diagnostics;
-pub(crate) use live::Live;
+pub(crate) use live::{Live, SiteLive};
 pub(crate) use network_monitor::NetworkMonitor;
 pub(crate) use playback::Playback;
 pub(crate) use render::Render;

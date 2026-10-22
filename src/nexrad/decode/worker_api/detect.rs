@@ -128,7 +128,7 @@ pub fn worker_detect(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let t_fetch = web_time::Instant::now();
         let volume = !p.volume_cuts.is_empty();
         let live = if p.input == "live" && !volume {
-            live_cut(p.elevation_number)
+            live_cut(&scan_key.site.0, p.elevation_number)
         } else {
             None
         };
@@ -246,13 +246,14 @@ pub fn worker_detect(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     })
 }
 
-/// The live accumulator's radials for `elevation_number`, or `None` when it
-/// no longer holds them (the cut was flushed to IndexedDB, or no stream).
-fn live_cut(elevation_number: u8) -> Option<CutData> {
+/// `site`'s live accumulator's radials for `elevation_number`, or `None` when
+/// it no longer holds them (the cut was flushed to IndexedDB, or no stream).
+/// The request's scan key names the site.
+fn live_cut(site: &str, elevation_number: u8) -> Option<CutData> {
     use crate::nexrad::color_table::product_from_str;
     use crate::nexrad::decode::record_decode::extract_sweep_data_from_sorted;
 
-    with_chunk_accum(|accum| {
+    with_chunk_accum(site, |accum| {
         let accum = accum?;
         let mut sorted: Vec<&::nexrad::model::data::Radial> = accum
             .current_radials

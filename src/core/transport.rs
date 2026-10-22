@@ -25,8 +25,8 @@
 //! These are the decisions the UI used to make inline (`ui/transport.rs`'s
 //! `toggle_play_pause`, `ui/timeline/now_edge.rs`'s `stop_live`) and the one
 //! `Live::detach_playhead` owned. They all operate on the same three pieces of
-//! core state — the live state machine, the projection engine's volume
-//! observations, and the playback state — and describe the rest.
+//! core state — the session's live state machine, every site's volume and
+//! projection engine, and the playback state — and describe the rest.
 //!
 //! The shell (`app::command_dispatch` via [`crate::core::Intent`], plus
 //! [`crate::subsystem::Live`] for the detach helper) assembles
@@ -36,11 +36,10 @@
 //!
 //! Pattern exemplar: [`crate::core::worker_ingest`] (Env / Slices / Actions).
 
-use crate::core::projection::ProjectionEngine;
 use crate::core::session::TiltRole;
 use crate::core::{
     FreezeAt, LiveExitReason, LiveModeState, LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState,
-    RadarTimeline,
+    RadarTimeline, SiteStreamSlice,
 };
 
 /// Read-only frame context for one transport gesture.
@@ -58,34 +57,20 @@ pub(crate) struct TransportEnv {
 /// Mutable borrows of the core state the transport reducers update directly.
 pub(crate) struct TransportSlices<'a> {
     pub live_mode: &'a mut LiveModeState,
-    pub engine: &'a mut ProjectionEngine,
+    /// Every site's volume and projection engine, which a stop resets.
+    pub sites: Vec<SiteStreamSlice<'a>>,
     pub playback: &'a mut PlaybackState,
 }
 
 /// Described effects the shell executes, in this field order.
 #[derive(Default, Debug, PartialEq)]
 pub(crate) struct TransportActions {
-    /// `live.channel.stop()` — tear down the realtime worker stream.
+    /// Stop every site's `live.channel` — tear down the realtime worker streams.
     ///
     /// There is no notice: stopping the stream is said by the now cap
     /// turning to GO LIVE, and toasts are for failures and notices only
     /// (one-instrument §10).
     pub stop_channel: bool,
-}
-
-/// Stop the live state machine: reset the phase/exit reason and drop the
-/// projection engine's volume observations together (the engine owns the
-/// observations, so the state-machine clear must also clear them).
-///
-/// The subsystem wrapper is [`crate::subsystem::Live::stop`], which is the only
-/// thing that also owns the (non-core) worker channel.
-fn stop_live_machine(
-    live_mode: &mut LiveModeState,
-    engine: &mut ProjectionEngine,
-    reason: LiveExitReason,
-) {
-    live_mode.stop(reason);
-    engine.reset_volume_observations();
 }
 
 /// Detach the playhead from the live edge — the decision behind
@@ -102,7 +87,7 @@ fn stop_live_machine(
 pub(crate) fn detach_playhead(env: &TransportEnv, slices: TransportSlices<'_>) -> TransportActions {
     let TransportSlices {
         live_mode,
-        engine,
+        mut sites,
         playback,
     } = slices;
 
@@ -112,7 +97,7 @@ pub(crate) fn detach_playhead(env: &TransportEnv, slices: TransportSlices<'_>) -
     }
     if env.pause_stream_while_reviewing {
         // Data-saver: stop the moment the user starts reviewing.
-        stop_live_machine(live_mode, engine, LiveExitReason::UserStopped);
+        crate::core::live_mode::stop_session(live_mode, &mut sites, LiveExitReason::UserStopped);
         return TransportActions { stop_channel: true };
     }
     if live_mode.detached_since.is_none() {
@@ -184,14 +169,14 @@ fn select_range_pinned(
     }
     let TransportSlices {
         live_mode,
-        engine,
+        sites,
         playback,
     } = slices;
     let actions = detach_playhead(
         env,
         TransportSlices {
             live_mode,
-            engine,
+            sites,
             playback: &mut *playback,
         },
     );
@@ -249,14 +234,14 @@ fn seek_inner(env: &TransportEnv, slices: TransportSlices<'_>, ts: f64) -> Trans
     }
     let TransportSlices {
         live_mode,
-        engine,
+        sites,
         playback,
     } = slices;
     let actions = detach_playhead(
         env,
         TransportSlices {
             live_mode,
-            engine,
+            sites,
             playback: &mut *playback,
         },
     );
@@ -598,14 +583,14 @@ pub(crate) fn reduce_toggle_play_pause(
     if slices.playback.is_pinned() {
         let TransportSlices {
             live_mode,
-            engine,
+            sites,
             playback,
         } = slices;
         let actions = detach_playhead(
             env,
             TransportSlices {
                 live_mode,
-                engine,
+                sites,
                 playback,
             },
         );
@@ -643,11 +628,11 @@ pub(crate) fn reduce_stop_live(
 ) -> TransportActions {
     let TransportSlices {
         live_mode,
-        engine,
+        mut sites,
         playback,
     } = slices;
 
-    stop_live_machine(live_mode, engine, LiveExitReason::UserStopped);
+    crate::core::live_mode::stop_session(live_mode, &mut sites, LiveExitReason::UserStopped);
     playback.playing = false;
     playback.exit_live(match placement {
         LiveStopPlacement::LiveEdge => FreezeAt::Now(env.now_secs),
@@ -683,9 +668,11 @@ mod coverage_tests {
         }
     }
 
-    /// The three core slices a reducer needs, owned by the caller.
+    /// The core slices a reducer needs, owned by the caller: the session,
+    /// one site's volume and engine, and the playback state.
     struct Fixture {
         live_mode: LiveModeState,
+        volume: crate::core::LiveVolumeState,
         engine: ProjectionEngine,
         playback: PlaybackState,
     }
@@ -694,6 +681,7 @@ mod coverage_tests {
         fn new() -> Self {
             Self {
                 live_mode: LiveModeState::default(),
+                volume: crate::core::LiveVolumeState::default(),
                 engine: ProjectionEngine::new(),
                 playback: PlaybackState::default(),
             }
@@ -702,7 +690,10 @@ mod coverage_tests {
         fn slices(&mut self) -> TransportSlices<'_> {
             TransportSlices {
                 live_mode: &mut self.live_mode,
-                engine: &mut self.engine,
+                sites: vec![SiteStreamSlice {
+                    volume: &mut self.volume,
+                    engine: &mut self.engine,
+                }],
                 playback: &mut self.playback,
             }
         }

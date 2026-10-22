@@ -589,7 +589,7 @@ fn handle_cycle_product(
 /// Latest included, as the same pick a ladder row click makes.
 fn step_tilt(
     state: &mut AppState,
-    live: &mut crate::subsystem::Live,
+    _live: &mut crate::subsystem::Live,
     sites: &crate::subsystem::Sites,
     playback: &mut crate::subsystem::Playback,
     down: bool,
@@ -597,7 +597,10 @@ fn step_tilt(
     let entries = state.current_elevation_list(
         &playback.state,
         &sites.focus().scans,
-        live.radar_model
+        sites
+            .focus()
+            .live
+            .radar_model
             .volume
             .as_ref()
             .and_then(|v| v.vcp_pattern.as_ref()),
@@ -853,7 +856,7 @@ mod tests {
     /// Drive `handle_stop_live` directly with the real state bundle.
     fn run_stop_live(live_phase: crate::core::LivePhase) -> Vec<crate::core::Intent> {
         let mut state = crate::state::AppState::default();
-        let mut live = crate::subsystem::Live::new(crate::nexrad::RealtimeChannel::new());
+        let mut live = crate::subsystem::Live::new();
         live.mode_state.phase = live_phase;
         let sites = crate::subsystem::Sites::default();
         let mut playback = crate::subsystem::Playback::default();

@@ -27,6 +27,20 @@ on top of those definitions and focuses on the operational flow.
 The async task drives the streaming. The channels are just typed mailboxes
 between it and the UI thread.
 
+The channel and the live state belong to a site; the phase belongs to the
+session. Each listed site (`SiteState.live`, a
+[`SiteLive`](../src/subsystem/live.rs)) holds its own `RealtimeChannel`,
+started with that site's id, its projection engine, the volume in progress
+(`LiveVolumeState`: chunk counts, azimuths, the volume plan and chunk
+arrivals) and its per-frame live models; each channel's results land on its
+own site, and in the worker each site's chunks fill their own accumulator
+(keyed by site id, which `ingest_chunk`, `render_live` and the live `detect`
+carry). The session (`subsystem::Live`, a `LiveModeState`) holds the one
+phase, exit reason, detached time and pulse: it starts streaming when the
+first site's stream starts, only the focus site's chunks move it between
+receiving and waiting, and it stops when the last site stops
+(`core::live_mode::session_phase_after`, `session_stream_ended`).
+
 ### Communication shape
 
 Three typed channels (all replaced on each `start()` so a winding-down previous

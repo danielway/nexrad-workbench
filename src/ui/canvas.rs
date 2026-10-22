@@ -212,14 +212,14 @@ pub(crate) fn render_canvas_with_geo(
 
                 let sweep_info = compute_sweep_line_azimuth(site, playback);
                 let (gpu_sweep, between_sweeps, live_partial) =
-                    compute_gpu_sweep_state(state, site, live, playback, derived, sweep_info);
+                    compute_gpu_sweep_state(state, site, playback, derived, sweep_info);
 
                 // Age desaturation needs the estimated antenna azimuth; only
                 // supply it while the view's sweep animation is active so a
                 // fixed elevation filter doesn't keep fading between visits.
                 let chunk_boundary = (derived.effective_sweep_animation
                     && derived.canvas_follows_live)
-                    .then_some(live.radar_model.estimated_azimuth)
+                    .then_some(site.live.radar_model.estimated_azimuth)
                     .flatten();
 
                 // Live compositing keeps `gpu_sweep` set even when animation
@@ -268,18 +268,19 @@ pub(crate) fn render_canvas_with_geo(
                     // need enough updates to advance the estimated-azimuth line
                     // (~10 fps is visually indistinguishable). Fully idle falls
                     // through to the 1 Hz global tick in `apply_frame_setup`.
-                    let live_has_active_sweep = live
+                    let live_has_active_sweep = site
+                        .live
                         .radar_model
                         .active_sweep
                         .as_ref()
                         .is_some_and(|s| s.data_azimuth_range.is_some());
-                    let live_has_moving_line =
-                        live.radar_model.active && live.radar_model.estimated_azimuth.is_some();
+                    let live_has_moving_line = site.live.radar_model.active
+                        && site.live.radar_model.estimated_azimuth.is_some();
 
                     // A paused archive reveal is a still image; only a moving
                     // playhead or the live stream needs the smooth cadence.
                     let reveal_moving = (gpu_sweep.is_some() || between_sweeps)
-                        && (playback.state.playing || live.radar_model.active);
+                        && (playback.state.playing || site.live.radar_model.active);
                     if reveal_moving || live_has_active_sweep {
                         ui.ctx()
                             .request_repaint_after(std::time::Duration::from_millis(33));
@@ -464,7 +465,7 @@ pub(crate) fn render_canvas_with_geo(
                         _ => (None, false),
                     }
                 };
-                let active_sweep = live.radar_model.active_sweep.as_ref();
+                let active_sweep = site.live.radar_model.active_sweep.as_ref();
                 let chunk_last_az: Vec<f32> = active_sweep
                     .map(|s| s.chunks.iter().map(|c| c.last_az).collect())
                     .unwrap_or_default();
@@ -476,15 +477,16 @@ pub(crate) fn render_canvas_with_geo(
                         stale: sweep_stale,
                         show_lines: derived.effective_sweep_animation,
                         live: derived.canvas_follows_live,
-                        antenna_az: live.radar_model.estimated_azimuth,
+                        antenna_az: site.live.radar_model.estimated_azimuth,
                         chunk_last_az: &chunk_last_az,
                         live_edge_time: active_sweep
                             .and_then(|s| s.chunk_time_spans.last().map(|&(_, end, _)| end)),
                         offscreen_cut: crate::core::canvas::offscreen_live_cut(
                             playback.state.playback_mode() == crate::core::PlaybackMode::Macro,
-                            live.radar_model
+                            site.live
+                                .radar_model
                                 .selected_cut(&state.viz_state.elevation_selection),
-                            live.radar_model.collecting_elevation(),
+                            site.live.radar_model.collecting_elevation(),
                             active_sweep.and_then(|s| s.data_azimuth_range),
                         ),
                         playhead_secs: playback.state.playback_position(),
@@ -814,7 +816,6 @@ fn draw_radar_gpu(
 fn compute_gpu_sweep_state(
     state: &mut AppState,
     site: &crate::subsystem::SiteState,
-    live: &crate::subsystem::Live,
     playback: &crate::subsystem::Playback,
     derived: &crate::subsystem::Derived,
     sweep_info: Option<(f32, f32)>,
@@ -824,15 +825,17 @@ fn compute_gpu_sweep_state(
     // keep driving the GPU sweep boundary and age desaturation between visits
     // of a fixed elevation. Frames mode never composites the partial.
     // Archive animation still uses effective_sweep_animation.
-    let selected_elev = live
+    let selected_elev = site
+        .live
         .radar_model
         .selected_cut(&state.viz_state.elevation_selection);
     let live_range = crate::core::canvas::live_compositing_azimuth_range(
         derived.canvas_follows_live,
         playback.state.playback_mode() == crate::core::PlaybackMode::Macro,
         selected_elev,
-        live.radar_model.collecting_elevation(),
-        live.radar_model
+        site.live.radar_model.collecting_elevation(),
+        site.live
+            .radar_model
             .active_sweep
             .as_ref()
             .and_then(|s| s.data_azimuth_range),

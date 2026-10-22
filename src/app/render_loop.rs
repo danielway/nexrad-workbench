@@ -151,10 +151,11 @@ impl WorkbenchApp {
             return;
         }
 
+        let live = &self.sites.list[site].live;
         if !self.state.effective_sweep_animation(
             &self.playback.state,
-            self.live.canvas_follows_live(&self.playback.state),
-            &self.live.radar_model,
+            self.live.canvas_follows_live(live, &self.playback.state),
+            &live.radar_model,
         ) {
             self.sites.list[site].previous_displayed = None;
             self.state.viz_state.last_sweep_line_cache = None;

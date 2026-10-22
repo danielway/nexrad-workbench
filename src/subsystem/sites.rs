@@ -4,10 +4,13 @@
 //! A `SiteState` owns everything that differs between radars: the site's id
 //! and position, its scan inventory, its render track and the crossfade and
 //! scrub caches in front of it, the frame on its canvas and how old it is,
-//! its storm cells, the GPU renderers that draw it ([`SiteGpu`]), and the
-//! request ledger, retry set and prefetch settle its pumps fetch through.
+//! its storm cells, the GPU renderers that draw it ([`SiteGpu`]), the
+//! request ledger, retry set and prefetch settle its pumps fetch through, and
+//! its live stream ([`SiteLive`]: the realtime channel, the volume in
+//! progress, the projection engine and the per-frame live models).
 //! Everything shared (playback, selection, settings, the worker pool, the
-//! download queue, the archive index, the activity book) stays with its own
+//! download queue, the archive index, the activity book, the live session's
+//! phase and view-model on [`crate::subsystem::Live`]) stays with its own
 //! owner.
 //!
 //! `focus` only says which site the single-valued surfaces describe: the tilt
@@ -27,6 +30,7 @@ use crate::core::storm_cells::StormCells;
 use crate::core::{DisplayedSweep, RadarTimeline, ScanBoundary};
 use crate::data::SiteId;
 use crate::nexrad::{GlobeRadarRenderer, RadarGpuRenderer, VolumeRayRenderer};
+use crate::subsystem::SiteLive;
 use std::sync::{Arc, Mutex};
 
 /// One site's GPU renderers: the flat disc, its projection onto the globe
@@ -125,6 +129,10 @@ pub(crate) struct SiteState {
     /// Debounce/idempotency state for this site's reactive prefetch (see
     /// [`PrefetchSettle`]).
     pub prefetch_settle: PrefetchSettle,
+    /// This site's live stream: its channel, the volume it is collecting,
+    /// its projection engine and this frame's live models. Whether the app
+    /// is streaming at all is the session's ([`crate::subsystem::Live`]).
+    pub live: SiteLive,
 }
 
 impl SiteState {
@@ -148,6 +156,7 @@ impl SiteState {
             ledger: RequestLedger::default(),
             retries: IngestRetries::default(),
             prefetch_settle: PrefetchSettle::default(),
+            live: SiteLive::default(),
         }
     }
 
@@ -188,6 +197,17 @@ impl SiteState {
         self.displayed
             .as_ref()
             .map(|d| (d.start_time + d.end_time) / 2.0)
+    }
+
+    /// The timeline view of this site's scans, listings and, while the
+    /// session `streaming`, the volume its stream is collecting.
+    pub(crate) fn timeline_view(&self, streaming: bool) -> crate::core::TimelineView<'_> {
+        crate::core::TimelineView::build(
+            &self.scans,
+            &self.shadows,
+            streaming.then_some(&self.live.volume),
+            self.live.radar_model.position.as_ref(),
+        )
     }
 
     /// Point this element at another radar. The caller tears down what was

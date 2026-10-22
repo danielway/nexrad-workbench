@@ -276,31 +276,36 @@ impl WorkbenchApp {
         }
     }
 
-    /// Drain the realtime channel and manage live-mode lifecycle.
+    /// Drain every site's realtime channel and manage live-mode lifecycle.
     pub(crate) fn handle_streaming_results(&mut self, ctx: &egui::Context) {
-        // Push the user's elevation selection down to the realtime channel
-        // each frame. The manager diffs internally so this is a no-op when
-        // the selection hasn't changed; on a real change it bumps the
-        // channel's filter epoch so any in-flight sleep wakes within ~250ms.
-        self.live.channel.sync_filter(
-            &self.state.viz_state.elevation_selection,
-            self.live.radar_model.vcp_pattern(),
-        );
+        for site in 0..self.sites.list.len() {
+            // Push the user's elevation selection down to the site's realtime
+            // channel each frame. The manager diffs internally so this is a
+            // no-op when the selection hasn't changed; on a real change it
+            // bumps the channel's filter epoch so any in-flight sleep wakes
+            // within ~250ms.
+            let live = &self.sites.list[site].live;
+            live.channel.sync_filter(
+                &self.state.viz_state.elevation_selection,
+                live.radar_model.vcp_pattern(),
+            );
 
-        for result in self.live.channel.poll() {
-            self.handle_realtime_result(result, ctx);
-        }
+            for result in live.channel.poll() {
+                self.handle_realtime_result(site, result, ctx);
+            }
 
-        // Stop realtime channel if live mode was stopped by UI
-        if !self.live.mode_state.is_active() && self.live.channel.is_active() {
-            log::debug!("Stopping realtime channel (live mode ended)");
-            self.live.channel.stop();
+            // Stop the site's channel if live mode was stopped by UI
+            let live = &self.sites.list[site].live;
+            if !self.live.mode_state.is_active() && live.channel.is_active() {
+                log::debug!("Stopping realtime channel (live mode ended)");
+                live.channel.stop();
+            }
         }
 
         // The plan's per-chunk `projected_available_at_secs` is an absolute
         // timestamp, so the countdown advances frame-by-frame off `now`
         // without needing a separate heartbeat to mirror the loop's sleep.
         // Phase flips happen at ChunkReceived time in
-        // `LiveModeState::handle_realtime_chunk` based on plan.next_target.
+        // `LiveModeState::apply_site_event` based on plan.next_target.
     }
 }

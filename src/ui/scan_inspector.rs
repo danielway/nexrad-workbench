@@ -7,7 +7,7 @@
 //! per-chunk progress for the in-progress live volume, and a tap-to-fetch
 //! affordance for cuts not yet downloaded. Plus a "Loop from here" action.
 //!
-//! The breakdown is read from the merged [`TimelineView`] — the SAME source the
+//! The breakdown is read from the merged [`crate::core::TimelineView`] — the SAME source the
 //! strip and tooltips read — so the inspector can never disagree with the strip
 //! about what is cached / collecting / available. It rebuilds the view from the
 //! subsystems each frame (cheap; the view borrows the cache) and finds the
@@ -18,7 +18,7 @@ use super::layout::{Layer, LayerKind, LayoutCtx};
 use super::timeline::format_timestamp_full;
 use crate::core::dialogs::{DialogId, DialogIntent};
 use crate::core::Intent;
-use crate::core::{FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView};
+use crate::core::{FrameCell, FrameCellState, FrameJoinInputs, ScanContainer};
 use crate::state::{format_bytes, AppState};
 use crate::subsystem::{Acquisition, Chrome, Live, Playback};
 use crate::ui::theme;
@@ -102,12 +102,7 @@ fn draw_scan_inspector(
     // `TiltFilter::Every` so EVERY elevation becomes a frame cell (the full volume
     // breakdown), unlike the strip which filters to the selected tilt; the
     // per-cell state resolution (cached/in-flight/available/...) is identical.
-    let view = TimelineView::build(
-        &site.scans,
-        &site.shadows,
-        Some(&live.mode_state),
-        live.radar_model.position.as_ref(),
-    );
+    let view = site.timeline_view(live.mode_state.is_active());
 
     let product = state.viz_state.product.to_worker_string();
     let mut in_flight_all = state.download_progress.in_flight_scans.clone();

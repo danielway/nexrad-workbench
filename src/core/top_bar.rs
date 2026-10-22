@@ -563,6 +563,7 @@ mod tests {
         SessionVm::build(SessionInputs {
             now: FrameNow(now),
             live_status: &LiveStatus::default(),
+            any_site_streams: false,
             live_phase: LivePhase::Idle,
             last_exit: None,
             selection,

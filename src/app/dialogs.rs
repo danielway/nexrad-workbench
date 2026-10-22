@@ -114,10 +114,15 @@ impl DispatchState<'_> {
             return;
         }
         let pause = self.state.pause_stream_while_reviewing;
-        if self
-            .live
-            .select_range(&mut self.playback.state, scan_start, now, true, now, pause)
-        {
+        if self.live.select_range(
+            self.sites,
+            &mut self.playback.state,
+            scan_start,
+            now,
+            true,
+            now,
+            pause,
+        ) {
             self.playback.state.seek_within_range(scan_start);
             // Arm the bulk fetch for the span (selection = the fetch).
             self.state.selection_just_finalized = self.playback.state.selection_range();

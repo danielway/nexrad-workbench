@@ -382,12 +382,10 @@ impl WorkbenchApp {
             acquisition_core::SelectionGate::Confirm => {
                 // Priced now, from the listing, so the confirmation says the
                 // real size rather than an estimate.
-                let view = crate::core::TimelineView::build(
-                    &self.sites.focus().scans,
-                    &self.sites.focus().shadows,
-                    Some(&self.live.mode_state),
-                    self.live.radar_model.position.as_ref(),
-                );
+                let view = self
+                    .sites
+                    .focus()
+                    .timeline_view(self.live.mode_state.is_active());
                 let site = crate::data::SiteId::new(self.sites.focus().id.0.clone());
                 let (lo, hi) = (start.min(end), start.max(end));
                 let sizes = self.timeline.activity.scans(&site, lo, hi);
