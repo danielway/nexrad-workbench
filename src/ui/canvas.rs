@@ -157,10 +157,7 @@ pub(crate) fn render_canvas_with_geo(
                 // data's real range — the same range the GPU disc and the 3D
                 // drape use — and the coverage ring and mosaic cutout at the
                 // product's maximum range.
-                let data_range_km = gpu_renderer.and_then(|renderer| {
-                    let r = renderer.lock().expect("renderer mutex poisoned");
-                    r.has_data().then(|| r.max_range_km())
-                });
+                let data_range_km = data_range_km(gpu_renderer);
                 let site_screen =
                     super::canvas_overlays::SiteScreen::new(&projection, site.lat, site.lon);
                 let coverage_km =
@@ -237,10 +234,45 @@ pub(crate) fn render_canvas_with_geo(
                         processing.data_age_desaturation,
                         derived.effective_sweep_animation,
                     );
+                // Every other site's own reveal, so its disc and its Rays
+                // marks follow its own antenna. The between-sweeps hold is
+                // the focus's alone.
+                let others: Vec<OtherReveal<'_>> = sites
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, _)| i != sites.focus)
+                    .map(|(_, s)| {
+                        let follows_live = live.canvas_follows_live(&s.live, &playback.state);
+                        let (sweep, _) = site_gpu_sweep(
+                            state,
+                            s,
+                            playback,
+                            follows_live,
+                            derived.effective_sweep_animation,
+                            compute_sweep_line_azimuth(s, playback),
+                        );
+                        OtherReveal {
+                            site: s,
+                            follows_live,
+                            sweep,
+                            chunk_boundary: (derived.effective_sweep_animation && follows_live)
+                                .then_some(s.live.radar_model.estimated_azimuth)
+                                .flatten(),
+                        }
+                    })
+                    .collect();
+
                 // Every site's disc, older frame first so the newer one is
-                // on top (core::sites::draw_order). The sweep reveal and the
-                // chunk boundary are the focus's; per-disc Rays come later.
+                // on top (core::sites::draw_order), each with its own reveal.
                 for drawn in sites.drawn() {
+                    let (sweep, boundary) = if std::ptr::eq(drawn, site) {
+                        (gpu_sweep, chunk_boundary)
+                    } else {
+                        others
+                            .iter()
+                            .find(|o| std::ptr::eq(o.site, drawn))
+                            .map_or((None, None), |o| (o.sweep, o.chunk_boundary))
+                    };
                     if let Some(renderer) = drawn.gpu.radar.as_ref() {
                         draw_radar_gpu(
                             ui,
@@ -250,8 +282,8 @@ pub(crate) fn render_canvas_with_geo(
                             drawn.lat,
                             drawn.lon,
                             &processing,
-                            gpu_sweep,
-                            chunk_boundary,
+                            sweep,
+                            boundary,
                         );
                     }
                 }
@@ -474,33 +506,37 @@ pub(crate) fn render_canvas_with_geo(
                         _ => (None, false),
                     }
                 };
-                let active_sweep = site.live.radar_model.active_sweep.as_ref();
-                let chunk_last_az: Vec<f32> = active_sweep
-                    .map(|s| s.chunks.iter().map(|c| c.last_az).collect())
-                    .unwrap_or_default();
-                let overlay_vm = crate::core::canvas::CanvasOverlayVm::build(
-                    &crate::core::canvas::CanvasOverlayInputs {
-                        product: state.viz_state.product,
-                        data_range_km,
-                        sweep: sweep_line_info,
-                        stale: sweep_stale,
-                        show_lines: derived.effective_sweep_animation,
-                        live: derived.canvas_follows_live,
-                        antenna_az: site.live.radar_model.estimated_azimuth,
-                        chunk_last_az: &chunk_last_az,
-                        live_edge_time: active_sweep
-                            .and_then(|s| s.chunk_time_spans.last().map(|&(_, end, _)| end)),
-                        offscreen_cut: crate::core::canvas::offscreen_live_cut(
-                            playback.state.playback_mode() == crate::core::PlaybackMode::Macro,
-                            site.live
-                                .radar_model
-                                .selected_cut(&state.viz_state.elevation_selection),
-                            site.live.radar_model.collecting_elevation(),
-                            active_sweep.and_then(|s| s.data_azimuth_range),
+                // The other discs' marks first, fainter, so the focus's
+                // marks stay on top where discs overlap.
+                for other in &others {
+                    let vm = site_overlay_vm(
+                        state,
+                        playback,
+                        derived,
+                        other.site,
+                        other.follows_live,
+                        data_range_km_of(other.site),
+                        (other.sweep, false),
+                    );
+                    super::canvas_overlays::render_site_sweep_marks(
+                        &painter,
+                        &vm,
+                        &super::canvas_overlays::SiteScreen::new(
+                            &projection,
+                            other.site.lat,
+                            other.site.lon,
                         ),
-                        playhead_secs: playback.state.playback_position(),
-                        fallbacks: crate::core::canvas::CANVAS_FALLBACKS,
-                    },
+                        crate::core::canvas::sweep_marks_opacity(false),
+                    );
+                }
+                let overlay_vm = site_overlay_vm(
+                    state,
+                    playback,
+                    derived,
+                    site,
+                    derived.canvas_follows_live,
+                    data_range_km,
+                    (sweep_line_info, sweep_stale),
                 );
                 let clock = crate::ui::time_format::ZoneClock {
                     use_local: state.use_local_time,
@@ -833,7 +869,68 @@ fn draw_radar_gpu(
     ui.painter().add(callback);
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Another site's reveal this frame: what its disc and its Rays marks draw.
+struct OtherReveal<'a> {
+    site: &'a crate::subsystem::SiteState,
+    follows_live: bool,
+    sweep: Option<(f32, f32)>,
+    chunk_boundary: Option<f32>,
+}
+
+/// The range a site's disc holds data to, when it holds any.
+fn data_range_km(renderer: Option<&Arc<Mutex<RadarGpuRenderer>>>) -> Option<f64> {
+    renderer.and_then(|renderer| {
+        let r = renderer.lock().expect("renderer mutex poisoned");
+        r.has_data().then(|| r.max_range_km())
+    })
+}
+
+fn data_range_km_of(site: &crate::subsystem::SiteState) -> Option<f64> {
+    data_range_km(site.gpu.radar.as_ref())
+}
+
+/// The overlay view-model for one site's disc. `sweep` is the reveal and
+/// whether it is the held position between sweeps.
+fn site_overlay_vm(
+    state: &AppState,
+    playback: &crate::subsystem::Playback,
+    derived: &crate::subsystem::Derived,
+    site: &crate::subsystem::SiteState,
+    follows_live: bool,
+    data_range_km: Option<f64>,
+    sweep: (Option<(f32, f32)>, bool),
+) -> crate::core::canvas::CanvasOverlayVm {
+    let active_sweep = site.live.radar_model.active_sweep.as_ref();
+    let chunk_last_az: Vec<f32> = active_sweep
+        .map(|s| s.chunks.iter().map(|c| c.last_az).collect())
+        .unwrap_or_default();
+    crate::core::canvas::CanvasOverlayVm::build(&crate::core::canvas::CanvasOverlayInputs {
+        product: state.viz_state.product,
+        data_range_km,
+        sweep: sweep.0,
+        stale: sweep.1,
+        show_lines: derived.effective_sweep_animation,
+        live: follows_live,
+        antenna_az: site.live.radar_model.estimated_azimuth,
+        chunk_last_az: &chunk_last_az,
+        live_edge_time: active_sweep
+            .and_then(|s| s.chunk_time_spans.last().map(|&(_, end, _)| end)),
+        offscreen_cut: crate::core::canvas::offscreen_live_cut(
+            playback.state.playback_mode() == crate::core::PlaybackMode::Macro,
+            site.live
+                .radar_model
+                .selected_cut(&state.viz_state.elevation_selection),
+            site.live.radar_model.collecting_elevation(),
+            active_sweep.and_then(|s| s.data_azimuth_range),
+        ),
+        playhead_secs: playback.state.playback_position(),
+        fallbacks: crate::core::canvas::CANVAS_FALLBACKS,
+    })
+}
+
+/// The focus's reveal: [`site_gpu_sweep`], plus the between-sweeps hold
+/// that keeps the last position on screen. Returns the reveal, whether it is
+/// held between sweeps, and whether a live partial composites.
 fn compute_gpu_sweep_state(
     state: &mut AppState,
     site: &crate::subsystem::SiteState,
@@ -841,6 +938,41 @@ fn compute_gpu_sweep_state(
     derived: &crate::subsystem::Derived,
     sweep_info: Option<(f32, f32)>,
 ) -> (Option<(f32, f32)>, bool, bool) {
+    let (gpu_sweep, live_partial) = site_gpu_sweep(
+        state,
+        site,
+        playback,
+        derived.canvas_follows_live,
+        derived.effective_sweep_animation,
+        sweep_info,
+    );
+
+    // Cache the sweep position for between-sweep display (pure rule).
+    let new_cache = crate::core::canvas::next_sweep_cache(
+        state.viz_state.last_sweep_line_cache,
+        gpu_sweep,
+        derived.effective_sweep_animation,
+    );
+    state.viz_state.last_sweep_line_cache = new_cache;
+    let between_sweeps = crate::core::canvas::between_sweeps(
+        derived.effective_sweep_animation,
+        gpu_sweep,
+        new_cache,
+    );
+    (gpu_sweep, between_sweeps, live_partial)
+}
+
+/// One site's sweep reveal this frame, and whether it is a live partial
+/// still arriving. `follows_live` is whether the site's canvas follows its
+/// stream; `animate` is whether Rays animates.
+fn site_gpu_sweep(
+    state: &AppState,
+    site: &crate::subsystem::SiteState,
+    playback: &crate::subsystem::Playback,
+    follows_live: bool,
+    animate: bool,
+    sweep_info: Option<(f32, f32)>,
+) -> (Option<(f32, f32)>, bool) {
     // Live partial compositing only when the in-progress elevation matches
     // the user's filter (Latest accepts any cut). Otherwise other tilts would
     // keep driving the GPU sweep boundary and age desaturation between visits
@@ -851,7 +983,7 @@ fn compute_gpu_sweep_state(
         .radar_model
         .selected_cut(&state.viz_state.elevation_selection);
     let live_range = crate::core::canvas::live_compositing_azimuth_range(
-        derived.canvas_follows_live,
+        follows_live,
         playback.state.playback_mode() == crate::core::PlaybackMode::Macro,
         selected_elev,
         site.live.radar_model.collecting_elevation(),
@@ -862,7 +994,7 @@ fn compute_gpu_sweep_state(
             .and_then(|s| s.data_azimuth_range),
     );
     let playback_ts = playback.state.playback_position();
-    let sweep_bounds = if live_range.is_none() && derived.effective_sweep_animation {
+    let sweep_bounds = if live_range.is_none() && animate {
         site.scans
             .find_recent_scan(playback_ts, crate::core::recency::RECENCY_SECS)
             .and_then(|scan| {
@@ -884,28 +1016,15 @@ fn compute_gpu_sweep_state(
 
     let gpu_sweep = crate::core::canvas::select_gpu_sweep(
         live_range,
-        derived.effective_sweep_animation,
+        animate,
         sweep_bounds,
         playback_ts,
         sweep_info,
     );
 
-    // Cache the sweep position for between-sweep display (pure rule).
-    let new_cache = crate::core::canvas::next_sweep_cache(
-        state.viz_state.last_sweep_line_cache,
-        gpu_sweep,
-        derived.effective_sweep_animation,
-    );
-    state.viz_state.last_sweep_line_cache = new_cache;
-    let between_sweeps = crate::core::canvas::between_sweeps(
-        derived.effective_sweep_animation,
-        gpu_sweep,
-        new_cache,
-    );
-
     // A live partial composites only while `live_range` is set: the sweep on
     // the GPU is still arriving.
-    (gpu_sweep, between_sweeps, live_range.is_some())
+    (gpu_sweep, live_range.is_some())
 }
 
 fn compute_sweep_line_azimuth(

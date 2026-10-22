@@ -380,6 +380,25 @@ impl AcquisitionState {
             .collect()
     }
 
+    /// [`Self::failed_scan_starts`] for one site's downloads: what that
+    /// site's timeline lane marks failed.
+    pub(crate) fn failed_scan_starts_for(&self, site_id: &str) -> Vec<i64> {
+        self.operations
+            .iter()
+            .filter_map(|op| match (&op.status, &op.kind) {
+                (
+                    OperationStatus::Failed { .. },
+                    OperationKind::ArchiveDownload {
+                        site_id: id,
+                        scan_start,
+                        ..
+                    },
+                ) if id.eq_ignore_ascii_case(site_id) => Some(*scan_start),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Ids of every currently-Failed archive download, oldest first — the
     /// targets of a "retry all" sweep.
     pub(crate) fn failed_operation_ids(&self) -> Vec<OperationId> {
@@ -1023,6 +1042,25 @@ mod coverage_tests {
         acq.mark_failed(chunk, "boom".to_string());
 
         assert_eq!(acq.failed_scan_starts(), vec![1000, 2000]);
+    }
+
+    #[wasm_bindgen_test]
+    fn failed_scan_starts_for_keeps_one_sites_downloads() {
+        let mut acq = AcquisitionState::default();
+        let dmx = acq.create_operation(download_kind(1000));
+        let tlx = acq.create_operation(OperationKind::ArchiveDownload {
+            site_id: "KTLX".to_string(),
+            file_name: "KTLX_2000".to_string(),
+            scan_start: 2000,
+            scan_end: 2300,
+        });
+        for id in [dmx, tlx] {
+            acq.mark_active(id);
+            acq.mark_failed(id, "boom".to_string());
+        }
+        assert_eq!(acq.failed_scan_starts_for("KTLX"), vec![2000]);
+        assert_eq!(acq.failed_scan_starts_for("kdmx"), vec![1000]);
+        assert!(acq.failed_scan_starts_for("KFWS").is_empty());
     }
 
     // ── failed_operation_for_scan_start: tolerance + newest + non-match ───────

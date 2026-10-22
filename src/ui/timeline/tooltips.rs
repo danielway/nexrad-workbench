@@ -194,6 +194,38 @@ pub(super) fn render_timeline_tooltip(
     });
 }
 
+/// Hover tooltip for a block on another site's lane: the site's volume, its
+/// state in the track's words, and its time.
+pub(super) fn render_lane_tooltip(
+    ui: &mut egui::Ui,
+    site: &str,
+    block: &crate::core::timeline_view::LaneBlock,
+    hover_pos: Pos2,
+    use_local: bool,
+) {
+    use crate::core::timeline_view::LaneBlockState;
+    let color = match block.state {
+        LaneBlockState::Held => tl_colors::STATUS_CACHED,
+        LaneBlockState::Listed => tl_colors::STATUS_AVAILABLE,
+        LaneBlockState::LiveFilling { .. } => theme::legacy::ACTIVE_BLUE,
+        LaneBlockState::Stalled { .. } | LaneBlockState::Failed => theme::acquisition::FAILED,
+    };
+    egui::Tooltip::always_open(
+        ui.ctx().clone(),
+        egui::LayerId::new(egui::Order::Tooltip, ui.id()),
+        ui.id().with("tl_lane_tooltip"),
+        Rect::from_center_size(hover_pos, Vec2::splat(20.0)),
+    )
+    .show(|ui: &mut egui::Ui| {
+        tooltip_header(ui, &format!("{site} volume"), block.state.label(), color);
+        ui.label(format_time_range(
+            block.start_secs,
+            block.end_secs,
+            use_local,
+        ));
+    });
+}
+
 /// Tooltip for an available (in cloud archive, not downloaded) region.
 fn render_available_tooltip_content(
     ui: &mut egui::Ui,

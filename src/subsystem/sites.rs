@@ -355,6 +355,63 @@ impl Sites {
         }
     }
 
+    /// The timeline lanes over `[start, end]`: one per site but the focus,
+    /// in list order (the focus has the full track). `session` is the live
+    /// session; `failed` gives a site's failed download starts. Empty with
+    /// one site.
+    pub(crate) fn lanes(
+        &self,
+        session: &crate::core::LiveModeState,
+        failed: impl Fn(&SiteId) -> Vec<i64>,
+        start: f64,
+        end: f64,
+    ) -> Vec<crate::core::timeline_view::LaneVm> {
+        use crate::core::session::Stream;
+        self.iter()
+            .enumerate()
+            .filter(|&(i, _)| i != self.focus)
+            .map(|(_, s)| {
+                let failed = failed(&s.id);
+                crate::core::timeline_view::lane_vm(
+                    &s.id.0,
+                    &s.timeline_view(session.is_active()),
+                    start,
+                    end,
+                    crate::core::timeline_view::LaneInputs {
+                        failed: &failed,
+                        newest_chunk_secs: s.live.volume.last_radial_time_secs,
+                        stream: Stream::classify(
+                            s.live.frame_status.activity,
+                            session.phase,
+                            session.last_exit_reason,
+                        ),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Every site's stream as the activity chip and sheet read it, in list
+    /// order. `phase` and `last_exit` are the live session's.
+    pub(crate) fn activity_streams(
+        &self,
+        phase: crate::core::LivePhase,
+        last_exit: Option<crate::core::LiveExitReason>,
+    ) -> Vec<crate::core::activity::SiteStream> {
+        use crate::core::session::Stream;
+        self.iter()
+            .map(|s| {
+                let status = &s.live.frame_status;
+                crate::core::activity::SiteStream {
+                    id: s.id.0.clone(),
+                    stream: Stream::classify(status.activity, phase, last_exit),
+                    chunks_received: status.chunks_received,
+                    last_chunk_age_secs: status.data_age_secs,
+                }
+            })
+            .collect()
+    }
+
     /// The ids in list order, for [`crate::core::sites::route`].
     pub(crate) fn ids(&self) -> Vec<SiteId> {
         self.iter().map(|s| s.id.clone()).collect()
@@ -485,6 +542,58 @@ mod tests {
         assert!(site.gpu.radar.is_none());
         assert!(site.gpu.globe_radar.is_none());
         assert!(site.gpu.volume_ray.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn lanes_are_every_site_but_the_focus_in_list_order() {
+        let session = crate::core::LiveModeState::default();
+        let mut sites = two_sites();
+        sites.list.push(SiteState::new("KFWS", 32.57, -97.30));
+        sites.list[2].shadows.push(ScanBoundary {
+            start: 1_000,
+            end: 1_300,
+        });
+        sites.focus = 1;
+        let lanes = sites.lanes(&session, |_| Vec::new(), 0.0, 5_000.0);
+        let ids: Vec<_> = lanes.iter().map(|l| l.site.as_str()).collect();
+        assert_eq!(ids, ["KDMX", "KFWS"]);
+        assert!(lanes[0].blocks.is_empty());
+        assert_eq!(lanes[1].blocks.len(), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn lanes_read_each_sites_own_failures() {
+        let session = crate::core::LiveModeState::default();
+        let mut sites = two_sites();
+        sites.list[1].shadows.push(ScanBoundary {
+            start: 1_000,
+            end: 1_300,
+        });
+        let lanes = sites.lanes(
+            &session,
+            |id| {
+                if id.0 == "KTLX" {
+                    vec![1_000]
+                } else {
+                    Vec::new()
+                }
+            },
+            0.0,
+            5_000.0,
+        );
+        assert_eq!(
+            lanes[0].blocks[0].state,
+            crate::core::timeline_view::LaneBlockState::Failed
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn one_site_has_no_lanes() {
+        let session = crate::core::LiveModeState::default();
+        let sites = Sites::default();
+        assert!(sites
+            .lanes(&session, |_| Vec::new(), 0.0, 5_000.0)
+            .is_empty());
     }
 
     #[wasm_bindgen_test]

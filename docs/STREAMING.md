@@ -41,6 +41,17 @@ first site's stream starts, only the focus site's chunks move it between
 receiving and waiting, and it stops when the last site stops
 (`core::live_mode::session_phase_after`, `session_stream_ended`).
 
+On the timeline the focus site keeps the full track; every other site gets an
+11 px lane under it, in list order (`core::timeline_view::lane_vm`, assembled
+by `Sites::lanes`). A lane has one block per volume: held (on the device,
+solid), listed (in the archive listing but not held, hollow), failed (that
+site's download failed, hollow with a red edge), and the volume the site's
+stream is collecting, solid up to its newest radial and a dashed outline to
+its projected end. When that site's stream is stalled the dashed part is red
+from where its chunks stopped. Listings, failures and cached scans are joined
+with the track's tolerance (`SCAN_JOIN_TOLERANCE_SECS`). One now line crosses
+the track and the lanes; with one site there are no lanes.
+
 ### Communication shape
 
 Three typed channels (all replaced on each `start()` so a winding-down previous

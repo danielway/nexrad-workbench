@@ -12,7 +12,9 @@
 //!
 //! Total height is `TIMELINE_TOTAL_H = OVERVIEW_H + TICK_LANE_H +
 //! SELECTION_STRIP_H + MAIN_TRACK_H` and is constant across Micro / Macro
-//! so the bottom panel never reflows.
+//! so the bottom panel never reflows. With more than one site, each site but
+//! the focus adds a lane under the main track ([`lanes_h`]); the panel grows
+//! by exactly that.
 
 use eframe::egui::FontId;
 
@@ -43,6 +45,17 @@ pub(crate) const OVERVIEW_UNDERLINE_H: f32 = 3.0;
 /// The selection strip between the tick rail and the main track: drag along
 /// it to make a range, drag its handles to resize it.
 pub(crate) const SELECTION_STRIP_H: f32 = 14.0;
+
+/// Height of one site's lane under the main track.
+pub(crate) const LANE_H: f32 = 11.0;
+
+/// Gap above each lane.
+pub(crate) const LANE_GAP: f32 = 3.0;
+
+/// The height `lanes` lanes add under the main track (0 with one site).
+pub(crate) fn lanes_h(lanes: usize) -> f32 {
+    lanes as f32 * (LANE_H + LANE_GAP)
+}
 
 /// Total timeline height, constant across detail levels.
 pub(crate) const TIMELINE_TOTAL_H: f32 =
@@ -109,5 +122,12 @@ mod coverage_tests {
     fn timeline_total_h_is_one_hundred_eight_px() {
         // Hand-computed: 38 + 14 + 14 + 42 = 108.
         assert!((TIMELINE_TOTAL_H - 108.0).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn lanes_add_nothing_with_one_site_and_a_lane_each_after() {
+        assert_eq!(lanes_h(0), 0.0);
+        assert!((lanes_h(2) - 2.0 * (LANE_H + LANE_GAP)).abs() < 1e-6);
+        assert!((LANE_H - 11.0).abs() < 1e-6);
     }
 }

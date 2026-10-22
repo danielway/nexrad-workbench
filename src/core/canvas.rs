@@ -1080,6 +1080,17 @@ impl CanvasOverlayVm {
     }
 }
 
+/// How strongly a disc's Rays marks draw: the focus at full strength, every
+/// other site at half, so the marks say which disc the single-valued
+/// surfaces describe.
+pub(crate) fn sweep_marks_opacity(is_focus: bool) -> f32 {
+    if is_focus {
+        1.0
+    } else {
+        0.5
+    }
+}
+
 /// Hovering the edge ring reads the data edge's time and age (§7: "hover the
 /// ring for the edge time and age"): `edge 11:21:57 · 18 s old`.
 pub(crate) fn edge_hover_text(
@@ -2937,6 +2948,12 @@ mod overlay_tests {
         assert!(faded_wedge_hint(true, sweep, 45.0, 50.0, 460.0).is_none());
         assert!(faded_wedge_hint(false, sweep, 200.0, 50.0, 460.0).is_none());
         assert!(faded_wedge_hint(true, sweep, 200.0, 470.0, 460.0).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_focus_marks_draw_full_and_the_others_at_half() {
+        assert_eq!(sweep_marks_opacity(true), 1.0);
+        assert_eq!(sweep_marks_opacity(false), 0.5);
     }
 }
 
