@@ -108,7 +108,8 @@ phone, and a product, tilt rule or playback of its own for each site.
 | **Loop window** | A time/frame range playback cycles over; may be pinned to the live edge. |
 
 **Sites and the focus.** A desktop map shows up to three sites at once; a
-phone shows one. Every site on the map is the same kind of thing: each has
+phone shows one, and a desktop window narrowed into the phone's layout keeps
+only the focus. Every site on the map is the same kind of thing: each has
 its own scans, frame, stream and disc, all at the one shared playhead,
 product and tilt rule, drawn older frame first so the newer one is on top.
 One of them is the **focus**: the surfaces that hold a single value (the

@@ -88,6 +88,22 @@ impl WorkbenchApp {
         }
     }
 
+    /// Keep the set within what the layout shows: a desktop window narrowed
+    /// into the phone's layout keeps only the focus
+    /// ([`sites_core::fit_to_layout`]). Called each frame once the layout is
+    /// known; a no-op while the set fits.
+    pub(crate) fn fit_sites_to_layout(&mut self) {
+        if let Some(change) = sites_core::fit_to_layout(
+            self.sites.list.len(),
+            self.sites.focus,
+            self.chrome.device_layout,
+        ) {
+            log::info!("The phone layout shows one site; keeping the focus");
+            let gone = self.sites.apply(change, None);
+            self.retire_sites(gone);
+        }
+    }
+
     /// `Intent::RemoveSite`: take `site_id` off the map.
     pub(crate) fn remove_site(&mut self, site_id: &str) {
         let before = self.sites.focus().id.clone();

@@ -1107,6 +1107,7 @@ impl eframe::App for WorkbenchApp {
         self.chrome.device_layout = self
             .state
             .refresh_mobile_mode(ctx, self.chrome.touch_screen);
+        self.fit_sites_to_layout();
 
         // Drain GPS-overlay async results before panels render so the
         // "My Location" checkbox sees coords/error on the same frame the
