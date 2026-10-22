@@ -42,7 +42,7 @@ pub(crate) use gps_location::render_gps_location;
 pub(crate) use mping::{render_mping_detail, render_mping_reports};
 pub(crate) use national_mosaic::{draw_national_mosaic, RadarCutout};
 pub(crate) use sites::{render_nexrad_sites, SiteLabelRoom};
-pub(crate) use sweep::{render_radar_sweep, SiteScreen, SweepPaint};
+pub(crate) use sweep::{render_radar_sweep, render_site_sweep_marks, SiteScreen, SweepPaint};
 
 use crate::core::map_chrome::{
     layout_map_chrome, ChromeInputs, ChromeLayout, ChromeSize, TrayItem,

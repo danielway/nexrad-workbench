@@ -6,9 +6,10 @@
 //! a faint white start line, a solid white data edge, a dashed red now line
 //! where the antenna probably is, and one edge ring at the data's range,
 //! split where the new sweep meets the previous one. No text prints on the
-//! map; hovering the edge ring reads the edge's time and age.
+//! map; hovering the edge ring reads the edge's time and age. The other
+//! sites' discs get their own marks, fainter, with no rings or hover.
 
-use crate::core::canvas::{CanvasOverlayVm, RingGeometry};
+use crate::core::canvas::{CanvasOverlayVm, RingGeometry, SweepMarks};
 use crate::geo::MapProjection;
 use crate::ui::theme;
 use eframe::egui::{self, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
@@ -67,90 +68,14 @@ pub(crate) fn render_radar_sweep(painter: &Painter, vm: &CanvasOverlayVm, p: &Sw
 
     let data_r = site.radius(vm.rings.data_km);
     let Some(marks) = vm.sweep.as_ref() else {
-        draw_edge_ring_whole(painter, site, data_r);
+        draw_edge_ring_whole(painter, site, data_r, 1.0);
         draw_hover(painter, vm, p, None);
         return;
     };
-
-    // The antenna is on another tilt than the one on screen: its cut is
-    // marked in grey over a whole edge ring, since none of it is in the
-    // picture, and the red now line still turns. No label: the caption names
-    // the antenna's tilt.
+    draw_marks(painter, site, data_r, marks, 1.0);
     if marks.offscreen {
-        draw_edge_ring_whole(painter, site, data_r);
-        let grey = theme::radar::sweep_line_stale();
-        painter.line_segment(
-            [site.center, site.at(data_r, marks.start_az)],
-            Stroke::new(1.0_f32, theme::radar::sweep_start_line_stale()),
-        );
-        for az in &marks.chunk_az {
-            painter.line_segment(
-                [site.center, site.at(data_r, *az)],
-                Stroke::new(1.0_f32, theme::radar::chunk_line()),
-            );
-        }
-        painter.line_segment(
-            [site.center, site.at(data_r, marks.edge_az)],
-            Stroke::new(1.5_f32, grey),
-        );
-        if let Some(now_az) = marks.now_az {
-            painter.extend(Shape::dashed_line(
-                &[site.center, site.at(data_r, now_az)],
-                Stroke::new(2.0_f32, theme::NOW),
-                7.0,
-                5.0,
-            ));
-        }
         draw_hover(painter, vm, p, None);
         return;
-    }
-
-    // The edge ring: the new sweep's arc in white, the rest faint.
-    draw_edge_ring_split(
-        painter,
-        site,
-        data_r,
-        marks.start_az,
-        marks.edge_az,
-        marks.stale,
-    );
-
-    // Start line, faint white; the data edge, solid white (both "what you
-    // see"); held positions between sweeps go grey.
-    let (start_color, edge_color) = if marks.stale {
-        (
-            theme::radar::sweep_start_line_stale(),
-            theme::radar::sweep_line_stale(),
-        )
-    } else {
-        (theme::radar::sweep_start_line(), theme::radar::SWEEP_LINE)
-    };
-    painter.line_segment(
-        [site.center, site.at(data_r, marks.start_az)],
-        Stroke::new(1.5_f32, start_color),
-    );
-
-    // Chunk boundaries of the live cut: hairlines.
-    for az in &marks.chunk_az {
-        painter.line_segment(
-            [site.center, site.at(data_r, *az)],
-            Stroke::new(1.0_f32, theme::radar::chunk_line()),
-        );
-    }
-
-    painter.line_segment(
-        [site.center, site.at(data_r, marks.edge_az)],
-        Stroke::new(2.0_f32, edge_color),
-    );
-
-    // The now line: projected, so dashed, and red because red is now.
-    if let Some(now_az) = marks.now_az {
-        painter.extend(Shape::dashed_line(
-            &[site.center, site.at(data_r, now_az)],
-            Stroke::new(2.0_f32, theme::NOW),
-            7.0,
-            5.0,
-        ));
     }
 
     // Row 2's fallback: one label at the data edge, time only, inside the
@@ -171,6 +96,107 @@ pub(crate) fn render_radar_sweep(painter: &Painter, vm: &CanvasOverlayVm, p: &Sw
     }
 
     draw_hover(painter, vm, p, Some(marks));
+}
+
+/// Another site's Rays marks on its own disc: the start line, data edge,
+/// now line and edge ring, at `opacity` (the core's
+/// [`crate::core::canvas::sweep_marks_opacity`]). No range rings, label or
+/// hover: those describe the focus. Nothing draws without a sweep.
+pub(crate) fn render_site_sweep_marks(
+    painter: &Painter,
+    vm: &CanvasOverlayVm,
+    site: &SiteScreen,
+    opacity: f32,
+) {
+    if let Some(marks) = vm.sweep.as_ref() {
+        draw_marks(painter, site, site.radius(vm.rings.data_km), marks, opacity);
+    }
+}
+
+/// The sweep marks at `fade` (1.0 for the focus).
+fn draw_marks(painter: &Painter, site: &SiteScreen, data_r: f32, marks: &SweepMarks, fade: f32) {
+    let c = |color: egui::Color32| color.gamma_multiply(fade);
+
+    // The antenna is on another tilt than the one on screen: its cut is
+    // marked in grey over a whole edge ring, since none of it is in the
+    // picture, and the red now line still turns. No label: the caption names
+    // the antenna's tilt.
+    if marks.offscreen {
+        draw_edge_ring_whole(painter, site, data_r, fade);
+        let grey = theme::radar::sweep_line_stale();
+        painter.line_segment(
+            [site.center, site.at(data_r, marks.start_az)],
+            Stroke::new(1.0_f32, c(theme::radar::sweep_start_line_stale())),
+        );
+        for az in &marks.chunk_az {
+            painter.line_segment(
+                [site.center, site.at(data_r, *az)],
+                Stroke::new(1.0_f32, c(theme::radar::chunk_line())),
+            );
+        }
+        painter.line_segment(
+            [site.center, site.at(data_r, marks.edge_az)],
+            Stroke::new(1.5_f32, c(grey)),
+        );
+        if let Some(now_az) = marks.now_az {
+            painter.extend(Shape::dashed_line(
+                &[site.center, site.at(data_r, now_az)],
+                Stroke::new(2.0_f32, c(theme::NOW)),
+                7.0,
+                5.0,
+            ));
+        }
+        return;
+    }
+
+    // The edge ring: the new sweep's arc in white, the rest faint.
+    draw_edge_ring_split(
+        painter,
+        site,
+        data_r,
+        marks.start_az,
+        marks.edge_az,
+        marks.stale,
+        fade,
+    );
+
+    // Start line, faint white; the data edge, solid white (both "what you
+    // see"); held positions between sweeps go grey.
+    let (start_color, edge_color) = if marks.stale {
+        (
+            theme::radar::sweep_start_line_stale(),
+            theme::radar::sweep_line_stale(),
+        )
+    } else {
+        (theme::radar::sweep_start_line(), theme::radar::SWEEP_LINE)
+    };
+    painter.line_segment(
+        [site.center, site.at(data_r, marks.start_az)],
+        Stroke::new(1.5_f32, c(start_color)),
+    );
+
+    // Chunk boundaries of the live cut: hairlines.
+    for az in &marks.chunk_az {
+        painter.line_segment(
+            [site.center, site.at(data_r, *az)],
+            Stroke::new(1.0_f32, c(theme::radar::chunk_line())),
+        );
+    }
+
+    painter.line_segment(
+        [site.center, site.at(data_r, marks.edge_az)],
+        Stroke::new(2.0_f32, c(edge_color)),
+    );
+
+    // The now line: projected, so dashed, and red because red is now.
+    if let Some(now_az) = marks.now_az {
+        painter.extend(Shape::dashed_line(
+            &[site.center, site.at(data_r, now_az)],
+            Stroke::new(2.0_f32, c(theme::NOW)),
+            7.0,
+            5.0,
+        ));
+    }
 }
 
 fn draw_rings(painter: &Painter, site: &SiteScreen, rings: &RingGeometry) {
@@ -202,11 +228,11 @@ fn draw_rings(painter: &Painter, site: &SiteScreen, rings: &RingGeometry) {
 
 const EDGE_RING_WIDTH: f32 = 3.0;
 
-fn draw_edge_ring_whole(painter: &Painter, site: &SiteScreen, radius: f32) {
+fn draw_edge_ring_whole(painter: &Painter, site: &SiteScreen, radius: f32, fade: f32) {
     painter.circle_stroke(
         site.center,
         radius,
-        Stroke::new(1.5_f32, theme::map::ring_major()),
+        Stroke::new(1.5_f32, theme::map::ring_major().gamma_multiply(fade)),
     );
 }
 
@@ -217,6 +243,7 @@ fn draw_edge_ring_split(
     start_az: f32,
     edge_az: f32,
     stale: bool,
+    fade: f32,
 ) {
     let swept = (edge_az - start_az).rem_euclid(360.0);
     let (new_color, old_color) = if stale {
@@ -224,6 +251,10 @@ fn draw_edge_ring_split(
     } else {
         (theme::radar::edge_ring_new(), theme::radar::edge_ring_old())
     };
+    let (new_color, old_color) = (
+        new_color.gamma_multiply(fade),
+        old_color.gamma_multiply(fade),
+    );
     arc(painter, site, radius, start_az, swept, new_color);
     arc(painter, site, radius, edge_az, 360.0 - swept, old_color);
 }
