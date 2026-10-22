@@ -315,6 +315,12 @@ pub(crate) fn stop_session(
     }
 }
 
+/// Whether the session's stream has ended: once no site still streams.
+/// A site whose channel fails stops alone; the session stops with the last.
+pub(crate) fn session_stream_ended(sites_streaming: impl IntoIterator<Item = bool>) -> bool {
+    !sites_streaming.into_iter().any(|streaming| streaming)
+}
+
 /// The session half of live mode: whether the app is streaming at all, how
 /// it last stopped, whether the playhead has left the live edge, and the
 /// pulse. One per app however many sites stream; each site's volume in
@@ -1756,5 +1762,15 @@ mod coverage_tests {
         s.record_chunk_arrival(ChunkArrivalStat::minimal_for_test(9999, 0.0));
         assert_eq!(s.chunk_arrivals.len(), 1024);
         assert_eq!(s.chunk_arrivals.last().unwrap().sequence, 1023);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_session_ends_when_the_last_site_stops() {
+        assert!(!session_stream_ended([true]));
+        assert!(!session_stream_ended([false, true, false]));
+        assert!(session_stream_ended([false]));
+        assert!(session_stream_ended([false, false, false]));
+        // No sites streaming at all is an ended session.
+        assert!(session_stream_ended(std::iter::empty()));
     }
 }

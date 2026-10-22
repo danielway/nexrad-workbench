@@ -11,9 +11,6 @@ use eframe::egui;
 
 impl WorkbenchApp {
     pub(crate) fn start_live_mode(&mut self, ctx: &egui::Context) {
-        let site_id = self.sites.focus().id.0.clone();
-        log::info!("Starting live mode for site: {}", site_id);
-
         let now = self.state.frame_now.secs();
 
         // Initialize live mode state. Going live pins the playhead to "now"
@@ -21,7 +18,6 @@ impl WorkbenchApp {
         // live, drives the live-range replay instead. The playhead is kept on
         // "now" by `tick_live`, independent of `playing`.
         self.live.mode_state.start(now);
-        self.sites.focus_mut().live.volume.begin();
         self.playback.state.enter_pinned_live(now);
 
         // Ensure the timeline is zoomed in far enough to show individual sweeps
@@ -36,20 +32,25 @@ impl WorkbenchApp {
             self.playback.state.center_view_on(now);
         }
 
-        // Push the current elevation filter into the channel before starting
-        // so the streaming loop's init-time backfill targets the user's
-        // selected elevation rather than a default.
-        let site = self.sites.focus();
-        site.live.channel.sync_filter(
-            &self.state.viz_state.elevation_selection,
-            site.live.radar_model.vcp_pattern(),
-        );
-        site.live.channel.start(
-            ctx.clone(),
-            site_id,
-            self.acquisition.coordinator.facade().clone(),
-            site.live.engine.clone(),
-        );
+        // Every listed site streams from its own channel, started with that
+        // site's id and projection engine.
+        for site in self.sites.iter_mut() {
+            log::info!("Starting live mode for site: {}", site.id.0);
+            site.live.volume.begin();
+            // Push the current elevation filter into the channel before
+            // starting so the streaming loop's init-time backfill targets the
+            // user's selected elevation rather than a default.
+            site.live.channel.sync_filter(
+                &self.state.viz_state.elevation_selection,
+                site.live.radar_model.vcp_pattern(),
+            );
+            site.live.channel.start(
+                ctx.clone(),
+                site.id.0.clone(),
+                self.acquisition.coordinator.facade().clone(),
+                site.live.engine.clone(),
+            );
+        }
     }
 
     /// Re-pin the playhead to the live edge (the `ReturnToLive` command).
@@ -429,20 +430,24 @@ impl WorkbenchApp {
         self.playback.state.playing = false;
     }
 
-    /// Handle a realtime streaming result.
+    /// Handle a realtime streaming result from the channel of the site at
+    /// `site` in the list. The result lands on that site's live state; only
+    /// the focus site moves the session phase past acquiring.
     pub(crate) fn handle_realtime_result(
         &mut self,
+        site: usize,
         result: nexrad::RealtimeResult,
         _ctx: &egui::Context,
     ) {
         let now = self.state.frame_now.secs();
+        let from_focus = site == self.sites.focus;
 
         match result {
             nexrad::RealtimeResult::Started { site_id } => {
                 log::debug!("Realtime streaming started for site: {}", site_id);
                 self.live.mode_state.apply_site_event(
                     crate::core::SiteStreamEvent::Started,
-                    true,
+                    from_focus,
                     now,
                 );
             }
@@ -468,10 +473,10 @@ impl WorkbenchApp {
                 let awaiting_target = plan.as_ref().and_then(|p| p.next_target()).is_some();
                 self.live.mode_state.apply_site_event(
                     crate::core::SiteStreamEvent::Chunk { awaiting_target },
-                    true,
+                    from_focus,
                     now,
                 );
-                let volume = &mut self.sites.focus_mut().live.volume;
+                let volume = &mut self.sites.list[site].live.volume;
                 volume.chunks_received = chunks_in_volume;
                 if let Some(stat) = arrival_stat {
                     volume.record_chunk_arrival(stat);
@@ -507,7 +512,7 @@ impl WorkbenchApp {
                 );
 
                 // Track realtime chunk as an acquisition operation
-                let rt_site_id = self.sites.focus().id.0.clone();
+                let rt_site_id = self.sites.list[site].id.0.clone();
                 let op_id =
                     self.acquisition
                         .state
@@ -532,7 +537,7 @@ impl WorkbenchApp {
                 }
 
                 // Forward chunk to worker for incremental ingest
-                let site_id = self.sites.focus().id.0.clone();
+                let site_id = self.sites.list[site].id.0.clone();
                 let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
                 if is_start {
                     self.state.session_stats.pipeline.processing = true;
@@ -567,12 +572,27 @@ impl WorkbenchApp {
             }
             nexrad::RealtimeResult::Error(msg) => {
                 log::error!("Realtime streaming error: {}", msg);
-                self.stop_live_mode(crate::core::LiveExitReason::ConnectionError);
-                // Preserve error message (stop_live_mode clears it)
-                self.live.mode_state.error_message = Some(msg.clone());
+                // A failed channel stops its own site; the session stops
+                // with the last site still streaming.
+                let others_streaming = self
+                    .sites
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != site)
+                    .map(|(_, other)| other.live.channel.is_active());
+                if crate::core::session_stream_ended(others_streaming) {
+                    self.stop_live_mode(crate::core::LiveExitReason::ConnectionError);
+                    // Preserve error message (stop_live_mode clears it)
+                    self.live.mode_state.error_message = Some(msg.clone());
+                } else {
+                    let live = &mut self.sites.list[site].live;
+                    live.channel.stop();
+                    live.volume.clear();
+                    live.engine.borrow_mut().reset_volume_observations();
+                }
 
                 // Track error as a failed acquisition operation
-                let err_site_id = self.sites.focus().id.0.clone();
+                let err_site_id = self.sites.list[site].id.0.clone();
                 let op_id =
                     self.acquisition
                         .state
