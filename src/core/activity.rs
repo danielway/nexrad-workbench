@@ -96,7 +96,7 @@ pub(crate) struct ActivityInputs<'a> {
 }
 
 /// Dev-only inputs, surfaced under the sheet's Details disclosure.
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 pub(crate) struct ActivityDevInputs {
     pub cross_origin_isolated: bool,
     pub avg_fetch_ms: Option<f64>,
@@ -117,6 +117,8 @@ pub(crate) struct ActivityDevInputs {
     /// The shown storm cell result: counts, cut and worker timing. `None`
     /// while no cells are shown.
     pub storm_cells: Option<crate::core::storm_cells::StormCellStats>,
+    /// Every site's volume texture, in list order.
+    pub volume_textures: Vec<crate::core::volume_plan::VolumeTexture>,
 }
 
 /// One site's stream, as the chip and the sheet read it.
@@ -365,7 +367,7 @@ pub(crate) struct NetworkRow {
 }
 
 /// Dev-only detail rows.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ActivityDetailVm {
     /// HTTP requests this session (the service worker's count when it has
     /// seen traffic, else the download channel's).
@@ -390,6 +392,9 @@ pub(crate) struct ActivityDetailVm {
     /// Scans the ledger has given up on: the volume genuinely lacks the
     /// requested cut, so no amount of retrying will produce it.
     pub unavailable: u32,
+    /// `(label, value)` per site holding a volume texture
+    /// ([`crate::core::volume_plan::volume_texture_rows`]).
+    pub volume_rows: Vec<(String, String)>,
 }
 
 /// The small always-on readout beside the activity chip: how smoothly the app
@@ -688,7 +693,7 @@ impl ActivityVm {
             rows,
             network,
             sites,
-            detail: inputs.dev.map(|dev| ActivityDetailVm {
+            detail: inputs.dev.as_ref().map(|dev| ActivityDetailVm {
                 requests: session_requests(&inputs),
                 failed_requests: inputs.sw_aggregate.failed_requests,
                 worker: inputs.worker,
@@ -703,6 +708,7 @@ impl ActivityVm {
                 chunk_latency: dev.chunk_latency,
                 storm_cells: dev.storm_cells,
                 unavailable: inputs.ledger.unavailable,
+                volume_rows: crate::core::volume_plan::volume_texture_rows(&dev.volume_textures),
             }),
         }
     }
@@ -1152,7 +1158,7 @@ mod coverage_tests {
                 sites: &self.sites,
                 focus: 0,
                 sheet_open: self.sheet_open,
-                dev: self.dev,
+                dev: self.dev.clone(),
                 errors: &self.errors,
                 errors_acked: self.errors_acked,
             }
@@ -1770,6 +1776,34 @@ mod coverage_tests {
         assert_eq!(detail.http_in_flight, 4);
         assert_eq!(detail.worker.ingest, 2);
         assert!(detail.cross_origin_isolated);
+    }
+
+    #[wasm_bindgen_test]
+    fn dev_rows_list_each_sites_volume_texture() {
+        use crate::core::volume_plan::VolumeTexture;
+        let mut f = Fixture::new();
+        f.dev = Some(ActivityDevInputs::default());
+        assert!(f.vm().detail.expect("detail").volume_rows.is_empty());
+        f.dev = Some(ActivityDevInputs {
+            volume_textures: vec![
+                VolumeTexture {
+                    site: "KTBW".into(),
+                    bytes: 6_000_000,
+                },
+                VolumeTexture {
+                    site: "KMLB".into(),
+                    bytes: 12_500_000,
+                },
+            ],
+            ..ActivityDevInputs::default()
+        });
+        assert_eq!(
+            f.vm().detail.expect("detail").volume_rows,
+            vec![
+                ("Volume KTBW".to_string(), "6.0 MB".to_string()),
+                ("Volume KMLB".to_string(), "12 MB".to_string()),
+            ]
+        );
     }
 
     // ── Errors other than downloads ─────────────────────────────────────

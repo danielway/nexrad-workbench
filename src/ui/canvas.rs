@@ -72,7 +72,15 @@ pub(crate) fn render_canvas_with_geo(
 
                 // Draw the 3D globe via PaintCallback: every site on the
                 // sphere, the camera and chrome on the focus.
-                draw_globe(ui, &rect, state, sites, globe_renderer, geo_line_renderer);
+                draw_globe(
+                    ui,
+                    &rect,
+                    state,
+                    sites,
+                    globe_renderer,
+                    geo_line_renderer,
+                    chrome.device_layout,
+                );
 
                 // Corner-chrome overlays (color scale + info + compass)
                 // dispatched through the typed registry. The trait's

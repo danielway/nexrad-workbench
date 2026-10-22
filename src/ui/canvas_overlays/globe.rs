@@ -42,6 +42,7 @@ pub(crate) fn draw_globe(
     sites: &crate::subsystem::Sites,
     globe_renderer: Option<&Arc<Mutex<GlobeRenderer>>>,
     geo_line_renderer: Option<&Arc<Mutex<GeoLineRenderer>>>,
+    layout: crate::core::phone::DeviceLayout,
 ) {
     let Some(globe_r) = globe_renderer.cloned() else {
         return;
@@ -49,8 +50,13 @@ pub(crate) fn draw_globe(
     let geo_r = geo_line_renderer.cloned();
     let volume_enabled = state.viz_state.volume_3d_enabled;
     let camera_pos = state.viz_state.camera.camera_world_pos();
+    let resident = sites.volume_residency(layout);
     let plan = crate::core::volume_plan::globe_draw_plan(
-        &sites.iter().map(globe_site).collect::<Vec<_>>(),
+        &sites
+            .iter()
+            .zip(resident)
+            .map(|(s, resident)| globe_site(s, resident))
+            .collect::<Vec<_>>(),
         volume_enabled,
         [camera_pos.x, camera_pos.y, camera_pos.z],
     );
@@ -152,8 +158,9 @@ fn paint_volume(
 }
 
 /// What the draw plan needs to know about one site: its frame time and
-/// position, and what its renderers hold.
-fn globe_site(site: &crate::subsystem::SiteState) -> GlobeSite {
+/// position, and what its renderers hold. `resident` is whether the memory
+/// rule lets it hold a volume.
+fn globe_site(site: &crate::subsystem::SiteState, resident: bool) -> GlobeSite {
     let held = |r: Option<bool>| r.unwrap_or(false);
     GlobeSite {
         frame_secs: site
@@ -167,11 +174,12 @@ fn globe_site(site: &crate::subsystem::SiteState) -> GlobeSite {
                 .as_ref()
                 .and_then(|r| r.lock().ok().map(|r| r.has_data())),
         ),
-        volume_ready: held(
-            site.gpu
-                .volume_ray
-                .as_ref()
-                .and_then(|r| r.lock().ok().map(|r| r.has_data())),
-        ),
+        volume_ready: resident
+            && held(
+                site.gpu
+                    .volume_ray
+                    .as_ref()
+                    .and_then(|r| r.lock().ok().map(|r| r.has_data())),
+            ),
     }
 }

@@ -12,7 +12,9 @@
 //! ascending elevation-angle order with no duplicates, and rows on a uniform
 //! azimuth grid. See `docs/RENDERING.md` for the full pipeline.
 
-use crate::core::volume_plan::{derive_shell_extents, site_unit_position, ShellExtents};
+use crate::core::volume_plan::{
+    derive_shell_extents, site_unit_position, volume_texture_bytes, ShellExtents,
+};
 use crate::core::RenderProcessing;
 use crate::core::VolumeSweepMeta;
 use crate::geo::Camera;
@@ -848,6 +850,29 @@ impl VolumeRayRenderer {
     /// Returns true if volume data has been uploaded.
     pub(crate) fn has_data(&self) -> bool {
         self.has_data
+    }
+
+    /// Bytes the volume texture takes on the GPU; 0 when none is allocated.
+    pub(crate) fn texture_bytes(&self) -> u64 {
+        match self.tex_alloc {
+            Some((width, height, format)) => volume_texture_bytes(
+                width as u32,
+                height as u32,
+                if format == glow::R8UI as i32 { 1 } else { 2 },
+            ),
+            None => 0,
+        }
+    }
+
+    /// Give the volume texture back (the site is past the memory budget,
+    /// see [`crate::core::volume_plan::resident_volumes`]). The next upload
+    /// allocates a new one.
+    pub(crate) fn clear_volume(&mut self, gl: &glow::Context) {
+        if let Some(tex) = self.volume_texture.take() {
+            unsafe { gl.delete_texture(tex) };
+        }
+        self.tex_alloc = None;
+        self.has_data = false;
     }
 
     /// Paint the volume at half resolution into an FBO, then blit to screen.

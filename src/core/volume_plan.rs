@@ -404,6 +404,61 @@ pub(crate) fn globe_draw_plan(
     surfaces.chain(volumes).collect()
 }
 
+/// How many volumes the GPU may hold at once: one per site a desktop can
+/// show, and one on a phone, whose GPU memory is the tighter limit.
+pub(crate) fn volume_budget(layout: crate::core::phone::DeviceLayout) -> usize {
+    if layout.is_phone() {
+        1
+    } else {
+        crate::core::sites::DESKTOP_CAP
+    }
+}
+
+/// Which of `site_count` sites may hold a volume under `budget`: the focus
+/// first, then the others in list order. A site past the budget draws its
+/// surface patch in volume mode, sends no volume request and gives its
+/// volume texture back. The focus is always inside a budget of one or more,
+/// so the caption never has to explain a missing focus volume.
+pub(crate) fn resident_volumes(site_count: usize, focus: usize, budget: usize) -> Vec<bool> {
+    let mut resident = vec![false; site_count];
+    let order = std::iter::once(focus).chain((0..site_count).filter(|&i| i != focus));
+    for i in order.filter(|&i| i < site_count).take(budget) {
+        resident[i] = true;
+    }
+    resident
+}
+
+/// Bytes a volume texture of `width` × `height` texels takes, at
+/// `bytes_per_texel` (1 for `R8UI`, 2 for `R16UI`).
+pub(crate) fn volume_texture_bytes(width: u32, height: u32, bytes_per_texel: u8) -> u64 {
+    width as u64 * height as u64 * bytes_per_texel as u64
+}
+
+/// One site's volume texture, as the developer readout reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VolumeTexture {
+    pub site: String,
+    /// [`volume_texture_bytes`] of what the site's renderer holds; 0 when it
+    /// holds no volume.
+    pub bytes: u64,
+}
+
+/// The developer rows for the volume textures: `(label, value)`, one per
+/// site that holds a volume, in list order, e.g. `("Volume KTBW", "6 MB")`.
+/// Empty while no site holds one, so 2D sessions show no new row.
+pub(crate) fn volume_texture_rows(textures: &[VolumeTexture]) -> Vec<(String, String)> {
+    textures
+        .iter()
+        .filter(|t| t.bytes > 0)
+        .map(|t| {
+            (
+                format!("Volume {}", t.site),
+                crate::core::timeline_view::format_bytes(t.bytes),
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -993,5 +1048,69 @@ mod extent_tests {
                 GlobeDraw::Volume(0)
             ]
         );
+    }
+
+    // ── Memory rule ─────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn the_budget_is_three_on_a_desktop_and_one_on_a_phone() {
+        use crate::core::phone::DeviceLayout;
+        assert_eq!(volume_budget(DeviceLayout::Desktop), 3);
+        assert_eq!(volume_budget(DeviceLayout::Phone { landscape: false }), 1);
+        assert_eq!(volume_budget(DeviceLayout::Phone { landscape: true }), 1);
+        // The budget covers every site the layout can show.
+        assert_eq!(
+            volume_budget(DeviceLayout::Desktop),
+            crate::core::sites::cap(DeviceLayout::Desktop)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn every_site_holds_a_volume_within_the_budget() {
+        assert_eq!(resident_volumes(1, 0, 3), vec![true]);
+        assert_eq!(resident_volumes(3, 1, 3), vec![true, true, true]);
+        assert!(resident_volumes(0, 0, 3).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_focus_holds_its_volume_first_and_the_rest_follow_list_order() {
+        assert_eq!(resident_volumes(3, 2, 1), vec![false, false, true]);
+        assert_eq!(resident_volumes(3, 2, 2), vec![true, false, true]);
+        assert_eq!(resident_volumes(3, 0, 2), vec![true, true, false]);
+        // A budget of none holds nothing.
+        assert_eq!(resident_volumes(2, 0, 0), vec![false, false]);
+    }
+
+    #[wasm_bindgen_test]
+    fn texture_bytes_count_every_texel_at_its_width() {
+        assert_eq!(volume_texture_bytes(4096, 1000, 1), 4_096_000);
+        assert_eq!(volume_texture_bytes(4096, 1000, 2), 8_192_000);
+        assert_eq!(volume_texture_bytes(0, 0, 2), 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_readout_has_a_row_per_site_holding_a_volume() {
+        let textures = [
+            VolumeTexture {
+                site: "KTBW".into(),
+                bytes: 8_192_000,
+            },
+            VolumeTexture {
+                site: "KMLB".into(),
+                bytes: 0,
+            },
+            VolumeTexture {
+                site: "KJAX".into(),
+                bytes: 24_000_000,
+            },
+        ];
+        assert_eq!(
+            volume_texture_rows(&textures),
+            vec![
+                ("Volume KTBW".to_string(), "8.2 MB".to_string()),
+                ("Volume KJAX".to_string(), "24 MB".to_string()),
+            ]
+        );
+        assert!(volume_texture_rows(&textures[1..2]).is_empty());
     }
 }

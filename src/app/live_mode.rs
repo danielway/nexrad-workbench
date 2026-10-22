@@ -412,8 +412,12 @@ impl WorkbenchApp {
     }
 
     /// Request a volume render (all elevations for ray marching) of site
-    /// `site`'s active scan.
+    /// `site`'s active scan. A site past the volume budget asks for none.
     pub(crate) fn request_worker_render_volume(&mut self, site: usize) {
+        let resident = self.sites.volume_residency(self.chrome.device_layout);
+        if !resident.get(site).copied().unwrap_or(false) {
+            return;
+        }
         let product = self.state.viz_state.product.to_worker_string().to_string();
         let track = &mut self.sites.list[site].render;
         self.render
