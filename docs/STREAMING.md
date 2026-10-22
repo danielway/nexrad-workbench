@@ -35,7 +35,8 @@ started with that site's id, its projection engine, the volume in progress
 arrivals) and its per-frame live models; each channel's results land on its
 own site, and in the worker each site's chunks fill their own accumulator
 (keyed by site id, which `ingest_chunk`, `render_live` and the live `detect`
-carry). The session (`subsystem::Live`, a `LiveModeState`) holds the one
+carry; a site that leaves the map sends `drop_site`, so its accumulator goes
+with it). The session (`subsystem::Live`, a `LiveModeState`) holds the one
 phase, exit reason, detached time and pulse: it starts streaming when the
 first site's stream starts, only the focus site's chunks move it between
 receiving and waiting, and it stops when the last site stops

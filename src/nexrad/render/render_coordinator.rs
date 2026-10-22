@@ -113,6 +113,14 @@ impl RenderCoordinator {
         }
     }
 
+    /// Tell the worker to forget `site`'s live accumulator; the site left
+    /// the map, or its element now points at another radar.
+    pub(crate) fn drop_site(&mut self, site: crate::data::SiteId) {
+        if let Some(ref mut worker) = self.worker {
+            worker.drop_site(site);
+        }
+    }
+
     /// Post a storm cell detection. Returns `false` when there is no worker
     /// to run it.
     pub(crate) fn detect(&mut self, request: crate::core::storm_cells::DetectRequest) -> bool {

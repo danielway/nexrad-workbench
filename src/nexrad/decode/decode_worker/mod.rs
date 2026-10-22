@@ -69,6 +69,7 @@ enum QueuedRequest {
     RenderVolume(RequestId, String, String, Vec<u8>),
     Detect(RequestId, crate::core::storm_cells::DetectRequest),
     DetectComposite(RequestId, crate::core::storm_cells::SceneDetectRequest),
+    DropSite(crate::data::SiteId),
 }
 
 impl DecodeWorker {
@@ -240,6 +241,9 @@ impl DecodeWorker {
                     }
                     QueuedRequest::DetectComposite(id, request) => {
                         send::send_detect_composite_request(&self.worker, id, &request);
+                    }
+                    QueuedRequest::DropSite(site) => {
+                        send::send_drop_site_request(&self.worker, &site);
                     }
                     QueuedRequest::RenderVolume(id, scan_key, product, elev_nums) => {
                         send::send_render_volume_request(

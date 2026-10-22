@@ -133,10 +133,10 @@ The essentials to hold in mind:
   decompress, NEXRAD decode, sweep extraction, IndexedDB I/O, sweep-blob
   generation) runs in a pool of Web Workers (`worker.js`). Communication is
   `postMessage` with Transferable ArrayBuffers (zero-copy). The worker protocol
-  has eight message types: `init`, `ingest`, `ingest_chunk`, `render`,
+  has nine message types: `init`, `ingest`, `ingest_chunk`, `render`,
   `render_volume`, `render_live`, `detect` and `detect_composite` (storm
   cells on one site's cut, or once on the composite grid of every shown
-  site).
+  site), and `drop_site` (forget a removed site's live accumulator).
 - **Pipeline** — Acquire (S3 download or live chunk stream) → Ingest in the worker
   (split → decompress → decode → extract sweep blobs → store in IDB) → Render in
   the worker (read one pre-computed sweep blob from IDB) → Display on the main
