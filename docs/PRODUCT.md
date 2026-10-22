@@ -55,8 +55,8 @@ glance to power-user archival analysis, and from desktop to phone.
 5. Scale gracefully from a casual glance to power-user archival analysis — and
    from desktop to phone.
 
-**Non-goals (v1):** multi-radar mosaic timelines, collaborative sessions,
-alerting/notifications, offline-first guarantees beyond the existing cache.
+**Non-goals (v1):** collaborative sessions, alerting/notifications,
+offline-first guarantees beyond the existing cache.
 
 ## 2. Design Principles
 
@@ -105,6 +105,18 @@ alerting/notifications, offline-first guarantees beyond the existing cache.
 | **Live edge** | The right boundary of acquired data; "now" minus dissemination latency. |
 | **Tether** | Whether the playhead is following the live edge. |
 | **Loop window** | A time/frame range playback cycles over; may be pinned to the live edge. |
+
+**Sites and the focus.** A desktop map shows up to three sites at once; a
+phone shows one. Every site on the map is the same kind of thing: each has
+its own scans, frame, stream and disc, all at the one shared playhead, drawn
+older frame first so the newer one is on top. One of them is the **focus**:
+the surfaces that hold a single value (the tilt ladder, the frame readout,
+the age pill, the caption's first words, the timeline track, the 3D views and
+storm cells) follow it. The site picker adds a site ("+ Also show"), removes
+one, moves the focus or keeps only the focus; picking a site plainly replaces
+the set. The map has its own centre, set when the focus changes or from a
+link, apart from any radar's position. Preferences remember the focus; the
+set itself travels only in the link.
 
 ### 3.1 Archive vs. streaming
 
@@ -905,13 +917,14 @@ decision are `core::link`; preferences are `core::prefs`.
 
 | What | Key | Notes |
 |---|---|---|
-| Site | `site` | An unknown site falls back to the preferred site |
+| Site | `site` | The focus. An unknown site falls back to the preferred site |
+| Other sites on the map | `also` | In order (`also=KMLB,KJAX`). Unknown sites and those over the layout's cap are dropped; ignored on the phone |
 | Playhead time | `t` | Unix seconds; not written while pinned |
 | Selection | `sel` | `now` (pinned point), `last6f` / `last1800s` (range ending now), `START~END` (fixed range); absent = a point at `t` |
 | Play mode | `mode` | `frames` or `rays` |
 | Product | `product` | Short code: `REF`, `VEL`, `SW`, `ZDR`, `CC` or `KDP`. A product that is not offered (`CFP`) is ignored and the default applies |
 | Tilt | `tilt` | An angle (`0.5`) or `latest` |
-| Map center | `lat`, `lon` | |
+| Map center | `lat`, `lon` | The map's own centre; absent, the map centres on the focus site |
 | 2D/3D, camera, map and timeline zoom, volume rendering and cutoff | `v` | Base64 JSON blob; its old `rt` flag is read as `sel=now` |
 | Storm cells | `cells` | Present means on; the value is the envelope threshold in dBZ (`cells=35`). Absent leaves the preference |
 | Storm cell tracks | `tracks` | `tracks=1` on, `tracks=0` off; written only while cells and tracks are both on. Absent leaves the preference |

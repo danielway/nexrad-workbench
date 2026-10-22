@@ -18,7 +18,7 @@
 //! | play mode (Frames / Rays) | `mode` |
 //! | product | `product` |
 //! | tilt (an angle, or Latest) | `tilt` |
-//! | map center | `lat`, `lon` |
+//! | map centre (the map's own, not a radar's) | `lat`, `lon` |
 //! | 2D/3D, camera, map and timeline zoom, volume rendering and cutoff | `v` |
 //! | storm cells on, at this envelope threshold (dBZ) | `cells` |
 //! | storm cell tracks on (`1`) or off (`0`) | `tracks` |

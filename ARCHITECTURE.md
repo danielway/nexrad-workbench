@@ -199,7 +199,7 @@ wrappers.
 | `RenderCoordinator` | `nexrad/render/` | Owns decode worker dispatch; dedup via the pure `should_dispatch` gate |
 | `RealtimeChannel` | `nexrad/live/realtime/` | Typed mailboxes + lifecycle of the live `streaming_loop` |
 | `ProjectionEngine` | `core/projection/` | Single owner of forward-looking radar timing (plans, forecasts) |
-| `PersistenceManager` | `app/persistence_manager.rs` | Shell over `core::decide_persist` — link push throttle + prefs save (tables in PRODUCT.md §13.4) |
+| `PersistenceManager` | `app/persistence_manager.rs` | Shell over `core::decide_persist` — link push throttle + prefs save (tables in PRODUCT.md §13.4; the link carries the focus as `site=` and the other sites on the map as `also=`) |
 | `NetworkMonitor` | `subsystem/network_monitor.rs` | Service worker metric listener (record types in `core/domain/telemetry.rs`) |
 
 ## Async Architecture
@@ -323,8 +323,16 @@ then UI layout.
   ledger, retries and prefetch settle. Worker replies find their site with
   `core::sites::route` and are dropped when it is gone; per-frame shells loop
   over the list, and single-valued surfaces (ladder, readouts, timeline,
-  links, preferences) read the focus. Today the list holds one site. The
-  site position also serves as the map centre until the map has its own.
+  links, preferences) read the focus. The list holds up to
+  `core::sites::cap` sites (three on a desktop, one on a phone); the
+  `AddSite`, `RemoveSite`, `SetFocus` and `OnlyFocus` intents change it
+  through the pure decisions in `core::sites`.
+- **The map centre** (`VizState::map_centre`) is its own value, apart from
+  every radar's position: `SelectSite`, `SetFocus` and the boot (from the
+  link's `lat`/`lon`, else the focus site) set it through
+  `VizState::centre_map_on`. The camera, the link's `lat`/`lon`, the scale
+  bar and the mPING query read it; whatever means "where is the radar"
+  reads the site.
 
 ### Intent Pattern
 State mutations from UI actions are expressed as `Intent` variants
