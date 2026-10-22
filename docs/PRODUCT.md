@@ -664,7 +664,34 @@ Interactive measurement and analysis affordances on the 2D canvas:
 - **Data probe** — hover for lat/lon, azimuth/range, the underlying gate value,
   and the radial's collection timestamp. (Named "Data probe" to free "inspector"
   for the scan inspector in §4.)
-- **Distance Measure** — click two points to read the great-circle distance.
+- **Distance Measure** — click two points to read the great-circle distance
+  (km, nm and mi; the readout sits past the end point, or the first spot
+  beside the line that covers neither end nor the map chrome). A third click starts over. Dragging
+  an end moves it; the map pans only when the drag starts away from both
+  ends.
+  - **Snap.** With storm cells and Tracks on, an end placed or dropped
+    within 16 px (24 px on the phone) of a lettered track's centroid snaps
+    to it and shows the letter beside its marker; a ring under the pointer
+    previews what a click would snap to. Only lettered tracks snap: a cell
+    seen once, with no letter yet, does not. An end placed on the My
+    location dot snaps to it and follows the fix.
+  - **Follow.** A snapped end follows its storm's centroid as the volume
+    changes, scrubbing or live, and the line and readout follow it. A
+    coasting track keeps it. When the track ends (missing from a finished
+    volume; also scrubbing back before it had a letter, turning Tracks off,
+    or changing site) the end lets go where the storm was last seen and
+    draws muted, still lettered; the readout says `Track B ended: point
+    stays where it was last seen`. Dragging a snapped end away unsnaps it.
+  - **Readout.** Under the distance, a storm to a fixed point (a map point,
+    My location or an ended track) adds its closest approach from the
+    track's motion: `Closest approach 4.2 km in 18 min · high confidence`;
+    "Closest approach: motion not known yet" while the motion is below the
+    forecast arrow's confidence, "Moving away: closest approach has passed",
+    "Closest approach more than an hour out", or "B is stationary". Two
+    storms add how the gap changes: `Converging at 12 km/h · closest 3.1 km
+    in 25 min`, `Diverging at 8 km/h`, "Holding about the same distance"
+    (under 2 km/h), or "A and B: motion not known yet".
+  - The measurement is not carried in the link.
 - **Storm Cells** (Layers › Analysis; over any product, 2D only). The
   detector runs on the volume's lowest reflectivity cut whatever product or
   tilt is on screen, so the cells stay over velocity, CC and the rest (a
@@ -709,6 +736,8 @@ Interactive measurement and analysis affordances on the 2D canvas:
     and bearing from you and its closest approach (`Closest to you: 14 km
     in 22 min`; withheld beyond an hour, "Moving away from you" when it
     is). The phone's card folds motion and age into one line ("Moving NE 82 km/h, high confidence · 34 min").
+    For closest approach to any other point, or between two storms, snap a
+    distance measurement to the track (Distance Measure, above).
   - **Column** (the card's vertical extent). Once the volume's higher
     reflectivity tilts are on device, each cell's footprint is sampled on
     every tilt (one cut per tilt), and the card adds the cell's echo top

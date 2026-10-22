@@ -123,15 +123,21 @@ pub(crate) fn handle_canvas_interaction(
     projection: &MapProjection,
     storm_cells: &crate::core::storm_cell_view::StormCellsVm,
 ) {
-    // Distance tool: click to place points. Which endpoint the click lands on
-    // is the core's call (`decide_distance_click`), applied by the shell.
+    // Distance tool: a click places an endpoint and a drag that starts on
+    // one moves it (instead of panning). Which endpoint, and what it snaps
+    // to, is the core's call (`core::measure`); the shell sends where.
+    let measure_drag = distance_tool_input(response, rect, state, projection);
     if state.viz_state.distance_tool_active && response.clicked() {
         if let Some(click_pos) = response.interact_pointer_pos() {
             let geo = projection.screen_to_geo(click_pos);
-            state.push_command(crate::core::Intent::PlaceDistancePoint {
-                lat: geo.y,
-                lon: geo.x,
-            });
+            state.push_command(crate::core::Intent::Measure(
+                crate::core::measure::MeasureIntent::Place {
+                    lat: geo.y,
+                    lon: geo.x,
+                    km_per_px: super::canvas_overlays::compute_km_per_pixel(projection, rect)
+                        .unwrap_or(0.0),
+                },
+            ));
         }
     } else if response.clicked() {
         if let Some(click_pos) = response.interact_pointer_pos() {
@@ -189,7 +195,7 @@ pub(crate) fn handle_canvas_interaction(
             .viz_state
             .set_pan_offset(state.viz_state.pan_offset() + t.pan);
     } else {
-        if response.dragged() {
+        if response.dragged() && !measure_drag {
             state
                 .viz_state
                 .set_pan_offset(state.viz_state.pan_offset() + response.drag_delta());
@@ -222,6 +228,60 @@ pub(crate) fn handle_canvas_interaction(
         state.viz_state.set_zoom(crate::geo::DEFAULT_FLAT_ZOOM);
         state.viz_state.set_pan_offset(Vec2::ZERO);
     }
+}
+
+/// The distance tool's drags: a drag that starts on an endpoint (the core's
+/// [`crate::core::measure::grab`]) moves it, and the drop snaps it. Returns
+/// whether this frame's drag belongs to an endpoint, so the map does not
+/// pan under it.
+fn distance_tool_input(
+    response: &egui::Response,
+    rect: &Rect,
+    state: &mut AppState,
+    projection: &MapProjection,
+) -> bool {
+    use crate::core::measure::{grab, snap_radius_km, MeasureIntent};
+    use crate::core::Intent;
+    if !state.viz_state.distance_tool_active {
+        return false;
+    }
+    let km_per_px = super::canvas_overlays::compute_km_per_pixel(projection, rect).unwrap_or(0.0);
+    let geo = |p: egui::Pos2| {
+        let g = projection.screen_to_geo(p);
+        (g.y, g.x)
+    };
+    let mut ours = state.viz_state.measurement.dragging.is_some();
+    if response.drag_started() {
+        let origin = response.ctx.input(|i| i.pointer.press_origin());
+        if let Some((lat, lon)) = origin.map(geo) {
+            let radius = snap_radius_km(state.is_mobile, km_per_px);
+            ours = grab(&state.viz_state.measurement, lat, lon, radius).is_some();
+            state.push_command(Intent::Measure(MeasureIntent::DragStart {
+                lat,
+                lon,
+                km_per_px,
+            }));
+        }
+    }
+    if !ours {
+        return false;
+    }
+    let pointer = response
+        .interact_pointer_pos()
+        .or_else(|| response.ctx.input(|i| i.pointer.latest_pos()))
+        .map(geo);
+    if response.drag_stopped() {
+        // Sent even without a position: it ends the drag.
+        let (lat, lon) = pointer.unwrap_or((f64::NAN, f64::NAN));
+        state.push_command(Intent::Measure(MeasureIntent::DragEnd {
+            lat,
+            lon,
+            km_per_px,
+        }));
+    } else if let Some((lat, lon)) = pointer.filter(|_| response.dragged()) {
+        state.push_command(Intent::Measure(MeasureIntent::DragTo { lat, lon }));
+    }
+    true
 }
 
 /// The map object under `pos`: hit-test every pickable mark against the
