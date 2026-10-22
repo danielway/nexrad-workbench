@@ -662,7 +662,8 @@ fn event_row(
     ui.add_space(2.0);
 }
 
-/// Navigate to a saved event: switch site if needed, loop its span, center timeline.
+/// Navigate to a saved event: pick its site if it is another (through
+/// `SelectSite`, as any site pick), loop its span, center the timeline.
 fn navigate_to_event(
     state: &mut AppState,
     sites: &mut crate::subsystem::Sites,
@@ -674,10 +675,10 @@ fn navigate_to_event(
 
     if event.site_id != sites.focus().id.0 {
         if let Some(site) = get_site(&event.site_id) {
-            sites.focus_mut().retarget(site.id, site.lat, site.lon);
-            state.viz_state.centre_map_on(site.lat, site.lon);
-            state.push_command(Intent::RefreshTimeline {
-                auto_position: false,
+            state.push_command(Intent::SelectSite {
+                site_id: site.id.to_string(),
+                lat: site.lat,
+                lon: site.lon,
             });
         }
     }

@@ -187,21 +187,17 @@ impl WorkbenchApp {
                 // shared, so only the focus site's load positions it.
                 let ranges = site.scans.time_ranges();
                 if !ranges.is_empty() && i == self.sites.focus {
-                    // Position playback at the end of the most recent range
-                    let most_recent_end = ranges.last().unwrap().end;
-
                     // Only auto-position on initial load or site change,
                     // not when refreshing after a download.
                     if self.state.auto_position_on_timeline_load {
                         self.state.auto_position_on_timeline_load = false;
-                        let ts = self.playback.state.playback_position();
-                        let in_any_range = ranges.iter().any(|r| r.contains(ts));
-                        // A live playhead follows now; repositioning it would
-                        // trip the seek-while-live guard (first-visit pick
-                        // with a warm cache).
-                        if !in_any_range && !self.playback.state.selection.is_live() {
-                            self.playback.state.set_playback_position(most_recent_end);
-                            self.playback.state.center_view_on(most_recent_end);
+                        if let Some(ts) = crate::core::domain::playback::auto_position_target(
+                            &ranges,
+                            self.playback.state.playback_position(),
+                            &self.playback.state.selection,
+                        ) {
+                            self.playback.state.set_playback_position(ts);
+                            self.playback.state.center_view_on(ts);
                         }
                     }
 

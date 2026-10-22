@@ -329,8 +329,10 @@ cached scans.
 A named range selection can be persisted as a **saved event** — a reusable
 bookmark across sessions. Saved events render as colored bars on the timeline,
 surface in a list grouped by site, and offer a "navigate to" action that jumps
-the playback position and selection to the event's range, pointing the focus
-at the event's site if it is another.
+the playback position and selection to the event's range. An event from
+another site picks that site the way the site picker does: it becomes the
+only site on the map and the focus, and if it was already on the map it keeps
+its scans rather than being added twice.
 
 ## 6. Live Streaming & the Tether Model
 

@@ -98,9 +98,9 @@ pub(crate) struct LayoutCtx<'a> {
     pub state: &'a mut AppState,
     /// Read-only: the storm-activity book behind the overview's bars.
     pub timeline: &'a Timeline,
-    /// Still `&mut`: opening a saved event from another site retargets the
-    /// focus site in place (`right_panel::navigate_to_event`). Everything
-    /// else reads the focus site's scans, shadows and position.
+    /// Still `&mut`: `Live::seek` and `Live::select_range` take every site's
+    /// stream and can stop its channel. Everything else reads the focus
+    /// site's scans, shadows and position.
     pub sites: &'a mut crate::subsystem::Sites,
     /// Still `&mut`: every scrub gesture calls `Live::seek`, which detaches
     /// the playhead, mutates `mode_state` and can stop the worker channel

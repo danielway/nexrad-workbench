@@ -196,8 +196,9 @@ UI batch. Its phase-by-phase record is in git history.
   load-bearing and unverifiable headlessly.
 - **`LayoutCtx` still hands five subsystems as `&mut`** (`sites`, `live`,
   `playback`, `acquisition`, `chrome`, plus `modals` for widget buffers).
-  `sites` is `&mut` only because opening a saved event from another site
-  retargets the focus in place (`right_panel::navigate_to_event`). `diagnostics` was
+  `sites` is `&mut` only because the transport calls the UI makes (`Live::seek`,
+  `Live::select_range`) can stop every site's stream channel; a saved event from
+  another site goes through `Intent::SelectSite`. `diagnostics` was
   narrowed to `&` in 2026-07 as a compiler-checked proof that no layer mutates
   it; each surviving `&mut` carries an inline doc naming the mutation that keeps
   it, so the next narrowing attempt starts with the answer. `chrome` is the
