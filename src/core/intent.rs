@@ -161,10 +161,10 @@ pub(crate) enum Intent {
     /// modal's list, the zip/geolocation result, and a canvas click on a site
     /// marker).
     SelectSite { site_id: String, lat: f64, lon: f64 },
-    /// A distance-tool click on the canvas, in geographic coordinates. Which
-    /// endpoint it lands on is decided by
-    /// [`crate::core::canvas::decide_distance_click`].
-    PlaceDistancePoint { lat: f64, lon: f64 },
+    /// The distance tool on the canvas: a click places an endpoint, a drag
+    /// moves one, and an endpoint near a lettered storm track (or "My
+    /// location") snaps to it. Reduced by [`crate::core::measure::reduce`].
+    Measure(crate::core::measure::MeasureIntent),
     /// A button of the map's corner toolbar (data probe, distance). Decided
     /// by [`crate::core::panels::toggle_map_tool`].
     ToggleMapTool(crate::core::panels::MapTool),
