@@ -190,6 +190,11 @@ pub(crate) fn extent(boxes: &[LatLonBox], pad_km: f64, cell_km: f64) -> Option<E
     })
 }
 
+/// Azimuth bins per degree in [`Radials::table`]: 0.01°, far finer than a
+/// radial, so the bin's nearest radial is the point's nearest radial but
+/// for points within 0.005° of halfway between two radials.
+const BINS_PER_DEG: usize = 100;
+
 /// A cut's radials sorted by azimuth, for the nearest-radial lookup.
 struct Radials {
     /// (azimuth, row) of every valid radial, by azimuth.
@@ -199,6 +204,17 @@ struct Radials {
 }
 
 impl Radials {
+    /// The nearest radial's row for each azimuth bin (`u32::MAX` in a gap),
+    /// so the resampling looks a radial up without a search.
+    fn table(&self) -> Vec<u32> {
+        (0..360 * BINS_PER_DEG)
+            .map(|b| {
+                let az = (b as f32 + 0.5) / BINS_PER_DEG as f32;
+                self.nearest(az).map_or(u32::MAX, |r| r as u32)
+            })
+            .collect()
+    }
+
     fn new(sweep: &DetectionInput) -> Self {
         let mut sorted: Vec<(f32, usize)> = sweep.azimuths[..sweep.azimuth_count]
             .iter()
@@ -252,12 +268,11 @@ pub(crate) fn resample(cuts: &[CompositeCut], threshold_dbz: f32) -> Option<Comp
             continue;
         }
         let dec = decoder(s);
-        let radials = Radials::new(s);
+        let radials = Radials::new(s).table();
         let max_range = s.first_gate_km + s.gate_count as f64 * s.gate_interval_km;
         let radar_cos = radar_cos_lat(s);
-        // Rows and columns the disc can reach.
+        // Rows the disc can reach.
         let reach_lat = max_range / KM_PER_DEG;
-        let reach_lon = max_range / (KM_PER_DEG * radar_cos);
         let row_of = |lat: f64| ((lat - ext.origin_lat) * KM_PER_DEG / CELL_KM).floor();
         let col_of = |lon: f64| ((lon - ext.origin_lon) * lon_km / CELL_KM).floor();
         let clamp = |v: f64, n: usize| v.clamp(0.0, n as f64 - 1.0) as usize;
@@ -265,31 +280,36 @@ pub(crate) fn resample(cuts: &[CompositeCut], threshold_dbz: f32) -> Option<Comp
             clamp(row_of(s.radar_lat - reach_lat), ext.rows),
             clamp(row_of(s.radar_lat + reach_lat), ext.rows),
         );
-        let (c0, c1) = (
-            clamp(col_of(s.radar_lon - reach_lon), ext.cols),
-            clamp(col_of(s.radar_lon + reach_lon), ext.cols),
-        );
+        let bins = 360 * BINS_PER_DEG;
         for r in r0..=r1 {
             let lat = ext.origin_lat + (r as f64 + 0.5) * CELL_KM / KM_PER_DEG;
             let y = (lat - s.radar_lat) * KM_PER_DEG;
             if y.abs() >= max_range {
                 continue;
             }
+            // The columns of this row inside the disc.
+            let half = (max_range * max_range - y * y).sqrt() / (KM_PER_DEG * radar_cos);
+            let (c0, c1) = (
+                clamp(col_of(s.radar_lon - half), ext.cols),
+                clamp(col_of(s.radar_lon + half), ext.cols),
+            );
             for c in c0..=c1 {
                 let lon = ext.origin_lon + (c as f64 + 0.5) * CELL_KM / lon_km;
                 let x = (lon - s.radar_lon) * KM_PER_DEG * radar_cos;
-                let range = x.hypot(y);
+                let range = (x * x + y * y).sqrt();
                 if range < s.first_gate_km || range >= max_range {
                     continue;
                 }
-                let gate = ((range - s.first_gate_km) / s.gate_interval_km).floor() as usize;
+                let gate = ((range - s.first_gate_km) / s.gate_interval_km) as usize;
                 if gate >= s.gate_count {
                     continue;
                 }
-                let az = (x.atan2(y).to_degrees() as f32).rem_euclid(360.0);
-                let Some(row) = radials.nearest(az) else {
+                let az = x.atan2(y).to_degrees().rem_euclid(360.0);
+                let row = radials[(az * BINS_PER_DEG as f64) as usize % bins];
+                if row == u32::MAX {
                     continue;
-                };
+                }
+                let row = row as usize;
                 let v = dec.decode(s.gate_values[row * s.gate_count + gate]);
                 if v.is_nan() {
                     continue;
