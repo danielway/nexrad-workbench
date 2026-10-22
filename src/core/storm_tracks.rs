@@ -121,8 +121,10 @@ pub(crate) fn history_keys(
 /// oldest first: at every volume start (on any of its sites) before the
 /// shown scene's time, the scene of each site's newest stored volume
 /// started by then, from [`history_keys`] per site plus the site's shown
-/// cut (`scans[i]` is the timeline of `shown.sites[i]`). Walking back stops where a site has
-/// no such volume, and after [`HISTORY_VOLUMES`] scenes.
+/// cut (`scans[i]` is the timeline of `shown.sites[i]`). A site with no
+/// such volume yet is left out of that scene, as a site with nothing
+/// displayed is left out of the shown one. At most [`HISTORY_VOLUMES`]
+/// scenes.
 pub(crate) fn scene_history_keys(scans: &[&[Scan]], shown: &SceneCellKey) -> Vec<SceneCellKey> {
     // Each site's stored volumes before its shown one, and the shown one
     // itself once stored (a scene before the shown one can hold it).
@@ -148,18 +150,15 @@ pub(crate) fn scene_history_keys(scans: &[&[Scan]], shown: &SceneCellKey) -> Vec
         .collect();
     let mut keys = Vec::new();
     for &at in starts.iter().rev() {
-        let scene: Option<Vec<StormCellKey>> = per_site
+        let sites: Vec<StormCellKey> = per_site
             .iter()
-            .map(|site| {
+            .filter_map(|site| {
                 site.iter()
                     .rev()
                     .find(|k| k.scan_key.scan_start.0 <= at)
                     .cloned()
             })
             .collect();
-        let Some(sites) = scene else {
-            break;
-        };
         keys.push(SceneCellKey {
             sites,
             threshold_dbz: shown.threshold_dbz,
@@ -1220,15 +1219,16 @@ mod tests {
             threshold_dbz: 35.0,
         };
         let keys = scene_history_keys(&[&a, &b], &shown);
-        // Back from KBBB's 4 (the shown cut) to KBBB's 0: KAAA's 0 has no
-        // KBBB volume before it, so the walk stops there.
-        assert_eq!(keys.len(), 9);
+        // Back from KBBB's 4 (the shown cut) to KAAA's 0, which has no
+        // KBBB volume before it and so is KAAA's alone.
+        assert_eq!(keys.len(), 10);
         let starts = |k: &SceneCellKey| -> Vec<i64> {
             k.sites.iter().map(|s| s.scan_key.scan_start.0).collect()
         };
-        assert_eq!(starts(&keys[0]), vec![ms(0), ms(0) + 120_000]);
-        assert_eq!(starts(&keys[1]), vec![ms(1), ms(0) + 120_000]);
-        assert_eq!(starts(&keys[8]), vec![ms(4), ms(4) + 120_000]);
+        assert_eq!(starts(&keys[0]), vec![ms(0)]);
+        assert_eq!(starts(&keys[1]), vec![ms(0), ms(0) + 120_000]);
+        assert_eq!(starts(&keys[2]), vec![ms(1), ms(0) + 120_000]);
+        assert_eq!(starts(&keys[9]), vec![ms(4), ms(4) + 120_000]);
         assert!(keys.windows(2).all(|w| w[0].time_ms() < w[1].time_ms()));
         assert!(keys.iter().all(|k| k.time_ms() < shown.time_ms()));
         // Never more than the history length.
