@@ -27,7 +27,7 @@
 //     Worker → Main:  { type: 'volume_decoded', id, buffer: ArrayBuffer, sweepMeta, wordSize, ... }
 //
 //   Live render (partial sweep from in-memory accumulator, synchronous):
-//     Main → Worker:  { type: 'render_live', id, elevationNumber, product }
+//     Main → Worker:  { type: 'render_live', id, siteId, elevationNumber, product }
 //     Worker → Main:  { type: 'live_decoded', id, azimuths: ArrayBuffer, gateValues: ArrayBuffer, ... }
 //     Worker → Main:  { type: 'live_superseded', id, elevationNumber, currentElevation }
 //       (the elevation was stored to IDB after the request was sent, so the
@@ -262,6 +262,7 @@ self.onmessage = async function (e) {
         try {
             // worker_render_live: JsValue -> JsValue (synchronous, reads from memory)
             const result = wasm.worker_render_live({
+                siteId: msg.siteId,
                 product: msg.product,
                 elevationNumber: msg.elevationNumber,
             });

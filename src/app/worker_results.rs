@@ -26,9 +26,9 @@ impl WorkbenchApp {
             self.state.session_stats.last_worker_outcome_ms = self.state.frame_now.millis();
         }
         // Several chunk acks can land in one drain (a backfill burst); post
-        // at most one live render for them, after the loop (see
-        // `LiveRenderCoalescer`).
-        let mut live_renders = crate::core::worker_ingest::LiveRenderCoalescer::default();
+        // at most one live render per streaming site for them, after the
+        // loop (see `SiteLiveRenderCoalescer`).
+        let mut live_renders = crate::core::worker_ingest::SiteLiveRenderCoalescer::default();
         for outcome in outcomes {
             match outcome {
                 nexrad::WorkerOutcome::Ingested(result) => {
@@ -36,14 +36,20 @@ impl WorkbenchApp {
                 }
                 nexrad::WorkerOutcome::ChunkIngested(result) => {
                     let completed = result.elevations_completed.clone();
+                    let site = result.scan_key.site.clone();
                     let render_live = self.handle_chunk_ingested_outcome(result);
-                    live_renders.observe(render_live, &completed);
+                    live_renders.observe(&site, render_live, &completed);
                 }
                 nexrad::WorkerOutcome::Decoded(result) => {
                     self.handle_decoded_outcome(result);
                 }
-                nexrad::WorkerOutcome::LiveDecoded(result) => {
-                    self.handle_live_decoded_outcome(result);
+                nexrad::WorkerOutcome::LiveDecoded { site, result } => {
+                    // A partial for a site no longer in the list (switched
+                    // away while the render was in the worker) is dropped.
+                    match crate::core::sites::route_site(&site, &self.sites.ids()) {
+                        Some(site) => self.handle_live_decoded_outcome(site, result),
+                        None => log::debug!("Live partial for {} dropped: site not shown", site),
+                    }
                 }
                 nexrad::WorkerOutcome::VolumeDecoded(volume_data) => {
                     self.handle_volume_decoded_outcome(volume_data);
@@ -82,8 +88,10 @@ impl WorkbenchApp {
                 }
             }
         }
-        if let Some((elevation, product)) = live_renders.finish() {
-            self.render.coordinator.render_live(elevation, product);
+        for (site, elevation, product) in live_renders.finish() {
+            self.render
+                .coordinator
+                .render_live(site, elevation, product);
         }
 
         // Byte progress first: a download's reports all precede its result.
@@ -516,13 +524,10 @@ impl WorkbenchApp {
         }
     }
 
-    fn handle_live_decoded_outcome(&mut self, result: DecodeResult) {
+    fn handle_live_decoded_outcome(&mut self, site: usize, result: DecodeResult) {
         use crate::core::worker_decoded::{
             reduce_live_decoded, reduce_live_decoded_azimuths, LiveDecodedEnv,
         };
-
-        // The live stream belongs to the focus site.
-        let site = self.sites.focus;
 
         // Phase 1: display decisions. The GPU renderer's current sweep id
         // (the promote decision's input) is read here and passed in as env.

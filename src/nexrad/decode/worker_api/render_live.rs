@@ -7,6 +7,8 @@ use super::*;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RenderLiveParams {
+    /// The streaming site whose accumulator to draw from.
+    site_id: String,
     #[serde(default = "default_product")]
     product: String,
     #[serde(default)]
@@ -72,7 +74,7 @@ struct LiveSupersededResponse {
 /// [`classify_live_target`]). An elevation the accumulator never held is
 /// still an error.
 ///
-/// Parameters (JS object): `{ product: string, elevationNumber?: number }`
+/// Parameters (JS object): `{ siteId: string, product: string, elevationNumber?: number }`
 #[allow(unreachable_pub)] // wasm_bindgen export invoked from worker.js; must stay pub
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsValue> {
@@ -86,7 +88,7 @@ pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsVa
 
     let product = product_from_str(&p.product);
 
-    with_chunk_accum(|accum| {
+    with_chunk_accum(&p.site_id, |accum| {
         let accum = accum.ok_or_else(|| JsValue::from_str("No chunk accumulator active"))?;
 
         let target_elev = p
@@ -311,34 +313,53 @@ mod tests {
         }
     }
 
-    fn params(elevation: u8) -> JsValue {
+    const SITE: &str = "KTLX";
+
+    fn params_for(site: &str, elevation: u8) -> JsValue {
         let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &"siteId".into(), &site.into()).unwrap();
         js_sys::Reflect::set(&obj, &"product".into(), &"reflectivity".into()).unwrap();
         js_sys::Reflect::set(&obj, &"elevationNumber".into(), &elevation.into()).unwrap();
         obj.into()
+    }
+
+    fn params(elevation: u8) -> JsValue {
+        params_for(SITE, elevation)
     }
 
     #[wasm_bindgen_test]
     fn render_live_after_completing_chunk_is_superseded_not_an_error() {
         // The burst: render_live(1) arrives after the chunk that completed
         // elevation 1 was ingested and its radials dropped.
-        set_chunk_accum(Some(accum(Some(1), &[1])));
+        set_chunk_accum(SITE, Some(accum(Some(1), &[1])));
         let result = worker_render_live(params(1)).expect("superseded is not an error");
         let superseded = js_sys::Reflect::get(&result, &"superseded".into()).unwrap();
         assert_eq!(superseded.as_bool(), Some(true));
         let elev = js_sys::Reflect::get(&result, &"elevationNumber".into()).unwrap();
         assert_eq!(elev.as_f64(), Some(1.0));
-        set_chunk_accum(None);
+        set_chunk_accum(SITE, None);
     }
 
     #[wasm_bindgen_test]
     fn render_live_for_never_seen_elevation_is_still_an_error() {
-        set_chunk_accum(Some(accum(Some(1), &[])));
+        set_chunk_accum(SITE, Some(accum(Some(1), &[])));
         let err = worker_render_live(params(1)).expect_err("nothing was ever collected");
         assert_eq!(
             err.as_string().as_deref(),
             Some("No radials for elevation 1 in accumulator")
         );
-        set_chunk_accum(None);
+        set_chunk_accum(SITE, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn render_live_reads_only_the_named_sites_accumulator() {
+        set_chunk_accum(SITE, Some(accum(Some(1), &[1])));
+        let err = worker_render_live(params_for("KOUN", 1))
+            .expect_err("KOUN has no accumulator of its own");
+        assert_eq!(
+            err.as_string().as_deref(),
+            Some("No chunk accumulator active")
+        );
+        set_chunk_accum(SITE, None);
     }
 }

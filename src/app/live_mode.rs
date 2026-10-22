@@ -306,6 +306,7 @@ impl WorkbenchApp {
                 // next chunk.
                 if !self.gpu_holds_live_sweep(site) {
                     self.render.coordinator.render_live(
+                        self.sites.list[site].id.clone(),
                         elevation_number,
                         self.state.viz_state.product.to_worker_string().to_string(),
                     );

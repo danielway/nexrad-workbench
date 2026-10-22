@@ -86,8 +86,14 @@ impl DecodeWorker {
         }
     }
 
-    /// Submit a live (partial sweep) render request: reads from in-memory accumulator.
-    pub(crate) fn render_live(&mut self, elevation_number: u8, product: String) {
+    /// Submit a live (partial sweep) render request: reads `site`'s
+    /// in-memory accumulator.
+    pub(crate) fn render_live(
+        &mut self,
+        site: crate::data::SiteId,
+        elevation_number: u8,
+        product: String,
+    ) {
         let id = self.next_request_id();
         // Live renders aren't bound to a stored scan; supply a sentinel
         // ScanKey for the context (the receive path doesn't read it for
@@ -97,17 +103,21 @@ impl DecodeWorker {
             crate::data::ScanKey::new(crate::data::SiteId::new(""), crate::data::UnixMillis(0));
         self.pending_render_live.borrow_mut().insert(
             id,
-            RenderContext {
-                scan_key,
-                elevation_number,
+            super::types::LiveRenderContext {
+                site: site.clone(),
+                render: RenderContext {
+                    scan_key,
+                    elevation_number,
+                },
             },
         );
 
         if *self.ready.borrow() {
-            send_render_live_request(&self.worker, id, elevation_number, &product);
+            send_render_live_request(&self.worker, id, &site, elevation_number, &product);
         } else {
             self.queue.push(super::QueuedRequest::RenderLive(
                 id,
+                site,
                 elevation_number,
                 product,
             ));
@@ -352,12 +362,14 @@ pub(super) fn send_render_request(
 pub(super) fn send_render_live_request(
     worker: &Worker,
     id: u64,
+    site: &crate::data::SiteId,
     elevation_number: u8,
     product: &str,
 ) {
     let request = RenderLiveRequestMsg {
         msg_type: RequestType::RenderLive.as_str(),
         id: id as f64,
+        site_id: &site.0,
         elevation_number,
         product,
     };

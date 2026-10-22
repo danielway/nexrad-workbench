@@ -461,6 +461,7 @@ pub(super) struct RenderLiveRequestMsg<'a> {
     #[serde(rename = "type")]
     pub msg_type: &'a str,
     pub id: f64,
+    pub site_id: &'a str,
     pub elevation_number: u8,
     pub product: &'a str,
 }
@@ -486,8 +487,12 @@ pub(crate) enum WorkerOutcome {
     ChunkIngested(ChunkIngestResult),
     /// Decode completed (raw data for GPU rendering).
     Decoded(DecodeResult),
-    /// Live partial sweep decoded (from in-memory accumulator, not IDB).
-    LiveDecoded(DecodeResult),
+    /// Live partial sweep decoded (from in-memory accumulator, not IDB),
+    /// for the streaming site that asked.
+    LiveDecoded {
+        site: crate::data::SiteId,
+        result: DecodeResult,
+    },
     /// Volume decode completed (all elevations packed for ray marching).
     VolumeDecoded(VolumeData),
     /// Storm cell detection completed.
@@ -509,6 +514,15 @@ pub(crate) enum WorkerOutcome {
         /// global state.
         failed_scan_timestamp_secs: Option<f64>,
     },
+}
+
+/// Context for a live (partial sweep) render request: the streaming site
+/// whose accumulator it reads, beside the render context. The render
+/// context keeps the sentinel scan key (an empty site) that marks a live
+/// partial on the canvas, so the site travels here instead.
+pub(crate) struct LiveRenderContext {
+    pub site: crate::data::SiteId,
+    pub render: crate::core::RenderContext,
 }
 
 /// Context for a volume render request.

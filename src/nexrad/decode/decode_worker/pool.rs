@@ -6,7 +6,9 @@
 //! - `render`, `render_volume` — round-robin; render requests just read from
 //!   IDB and every worker has its own connection.
 //! - `ingest_chunk` and `render_live` — pinned to worker 0 because the live
-//!   accumulator (`CHUNK_ACCUM`) is a per-worker thread-local.
+//!   accumulators (`CHUNK_ACCUM`, one per streaming site, keyed by site id)
+//!   are a per-worker thread-local. Both carry the site, so the pool only
+//!   passes them through.
 //! - `detect` — pinned to worker 0 for a live cut (it reads the
 //!   accumulator), round-robined like `render` for a stored one.
 //!
@@ -134,8 +136,13 @@ impl WorkerPool {
 
     /// Submit a live (partial) render — pinned to the live worker because it
     /// reads the in-memory accumulator populated by `ingest_chunk`.
-    pub(crate) fn render_live(&mut self, elevation_number: u8, product: String) {
-        self.workers[LIVE_WORKER_INDEX].render_live(elevation_number, product);
+    pub(crate) fn render_live(
+        &mut self,
+        site: crate::data::SiteId,
+        elevation_number: u8,
+        product: String,
+    ) {
+        self.workers[LIVE_WORKER_INDEX].render_live(site, elevation_number, product);
     }
 
     /// Submit a volume render — round-robined across workers.

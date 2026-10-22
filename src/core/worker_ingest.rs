@@ -61,8 +61,9 @@ pub(crate) struct ChunkIngestActions {
     pub record_chunk_collection_end_secs: Option<f64>,
     /// The site's `live.channel.record_availability_lag_secs(x)`.
     pub record_availability_lag_secs: Option<f64>,
-    /// `render.coordinator.render_live(elevation, product)`, posted once per
-    /// drain after [`LiveRenderCoalescer`] folds the drain's acks.
+    /// `render.coordinator.render_live(site, elevation, product)`, posted
+    /// once per site per drain after [`SiteLiveRenderCoalescer`] folds the
+    /// drain's acks.
     pub render_live: Option<(u8, String)>,
     /// GPU `promote_current_to_previous` under the renderer lock.
     pub promote_prev_texture: bool,
@@ -179,6 +180,49 @@ impl LiveRenderCoalescer {
     /// The one live render to post for the drain, if any.
     pub(crate) fn finish(self) -> Option<(u8, String)> {
         self.pending
+    }
+}
+
+/// [`LiveRenderCoalescer`] per streaming site: each site's worker
+/// accumulator is its own, so one site's acknowledgements never replace or
+/// drop another's live render. Sites keep the order of their first
+/// acknowledgement in the drain.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct SiteLiveRenderCoalescer {
+    by_site: Vec<(crate::data::SiteId, LiveRenderCoalescer)>,
+}
+
+impl SiteLiveRenderCoalescer {
+    /// Observe one acknowledgement from `site`'s stream, in drain order.
+    pub(crate) fn observe(
+        &mut self,
+        site: &crate::data::SiteId,
+        render_live: Option<(u8, String)>,
+        elevations_completed: &[u8],
+    ) {
+        let index = match self.by_site.iter().position(|(id, _)| id == site) {
+            Some(index) => index,
+            None => {
+                self.by_site
+                    .push((site.clone(), LiveRenderCoalescer::default()));
+                self.by_site.len() - 1
+            }
+        };
+        self.by_site[index]
+            .1
+            .observe(render_live, elevations_completed);
+    }
+
+    /// The live renders to post for the drain: at most one per site.
+    pub(crate) fn finish(self) -> Vec<(crate::data::SiteId, u8, String)> {
+        self.by_site
+            .into_iter()
+            .filter_map(|(site, coalescer)| {
+                coalescer
+                    .finish()
+                    .map(|(elevation, product)| (site, elevation, product))
+            })
+            .collect()
     }
 }
 
@@ -1011,6 +1055,34 @@ mod tests {
             coalesce(&[(refl(1), &[][..]), (refl(2), &[1][..])]),
             refl(2)
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn each_site_coalesces_its_own_live_renders() {
+        let ktlx = crate::data::SiteId::new("KTLX");
+        let kinx = crate::data::SiteId::new("KINX");
+        let mut coalescer = SiteLiveRenderCoalescer::default();
+        coalescer.observe(&ktlx, refl(1), &[]);
+        coalescer.observe(&kinx, refl(3), &[]);
+        // KINX completing elevation 1 leaves KTLX's pending render alone.
+        coalescer.observe(&kinx, None, &[1]);
+        coalescer.observe(&ktlx, refl(2), &[]);
+        assert_eq!(
+            coalescer.finish(),
+            vec![
+                (ktlx, 2, "reflectivity".to_string()),
+                (kinx, 3, "reflectivity".to_string()),
+            ]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_site_whose_render_was_stored_posts_none() {
+        let ktlx = crate::data::SiteId::new("KTLX");
+        let mut coalescer = SiteLiveRenderCoalescer::default();
+        coalescer.observe(&ktlx, refl(1), &[]);
+        coalescer.observe(&ktlx, None, &[1]);
+        assert!(coalescer.finish().is_empty());
     }
 
     #[wasm_bindgen_test]
