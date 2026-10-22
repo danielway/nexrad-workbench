@@ -712,8 +712,11 @@ Interactive measurement and analysis affordances on the 2D canvas:
   - **Tracks** (the checkbox under the slider). Cells are tracked across
     volumes (SCIT-style: predicted from their recent motion, matched by
     distance, area and peak, coasting two volumes before a track ends).
-    Each track has a letter (A–Z, then AA, AB…) that stays with the storm
-    and is never reused while the site is open. The storm's path, every
+    A track gets a letter (A–Z, then AA, AB…) once it has been seen in
+    two volumes, or at once when it splits off a lettered storm; a cell
+    seen only once shows its peak alone and uses no letter up, so letters
+    go only to storms that last. A letter stays with its storm and is
+    never handed out again while the site is open. The storm's path, every
     centroid seen (up to 24, about two hours), draws as small dots on a thin
     line that fades with age, newest strongest; a track that split off
     another starts with a short dashed join to the parent's centroid at the
@@ -727,8 +730,8 @@ Interactive measurement and analysis affordances on the 2D canvas:
     Scrubbing back over volumes already seen, or a loop wrapping, shows
     the same letters. A volume whose cells arrive late (a loop that runs
     ahead of detection) is tracked when they do, and the volumes after it
-    are tracked again; only storms that started after it can change
-    letter. Scrubbing more than 20 minutes before the first volume seen
+    are tracked again; letters already shown stay with their storms.
+    Scrubbing more than 20 minutes before the first volume seen
     starts over with new letters.
   - **Rays and live.** Rays shows the previous sweep ahead of the sweep line
     and the current one behind it; cells belong to the current sweep, so a

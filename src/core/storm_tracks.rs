@@ -23,8 +23,8 @@
 //!    frame before it (or the run's start), then observe every later frame
 //!    again, in time order, from its cached cells, replacing it. A volume
 //!    whose result arrives late (after the playhead moved on and later
-//!    volumes were tracked) is therefore tracked like any other; only
-//!    tracks that started after it can change letter.
+//!    volumes were tracked) is therefore tracked like any other, and letters
+//!    already shown stay with their storms.
 //! 3. **History:** the [`HISTORY_VOLUMES`] volumes before `t` that
 //!    [`history_keys`] names are observed the same way as their cells land
 //!    (`storm_cells::decide` asks for them nearest first). The shown volume
@@ -35,6 +35,14 @@
 //!    new run there. The ID counter is kept, so the new run's tracks get
 //!    new labels.
 //!
+//! **Letters.** The tracker's IDs are internal; the letters shown are
+//! handed out here, from a counter that only moves forward. A track gets
+//! one once it has been seen in two volumes (or at once when it split off
+//! a lettered track); a track seen once has none and uses none up. Each
+//! lettered track's centroids remember its letter, so when a replay
+//! observes a track again (even one that now becomes lettered a volume
+//! earlier) it takes the same letter back instead of a new one.
+//!
 //! A frame whose cells have left the detection cache cannot be observed
 //! again; a replay drops it, and it is observed again when shown. A
 //! provisional (live, partial-cut) result is previewed from the tracker
@@ -42,7 +50,7 @@
 //! when it arrives. A threshold change restarts the store (the cells
 //! differ), and a site change resets it, ID counter included.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::core::storm_cells::{
     has_reflectivity, lowest_reflectivity_cut, CutInput, StormCellKey, StormCells,
@@ -115,6 +123,17 @@ struct StoredFrame {
     /// The tracker right after this volume: where a volume inserted after
     /// this one starts from.
     after: Tracker,
+    /// The letters of this volume's lettered tracks.
+    letters: Letters,
+}
+
+/// Letter numbers ([`track_label`]) by tracker ID, for one volume.
+type Letters = BTreeMap<TrackId, u32>;
+
+/// A centroid's exact position: detection is deterministic, so the same
+/// cell observed again (on a replay) has the same bits.
+fn point_key((lat, lon): (f64, f64)) -> (u64, u64) {
+    (lat.to_bits(), lon.to_bits())
 }
 
 /// What [`StormTracks::sync`] did, for logs and tests.
@@ -146,8 +165,14 @@ pub(crate) struct StormTracks {
     frames: BTreeMap<i64, StoredFrame>,
     /// The threshold the stored frames were detected at.
     threshold_dbz: Option<f32>,
-    /// The shown volume's key and frame.
-    current: Option<(StormCellKey, Frame)>,
+    /// The shown volume's key, frame and letters.
+    current: Option<(StormCellKey, Frame, Letters)>,
+    /// The next letter to hand out. Only moves forward (a site change
+    /// resets it), so a letter names one storm.
+    next_letter: u32,
+    /// The letter each lettered track's centroids carry, so a track
+    /// observed again on a replay keeps its letter.
+    letter_of_point: HashMap<(u64, u64), u32>,
     /// The last [`StormTracks::sync`] outcome.
     pub last_sync: Option<TrackSync>,
     /// Volumes observed so far (replays included), for the debug log.
@@ -184,6 +209,83 @@ impl StormTracks {
         self.run_start = start;
         self.frames.clear();
         self.current = None;
+        self.letter_of_point.clear();
+    }
+
+    /// The letters before the volume at `t`: those of the nearest frame
+    /// before it.
+    fn letters_before(&self, t: i64) -> Letters {
+        self.frames
+            .range(..t)
+            .next_back()
+            .map(|(_, f)| f.letters.clone())
+            .unwrap_or_default()
+    }
+
+    /// Letter the tracks of `frame`, given the letters of the volume before
+    /// (`prev`). A track keeps its letter; a track without one gets one
+    /// once it has been seen twice, or at once when it split off a lettered
+    /// track. It takes back the letter its centroids already carry (a
+    /// replay), else the next one when `allocate` (final results only); a
+    /// track seen once has none and uses none up.
+    ///
+    /// `points` is every centroid each track has in the volumes being
+    /// observed (later ones included), newest last: on a replay a track
+    /// can become lettered earlier than before, and should take back the
+    /// letter its later centroids carry rather than a new one.
+    fn letter(
+        &mut self,
+        frame: &Frame,
+        prev: &Letters,
+        points: &HashMap<TrackId, Vec<(f64, f64)>>,
+        allocate: bool,
+    ) -> Letters {
+        let mut out = Letters::new();
+        let mut used = BTreeSet::new();
+        for s in &frame.tracks {
+            if let Some(&l) = prev.get(&s.id) {
+                out.insert(s.id, l);
+                used.insert(l);
+            }
+        }
+        for s in &frame.tracks {
+            if out.contains_key(&s.id) {
+                continue;
+            }
+            let split_off_lettered = s
+                .split_from
+                .is_some_and(|p| out.contains_key(&p) || prev.contains_key(&p));
+            if s.age_volumes < 2 && !split_off_lettered {
+                continue;
+            }
+            let carried = points
+                .get(&s.id)
+                .map_or(&s.trail, |p| p)
+                .iter()
+                .rev()
+                .filter_map(|&p| self.letter_of_point.get(&point_key(p)).copied())
+                .find(|l| !used.contains(l));
+            let l = match carried {
+                Some(l) => l,
+                None if allocate => {
+                    self.next_letter += 1;
+                    self.next_letter - 1
+                }
+                None => continue,
+            };
+            out.insert(s.id, l);
+            used.insert(l);
+        }
+        if allocate {
+            for s in &frame.tracks {
+                if let Some(&l) = out.get(&s.id) {
+                    for &p in &s.trail {
+                        self.letter_of_point.insert(point_key(p), l);
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Whether the volume of `key` has a frame for that cut.
@@ -197,17 +299,12 @@ impl StormTracks {
     /// debug log: how quickly letters are used up measures how stable the
     /// tracking is.
     pub(crate) fn newest_label(&self) -> Option<String> {
-        self.latest().next_id().checked_sub(1).map(track_label)
+        self.next_letter.checked_sub(1).map(track_label)
     }
 
     /// Volumes observed so far on this site, replays included.
     pub(crate) fn observations(&self) -> u64 {
         self.observations
-    }
-
-    /// The frame for the shown volume, if it is tracked.
-    pub(crate) fn current(&self) -> Option<&Frame> {
-        self.current.as_ref().map(|(_, f)| f)
     }
 
     /// Volume times with a stored frame, oldest first.
@@ -268,7 +365,7 @@ impl StormTracks {
             .cloned()
             .collect();
         if pending.is_empty() {
-            if let (Some((k, _)), Some(outcome)) = (&self.current, self.last_sync) {
+            if let (Some((k, _, _)), Some(outcome)) = (&self.current, self.last_sync) {
                 if k == &key {
                     // Nothing changed since the last frame.
                     return outcome;
@@ -293,7 +390,9 @@ impl StormTracks {
                 self.current = None;
                 return TrackSync::Untracked;
             };
-            self.current = Some((key, frame));
+            let prev = self.letters_before(t);
+            let letters = self.letter(&frame, &prev, &HashMap::new(), false);
+            self.current = Some((key, frame, letters));
             return TrackSync::Previewed {
                 history: pending.len(),
             };
@@ -302,7 +401,7 @@ impl StormTracks {
             self.current = None;
             return TrackSync::Untracked;
         };
-        self.current = Some((key, stored.frame.clone()));
+        self.current = Some((key, stored.frame.clone(), stored.letters.clone()));
         if observed == 0 {
             TrackSync::LookedUp
         } else {
@@ -322,6 +421,7 @@ impl StormTracks {
             return 0;
         };
         let mut tracker = self.state_before(x0);
+        let mut letters = self.letters_before(x0);
         let mut seq: BTreeMap<i64, StormCellKey> = self
             .frames
             .split_off(&x0)
@@ -334,21 +434,31 @@ impl StormTracks {
                 replayed -= 1;
             }
         }
+        let mut observed = Vec::new();
+        let mut points: HashMap<TrackId, Vec<(f64, f64)>> = HashMap::new();
         for (t, key) in seq {
             let Some(result) = cells.cached_result(&key) else {
                 continue;
             };
             if let Some(frame) = tracker.observe(t, result, false) {
                 self.observations += 1;
-                self.frames.insert(
-                    t,
-                    StoredFrame {
-                        key,
-                        frame,
-                        after: tracker.clone(),
-                    },
-                );
+                for s in frame.tracks.iter().filter(|s| s.cell_id.is_some()) {
+                    points.entry(s.id).or_default().push((s.lat, s.lon));
+                }
+                observed.push((t, key, frame, tracker.clone()));
             }
+        }
+        for (t, key, frame, after) in observed {
+            letters = self.letter(&frame, &letters, &points, true);
+            self.frames.insert(
+                t,
+                StoredFrame {
+                    key,
+                    frame,
+                    after,
+                    letters: letters.clone(),
+                },
+            );
         }
         while self.frames.len() > MAX_FRAMES {
             self.frames.pop_first();
@@ -359,15 +469,16 @@ impl StormTracks {
     /// The tracks on the shown volume. `reference` is a point (the user's
     /// location) to compute closest approach to.
     pub(crate) fn view(&self, reference: Option<(f64, f64)>) -> Option<TracksView> {
-        let frame = self.current()?;
+        let (_, frame, letters) = self.current.as_ref()?;
         let tracks = frame
             .tracks
             .iter()
-            .map(|s| {
+            .filter_map(|s| Some((s, *letters.get(&s.id)?)))
+            .map(|(s, letter)| {
                 let confident = s.motion.confidence >= MIN_FORECAST_CONFIDENCE;
                 TrackVm {
                     id: s.id,
-                    label: track_label(s.id),
+                    label: track_label(letter),
                     cell_id: s.cell_id,
                     lat: s.lat,
                     lon: s.lon,
@@ -549,10 +660,11 @@ mod tests {
     #[wasm_bindgen_test]
     fn a_freshly_opened_volume_is_tracked_at_once_and_gains_motion_as_history_lands() {
         let (mut tracks, mut cells) = (StormTracks::default(), StormCells::default());
-        // No history cached yet: tracked anyway, a one-volume track.
+        // No history cached yet: tracked anyway, but seen once, so no
+        // letter yet (and none used up).
         assert_eq!(show(&mut tracks, &mut cells, 5), observed(0, 0));
-        let a = tracks.view(None).unwrap().for_cell(0).unwrap().clone();
-        assert_eq!((a.label.as_str(), a.age_volumes), ("A", 1));
+        assert!(tracks.view(None).unwrap().for_cell(0).is_none());
+        assert_eq!(tracks.newest_label(), None);
         // Part of the history lands: observed before 5, and 5 again.
         cache(&mut cells, [1, 2, 3]);
         assert_eq!(tracks.sync(true, &cells, &history(5)), observed(3, 1));
@@ -592,7 +704,7 @@ mod tests {
         cache(&mut cells, 2..=8);
         assert_eq!(show(&mut tracks, &mut cells, 6), observed(4, 0));
         let at6 = tracks.view(None).unwrap();
-        assert_eq!(label_of_cell(&tracks, 1), "B");
+        assert!(at6.for_cell(1).is_none(), "the second storm is new at 6");
         // Back two volumes: looked up, not re-observed.
         assert_eq!(show(&mut tracks, &mut cells, 4), TrackSync::LookedUp);
         let at4 = tracks.view(None).unwrap();
@@ -663,7 +775,8 @@ mod tests {
         assert_eq!(show(&mut tracks, &mut cells, 6), TrackSync::LookedUp);
         let a6 = tracks.view(None).unwrap().for_cell(0).unwrap().clone();
         assert_eq!((a6.label.as_str(), a6.age_volumes), ("A", 7));
-        assert_eq!(label_of_cell(&tracks, 1), "B");
+        assert!(tracks.view(None).unwrap().for_cell(1).is_none());
+        assert_eq!(tracks.newest_label().as_deref(), Some("A"));
     }
 
     #[wasm_bindgen_test]
@@ -683,7 +796,10 @@ mod tests {
         // The wrap back to 0 looks up; nothing restarts.
         assert_eq!(show(&mut tracks, &mut cells, 0), TrackSync::LookedUp);
         assert_eq!(tracks.newest_label(), after_pass_one);
-        assert_eq!(label_of_cell(&tracks, 0), "A");
+        assert!(
+            tracks.view(None).unwrap().for_cell(0).is_none(),
+            "seen once at 0"
+        );
         // Pass two: every volume shown again, 3 and 5 now detected.
         for v in 1..=8 {
             let outcome = show(&mut tracks, &mut cells, v);
@@ -700,6 +816,110 @@ mod tests {
         }
         assert_eq!(tracks.newest_label(), after_pass_one);
         assert_eq!(label_of_cell(&tracks, 1), "B");
+    }
+
+    /// Show `vol` with these cells, history: every earlier volume given.
+    fn show_cells(
+        tracks: &mut StormTracks,
+        cells: &mut StormCells,
+        vol: i64,
+        list: Vec<StormCell>,
+        history: &[i64],
+    ) -> TrackSync {
+        let r = StormCellsResult {
+            cells: list,
+            ..StormCellsResult::default()
+        };
+        cells.seed(key(vol), r, true, true);
+        let keys: Vec<StormCellKey> = history.iter().map(|&v| key(v)).collect();
+        tracks.sync(true, cells, &keys)
+    }
+
+    fn label_opt(tracks: &StormTracks, cell_id: u32) -> Option<String> {
+        tracks
+            .view(None)
+            .and_then(|v| v.for_cell(cell_id).map(|t| t.label.clone()))
+    }
+
+    #[wasm_bindgen_test]
+    fn a_cell_seen_once_never_gets_a_letter_or_uses_one_up() {
+        let (mut tracks, mut cells) = (StormTracks::default(), StormCells::default());
+        for v in 0..6 {
+            // The storm, plus a flash 40 km further along each volume.
+            let list = vec![
+                cell(0, v as f64 * 3.0, 0.0),
+                cell(1, -100.0 + 40.0 * v as f64, 60.0),
+            ];
+            show_cells(&mut tracks, &mut cells, v, list, &[]);
+            assert_eq!(label_opt(&tracks, 1), None, "volume {v}");
+        }
+        assert_eq!(label_opt(&tracks, 0).as_deref(), Some("A"));
+        assert_eq!(tracks.newest_label().as_deref(), Some("A"));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_track_lettered_on_its_second_volume_keeps_that_letter() {
+        let (mut tracks, mut cells) = (StormTracks::default(), StormCells::default());
+        let at = |v: i64| vec![cell(0, v as f64 * 3.0, 0.0)];
+        show_cells(&mut tracks, &mut cells, 0, at(0), &[]);
+        assert_eq!(label_opt(&tracks, 0), None);
+        for v in 1..5 {
+            show_cells(&mut tracks, &mut cells, v, at(v), &[]);
+            assert_eq!(label_opt(&tracks, 0).as_deref(), Some("A"), "volume {v}");
+        }
+        // Scrubbing back: the second volume still says A, the first nothing.
+        show_cells(&mut tracks, &mut cells, 1, at(1), &[]);
+        assert_eq!(label_opt(&tracks, 0).as_deref(), Some("A"));
+        show_cells(&mut tracks, &mut cells, 0, at(0), &[]);
+        assert_eq!(label_opt(&tracks, 0), None);
+        assert_eq!(tracks.newest_label().as_deref(), Some("A"));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_late_volume_letters_a_track_it_makes_seen_twice() {
+        let (mut tracks, mut cells) = (StormTracks::default(), StormCells::default());
+        let a = |v: i64| cell(0, v as f64 * 3.0, 0.0);
+        let b = |v: i64| cell(1, v as f64 * 3.0, 50.0);
+        show_cells(&mut tracks, &mut cells, 0, vec![a(0)], &[]);
+        show_cells(&mut tracks, &mut cells, 1, vec![a(1)], &[]);
+        // B first seen at 3 (2's cells have not landed): no letter.
+        show_cells(&mut tracks, &mut cells, 3, vec![a(3), b(3)], &[0, 1, 2]);
+        assert_eq!(label_opt(&tracks, 0).as_deref(), Some("A"));
+        assert_eq!(label_opt(&tracks, 1), None);
+        // 2 lands late with B in it: B is now seen twice, at 3 it is B.
+        cells.seed(
+            key(2),
+            StormCellsResult {
+                cells: vec![a(2), b(2)],
+                ..StormCellsResult::default()
+            },
+            true,
+            false,
+        );
+        show_cells(&mut tracks, &mut cells, 3, vec![a(3), b(3)], &[0, 1, 2]);
+        assert_eq!(label_opt(&tracks, 0).as_deref(), Some("A"));
+        assert_eq!(label_opt(&tracks, 1).as_deref(), Some("B"));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_split_off_a_lettered_storm_gets_a_letter_at_once() {
+        let (mut tracks, mut cells) = (StormTracks::default(), StormCells::default());
+        for v in 0..3 {
+            show_cells(
+                &mut tracks,
+                &mut cells,
+                v,
+                vec![cell(0, v as f64 * 3.0, 0.0)],
+                &[],
+            );
+        }
+        // Volume 3: the storm splits; the piece 8 km south is new.
+        let list = vec![cell(0, 9.0, 0.0), cell(1, 9.0, -8.0)];
+        show_cells(&mut tracks, &mut cells, 3, list, &[]);
+        assert_eq!(label_opt(&tracks, 0).as_deref(), Some("A"));
+        let child = tracks.view(None).unwrap().for_cell(1).cloned().unwrap();
+        assert_eq!((child.label.as_str(), child.age_volumes), ("B", 1));
+        assert!(child.split_origin.is_some());
     }
 
     #[wasm_bindgen_test]
@@ -740,7 +960,7 @@ mod tests {
         let (mut tracks, mut cells) = (StormTracks::default(), StormCells::default());
         cache(&mut cells, 0..=6);
         show(&mut tracks, &mut cells, 6);
-        assert_eq!(label_of_cell(&tracks, 1), "B");
+        assert_eq!(label_of_cell(&tracks, 0), "A");
         // Another threshold: other cells, so a restart (labels go on).
         cells.seed(key_at(6, CutInput::Stored, 45.0), result(6), true, true);
         let history45: Vec<StormCellKey> =
@@ -749,7 +969,7 @@ mod tests {
             cells.seed(k.clone(), result(v), true, false);
         }
         assert_eq!(tracks.sync(true, &cells, &history45), observed(4, 0));
-        assert_eq!(label_of_cell(&tracks, 0), "C");
+        assert_eq!(label_of_cell(&tracks, 0), "B");
         // New site: everything forgotten, labels from A again.
         tracks.reset();
         let mut cells = StormCells::default();
