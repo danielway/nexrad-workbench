@@ -72,29 +72,29 @@ impl WorkbenchApp {
                 self.state.download_progress.phase = crate::state::DownloadPhase::Decoding;
 
                 // Cache hit: records already in IDB. Resolve elevation list
-                // from timeline metadata (when available) and route both the
-                // scan key and elevation list through the single-owner
-                // helper.
-                let elev_nums: Vec<u8> = crate::core::sites::route(&scan.key, &self.sites.ids())
-                    .and_then(|i| {
-                        self.sites.list[i]
-                            .scans
-                            .find_recent_scan(scan_ts as f64, 1.0)
-                    })
-                    .map(|tl_scan| {
-                        let mut nums: Vec<u8> =
-                            tl_scan.sweeps.iter().map(|s| s.elevation_number).collect();
-                        nums.sort_unstable();
-                        nums.dedup();
-                        nums
-                    })
-                    .unwrap_or_default();
-                self.set_active_scan(scan.key.clone(), elev_nums, scan_ts as f64);
+                // from the site's timeline metadata (when available) and
+                // route both the scan key and elevation list through the
+                // single-owner helper. A scan for a site no longer in the
+                // list is not rendered.
+                if let Some(site) = crate::core::sites::route(&scan.key, &self.sites.ids()) {
+                    let elev_nums: Vec<u8> = self.sites.list[site]
+                        .scans
+                        .find_recent_scan(scan_ts as f64, 1.0)
+                        .map(|tl_scan| {
+                            let mut nums: Vec<u8> =
+                                tl_scan.sweeps.iter().map(|s| s.elevation_number).collect();
+                            nums.sort_unstable();
+                            nums.dedup();
+                            nums
+                        })
+                        .unwrap_or_default();
+                    self.set_active_scan(site, scan.key.clone(), elev_nums);
 
-                self.render.coordinator.force_fresh_render();
-                self.request_worker_render();
-                if self.volume_3d_active() {
-                    self.request_worker_render_volume();
+                    self.sites.list[site].render.force_fresh_render();
+                    self.request_worker_render(site);
+                    if self.volume_3d_active() {
+                        self.request_worker_render_volume(site);
+                    }
                 }
             } else {
                 // Count fresh-download bytes toward the reactive auto-fetch

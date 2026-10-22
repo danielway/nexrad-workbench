@@ -170,35 +170,36 @@ impl WorkbenchApp {
         }
     }
 
-    /// Set the active scan for rendering — the scan key + elevation list
-    /// owned by `RenderCoordinator`. The on-GPU `viz_state.displayed`
-    /// slot is updated separately by the decode-result handlers once
-    /// the worker actually delivers pixels for the requested sweep.
+    /// Set site `site`'s active scan for rendering — the scan key +
+    /// elevation list on its render track. The site's on-GPU `displayed`
+    /// slot is updated separately by the decode-result handlers once the
+    /// worker actually delivers pixels for the requested sweep.
     pub(crate) fn set_active_scan(
         &mut self,
+        site: usize,
         scan_key: data::ScanKey,
         elevations: Vec<u8>,
-        _displayed_ts: f64,
     ) {
-        self.render.coordinator.set_scan(scan_key, elevations);
+        self.sites.list[site].render.set_scan(scan_key, elevations);
     }
 
     /// Like [`Self::set_active_scan`] but for the live chunk-by-chunk
     /// path where the elevation list grows incrementally.
     pub(crate) fn advance_active_scan_chunk(
         &mut self,
+        site: usize,
         scan_key: data::ScanKey,
         new_elevations: &[u8],
-        _displayed_ts: f64,
     ) {
-        self.render.coordinator.set_scan_key(scan_key);
-        self.render.coordinator.add_elevations(new_elevations);
+        let track = &mut self.sites.list[site].render;
+        track.set_scan_key(scan_key);
+        track.add_elevations(new_elevations);
     }
 
-    /// Clear the active scan. Used when no scan is in range, on site
-    /// change, and on error paths.
-    pub(crate) fn clear_active_scan(&mut self) {
-        self.render.coordinator.clear_scan_key();
+    /// Clear site `site`'s active scan. Used when no scan is in range, on
+    /// site change, and on error paths.
+    pub(crate) fn clear_active_scan(&mut self, site: usize) {
+        self.sites.list[site].render.clear_scan_key();
     }
 
     fn handle_ingested_outcome(&mut self, result: IngestResult) {
@@ -252,11 +253,6 @@ impl WorkbenchApp {
             crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
             js_sys::Date::now(),
         );
-        self.set_active_scan(
-            result.scan_key.clone(),
-            result.elevation_numbers,
-            scan_start_secs,
-        );
         // Refresh timeline to include the new scan
         self.state
             .push_command(crate::core::Intent::RefreshTimeline {
@@ -266,13 +262,24 @@ impl WorkbenchApp {
         // Request eviction check
         self.state.push_command(crate::core::Intent::CheckEviction);
 
+        // The rest is the ingesting site's; a scan for a site no longer in
+        // the list is stored but not rendered.
+        let Some(site) = crate::core::sites::route(&result.scan_key, &self.sites.ids()) else {
+            log::debug!(
+                "Ingest for {} not rendered: site not shown",
+                result.scan_key
+            );
+            return;
+        };
+        self.set_active_scan(site, result.scan_key.clone(), result.elevation_numbers);
+
         // Force a fresh render
-        self.render.coordinator.force_fresh_render();
+        self.sites.list[site].render.force_fresh_render();
 
         // Trigger render for the ingested scan
-        self.request_worker_render();
+        self.request_worker_render(site);
         if self.volume_3d_active() {
-            self.request_worker_render_volume();
+            self.request_worker_render_volume(site);
         }
     }
 
@@ -285,14 +292,20 @@ impl WorkbenchApp {
 
         let is_live = self.live.mode_state.is_active();
 
-        // Update scan key, growing elevation list, and displayed timestamp
-        // through the single owner so they can never drift.
-        let had_elevations = !self.render.coordinator.available_elevations().is_empty();
-        self.advance_active_scan_chunk(
-            result.scan_key.clone(),
-            &result.elevations_completed,
-            result.context.timestamp_secs,
-        );
+        // A chunk from a stream whose site is no longer in the list (it was
+        // switched away while the chunk was in the worker) is dropped.
+        let Some(site) = crate::core::sites::route(&result.scan_key, &self.sites.ids()) else {
+            log::debug!("Chunk for {} dropped: site not shown", result.scan_key);
+            return None;
+        };
+
+        // Update scan key and the growing elevation list through the single
+        // owner so they can never drift.
+        let had_elevations = !self.sites.list[site]
+            .render
+            .available_elevations()
+            .is_empty();
+        self.advance_active_scan_chunk(site, result.scan_key.clone(), &result.elevations_completed);
 
         // Assemble the frame context and run the pure reducer over the core
         // state slices. All decisions (and the core-state mutations they
@@ -301,11 +314,11 @@ impl WorkbenchApp {
         let actions = {
             let env = ChunkIngestEnv {
                 is_live,
-                site_id: &self.sites.focus().id.0,
+                site_id: &self.sites.list[site].id.0,
                 product_worker_string: self.state.viz_state.product.to_worker_string(),
                 now_secs: self.state.frame_now.secs(),
                 had_elevations,
-                available_elevations: self.render.coordinator.available_elevations(),
+                available_elevations: self.sites.list[site].render.available_elevations(),
                 frame_projection: self.live.frame_projection.as_ref(),
                 volume_3d_active: self.volume_3d_active(),
             };
@@ -340,13 +353,13 @@ impl WorkbenchApp {
             self.state.session_stats.pipeline.mark_processing_done();
         }
         if actions.force_fresh_render {
-            self.render.coordinator.force_fresh_render();
+            self.sites.list[site].render.force_fresh_render();
         }
         if actions.request_render {
-            self.request_worker_render();
+            self.request_worker_render(site);
         }
         if actions.request_volume_render {
-            self.request_worker_render_volume();
+            self.request_worker_render_volume(site);
         }
         actions.render_live
     }
@@ -358,21 +371,40 @@ impl WorkbenchApp {
         self.state.session_stats.pipeline.mark_processing_done();
         self.state.session_stats.pipeline.rendering = true;
 
+        // A sweep for a site no longer in the list is dropped; only the
+        // shared pipeline bookkeeping runs.
+        let Some(site) = crate::core::sites::route(&result.context.scan_key, &self.sites.ids())
+        else {
+            log::debug!(
+                "Decode for {} dropped: site not shown",
+                result.context.scan_key
+            );
+            self.state.session_stats.pipeline.mark_render_done();
+            self.retire_in_flight_scan(result.context.scan_key.scan_start.as_secs());
+            return;
+        };
+        // The live stream belongs to the focus site.
+        let live_cut = (site == self.sites.focus)
+            .then(|| self.live_render_sources())
+            .flatten();
+
         // Assemble the frame context and run the pure reducer. All decisions
         // (current-scan gate, cache entry, pending-prev clearing, display
         // angle, ghost retention, overlay gate) happen in `reduce_decoded`;
         // the shell executes the described actions below — the GPU upload
         // block itself stays here.
+        let whole_sweeps_only = self.live_shows_whole_sweeps();
         let actions = {
+            let target = &mut self.sites.list[site];
             let env = DecodedEnv {
                 dev_mode: self.state.dev_mode,
-                site_id: &self.sites.focus().id.0,
+                site_id: &target.id.0,
                 playback_position: self.playback.state.playback_position(),
                 elevation_selection: &self.state.viz_state.elevation_selection,
                 product: self.state.viz_state.product,
                 max_scan_age_secs: MAX_SCAN_AGE_SECS,
-                live_cut: self.live_render_sources(),
-                whole_sweeps_only: self.live_shows_whole_sweeps(),
+                live_cut,
+                whole_sweeps_only,
                 sweep_animation: self.state.effective_sweep_animation(
                     &self.playback.state,
                     self.live.canvas_follows_live(&self.playback.state),
@@ -382,9 +414,9 @@ impl WorkbenchApp {
                 pending_scans_empty: self.state.download_progress.pending_scans.is_empty(),
             };
             let slices = DecodedSlices {
-                playback_manager: &mut self.render.playback_manager,
+                playback_manager: &mut target.crossfade,
             };
-            reduce_decoded(env, slices, &self.sites.focus().scans, &result)
+            reduce_decoded(env, slices, &target.scans, &result)
         };
 
         // Execute the described actions in the struct's field order.
@@ -449,6 +481,18 @@ impl WorkbenchApp {
 
         if let Some((start, end, angle)) = actions.update_overlay {
             self.update_overlay_from_sweep(start, end, angle);
+        }
+    }
+
+    /// Drop a scan's in-flight ghost and, when nothing else is in flight or
+    /// pending, the download progress with it.
+    fn retire_in_flight_scan(&mut self, scan_start: i64) {
+        let progress = &mut self.state.download_progress;
+        progress
+            .in_flight_scans
+            .retain(|&(start, _)| start != scan_start);
+        if progress.in_flight_scans.is_empty() && progress.pending_scans.is_empty() {
+            progress.clear();
         }
     }
 
@@ -625,8 +669,9 @@ impl WorkbenchApp {
         // right ghost is removed even after the user scrolled away and
         // the active scan key now points elsewhere.
         let cleanup_ts = failed_scan_timestamp_secs.or_else(|| {
-            self.render
-                .coordinator
+            self.sites
+                .focus()
+                .render
                 .scan_key()
                 .map(|k| k.scan_start.as_secs_f64())
         });

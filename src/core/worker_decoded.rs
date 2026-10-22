@@ -70,7 +70,7 @@ pub(crate) struct DecodedEnv<'a> {
 
 /// Mutable borrows of the core state the reducer updates directly.
 pub(crate) struct DecodedSlices<'a> {
-    /// `render.playback_manager` — receives the cached sweep entry and the
+    /// The site's `crossfade` cache — receives the cached sweep entry and the
     /// pending-prev-sweep clearing.
     pub playback_manager: &'a mut PlaybackManager,
 }

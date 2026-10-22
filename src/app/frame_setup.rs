@@ -106,15 +106,16 @@ impl WorkbenchApp {
                 r.clear_data();
             }
         }
-        self.render.playback_manager.clear_cache();
+        let focus = self.sites.focus_mut();
+        focus.crossfade.clear_cache();
         // `clear_for_site_change` is broader than `clear_active_scan`:
         // it also wipes `available_elevations` and the per-render
         // dedup cache. Pair it with the on-GPU `displayed` wipe so
         // the timeline/canvas don't keep highlighting the old site.
-        self.render.coordinator.clear_for_site_change();
+        focus.render.clear_for_site_change();
+        focus.shadows.clear();
         self.state.viz_state.displayed = None;
         self.state.viz_state.previous_displayed = None;
-        self.sites.focus_mut().shadows.clear();
         self.state.viz_state.storm_cells.reset();
         self.state.viz_state.storm_tracks.reset();
     }

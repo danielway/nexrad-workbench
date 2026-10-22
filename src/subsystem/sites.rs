@@ -2,7 +2,8 @@
 //!
 //! [`Sites`] holds one [`SiteState`] per active radar and a `focus` index.
 //! A `SiteState` owns everything that differs between radars: the site's id
-//! and position and its scan inventory. Everything shared (playback,
+//! and position, its scan inventory, its render track and the crossfade and
+//! scrub caches in front of it. Everything shared (playback,
 //! selection, settings, the worker pool, the download queue, the archive
 //! index, the activity book) stays with its own owner.
 //!
@@ -15,6 +16,9 @@
 //! The list is never empty and `focus` is always one of its indices
 //! ([`crate::core::sites::focus_valid`]); nothing adds or removes sites yet.
 
+use crate::core::playback_manager::PlaybackManager;
+use crate::core::render::RenderTrack;
+use crate::core::render_loop::ScrubCache;
 use crate::core::{RadarTimeline, ScanBoundary};
 use crate::data::SiteId;
 
@@ -33,6 +37,15 @@ pub(crate) struct SiteState {
     /// Per-scan time boundaries from the archive listing, drawn on the
     /// timeline before the scans are downloaded. Cleared on a site change.
     pub shadows: Vec<ScanBoundary>,
+    /// The scan this site is rendering, its renderable elevations and the
+    /// dedup inputs for its worker requests. The worker pool itself is
+    /// shared ([`crate::nexrad::RenderCoordinator`]).
+    pub render: RenderTrack,
+    /// Decoded sweeps kept for the crossfade under-layer, and the pending
+    /// previous-sweep request.
+    pub crossfade: PlaybackManager,
+    /// Scrub detection for this site's active scan.
+    pub scrub: ScrubCache,
 }
 
 impl SiteState {
@@ -44,6 +57,9 @@ impl SiteState {
             lon,
             scans: RadarTimeline::default(),
             shadows: Vec::new(),
+            render: RenderTrack::default(),
+            crossfade: PlaybackManager::new(),
+            scrub: ScrubCache::default(),
         }
     }
 

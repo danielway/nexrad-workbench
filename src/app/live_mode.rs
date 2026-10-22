@@ -251,7 +251,8 @@ impl WorkbenchApp {
             .update_overlay(start, end, elevation_deg, self.state.frame_now.secs());
     }
 
-    /// Send a render request to the worker for the current scan/elevation/product.
+    /// Send a render request to the worker for site `site`'s
+    /// scan/elevation/product at the playhead.
     ///
     /// Mode-agnostic: the unified resolver merges the live in-progress
     /// accumulator with the cached timeline and returns one of three intents.
@@ -262,17 +263,22 @@ impl WorkbenchApp {
     /// Honours the user's intent exactly: no fuzzy elevation fallback — if the
     /// user picks 5° and the resolved scan only has 1°/3°/7°, the canvas blanks
     /// rather than snapping to a neighbor.
-    pub(crate) fn request_worker_render(&mut self) {
+    pub(crate) fn request_worker_render(&mut self, site: usize) {
         use crate::core::playback_manager::DesiredDisplay;
 
+        // The live stream belongs to the focus site; every other site
+        // resolves from its cache alone.
+        let streams = site == self.sites.focus;
+        let live_cut = streams.then(|| self.live_render_sources()).flatten();
+        let target = &self.sites.list[site];
         let desired = crate::core::playback_manager::resolve_desired_display(
-            &self.sites.focus().id.0,
+            &target.id.0,
             self.playback.state.playback_position(),
             &self.state.viz_state.elevation_selection,
             self.state.viz_state.product,
-            &self.sites.focus().scans,
+            &target.scans,
             MAX_SCAN_AGE_SECS,
-            self.live_render_sources(),
+            live_cut,
             self.live_shows_whole_sweeps(),
         );
 
@@ -293,7 +299,8 @@ impl WorkbenchApp {
                 }
             }
             DesiredDisplay::Cached(identity) => {
-                if self.render.coordinator.request_render_for(identity) {
+                let track = &mut self.sites.list[site].render;
+                if self.render.coordinator.request_render_for(track, identity) {
                     // Was guarded by `&& !pipeline.processing`, which only ever
                     // skipped a redundant `true = true`.
                     self.state.session_stats.pipeline.processing = true;
@@ -307,7 +314,8 @@ impl WorkbenchApp {
                 // resolve to `Blank` even though the GPU holds a good `live|*`
                 // sweep. Only blank when archive owns the canvas — which it
                 // does whenever the playhead is detached from the live edge.
-                let protecting_live_partial = self.live.canvas_follows_live(&self.playback.state)
+                let protecting_live_partial = streams
+                    && self.live.canvas_follows_live(&self.playback.state)
                     && self.gpu_holds_live_sweep();
                 // Don't blank merely because the playhead drifted into a gap
                 // (spec §11.2): a Blank with NO scan covering the playhead is the
@@ -315,9 +323,7 @@ impl WorkbenchApp {
                 // canvas caption surface the discrepancy. Blank only when a scan
                 // IS present but the selected elevation/product isn't in it (the
                 // honest "nothing here for your filter" case).
-                let scan_covers_playhead = self
-                    .sites
-                    .focus()
+                let scan_covers_playhead = self.sites.list[site]
                     .scans
                     .find_recent_scan(self.playback.state.playback_position(), MAX_SCAN_AGE_SECS)
                     .is_some();
@@ -382,10 +388,14 @@ impl WorkbenchApp {
             .unwrap_or(false)
     }
 
-    /// Request volume render (all elevations for ray marching).
-    pub(crate) fn request_worker_render_volume(&mut self) {
+    /// Request a volume render (all elevations for ray marching) of site
+    /// `site`'s active scan.
+    pub(crate) fn request_worker_render_volume(&mut self, site: usize) {
         let product = self.state.viz_state.product.to_worker_string().to_string();
-        self.render.coordinator.request_volume_render(&product);
+        let track = &mut self.sites.list[site].render;
+        self.render
+            .coordinator
+            .request_volume_render(track, &product);
     }
 
     /// Stop live mode streaming.

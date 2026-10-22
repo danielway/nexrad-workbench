@@ -1,15 +1,17 @@
-//! Render coordinator: owns the decode worker pool and render request deduplication.
+//! Render coordinator: owns the decode worker pool and sends render requests.
 //!
-//! Consolidates the five tightly-coupled fields that were scattered between
-//! WorkbenchApp and Renderers into a single owner.
+//! The pool is shared by every site. What each site is rendering, and the
+//! dedup inputs for its requests, is that site's
+//! [`RenderTrack`](crate::core::render::RenderTrack); the request methods take
+//! the track they are sending for.
 
-use super::render_request::VolumeRenderRequest;
+use crate::core::render::{RenderTrack, VolumeRenderRequest};
 use crate::core::SweepIdentity;
 use crate::data::ScanKey;
 use crate::nexrad::decode::decode_worker::{default_pool_size, WorkerOutcome, WorkerPool};
 
-/// Coordinates render requests to a pool of decode workers, deduplicating
-/// identical requests and owning the current scan/elevation state.
+/// Sends render requests to a pool of decode workers, deduplicating each
+/// against the requesting site's [`RenderTrack`].
 ///
 /// The pool is chosen to saturate the ingest pipeline with parallel
 /// decompress/decode work while keeping the UI thread responsive — see
@@ -17,35 +19,11 @@ use crate::nexrad::decode::decode_worker::{default_pool_size, WorkerOutcome, Wor
 pub(crate) struct RenderCoordinator {
     /// Pool of Web Workers for offloading expensive NEXRAD operations.
     worker: Option<WorkerPool>,
-    /// Identity of the currently displayed scan. Stored as the typed
-    /// [`ScanKey`] rather than its serialized form so callers compare by
-    /// value, not by string formatting; the storage-key string is built at
-    /// the worker boundary via [`ScanKey::to_storage_key`].
-    current_scan_key: Option<ScanKey>,
-    /// Elevations the GPU can render right now for the *currently
-    /// displayed* scan, populated from worker ingest results in either the
-    /// live or archive flow. Distinct from
-    /// [`crate::core::VolumeElevationRoster::received`], which is the
-    /// in-progress *live* volume's observation roster — different scope,
-    /// different lifecycle. Don't mix the two.
-    available_elevations: Vec<u8>,
-    /// Identity of the last single-elevation render request, for dedup.
-    /// Compared structurally — equal identities mean the same on-disk sweep
-    /// and the request is suppressed.
-    last_render: Option<SweepIdentity>,
-    /// Previous volume render parameters for change detection.
-    last_volume_render: Option<VolumeRenderRequest>,
 }
 
 impl RenderCoordinator {
     pub(crate) fn new(worker: Option<WorkerPool>) -> Self {
-        Self {
-            worker,
-            current_scan_key: None,
-            available_elevations: Vec::new(),
-            last_render: None,
-            last_volume_render: None,
-        }
+        Self { worker }
     }
 
     /// Whether a decode worker is available.
@@ -53,66 +31,19 @@ impl RenderCoordinator {
         self.worker.is_some()
     }
 
-    /// Current scan key, if any.
-    pub(crate) fn scan_key(&self) -> Option<&ScanKey> {
-        self.current_scan_key.as_ref()
-    }
-
-    /// Available elevation numbers for the current scan.
-    pub(crate) fn available_elevations(&self) -> &[u8] {
-        &self.available_elevations
-    }
-
-    /// Set the current scan key and available elevations (after ingest).
-    pub(crate) fn set_scan(&mut self, key: ScanKey, elevations: Vec<u8>) {
-        self.current_scan_key = Some(key);
-        self.available_elevations = elevations;
-    }
-
-    /// Set just the scan key (e.g. during scrub or chunk ingest).
-    pub(crate) fn set_scan_key(&mut self, key: ScanKey) {
-        self.current_scan_key = Some(key);
-    }
-
-    /// Add newly-completed elevations (used during chunk ingest).
-    pub(crate) fn add_elevations(&mut self, new: &[u8]) {
-        for &elev in new {
-            if !self.available_elevations.contains(&elev) {
-                self.available_elevations.push(elev);
-                self.available_elevations.sort_unstable();
-            }
-        }
-    }
-
-    /// Clear render state for a site change.
-    pub(crate) fn clear_for_site_change(&mut self) {
-        self.current_scan_key = None;
-        self.available_elevations.clear();
-        self.last_render = None;
-        self.last_volume_render = None;
-    }
-
-    /// Force the next render request to go through (clears dedup cache).
-    pub(crate) fn force_fresh_render(&mut self) {
-        self.last_render = None;
-        self.last_volume_render = None;
-    }
-
-    /// Clear only the scan key (e.g. when no scan is in range).
-    pub(crate) fn clear_scan_key(&mut self) {
-        self.current_scan_key = None;
-        self.last_render = None;
-    }
-
-    /// Send a render request for an explicit sweep identity. Returns true
-    /// if the request was actually sent (false if deduplicated or no
-    /// worker).
-    pub(crate) fn request_render_for(&mut self, identity: SweepIdentity) -> bool {
+    /// Send a render request for an explicit sweep identity, unless `track`
+    /// sent the same one last. Returns true if the request was actually sent
+    /// (false if deduplicated or no worker).
+    pub(crate) fn request_render_for(
+        &mut self,
+        track: &mut RenderTrack,
+        identity: SweepIdentity,
+    ) -> bool {
         let Some(ref mut worker) = self.worker else {
             return false;
         };
 
-        if !crate::core::render::should_dispatch(&identity, self.last_render.as_ref()) {
+        if !track.admits_sweep(&identity) {
             return false;
         }
 
@@ -126,14 +57,15 @@ impl RenderCoordinator {
         let scan_key = identity.scan_key.clone();
         let elevation_number = identity.elevation_number;
         let product = identity.product.clone();
-        self.last_render = Some(identity);
+        track.set_last_render(identity);
         worker.render(scan_key, elevation_number, product);
         true
     }
 
-    /// Send a volume render request. Returns true if actually sent.
-    pub(crate) fn request_volume_render(&mut self, product: &str) -> bool {
-        let Some(ref scan_key) = self.current_scan_key else {
+    /// Send a volume render request for `track`'s scan. Returns true if
+    /// actually sent.
+    pub(crate) fn request_volume_render(&mut self, track: &mut RenderTrack, product: &str) -> bool {
+        let Some(scan_key) = track.scan_key().cloned() else {
             log::debug!("Volume render skipped: no scan key");
             return false;
         };
@@ -141,7 +73,7 @@ impl RenderCoordinator {
             log::debug!("Volume render skipped: no worker");
             return false;
         };
-        if self.available_elevations.is_empty() {
+        if track.available_elevations().is_empty() {
             log::warn!("Volume render skipped: no elevation numbers available");
             return false;
         }
@@ -151,7 +83,7 @@ impl RenderCoordinator {
             product: product.to_string(),
         };
 
-        if !crate::core::render::should_dispatch(&request, self.last_volume_render.as_ref()) {
+        if !track.admits_volume(&request) {
             return false;
         }
 
@@ -159,13 +91,12 @@ impl RenderCoordinator {
             "Requesting volume render: {} product={} elevations={:?}",
             scan_key,
             product,
-            self.available_elevations,
+            track.available_elevations(),
         );
 
-        let scan_key_typed = scan_key.clone();
-        let elev_nums = self.available_elevations.clone();
-        self.last_volume_render = Some(request);
-        worker.render_volume(scan_key_typed, product.to_string(), elev_nums);
+        let elev_nums = track.available_elevations().to_vec();
+        track.set_last_volume_render(request);
+        worker.render_volume(scan_key, product.to_string(), elev_nums);
         true
     }
 
@@ -290,12 +221,6 @@ impl RenderCoordinator {
             }
         }
     }
-
-    /// Store a prefetch render identity in the dedup cache (to prevent
-    /// re-sending the same prefetch request).
-    pub(crate) fn set_last_render(&mut self, identity: SweepIdentity) {
-        self.last_render = Some(identity);
-    }
 }
 
 #[cfg(test)]
@@ -312,100 +237,37 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn new_has_no_worker_and_empty_state() {
+    fn new_has_no_worker() {
         let c = RenderCoordinator::new(None);
         assert!(!c.has_worker());
-        assert!(c.scan_key().is_none());
-        assert!(c.available_elevations().is_empty());
-    }
-
-    #[wasm_bindgen_test]
-    fn set_scan_sets_key_and_elevations() {
-        let mut c = RenderCoordinator::new(None);
-        c.set_scan(key("KDMX", 1_700_000_000_000), vec![1, 2, 3]);
-        assert_eq!(c.scan_key(), Some(&key("KDMX", 1_700_000_000_000)));
-        assert_eq!(c.available_elevations(), &[1, 2, 3]);
-    }
-
-    #[wasm_bindgen_test]
-    fn set_scan_key_only_leaves_elevations_untouched() {
-        let mut c = RenderCoordinator::new(None);
-        c.set_scan(key("KDMX", 100), vec![4, 5]);
-        c.set_scan_key(key("KFTG", 200));
-        assert_eq!(c.scan_key(), Some(&key("KFTG", 200)));
-        // elevations from the prior set_scan remain
-        assert_eq!(c.available_elevations(), &[4, 5]);
-    }
-
-    #[wasm_bindgen_test]
-    fn add_elevations_keeps_sorted_unique() {
-        let mut c = RenderCoordinator::new(None);
-        c.add_elevations(&[5, 3, 9]);
-        assert_eq!(c.available_elevations(), &[3, 5, 9]);
-    }
-
-    #[wasm_bindgen_test]
-    fn add_elevations_dedups_existing() {
-        let mut c = RenderCoordinator::new(None);
-        c.add_elevations(&[1, 2]);
-        c.add_elevations(&[2, 1, 4]);
-        assert_eq!(c.available_elevations(), &[1, 2, 4]);
-    }
-
-    #[wasm_bindgen_test]
-    fn add_elevations_no_duplicate_when_re_added() {
-        let mut c = RenderCoordinator::new(None);
-        c.add_elevations(&[7]);
-        c.add_elevations(&[7]);
-        assert_eq!(c.available_elevations(), &[7]);
-    }
-
-    #[wasm_bindgen_test]
-    fn add_elevations_merges_into_existing_sorted() {
-        let mut c = RenderCoordinator::new(None);
-        c.set_scan(key("KABC", 1), vec![2, 6]);
-        c.add_elevations(&[4]);
-        assert_eq!(c.available_elevations(), &[2, 4, 6]);
-    }
-
-    #[wasm_bindgen_test]
-    fn clear_for_site_change_resets_everything() {
-        let mut c = RenderCoordinator::new(None);
-        c.set_scan(key("KDMX", 5), vec![1, 2]);
-        c.clear_for_site_change();
-        assert!(c.scan_key().is_none());
-        assert!(c.available_elevations().is_empty());
-    }
-
-    #[wasm_bindgen_test]
-    fn clear_scan_key_clears_key_but_keeps_elevations() {
-        let mut c = RenderCoordinator::new(None);
-        c.set_scan(key("KDMX", 5), vec![1, 2]);
-        c.clear_scan_key();
-        assert!(c.scan_key().is_none());
-        assert_eq!(c.available_elevations(), &[1, 2]);
     }
 
     #[wasm_bindgen_test]
     fn request_render_for_returns_false_without_worker() {
         let mut c = RenderCoordinator::new(None);
-        let sent = c.request_render_for(identity("KDMX", 100, 1, "ref"));
+        let mut track = RenderTrack::default();
+        let sent = c.request_render_for(&mut track, identity("KDMX", 100, 1, "ref"));
         assert!(!sent);
+        // Nothing was sent, so nothing is recorded for dedup.
+        assert!(track.last_render().is_none());
     }
 
     #[wasm_bindgen_test]
     fn request_volume_render_false_without_scan_key() {
         let mut c = RenderCoordinator::new(None);
+        let mut track = RenderTrack::default();
         // no scan key set -> short-circuits to false
-        assert!(!c.request_volume_render("ref"));
+        assert!(!c.request_volume_render(&mut track, "ref"));
     }
 
     #[wasm_bindgen_test]
     fn request_volume_render_false_without_worker() {
         let mut c = RenderCoordinator::new(None);
-        c.set_scan(key("KDMX", 100), vec![1, 2]);
+        let mut track = RenderTrack::default();
+        track.set_scan(key("KDMX", 100), vec![1, 2]);
         // scan key present + elevations present, but no worker -> false
-        assert!(!c.request_volume_render("ref"));
+        assert!(!c.request_volume_render(&mut track, "ref"));
+        assert!(track.last_volume_render().is_none());
     }
 
     #[wasm_bindgen_test]
@@ -415,31 +277,12 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn force_fresh_render_is_safe_without_worker() {
+    fn primed_dedup_does_not_send_without_worker() {
         let mut c = RenderCoordinator::new(None);
-        // exercises the dedup-cache clear path; no observable getter, just
-        // assert it does not affect scan state.
-        c.set_scan(key("KDMX", 1), vec![3]);
-        c.force_fresh_render();
-        assert_eq!(c.scan_key(), Some(&key("KDMX", 1)));
-        assert_eq!(c.available_elevations(), &[3]);
-    }
-
-    #[wasm_bindgen_test]
-    fn set_last_render_does_not_send_without_worker() {
-        let mut c = RenderCoordinator::new(None);
-        // priming the dedup cache should not affect public state and should
-        // keep request_render_for returning false (still no worker).
-        c.set_last_render(identity("KDMX", 1, 1, "ref"));
-        assert!(!c.request_render_for(identity("KDMX", 1, 1, "ref")));
-    }
-
-    #[wasm_bindgen_test]
-    fn set_scan_overwrites_prior_elevations() {
-        let mut c = RenderCoordinator::new(None);
-        c.set_scan(key("KDMX", 1), vec![1, 2, 3]);
-        c.set_scan(key("KDMX", 2), vec![9]);
-        assert_eq!(c.scan_key(), Some(&key("KDMX", 2)));
-        assert_eq!(c.available_elevations(), &[9]);
+        let mut track = RenderTrack::default();
+        // priming the dedup cache keeps request_render_for returning false
+        // (still no worker).
+        track.set_last_render(identity("KDMX", 1, 1, "ref"));
+        assert!(!c.request_render_for(&mut track, identity("KDMX", 1, 1, "ref")));
     }
 }

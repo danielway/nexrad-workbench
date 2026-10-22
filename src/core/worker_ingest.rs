@@ -64,7 +64,7 @@ pub(crate) struct ChunkIngestActions {
     pub intents: Vec<Intent>,
     /// `state.session_stats.pipeline.mark_processing_done()`.
     pub mark_processing_done: bool,
-    /// `render.coordinator.force_fresh_render()`.
+    /// `render.force_fresh_render()` on the site's track.
     pub force_fresh_render: bool,
     /// Shell calls `request_worker_render()` (the unified display resolver,
     /// which reads the stored sweep blob for a completed cut). Archive sets

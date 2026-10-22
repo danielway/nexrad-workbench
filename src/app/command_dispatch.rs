@@ -692,7 +692,9 @@ impl WorkbenchApp {
             dispatch_state_only(cmd, &mut bundle, outcome)
         };
         if std::mem::take(&mut outcome.fresh_render) {
-            self.render.coordinator.force_fresh_render();
+            for site in self.sites.list.iter_mut() {
+                site.render.force_fresh_render();
+            }
         }
         let Some(cmd) = cmd else {
             return;
@@ -882,7 +884,9 @@ impl WorkbenchApp {
             // correct (spec §11.2): the data the displayed frame came from is
             // gone, so drop it rather than holding a stale frame with a
             // discrepancy caption.
-            self.clear_display_no_scan();
+            for site in 0..self.sites.list.len() {
+                self.clear_display_no_scan(site);
+            }
             // Reset the acquisition machinery to match the now-empty cache:
             // the queue, its drawer operations, the progress ghosts, the
             // prefetch settle (its resolved marker would otherwise suppress
