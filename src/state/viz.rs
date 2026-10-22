@@ -67,11 +67,9 @@ pub(crate) struct VizState {
     /// Whether the distance measurement tool is active.
     pub distance_tool_active: bool,
 
-    /// Distance measurement start point (lat, lon).
-    pub distance_start: Option<(f64, f64)>,
-
-    /// Distance measurement end point (lat, lon).
-    pub distance_end: Option<(f64, f64)>,
+    /// The distance tool's measurement: endpoints, what each is snapped
+    /// to, and the drag in progress (see `crate::core::measure`).
+    pub measurement: crate::core::measure::Measurement,
 
     /// Whether storm cell detection overlay is visible.
     pub storm_cells_visible: bool,
@@ -142,8 +140,7 @@ impl Default for VizState {
             volume_density_cutoff: 5.0,
             data_probe_enabled: false,
             distance_tool_active: false,
-            distance_start: None,
-            distance_end: None,
+            measurement: Default::default(),
             storm_cells_visible: false,
             storm_cell_threshold_dbz: 35.0,
             storm_cells: StormCells::default(),

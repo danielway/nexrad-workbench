@@ -117,6 +117,8 @@ impl WorkbenchApp {
         self.timeline.shadow_scan_boundaries.clear();
         self.state.viz_state.storm_cells.reset();
         self.state.viz_state.storm_tracks.reset();
+        // Letters restart with the tracks: let snapped endpoints go.
+        self.state.viz_state.measurement.release_tracks();
     }
 
     /// Bring the storm cell result in line with what is displayed. The
@@ -220,6 +222,25 @@ impl WorkbenchApp {
             );
         } else if tracks != crate::core::storm_tracks::TrackSync::Off {
             log::trace!("storm tracks: {tracks:?}");
+        }
+        // A measurement endpoint snapped to a track (or "My location")
+        // follows it to the shown volume ([`crate::core::measure::follow`]).
+        if self.state.viz_state.measurement.follows_anything() {
+            let my_location = self
+                .state
+                .layer_state
+                .geo
+                .gps_location
+                .then_some(self.diagnostics.gps.coords)
+                .flatten();
+            let viz = &mut self.state.viz_state;
+            let view = tracks_on.then(|| viz.storm_tracks.view(None)).flatten();
+            crate::core::measure::follow(
+                &mut viz.measurement,
+                tracks_on,
+                view.as_ref(),
+                my_location,
+            );
         }
         if let Some(request) = request {
             log::debug!("storm cells: requesting {:?}", request.key);

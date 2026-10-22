@@ -153,7 +153,10 @@ fn draw_row(
 /// Works against any [`Projection`] — 2D always resolves, 3D returns
 /// `None` when the canvas center happens to land off-globe (the scale
 /// bar is suppressed in that case).
-fn compute_km_per_pixel(projection: &dyn crate::geo::Projection, rect: &Rect) -> Option<f64> {
+pub(crate) fn compute_km_per_pixel(
+    projection: &dyn crate::geo::Projection,
+    rect: &Rect,
+) -> Option<f64> {
     if rect.width() < 4.0 || rect.height() < 4.0 {
         return None;
     }
