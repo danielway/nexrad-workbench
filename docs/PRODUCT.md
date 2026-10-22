@@ -709,6 +709,22 @@ Interactive measurement and analysis affordances on the 2D canvas:
     and bearing from you and its closest approach (`Closest to you: 14 km
     in 22 min`; withheld beyond an hour, "Moving away from you" when it
     is). The phone's card folds motion and age into one line ("Moving NE 82 km/h, high confidence · 34 min").
+  - **Column** (the card's vertical extent). Once the volume's higher
+    reflectivity tilts are on device, each cell's footprint is sampled on
+    every tilt (one cut per tilt), and the card adds the cell's echo top
+    and the strongest echo in its column with its height (`Echo top ~13 km
+    · max 63 dBZ at 3 km`; `≥` when the highest tilt still has echo, so the
+    real top is above). The echo top is the highest sample of at least
+    18 dBZ over the footprint (from a tilt with three or more such gates);
+    heights are beam heights above the radar (4/3 earth radius); values pass
+    a three-gate median along each radial so a single gate cannot set them.
+    It is the column over the lowest-cut footprint, so a storm that leans
+    far off it is sampled only where it overhangs it. While the volume's
+    tilts are not all on device (a live volume still arriving, a volume
+    fetched cut by cut) the line says "(partial volume)"; the phone folds it
+    into one line. The columns come after the cells, so they never delay
+    them, and only for the displayed volume. Nothing on the map changes
+    (no 3D drawing).
   - **Tracks** (the checkbox under the slider). Cells are tracked across
     volumes (SCIT-style: predicted from their recent motion, matched by
     distance, area and peak, coasting two volumes before a track ends).

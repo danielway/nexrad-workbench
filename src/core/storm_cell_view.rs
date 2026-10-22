@@ -42,6 +42,11 @@
 //!   The card adds motion, age, trend and, with "My location" on, where the
 //!   cell is from you and its closest approach. A coasting track (no cell
 //!   this volume) draws nothing.
+//! - **Column.** Once the volume part is in
+//!   (`StormCellsResult::volume`), the card adds the cell's echo top and the
+//!   strongest echo in its column with its height; the phone folds them into
+//!   one line. "(partial volume)" follows while the volume's tilts are not
+//!   all on device. Nothing on the map changes.
 //!
 //! Screen math takes the projection as a closure (`lat, lon -> [x, y]`) so
 //! the module stays free of egui; text widths assume the monospace chip
@@ -730,6 +735,14 @@ fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> Ca
         } else if let Some(m) = membership {
             lines.push(line(m, false));
         }
+        if let Some((text, partial)) = column_text(i.result, cell) {
+            let text = if partial {
+                format!("{text} (partial volume)")
+            } else {
+                text
+            };
+            lines.push(line(text, false));
+        }
         lines.push(line(place, true));
     } else {
         lines.push(line(
@@ -745,6 +758,12 @@ fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> Ca
         ));
         if let Some(m) = membership {
             lines.push(line(m, false));
+        }
+        if let Some((text, partial)) = column_text(i.result, cell) {
+            lines.push(line(text, false));
+            if partial {
+                lines.push(line("(partial volume)".to_string(), true));
+            }
         }
         if let Some(t) = track {
             lines.push(line(motion_text(t), false));
@@ -781,6 +800,38 @@ fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> Ca
         title,
         lines,
         anchor,
+    }
+}
+
+/// The cell's column through the volume, e.g. `Echo top ~12 km · max
+/// 62 dBZ at 4 km`, and whether the volume is partial (more tilts to come or
+/// not on device, so the top may be higher). `None` before the volume part
+/// is in. A top still in echo at the highest tilt sampled reads `≥`.
+fn column_text(result: &StormCellsResult, cell: &StormCell) -> Option<(String, bool)> {
+    let volume = result.volume.as_ref()?;
+    let column = volume.cells.get(cell.id as usize)?;
+    let mut parts = Vec::new();
+    if let Some(top) = column.echo_top_km {
+        let sign = if column.echo_top_capped {
+            "\u{2265}"
+        } else {
+            "~"
+        };
+        parts.push(format!("Echo top {sign}{}", height_text(top)));
+    }
+    if let (Some(dbz), Some(h)) = (column.max_dbz, column.max_dbz_height_km) {
+        let lead = if parts.is_empty() { "Max" } else { "max" };
+        parts.push(format!("{lead} {dbz:.0} dBZ at {}", height_text(h)));
+    }
+    (!parts.is_empty()).then(|| (parts.join(" \u{00B7} "), !volume.complete))
+}
+
+/// A height in km: tenths below 2 km, whole km above.
+fn height_text(km: f32) -> String {
+    if km < 2.0 {
+        format!("{km:.1} km")
+    } else {
+        format!("{km:.0} km")
     }
 }
 
@@ -1274,6 +1325,90 @@ mod tests {
         assert!(overlay_style(true).outline_px > overlay_style(false).outline_px);
         assert_eq!(overlay_style(true).chip_font_px, 12.0);
         assert!(overlay_style(true).chip_spacing_px > overlay_style(false).chip_spacing_px);
+    }
+
+    /// `result()` with columns for both cells.
+    fn with_volume(complete: bool) -> StormCellsResult {
+        use crate::storm_cells::{CellColumn, VolumeStructure};
+        let mut r = result();
+        r.volume = Some(VolumeStructure {
+            tilts: Vec::new(),
+            cells: vec![
+                CellColumn {
+                    echo_top_km: Some(12.4),
+                    echo_top_capped: false,
+                    max_dbz: Some(63.5),
+                    max_dbz_height_km: Some(4.2),
+                    profile: vec![Some(62.0), Some(63.5)],
+                },
+                CellColumn {
+                    echo_top_km: Some(15.6),
+                    echo_top_capped: true,
+                    max_dbz: Some(55.0),
+                    max_dbz_height_km: Some(1.3),
+                    profile: vec![Some(55.0)],
+                },
+            ],
+            complete,
+        });
+        r
+    }
+
+    fn card_texts(r: &StormCellsResult, at: (f64, f64), phone: bool) -> Vec<String> {
+        let p = StormCellPointer {
+            hover: Some(at),
+            selected: Some(at),
+        };
+        let mut i = inputs(r, &p);
+        i.phone = phone;
+        let card = build(&i, project).card.expect("card");
+        card.lines.into_iter().map(|l| l.text).collect()
+    }
+
+    #[wasm_bindgen_test]
+    fn the_card_reads_the_column_once_the_volume_is_in() {
+        // Before the volume part: no column line.
+        let texts = card_texts(&result(), (42.2, -93.2), false);
+        assert!(!texts.iter().any(|t| t.contains("Echo top")), "{texts:?}");
+
+        let r = with_volume(true);
+        let texts = card_texts(&r, (42.2, -93.2), false);
+        let at = texts
+            .iter()
+            .position(|t| t == "Echo top ~12 km \u{00B7} max 64 dBZ at 4 km")
+            .unwrap_or_else(|| panic!("{texts:?}"));
+        assert!(
+            texts[at - 1].ends_with("in this group"),
+            "after the cell's own lines"
+        );
+        assert!(!texts.iter().any(|t| t.contains("partial")));
+        // A top still in echo at the highest tilt is a lower bound; a low
+        // peak reads in tenths.
+        let texts = card_texts(&r, (42.2, -92.6), false);
+        assert!(
+            texts.contains(&"Echo top \u{2265}16 km \u{00B7} max 55 dBZ at 1.3 km".to_string()),
+            "{texts:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_partial_volume_says_so() {
+        let r = with_volume(false);
+        let texts = card_texts(&r, (42.2, -93.2), false);
+        let at = texts
+            .iter()
+            .position(|t| t.starts_with("Echo top"))
+            .unwrap();
+        assert_eq!(texts[at + 1], "(partial volume)");
+        // The phone folds it into the one line.
+        let texts = card_texts(&r, (42.2, -93.2), true);
+        assert!(
+            texts.contains(
+                &"Echo top ~12 km \u{00B7} max 64 dBZ at 4 km (partial volume)".to_string()
+            ),
+            "{texts:?}"
+        );
+        assert!(texts.len() <= 4, "compact: {texts:?}");
     }
 
     #[wasm_bindgen_test]
