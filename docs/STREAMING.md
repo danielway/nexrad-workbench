@@ -46,7 +46,9 @@ On the timeline the focus site keeps the full track; every other site gets an
 11 px lane under it, in list order (`core::timeline_view::lane_vm`, assembled
 by `Sites::lanes`). A lane has one block per volume: held (on the device,
 solid), listed (in the archive listing but not held, hollow), failed (that
-site's download failed, hollow with a red edge), and the volume the site's
+site's download failed, hollow with a red edge), queued (hatched) and in
+flight (a pulsing fill, from the download queue and the site's request
+ledger until its timeline shows the scan), and the volume the site's
 stream is collecting, solid up to its newest radial and a dashed outline to
 its projected end. When that site's stream is stalled the dashed part is red
 from where its chunks stopped. Listings, failures and cached scans are joined

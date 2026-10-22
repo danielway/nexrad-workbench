@@ -665,6 +665,23 @@ impl RequestLedger {
             .collect()
     }
 
+    /// Scan starts requested and not yet on the timeline: enqueued,
+    /// downloading or ingesting, or ingested and awaiting the timeline,
+    /// TTL-filtered. A site's lane draws them as in flight unless the queue
+    /// still holds them.
+    pub(crate) fn in_progress_scan_starts(&self, now_ms: f64) -> Vec<i64> {
+        self.entries
+            .iter()
+            .filter(|(_, e)| match e.state {
+                LedgerState::Pending { since_ms } | LedgerState::AwaitingTimeline { since_ms } => {
+                    now_ms - since_ms <= LEDGER_PENDING_TTL_MS
+                }
+                _ => false,
+            })
+            .map(|(&k, _)| k)
+            .collect()
+    }
+
     fn entry_near_mut(&mut self, scan_start: i64, tolerance_secs: i64) -> Option<&mut LedgerEntry> {
         let key = self
             .entries
@@ -2413,6 +2430,22 @@ mod reducer_tests {
         let mut led = RequestLedger::default();
         led.note_enqueued(1300, Some(1), 0.0);
         assert_eq!(led.summarize(1.0), LedgerSummary::default());
+    }
+
+    #[wasm_bindgen_test]
+    fn in_progress_runs_from_enqueue_until_the_timeline_sees_the_scan() {
+        let mut led = RequestLedger::default();
+        led.note_enqueued(1300, Some(1), 0.0);
+        led.note_enqueued(2300, Some(1), 0.0);
+        led.note_ingested(2300, TOL, 10.0);
+        led.note_failed(3300, TOL, 10.0);
+        let mut starts = led.in_progress_scan_starts(20.0);
+        starts.sort();
+        assert_eq!(starts, vec![1300, 2300]);
+        // Past the TTL nothing is in progress.
+        assert!(led
+            .in_progress_scan_starts(LEDGER_PENDING_TTL_MS + 20.0)
+            .is_empty());
     }
 
     #[wasm_bindgen_test]

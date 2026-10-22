@@ -206,7 +206,8 @@ pub(super) fn render_lane_tooltip(
     use crate::core::timeline_view::LaneBlockState;
     let color = match block.state {
         LaneBlockState::Held => tl_colors::STATUS_CACHED,
-        LaneBlockState::Listed => tl_colors::STATUS_AVAILABLE,
+        LaneBlockState::Listed | LaneBlockState::Queued => tl_colors::STATUS_AVAILABLE,
+        LaneBlockState::InFlight => theme::legacy::ACTIVE_BLUE,
         LaneBlockState::LiveFilling { .. } => theme::legacy::ACTIVE_BLUE,
         LaneBlockState::Stalled { .. } | LaneBlockState::Failed => theme::acquisition::FAILED,
     };

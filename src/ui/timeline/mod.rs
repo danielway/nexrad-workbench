@@ -404,8 +404,13 @@ pub(super) fn render_timeline(
     let overlay_rect = lane_rects
         .last()
         .map_or(scan_rect, |last| scan_rect.union(*last));
-    let failed_for = |id: &crate::data::SiteId| acquisition.state.failed_scan_starts_for(&id.0);
-    let site_lanes = sites.lanes(&live.mode_state, failed_for, view_start, view_end);
+    let site_lanes = sites.lanes(
+        &live.mode_state,
+        |id| acquisition.lane_downloads(id),
+        derived.frame_now_secs * 1000.0,
+        view_start,
+        view_end,
+    );
 
     // -- Build the per-frame TimelineFrame --
     // One adapter (`TimelineView`) merges every timeline source (cache,

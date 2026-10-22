@@ -208,7 +208,8 @@ zoom. It is the single shared map of three decoupled systems: **acquisition**,
 The main strip is the focus's track. Each other site on the map gets an
 11 px lane under it, in the order the sites were added, with its ID at the
 left: one block per volume, solid when it is on the device, hollow when it
-is only listed, a red edge when its download failed, and the volume its
+is only listed, hatched while it waits to download, pulsing while it
+downloads, a red edge when its download failed, and the volume its
 stream is collecting solid up to the newest radial with a dashed outline to
 its projected end (red from where the chunks stopped when that stream is
 stalled). One now line crosses the strip and the lanes. The selection strip,

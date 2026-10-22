@@ -78,6 +78,29 @@ pub(crate) struct SelectionFetchTarget {
 }
 
 impl Acquisition {
+    /// `site`'s downloads as its timeline lane reads them: failed
+    /// operations, queued items and the items downloading. The lane adds
+    /// the site's own ledger (`Sites::lanes`).
+    pub(crate) fn lane_downloads(
+        &self,
+        site: &crate::data::SiteId,
+    ) -> crate::core::timeline_view::LaneDownloads {
+        let queue = &self.coordinator.download_queue;
+        crate::core::timeline_view::LaneDownloads {
+            failed: self.state.failed_scan_starts_for(&site.0),
+            queued: queue
+                .pending_items()
+                .filter(|item| &item.site == site)
+                .map(|item| item.scan_start)
+                .collect(),
+            in_flight: queue
+                .active_items()
+                .filter(|item| &item.site == site)
+                .map(|item| item.scan_start)
+                .collect(),
+        }
+    }
+
     /// Construct a fresh subsystem.
     ///
     /// `data_facade` is shared with whatever else needs to talk to
