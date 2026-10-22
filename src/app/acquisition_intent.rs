@@ -51,17 +51,26 @@ impl WorkbenchApp {
         // holding the playhead (requests wait for the drag to settle).
         let playhead_attached =
             self.playback.state.is_pinned() || self.playback.state.is_live_range();
-        if !self.render.coordinator.has_worker()
-            || !acquisition_core::reactive_prefetch_allowed(
-                playhead_attached,
-                self.acquisition.state.is_paused(),
-                self.state.autofetch_while_scrubbing,
-                self.state.pointer_scrub_active,
-            )
-        {
+        if !self.render.coordinator.has_worker() {
             return;
         }
         for site in 0..self.sites.list.len() {
+            // Per site: an attached playhead hands acquisition to the site's
+            // stream only while that stream runs. A site whose stream never
+            // connected or gave up still reads the archive, so it shows its
+            // latest volume beside the sites that stream.
+            let stream_owns = acquisition_core::stream_owns_acquisition(
+                playhead_attached,
+                self.sites.list[site].live.channel.is_active(),
+            );
+            if !acquisition_core::reactive_prefetch_allowed(
+                stream_owns,
+                self.acquisition.state.is_paused(),
+                self.state.autofetch_while_scrubbing,
+                self.state.pointer_scrub_active,
+            ) {
+                continue;
+            }
             self.pump_implicit_prefetch_for(ctx, site);
         }
     }
