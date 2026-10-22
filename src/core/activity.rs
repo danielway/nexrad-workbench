@@ -78,9 +78,12 @@ pub(crate) struct ActivityInputs<'a> {
     pub fps: Option<f64>,
     pub recent_requests: &'a VecDeque<NetworkRequest>,
     pub cache_size_bytes: u64,
-    /// The session's stream fact — the activity chip projects its healthy
-    /// states ([`Stream::headline_word`]) when no archive work is outstanding.
-    pub stream: Stream,
+    /// Every site's stream, in list order. The chip projects the healthiest
+    /// one's word ([`headline_stream`]) when no archive work is outstanding
+    /// and, with more than one site, sums them ([`SiteSum`]).
+    pub sites: &'a [SiteStream],
+    /// Index into `sites` of the focus, whose section the sheet lists first.
+    pub focus: usize,
     /// Whether the activity sheet is open. Rows and network entries are only
     /// materialized when something is actually looking at them.
     pub sheet_open: bool,
@@ -114,6 +117,35 @@ pub(crate) struct ActivityDevInputs {
     /// The shown storm cell result: counts, cut and worker timing. `None`
     /// while no cells are shown.
     pub storm_cells: Option<crate::core::storm_cells::StormCellStats>,
+}
+
+/// One site's stream, as the chip and the sheet read it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SiteStream {
+    pub id: String,
+    pub stream: Stream,
+    /// Chunks received in the site's volume in progress.
+    pub chunks_received: u32,
+    /// Seconds since the newest radial the site's stream received; `None`
+    /// before the first one or while not streaming.
+    pub last_chunk_age_secs: Option<f64>,
+}
+
+/// The stream the chip speaks for: the site's own with one site; with more,
+/// the healthiest of them, so one quiet site never hides another receiving.
+pub(crate) fn headline_stream(sites: &[SiteStream]) -> Stream {
+    const ORDER: [Stream; 6] = [
+        Stream::Receiving,
+        Stream::Connecting,
+        Stream::Waiting,
+        Stream::Stalled,
+        Stream::Failed,
+        Stream::Off,
+    ];
+    ORDER
+        .into_iter()
+        .find(|s| sites.iter().any(|site| site.stream == *s))
+        .unwrap_or(Stream::Off)
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -159,6 +191,38 @@ pub(crate) struct ActivityHeadline {
     /// Whether motion is appropriate. Motion means "data is moving" and
     /// nothing else; the shell still ANDs this with the reduced-motion check.
     pub animate: bool,
+    /// How many sites the chip speaks for, and how many of their streams
+    /// stalled.
+    pub sites: SiteSum,
+}
+
+/// The chip's sum over the sites.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SiteSum {
+    pub sites: u32,
+    pub stalled: u32,
+}
+
+impl SiteSum {
+    pub(crate) fn of(sites: &[SiteStream]) -> Self {
+        Self {
+            sites: sites.len() as u32,
+            stalled: sites.iter().filter(|s| s.stream == Stream::Stalled).count() as u32,
+        }
+    }
+}
+
+impl ActivityHeadline {
+    /// The chip's words. With one site, the label alone; with more, the
+    /// sum: `Receiving · 3 sites`, `Receiving 3 sites · 1 stalled`.
+    pub(crate) fn words(&self) -> String {
+        let SiteSum { sites, stalled } = self.sites;
+        match (sites, stalled) {
+            (0 | 1, _) => self.label.to_string(),
+            (n, 0) => format!("{} \u{00b7} {n} sites", self.label),
+            (n, k) => format!("{} {n} sites \u{00b7} {k} stalled", self.label),
+        }
+    }
 }
 
 /// One stage of the acquisition pipeline, as shown in the sheet's stage strip.
@@ -360,6 +424,83 @@ fn session_requests(inputs: &ActivityInputs<'_>) -> u32 {
     }
 }
 
+/// One site's section in the sheet.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SiteSection {
+    pub id: String,
+    /// The focus site, listed first.
+    pub focus: bool,
+    /// `Receiving · 12 chunks · last 4 s ago`, or `Not streaming`.
+    pub stream_line: String,
+    /// Whether the stream is past its cadence or failed (drawn as a
+    /// warning).
+    pub unhealthy: bool,
+    /// This site's failed downloads.
+    pub failed: u32,
+    /// The first failed download's error.
+    pub first_error: Option<String>,
+}
+
+/// The sheet's per-site sections: focus first, then the rest in list order.
+/// Empty with one site, so the one-site sheet is unchanged.
+pub(crate) fn site_sections(
+    sites: &[SiteStream],
+    focus: usize,
+    operations: &VecDeque<AcquisitionOperation>,
+) -> Vec<SiteSection> {
+    if sites.len() < 2 {
+        return Vec::new();
+    }
+    let order = std::iter::once(focus).chain((0..sites.len()).filter(|&i| i != focus));
+    order
+        .filter_map(|i| sites.get(i).map(|s| (i, s)))
+        .map(|(i, s)| {
+            let failures: Vec<&str> = operations
+                .iter()
+                .filter_map(|op| match (&op.status, &op.kind) {
+                    (
+                        OperationStatus::Failed { error },
+                        OperationKind::ArchiveDownload { site_id, .. },
+                    ) if site_id.eq_ignore_ascii_case(&s.id) => Some(error.as_str()),
+                    _ => None,
+                })
+                .collect();
+            SiteSection {
+                id: s.id.clone(),
+                focus: i == focus,
+                stream_line: site_stream_line(s),
+                unhealthy: matches!(s.stream, Stream::Stalled | Stream::Failed),
+                failed: failures.len() as u32,
+                first_error: failures.first().map(|e| e.to_string()),
+            }
+        })
+        .collect()
+}
+
+/// A site's stream in the sheet: its state, chunk count and last chunk age.
+fn site_stream_line(s: &SiteStream) -> String {
+    let word = match s.stream {
+        Stream::Off => return "Not streaming".to_string(),
+        Stream::Failed => return "Stream failed".to_string(),
+        Stream::Connecting => "Connecting",
+        Stream::Receiving => "Receiving",
+        Stream::Waiting => "Waiting",
+        Stream::Stalled => "Stalled",
+    };
+    let mut line = format!(
+        "{word} \u{00b7} {} chunk{}",
+        s.chunks_received,
+        if s.chunks_received == 1 { "" } else { "s" }
+    );
+    if let Some(age) = s.last_chunk_age_secs {
+        line.push_str(&format!(
+            " \u{00b7} last {} ago",
+            crate::core::format_lag(age.max(0.0).round())
+        ));
+    }
+    line
+}
+
 /// The complete activity projection, rebuilt once per frame.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ActivityVm {
@@ -375,6 +516,9 @@ pub(crate) struct ActivityVm {
     pub rows: Vec<ActivityRow>,
     /// Empty unless the sheet is open.
     pub network: Vec<NetworkRow>,
+    /// One section per site; empty unless the sheet is open and more than
+    /// one site is listed ([`site_sections`]).
+    pub sites: Vec<SiteSection>,
     pub detail: Option<ActivityDetailVm>,
 }
 
@@ -383,6 +527,44 @@ pub(crate) struct ActivityVm {
 // ───────────────────────────────────────────────────────────────────────────
 
 impl ActivityVm {
+    /// The chip's hover sentence. With more than one site it names how many
+    /// the chip speaks for and how many of their streams stalled.
+    pub(crate) fn hover(&self) -> String {
+        let SiteSum { sites, stalled } = self.headline.sites;
+        if sites < 2 {
+            return match self.state {
+                ActivityState::UpToDate => "Everything you're viewing is downloaded",
+                ActivityState::Downloading { .. } => "Downloading scans — click for details",
+                ActivityState::Processing => "Decoding downloaded data — click for details",
+                ActivityState::Streaming => "Live stream running — click for details",
+                ActivityState::Paused { .. } => "Downloads paused — click to resume",
+            }
+            .to_string();
+        }
+        let stalled = match stalled {
+            0 => String::new(),
+            1 => ", 1 stream stalled".to_string(),
+            k => format!(", {k} streams stalled"),
+        };
+        match self.state {
+            ActivityState::UpToDate => {
+                format!("Everything you're viewing on {sites} sites is downloaded{stalled}")
+            }
+            ActivityState::Downloading { .. } => {
+                format!("Downloading scans for {sites} sites{stalled} — click for details")
+            }
+            ActivityState::Processing => {
+                format!("Decoding downloaded data for {sites} sites{stalled} — click for details")
+            }
+            ActivityState::Streaming => {
+                format!("Live streams running on {sites} sites{stalled} — click for details")
+            }
+            ActivityState::Paused { .. } => {
+                format!("Downloads paused for {sites} sites{stalled} — click to resume")
+            }
+        }
+    }
+
     /// The chip's ⚠ tick: failed downloads plus errors the sheet has not
     /// shown, with its hover. `None` when there is nothing to flag.
     pub(crate) fn warning(&self) -> Option<(u32, String)> {
@@ -414,7 +596,8 @@ impl ActivityVm {
     /// sheet shows what is happening this frame.
     pub(crate) fn build_settled(inputs: ActivityInputs<'_>, settle: &mut HeadlineSettle) -> Self {
         let now_ms = inputs.now_ms;
-        let stream = inputs.stream;
+        let stream = headline_stream(inputs.sites);
+        let sum = SiteSum::of(inputs.sites);
         let counts = stage_counts(&inputs);
         let mut vm = Self::build(inputs);
         let quiet = if stream.headline_word().is_some() {
@@ -425,7 +608,7 @@ impl ActivityVm {
         let shown = settle.step(vm.state, quiet, now_ms);
         if shown != vm.state {
             vm.state = shown;
-            vm.headline = headline_for(shown, &counts, stream);
+            vm.headline = headline_for(shown, &counts, stream, sum);
         }
         vm
     }
@@ -433,7 +616,8 @@ impl ActivityVm {
     pub(crate) fn build(inputs: ActivityInputs<'_>) -> Self {
         let counts = stage_counts(&inputs);
         let failed = failure_summary(inputs.operations);
-        let state = derive_state(&counts, &inputs);
+        let stream = headline_stream(inputs.sites);
+        let state = derive_state(&counts, &inputs, stream);
 
         let rows = if inputs.sheet_open {
             build_rows(inputs.operations)
@@ -446,9 +630,15 @@ impl ActivityVm {
             Vec::new()
         };
 
+        let sites = if inputs.sheet_open {
+            site_sections(inputs.sites, inputs.focus, inputs.operations)
+        } else {
+            Vec::new()
+        };
+
         Self {
             state,
-            headline: headline_for(state, &counts, inputs.stream),
+            headline: headline_for(state, &counts, stream, SiteSum::of(inputs.sites)),
             stages: [
                 ActivityStage {
                     kind: ActivityStageKind::Queued,
@@ -497,6 +687,7 @@ impl ActivityVm {
             },
             rows,
             network,
+            sites,
             detail: inputs.dev.map(|dev| ActivityDetailVm {
                 requests: session_requests(&inputs),
                 failed_requests: inputs.sw_aggregate.failed_requests,
@@ -691,7 +882,11 @@ fn settling_count(inputs: &ActivityInputs<'_>) -> u32 {
         .count() as u32
 }
 
-fn derive_state(counts: &StageCounts, inputs: &ActivityInputs<'_>) -> ActivityState {
+fn derive_state(
+    counts: &StageCounts,
+    inputs: &ActivityInputs<'_>,
+    stream: Stream,
+) -> ActivityState {
     let outstanding = counts.outstanding();
     if inputs.queue_paused && outstanding > 0 {
         return ActivityState::Paused {
@@ -704,45 +899,55 @@ fn derive_state(counts: &StageCounts, inputs: &ActivityInputs<'_>) -> ActivitySt
     if counts.processing > 0 || counts.settling > 0 || inputs.gpu_render_in_flight {
         return ActivityState::Processing;
     }
-    if inputs.stream.headline_word().is_some() {
+    if stream.headline_word().is_some() {
         return ActivityState::Streaming;
     }
     ActivityState::UpToDate
 }
 
-fn headline_for(state: ActivityState, counts: &StageCounts, stream: Stream) -> ActivityHeadline {
+fn headline_for(
+    state: ActivityState,
+    counts: &StageCounts,
+    stream: Stream,
+    sites: SiteSum,
+) -> ActivityHeadline {
     match state {
         ActivityState::UpToDate => ActivityHeadline {
             count: None,
             label: "Up to date",
             glyph: ActivityGlyph::Check,
             animate: false,
+            sites,
         },
         ActivityState::Downloading { scans } => ActivityHeadline {
             count: Some(scans),
             label: "Downloading",
             glyph: ActivityGlyph::ArrowDown,
             animate: counts.downloading > 0,
+            sites,
         },
         ActivityState::Processing => ActivityHeadline {
             count: None,
             label: "Processing",
             glyph: ActivityGlyph::Gear,
             animate: true,
+            sites,
         },
-        // The session's stream word, so the chip never says "Receiving"
-        // while the stream line says it is waiting.
+        // The stream's own word, so the chip never says "Receiving" while
+        // the stream line says it is waiting.
         ActivityState::Streaming => ActivityHeadline {
             count: None,
             label: stream.headline_word().unwrap_or("Receiving"),
             glyph: ActivityGlyph::Wave,
             animate: stream.is_animated(),
+            sites,
         },
         ActivityState::Paused { queued } => ActivityHeadline {
             count: Some(queued),
             label: "Paused",
             glyph: ActivityGlyph::Pause,
             animate: false,
+            sites,
         },
     }
 }
@@ -889,7 +1094,7 @@ mod coverage_tests {
         last_worker_outcome_ms: f64,
         gpu_render_in_flight: bool,
         http_in_flight: u32,
-        stream: Stream,
+        sites: Vec<SiteStream>,
         sheet_open: bool,
         dev: Option<ActivityDevInputs>,
         fps: Option<f64>,
@@ -912,7 +1117,7 @@ mod coverage_tests {
                 last_worker_outcome_ms: 1_000.0,
                 gpu_render_in_flight: false,
                 http_in_flight: 0,
-                stream: Stream::Off,
+                sites: vec![site("KDMX", Stream::Off)],
                 sheet_open: false,
                 dev: None,
                 fps: None,
@@ -944,12 +1149,22 @@ mod coverage_tests {
                 fps: self.fps,
                 recent_requests: &self.requests,
                 cache_size_bytes: 0,
-                stream: self.stream,
+                sites: &self.sites,
+                focus: 0,
                 sheet_open: self.sheet_open,
                 dev: self.dev,
                 errors: &self.errors,
                 errors_acked: self.errors_acked,
             }
+        }
+    }
+
+    fn site(id: &str, stream: Stream) -> SiteStream {
+        SiteStream {
+            id: id.to_string(),
+            stream,
+            chunks_received: 0,
+            last_chunk_age_secs: None,
         }
     }
 
@@ -1046,7 +1261,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn streaming_state_only_when_no_archive_work() {
         let mut f = Fixture::new();
-        f.stream = Stream::Receiving;
+        f.sites[0].stream = Stream::Receiving;
         assert_eq!(f.vm().state, ActivityState::Streaming);
         assert_eq!(f.vm().headline.label, "Receiving");
         assert!(f.vm().headline.animate);
@@ -1061,9 +1276,9 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn stalled_stream_is_not_streaming_state() {
         let mut f = Fixture::new();
-        f.stream = Stream::Stalled;
+        f.sites[0].stream = Stream::Stalled;
         assert_eq!(f.vm().state, ActivityState::UpToDate);
-        f.stream = Stream::Failed;
+        f.sites[0].stream = Stream::Failed;
         assert_eq!(f.vm().state, ActivityState::UpToDate);
     }
 
@@ -1072,13 +1287,13 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn streaming_headline_projects_the_session_stream_word() {
         let mut f = Fixture::new();
-        f.stream = Stream::Waiting;
+        f.sites[0].stream = Stream::Waiting;
         let vm = f.vm();
         assert_eq!(vm.state, ActivityState::Streaming);
         assert_eq!(vm.headline.label, "Waiting");
         assert!(!vm.headline.animate);
 
-        f.stream = Stream::Connecting;
+        f.sites[0].stream = Stream::Connecting;
         let vm = f.vm();
         assert_eq!(vm.headline.label, "Connecting");
         assert!(vm.headline.animate);
@@ -1442,7 +1657,8 @@ mod coverage_tests {
                 fps: None,
                 recent_requests: &f.requests,
                 cache_size_bytes: 0,
-                stream: Stream::Off,
+                sites: &f.sites,
+                focus: 0,
                 sheet_open: false,
                 dev: Some(ActivityDevInputs::default()),
                 errors: &f.errors,
@@ -1733,7 +1949,7 @@ mod coverage_tests {
     fn build_settled_rewrites_the_headline() {
         let mut f = Fixture::new();
         f.worker = ingesting(1);
-        f.stream = Stream::Receiving;
+        f.sites[0].stream = Stream::Receiving;
         let mut settle = HeadlineSettle::default();
         let vm = ActivityVm::build_settled(f.inputs(), &mut settle);
         assert_eq!(vm.state, ActivityState::Streaming);
@@ -1788,5 +2004,204 @@ mod coverage_tests {
         let mut f = Fixture::new();
         f.fps = Some(f64::INFINITY);
         assert_eq!(f.vm().readout.fps, None);
+    }
+
+    // ── Sites: the chip's sum and the sheet's sections ──────────────────
+
+    fn three_sites(f: &mut Fixture, streams: [Stream; 3]) {
+        f.sites = ["KTBW", "KMLB", "KJAX"]
+            .into_iter()
+            .zip(streams)
+            .map(|(id, s)| site(id, s))
+            .collect();
+    }
+
+    #[wasm_bindgen_test]
+    fn one_site_keeps_the_chip_words() {
+        let mut f = Fixture::new();
+        assert_eq!(f.vm().headline.words(), "Up to date");
+        assert_eq!(f.vm().hover(), "Everything you're viewing is downloaded");
+        f.sites[0].stream = Stream::Receiving;
+        assert_eq!(f.vm().headline.words(), "Receiving");
+        assert_eq!(f.vm().hover(), "Live stream running — click for details");
+        // A stalled single site still reads as today: no sum, no count.
+        f.sites[0].stream = Stream::Stalled;
+        assert_eq!(f.vm().headline.words(), "Up to date");
+    }
+
+    #[wasm_bindgen_test]
+    fn the_chip_sums_three_receiving_sites() {
+        let mut f = Fixture::new();
+        three_sites(&mut f, [Stream::Receiving; 3]);
+        let vm = f.vm();
+        assert_eq!(vm.headline.words(), "Receiving \u{00b7} 3 sites");
+        assert_eq!(
+            vm.hover(),
+            "Live streams running on 3 sites — click for details"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn the_chip_counts_a_stalled_site() {
+        let mut f = Fixture::new();
+        three_sites(
+            &mut f,
+            [Stream::Receiving, Stream::Waiting, Stream::Stalled],
+        );
+        let vm = f.vm();
+        assert_eq!(vm.headline.words(), "Receiving 3 sites \u{00b7} 1 stalled");
+        assert_eq!(
+            vm.hover(),
+            "Live streams running on 3 sites, 1 stream stalled — click for details"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn the_chip_reads_up_to_date_over_three_quiet_sites() {
+        let mut f = Fixture::new();
+        three_sites(&mut f, [Stream::Off; 3]);
+        let vm = f.vm();
+        assert_eq!(vm.headline.words(), "Up to date \u{00b7} 3 sites");
+        assert_eq!(
+            vm.hover(),
+            "Everything you're viewing on 3 sites is downloaded"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn the_sum_rides_on_downloads_too() {
+        let mut f = Fixture::new();
+        three_sites(&mut f, [Stream::Off; 3]);
+        f.operations
+            .push_back(download(1, 1000, OperationStatus::Active));
+        let vm = f.vm();
+        assert_eq!(vm.headline.count, Some(1));
+        assert_eq!(vm.headline.words(), "Downloading \u{00b7} 3 sites");
+    }
+
+    /// One quiet site never hides another that is receiving: the chip
+    /// speaks for the healthiest stream.
+    #[wasm_bindgen_test]
+    fn the_headline_stream_is_the_healthiest_site() {
+        let pick = |streams: &[Stream]| {
+            let sites: Vec<SiteStream> = streams.iter().map(|s| site("K", *s)).collect();
+            headline_stream(&sites)
+        };
+        assert_eq!(
+            pick(&[Stream::Stalled, Stream::Receiving]),
+            Stream::Receiving
+        );
+        assert_eq!(
+            pick(&[Stream::Waiting, Stream::Connecting]),
+            Stream::Connecting
+        );
+        assert_eq!(pick(&[Stream::Off, Stream::Waiting]), Stream::Waiting);
+        assert_eq!(pick(&[Stream::Off, Stream::Stalled]), Stream::Stalled);
+        assert_eq!(pick(&[Stream::Failed]), Stream::Failed);
+        assert_eq!(pick(&[]), Stream::Off);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_sheet_has_no_site_sections_with_one_site() {
+        let mut f = Fixture::new();
+        f.sheet_open = true;
+        assert!(f.vm().sites.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_sheet_lists_the_focus_first_then_list_order() {
+        let mut f = Fixture::new();
+        three_sites(
+            &mut f,
+            [Stream::Receiving, Stream::Waiting, Stream::Stalled],
+        );
+        f.sheet_open = true;
+        let mut inputs = f.inputs();
+        inputs.focus = 1;
+        let vm = ActivityVm::build(inputs);
+        let ids: Vec<_> = vm.sites.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["KMLB", "KTBW", "KJAX"]);
+        assert!(vm.sites[0].focus);
+        assert!(!vm.sites[1].focus && !vm.sites[2].focus);
+        assert!(vm.sites[2].unhealthy);
+        assert!(!vm.sites[0].unhealthy);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_sheet_sections_are_built_only_while_it_is_open() {
+        let mut f = Fixture::new();
+        three_sites(&mut f, [Stream::Off; 3]);
+        assert!(f.vm().sites.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn a_site_section_reads_its_stream_chunks_and_last_chunk_age() {
+        let mut s = site("KMLB", Stream::Receiving);
+        s.chunks_received = 12;
+        s.last_chunk_age_secs = Some(4.2);
+        assert_eq!(
+            site_stream_line(&s),
+            "Receiving \u{00b7} 12 chunks \u{00b7} last 0:04 ago"
+        );
+        s.chunks_received = 1;
+        s.last_chunk_age_secs = None;
+        s.stream = Stream::Stalled;
+        assert_eq!(site_stream_line(&s), "Stalled \u{00b7} 1 chunk");
+        assert_eq!(
+            site_stream_line(&site("KJAX", Stream::Off)),
+            "Not streaming"
+        );
+        assert_eq!(
+            site_stream_line(&site("KJAX", Stream::Failed)),
+            "Stream failed"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_site_section_counts_only_its_own_failed_downloads() {
+        let mut f = Fixture::new();
+        three_sites(&mut f, [Stream::Off; 3]);
+        let mut failed = download(
+            1,
+            1000,
+            OperationStatus::Failed {
+                error: "HTTP 503".into(),
+            },
+        );
+        if let OperationKind::ArchiveDownload { site_id, .. } = &mut failed.kind {
+            *site_id = "KJAX".into();
+        }
+        f.operations.push_back(failed);
+        let sections = site_sections(&f.sites, 0, &f.operations);
+        assert_eq!(sections[0].failed, 0);
+        assert_eq!(sections[2].id, "KJAX");
+        assert_eq!(sections[2].failed, 1);
+        assert_eq!(sections[2].first_error.as_deref(), Some("HTTP 503"));
+    }
+
+    /// Every state explains itself on hover, with one site and with three.
+    #[wasm_bindgen_test]
+    fn every_state_has_hover_text_for_one_site_and_many() {
+        for many in [false, true] {
+            let mut f = Fixture::new();
+            if many {
+                three_sites(&mut f, [Stream::Off; 3]);
+            }
+            let mut hovers = vec![f.vm().hover()];
+            f.gpu_render_in_flight = true;
+            hovers.push(f.vm().hover());
+            f.gpu_render_in_flight = false;
+            f.sites[0].stream = Stream::Receiving;
+            hovers.push(f.vm().hover());
+            f.operations
+                .push_back(download(1, 1000, OperationStatus::Queued));
+            hovers.push(f.vm().hover());
+            f.queue_paused = true;
+            hovers.push(f.vm().hover());
+            assert!(hovers.iter().all(|h| !h.is_empty()));
+            let distinct: std::collections::BTreeSet<_> = hovers.iter().collect();
+            assert_eq!(distinct.len(), 5, "{hovers:?}");
+            assert_eq!(hovers.iter().all(|h| h.contains("3 sites")), many);
+        }
     }
 }

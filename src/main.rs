@@ -670,6 +670,10 @@ impl WorkbenchApp {
     ) -> core::activity::ActivityVm {
         let now_ms = self.state.frame_now.millis();
         let stats = &self.state.session_stats;
+        let site_streams = self.sites.activity_streams(
+            self.live.mode_state.phase,
+            self.live.mode_state.last_exit_reason,
+        );
         core::activity::ActivityVm::build_settled(
             core::activity::ActivityInputs {
                 now_ms,
@@ -688,7 +692,8 @@ impl WorkbenchApp {
                 fps: stats.avg_fps,
                 recent_requests: &self.state.recent_network_requests,
                 cache_size_bytes: stats.cache_size_bytes,
-                stream: self.live.session.stream,
+                sites: &site_streams,
+                focus: self.sites.focus,
                 sheet_open: self.chrome.activity_sheet_open,
                 errors: &self.state.errors,
                 errors_acked: self.chrome.errors_acked,

@@ -391,6 +391,27 @@ impl Sites {
             .collect()
     }
 
+    /// Every site's stream as the activity chip and sheet read it, in list
+    /// order. `phase` and `last_exit` are the live session's.
+    pub(crate) fn activity_streams(
+        &self,
+        phase: crate::core::LivePhase,
+        last_exit: Option<crate::core::LiveExitReason>,
+    ) -> Vec<crate::core::activity::SiteStream> {
+        use crate::core::session::Stream;
+        self.iter()
+            .map(|s| {
+                let status = &s.live.frame_status;
+                crate::core::activity::SiteStream {
+                    id: s.id.0.clone(),
+                    stream: Stream::classify(status.activity, phase, last_exit),
+                    chunks_received: status.chunks_received,
+                    last_chunk_age_secs: status.data_age_secs,
+                }
+            })
+            .collect()
+    }
+
     /// The ids in list order, for [`crate::core::sites::route`].
     pub(crate) fn ids(&self) -> Vec<SiteId> {
         self.iter().map(|s| s.id.clone()).collect()
