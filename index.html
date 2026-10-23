@@ -19,11 +19,16 @@
     <!-- iOS "Add to Home Screen" PWA metadata. The manifest's display:standalone
          covers modern browsers, but iOS Safari still reads these legacy tags to
          decide whether to launch without Safari chrome and how to style the
-         status bar. `black-translucent` lets the app paint under the status bar
-         together with viewport-fit=cover above. -->
+         status bar. The status bar is opaque `black`, not `black-translucent`:
+         since iOS 26, a translucent bar blurs the top of the page (where the
+         top bar sits) and the viewport comes up short by the status bar's
+         height, leaving a gap at the bottom (WebKit bug 301108). With an
+         opaque bar the page starts below it and env(safe-area-inset-top) is 0.
+         iOS keeps the style an app was installed with, so a change here only
+         reaches an installed app after it is removed and added again. -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <meta name="apple-mobile-web-app-title" content="NEXRAD">
 
     <!-- Privacy-friendly aggregate pageview analytics. Include the host in the
@@ -191,9 +196,8 @@
 
         /* iOS safe-area insets exposed as CSS custom properties so the WASM
            app can read them via getComputedStyle. Needed because the canvas
-           extends under the status bar / home indicator when installed as a
-           PWA (viewport-fit=cover + apple-mobile-web-app-status-bar-style
-           black-translucent), and egui has to compensate in its own layout. */
+           extends under the home indicator (and the notch in landscape) with
+           viewport-fit=cover, and egui has to compensate in its own layout. */
         :root {
             --sa-inset-top: env(safe-area-inset-top, 0px);
             --sa-inset-right: env(safe-area-inset-right, 0px);
