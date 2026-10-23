@@ -777,8 +777,9 @@ Interactive measurement and analysis affordances on the 2D canvas:
     on the phone) so they read on every part of the palette. Intensity is
     never the stroke's color.
   - **Chip.** The cell's peak dBZ sits in a small mono chip at the outline's
-    top-right (11 px; 12 px on the phone). Chips are placed strongest first
-    and skipped when they would crowd one already placed; an outline smaller
+    top-right (11 px; 12 px on the phone), or its bottom-right when that
+    spot is taken. Chips are placed strongest first and skipped when both
+    spots would crowd one already placed; an outline smaller
     than about 14 px on screen carries none. With Tracks on the chip leads
     with the track's letter (`B 58`) and ends with ↑ or ↓ when the peak
     moved more than 3 dB over the last three volumes.

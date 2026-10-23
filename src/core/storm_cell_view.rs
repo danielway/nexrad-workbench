@@ -18,9 +18,10 @@
 //!   cell without a core ring, which detection should not produce, draws
 //!   its footprint at full stroke and no faint ring.) Cell rings are one
 //!   light stroke over a dark halo, intensity left out of the color. The
-//!   peak dBZ sits in a chip at the drawn outline's top-right; chips
-//!   are placed strongest first and skipped when they would crowd one
-//!   already placed or when the outline is too small on screen to carry one.
+//!   peak dBZ sits in a chip at the drawn outline's top-right, or its
+//!   bottom-right when that spot is taken; chips are placed strongest first
+//!   and skipped when both spots would crowd one already placed or when the
+//!   outline is too small on screen to carry one.
 //!   Cells from a live sweep that is still arriving are provisional: drawn
 //!   muted, with a hollow chip.
 //! - **Hit test.** Point in polygon on the footprint rings in lat/lon (the
@@ -705,9 +706,9 @@ fn chip_size(text: &str, style: &OverlayStyle) -> [f32; 2] {
     ]
 }
 
-/// Place a cell's chip at its outline's top-right, or `None` when the
-/// outline is too small on screen or the chip would crowd one already
-/// placed.
+/// Place a cell's chip at its outline's top-right, else its bottom-right,
+/// or `None` when the outline is too small on screen or both spots would
+/// crowd a chip already placed.
 fn place_chip(
     cell: &StormCell,
     track: Option<&TrackVm>,
@@ -727,15 +728,23 @@ fn place_chip(
     }
     let text = chip_text(cell, track);
     let size = chip_size(&text, style);
-    let min = [max_x + CHIP_GAP_X, min_y - size[1] * 0.4];
     let gap = style.chip_spacing_px;
-    let crowds = placed.iter().any(|(m, s)| {
-        min[0] < m[0] + s[0] + gap
-            && m[0] < min[0] + size[0] + gap
-            && min[1] < m[1] + s[1] + gap
-            && m[1] < min[1] + size[1] + gap
-    });
-    (!crowds).then_some(ChipVm {
+    let crowds = |min: [f32; 2]| {
+        placed.iter().any(|(m, s)| {
+            min[0] < m[0] + s[0] + gap
+                && m[0] < min[0] + size[0] + gap
+                && min[1] < m[1] + s[1] + gap
+                && m[1] < min[1] + size[1] + gap
+        })
+    };
+    // The outline's top-right, else its bottom-right.
+    let min = [
+        [max_x + CHIP_GAP_X, min_y - size[1] * 0.4],
+        [max_x + CHIP_GAP_X, max_y - size[1] * 0.6],
+    ]
+    .into_iter()
+    .find(|&m| !crowds(m))?;
+    Some(ChipVm {
         cell_id: cell.id,
         min,
         size,
@@ -1305,6 +1314,32 @@ mod tests {
         assert_eq!(vm.cells.len(), 2, "both outlines still draw");
         assert_eq!(vm.chips.len(), 1);
         assert_eq!(vm.chips[0].cell_id, 0, "the stronger cell keeps its chip");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_crowded_chip_moves_to_the_bottom_right_before_it_is_skipped() {
+        // Three tall outlines side by side, strongest first: the second
+        // chip's top-right spot is taken, its bottom-right is free; the
+        // third finds both taken.
+        let r = StormCellsResult {
+            cells: vec![
+                cell(0, 42.2, -93.2, 0.2, 62.0),
+                cell(1, 42.2, -93.15, 0.2, 55.0),
+                cell(2, 42.2, -93.1, 0.2, 50.0),
+            ],
+            ..StormCellsResult::default()
+        };
+        let p = StormCellPointer::default();
+        let vm = build(&inputs(&r, &p), project);
+        assert_eq!(vm.cells.len(), 3);
+        let ids: Vec<u32> = vm.chips.iter().map(|c| c.cell_id).collect();
+        assert_eq!(ids, vec![0, 1]);
+        // Cell 1's chip sits off its east edge (-92.95), straddling its
+        // south edge (42.0) instead of its north one.
+        let south_east = project(42.0, -92.95);
+        let chip = &vm.chips[1];
+        assert!(chip.min[0] > south_east[0] && chip.min[0] < south_east[0] + 6.0);
+        assert!(chip.min[1] < south_east[1] && chip.min[1] + chip.size[1] > south_east[1]);
     }
 
     #[wasm_bindgen_test]
