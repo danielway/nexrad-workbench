@@ -70,10 +70,17 @@ pub(crate) fn render_canvas_with_geo(
                     ctx.request_repaint();
                 }
 
-                // Draw the 3D globe via PaintCallback. The 3D views draw the
-                // focus site only; every site joins them in PR 5 of the
-                // multi-site series.
-                draw_globe(ui, &rect, state, site, globe_renderer, geo_line_renderer);
+                // Draw the 3D globe via PaintCallback: every site on the
+                // sphere, the camera and chrome on the focus.
+                draw_globe(
+                    ui,
+                    &rect,
+                    state,
+                    sites,
+                    globe_renderer,
+                    geo_line_renderer,
+                    chrome.device_layout,
+                );
 
                 // Corner-chrome overlays (color scale + info + compass)
                 // dispatched through the typed registry. The trait's
