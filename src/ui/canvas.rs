@@ -465,25 +465,58 @@ pub(crate) fn render_canvas_with_geo(
                     .gps_location
                     .then_some(diagnostics.gps.coords)
                     .flatten();
+                // With more than one site the cells are the scene's: one
+                // set over every disc, each cell waiting for the sweep line
+                // of every site that sees it.
+                let scene_cells = crate::core::storm_cells::uses_scene(sites.list.len());
                 let storm_tracks_view = state
                     .viz_state
                     .storm_tracks_visible
-                    .then(|| state.viz_state.storm_tracks.view(my_location))
+                    .then(|| {
+                        if scene_cells {
+                            sites.scene.tracks.view(my_location)
+                        } else {
+                            state.viz_state.storm_tracks.view(my_location)
+                        }
+                    })
                     .flatten();
-                // Storm cells are the focus site's only; the other discs
-                // gain theirs in PR 6 of the multi-site series.
+                let scene_radars: Vec<crate::core::storm_cell_view::SceneRadar<'_>> = if scene_cells
+                {
+                    sites
+                        .iter()
+                        .map(|s| crate::core::storm_cell_view::SceneRadar {
+                            id: &s.id.0,
+                            radar: (s.lat, s.lon),
+                            sweep: if std::ptr::eq(s, site) {
+                                gpu_sweep
+                            } else {
+                                others
+                                    .iter()
+                                    .find(|o| std::ptr::eq(o.site, s))
+                                    .and_then(|o| o.sweep)
+                            },
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let storm_cell_inputs = crate::core::storm_cell_view::StormCellViewInputs {
-                    result: &site.cells.result,
+                    result: sites.shown_cells(),
                     visible: state.viz_state.storm_cells_visible,
                     view_mode: ViewMode::Flat2D,
                     radar: (site.lat, site.lon),
                     site_id: &site.id.0,
                     sweep: gpu_sweep,
-                    provisional: live_partial,
+                    provisional: if scene_cells {
+                        sites.scene.cells.is_provisional()
+                    } else {
+                        live_partial
+                    },
                     phone: state.is_mobile,
                     pointer: &state.viz_state.storm_cell_pointer,
                     probe_on: state.viz_state.data_probe_enabled,
                     tracks: storm_tracks_view.as_ref(),
+                    scene: &scene_radars,
                 };
                 let storm_cells_vm =
                     crate::core::storm_cell_view::build(&storm_cell_inputs, |lat, lon| {

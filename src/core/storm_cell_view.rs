@@ -213,6 +213,16 @@ pub(crate) fn footprint_behind_sweep_line(
 // View-model
 // ───────────────────────────────────────────────────────────────────────────
 
+/// One shown site, when the cells are the scene's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SceneRadar<'a> {
+    pub id: &'a str,
+    /// `(lat, lon)`.
+    pub radar: (f64, f64),
+    /// The site's Rays sweep, as [`StormCellViewInputs::sweep`].
+    pub sweep: Option<(f32, f32)>,
+}
+
 /// Everything the overlay's view-model is built from.
 pub(crate) struct StormCellViewInputs<'a> {
     pub result: &'a StormCellsResult,
@@ -237,6 +247,29 @@ pub(crate) struct StormCellViewInputs<'a> {
     /// The tracks on these cells, when "Tracks" is on and the volume is
     /// tracked ([`crate::core::storm_tracks::StormTracks::view`]).
     pub tracks: Option<&'a TracksView>,
+    /// The shown sites when the cells are the scene's (detected on the
+    /// composite grid of more than one site); empty for one site's cells,
+    /// which use `radar`, `site_id` and `sweep`.
+    pub scene: &'a [SceneRadar<'a>],
+}
+
+/// Whether a footprint is behind the Rays sweep line: the one site's, or,
+/// for the scene's cells, that of every shown site among `sites` (those
+/// that see it). A cell sits on each of those sites' current sweeps, so it
+/// waits for all of them.
+fn behind_sweep_lines(
+    i: &StormCellViewInputs<'_>,
+    ring: &[(f64, f64)],
+    centroid: (f64, f64),
+    sites: &[String],
+) -> bool {
+    if i.scene.is_empty() {
+        return footprint_behind_sweep_line(ring, centroid, i.radar, i.sweep);
+    }
+    i.scene
+        .iter()
+        .filter(|r| sites.iter().any(|s| s == r.id))
+        .all(|r| footprint_behind_sweep_line(ring, centroid, r.radar, r.sweep))
 }
 
 /// Stroke widths and chip type for the layout, in screen px.
@@ -469,7 +502,7 @@ pub(crate) fn shown_cells(i: &StormCellViewInputs<'_>) -> Vec<u32> {
     i.result
         .cells
         .iter()
-        .filter(|c| footprint_behind_sweep_line(&c.outline, (c.lat, c.lon), i.radar, i.sweep))
+        .filter(|c| behind_sweep_lines(i, &c.outline, (c.lat, c.lon), &c.sites))
         .map(|c| c.id)
         .collect()
 }
@@ -510,9 +543,17 @@ pub(crate) fn build(
     // the sweep line like its cells.
     for g in &i.result.groups {
         let member_shown = g.cell_ids.iter().any(|id| shown.contains(id));
+        let mut seen_by: Vec<String> = g
+            .cell_ids
+            .iter()
+            .filter_map(|id| i.result.cells.get(*id as usize))
+            .flat_map(|c| c.sites.iter().cloned())
+            .collect();
+        seen_by.sort();
+        seen_by.dedup();
         if member_shown
             && g.outline.len() >= 3
-            && footprint_behind_sweep_line(&g.outline, (g.lat, g.lon), i.radar, i.sweep)
+            && behind_sweep_lines(i, &g.outline, (g.lat, g.lon), &seen_by)
         {
             vm.groups.push(ring_px(&g.outline));
         }
@@ -710,11 +751,16 @@ fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> Ca
         let pos = g.cell_ids.iter().position(|&c| c == cell.id)?;
         Some(format!("{} of {} in this group", pos + 1, g.cell_ids.len()))
     });
+    // The scene's cells are placed from the nearest site that sees them.
+    let from = match cell.sites.first() {
+        Some(site) if !i.scene.is_empty() => site.as_str(),
+        _ => i.site_id,
+    };
     let place = format!(
         "{:.0} km at {:03.0}\u{00B0} from {}",
         cell.range_from_radar_km,
         cell.bearing_from_radar_deg.rem_euclid(360.0),
-        i.site_id
+        from
     );
     let track = i.tracks.and_then(|t| t.for_cell(cell.id));
     let line = |text: String, dim: bool| CardLine { text, dim };
@@ -735,7 +781,7 @@ fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> Ca
         } else if let Some(m) = membership {
             lines.push(line(m, false));
         }
-        if let Some((text, partial)) = column_text(i.result, cell) {
+        if let Some((text, partial)) = column_text(i, cell) {
             let text = if partial {
                 format!("{text} (partial volume)")
             } else {
@@ -759,7 +805,7 @@ fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> Ca
         if let Some(m) = membership {
             lines.push(line(m, false));
         }
-        if let Some((text, partial)) = column_text(i.result, cell) {
+        if let Some((text, partial)) = column_text(i, cell) {
             lines.push(line(text, false));
             if partial {
                 lines.push(line("(partial volume)".to_string(), true));
@@ -785,6 +831,10 @@ fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> Ca
     if i.provisional {
         lines.push(line("Provisional: sweep still arriving".to_string(), true));
     }
+    // With several sites shown, the radars that see the cell.
+    if !i.scene.is_empty() && !cell.sites.is_empty() {
+        lines.push(line(cell.sites.join(" \u{00B7} "), true));
+    }
     let title = match track {
         Some(t) => {
             let trend = trend_mark(t.peak_trend_db)
@@ -807,8 +857,13 @@ fn card(i: &StormCellViewInputs<'_>, cell: &StormCell, anchor: CardAnchor) -> Ca
 /// 62 dBZ at 4 km`, and whether the volume is partial (more tilts to come or
 /// not on device, so the top may be higher). `None` before the volume part
 /// is in. A top still in echo at the highest tilt sampled reads `≥`.
-fn column_text(result: &StormCellsResult, cell: &StormCell) -> Option<(String, bool)> {
-    let volume = result.volume.as_ref()?;
+/// Always `None` for the scene's cells: a column is one radar's, and cells
+/// on the composite grid have none.
+fn column_text(i: &StormCellViewInputs<'_>, cell: &StormCell) -> Option<(String, bool)> {
+    if !i.scene.is_empty() {
+        return None;
+    }
+    let volume = i.result.volume.as_ref()?;
     let column = volume.cells.get(cell.id as usize)?;
     let mut parts = Vec::new();
     if let Some(top) = column.echo_top_km {
@@ -1006,6 +1061,7 @@ mod tests {
             elongation: 1.0,
             outline: square(lat, lon, h),
             core_outline: Vec::new(),
+            sites: Vec::new(),
         }
     }
 
@@ -1045,6 +1101,7 @@ mod tests {
             pointer: p,
             probe_on: false,
             tracks: None,
+            scene: &[],
         }
     }
 
@@ -1877,5 +1934,104 @@ mod tests {
             probe_line(&i, 42.2, -93.2).as_deref(),
             Some("Cell D 62 dBZ \u{00B7} 493 km\u{00B2}")
         );
+    }
+
+    const KDVN: (f64, f64) = (41.61, -90.58);
+
+    fn scene_radars(dvn_sweep: Option<(f32, f32)>) -> [SceneRadar<'static>; 2] {
+        [
+            SceneRadar {
+                id: "KDMX",
+                radar: RADAR,
+                sweep: None,
+            },
+            SceneRadar {
+                id: "KDVN",
+                radar: KDVN,
+                sweep: dvn_sweep,
+            },
+        ]
+    }
+
+    #[wasm_bindgen_test]
+    fn the_scene_card_names_the_sites_that_see_the_cell_last() {
+        let mut r = result();
+        r.cells[1].sites = vec!["KDVN".into(), "KDMX".into()];
+        r.cells[1].range_from_radar_km = 166.0;
+        r.cells[1].bearing_from_radar_deg = 281.0;
+        let p = StormCellPointer {
+            hover: Some((42.2, -92.6)),
+            selected: None,
+        };
+        let radars = scene_radars(None);
+        let i = StormCellViewInputs {
+            scene: &radars,
+            ..inputs(&r, &p)
+        };
+        let card = build(&i, project).card.expect("hover card");
+        let text: Vec<&str> = card.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(text.last(), Some(&"KDVN \u{00B7} KDMX"), "{text:?}");
+        // Placed from the nearest site that sees it, not the focus.
+        assert!(
+            text.contains(&"166 km at 281\u{00B0} from KDVN"),
+            "{text:?}"
+        );
+
+        // One site's cells say nothing of sites, whatever the cell holds.
+        let card = build(&inputs(&r, &p), project).card.expect("hover card");
+        let text: Vec<&str> = card.lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(!text.iter().any(|t| t.contains("KDVN")), "{text:?}");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_scene_cell_waits_for_the_sweep_line_of_every_site_that_sees_it() {
+        let mut r = result();
+        r.cells[0].sites = vec!["KDMX".into()];
+        r.cells[1].sites = vec!["KDMX".into(), "KDVN".into()];
+        let p = StormCellPointer::default();
+        // KDVN's sweep has covered 10 degrees from north: the cells, west of
+        // it, are still ahead of its line.
+        let radars = scene_radars(Some((10.0, 0.0)));
+        let i = StormCellViewInputs {
+            scene: &radars,
+            ..inputs(&r, &p)
+        };
+        assert_eq!(shown_cells(&i), vec![0]);
+        // Once KDVN's whole sweep is current, both draw.
+        let radars = scene_radars(None);
+        let i = StormCellViewInputs {
+            scene: &radars,
+            ..inputs(&r, &p)
+        };
+        assert_eq!(shown_cells(&i), vec![0, 1]);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_scene_card_has_no_column_line() {
+        // Even a result that carries columns: a column is one radar's.
+        let r = with_volume(true);
+        let p = StormCellPointer {
+            hover: Some((42.2, -93.2)),
+            selected: Some((42.2, -93.2)),
+        };
+        let radars = scene_radars(None);
+        for phone in [false, true] {
+            let i = StormCellViewInputs {
+                scene: &radars,
+                phone,
+                ..inputs(&r, &p)
+            };
+            let card = build(&i, project).card.expect("card");
+            let texts: Vec<&str> = card.lines.iter().map(|l| l.text.as_str()).collect();
+            assert!(
+                !texts.iter().any(|t| t.contains("Echo top")
+                    || t.contains("dBZ at")
+                    || t.contains("partial volume")),
+                "{texts:?}"
+            );
+        }
+        // The same result for one site reads its column.
+        let texts = card_texts(&r, (42.2, -93.2), false);
+        assert!(texts.iter().any(|t| t.contains("Echo top")), "{texts:?}");
     }
 }

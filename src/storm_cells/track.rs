@@ -1126,6 +1126,7 @@ mod tests {
                 elongation: 1.0,
                 outline: cell.rect.map(box_ring).unwrap_or_default(),
                 core_outline: Vec::new(),
+                sites: Vec::new(),
             });
             if let Some(g) = cell.group {
                 while r.groups.len() <= g as usize {

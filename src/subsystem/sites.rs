@@ -28,7 +28,8 @@ use crate::core::playback_manager::PlaybackManager;
 use crate::core::render::RenderTrack;
 use crate::core::render_loop::ScrubCache;
 use crate::core::sites::Change;
-use crate::core::storm_cells::StormCells;
+use crate::core::storm_cells::{SceneCellKey, StormCells};
+use crate::core::storm_tracks::StormTracks;
 use crate::core::{DisplayedSweep, RadarTimeline, ScanBoundary};
 use crate::data::SiteId;
 use crate::nexrad::{GlobeRadarRenderer, RadarGpuRenderer, VolumeRayRenderer};
@@ -270,12 +271,37 @@ impl Default for SiteState {
     }
 }
 
+/// The scene's storm cells: while more than one site is shown, cells are
+/// detected once on the composite grid of every shown site
+/// (`crate::core::storm_cells::decide_scene`) and tracked with one letter
+/// pool, so a storm two radars see is one storm. The per-site results are
+/// not asked for meanwhile; with one site this stays empty and the focus's
+/// own cells and `VizState::storm_tracks` are used.
+#[derive(Default)]
+pub(crate) struct SceneCells {
+    pub cells: StormCells<SceneCellKey>,
+    pub tracks: StormTracks<SceneCellKey>,
+    /// The last sync took the scene path: switching paths restarts the
+    /// tracker the other path leaves.
+    pub active: bool,
+}
+
+impl SceneCells {
+    /// Forget the result, cache, request in flight and tracks.
+    pub(crate) fn reset(&mut self) {
+        self.cells.reset();
+        self.tracks.reset();
+    }
+}
+
 /// The active sites and which one the single-valued surfaces describe.
 pub(crate) struct Sites {
     /// One element per active radar; never empty.
     pub list: Vec<SiteState>,
     /// Index into `list` of the site the single-valued surfaces describe.
     pub focus: usize,
+    /// The storm cells of the whole scene, beside the per-site ones.
+    pub scene: SceneCells,
 }
 
 impl Sites {
@@ -284,6 +310,7 @@ impl Sites {
         Self {
             list: vec![initial],
             focus: 0,
+            scene: SceneCells::default(),
         }
     }
 
@@ -439,6 +466,40 @@ impl Sites {
     pub(crate) fn volume_residency(&self, layout: crate::core::phone::DeviceLayout) -> Vec<bool> {
         use crate::core::volume_plan::{resident_volumes, volume_budget};
         resident_volumes(self.list.len(), self.focus, volume_budget(layout))
+    }
+
+    /// The storm cells the canvas draws: the scene's, detected on the
+    /// composite grid, while more than one site is shown, else the focus's.
+    pub(crate) fn shown_cells(&self) -> &crate::core::StormCellsResult {
+        if crate::core::storm_cells::uses_scene(self.list.len()) {
+            &self.scene.cells.result
+        } else {
+            &self.focus().cells.result
+        }
+    }
+
+    /// The lettered tracks on [`Self::shown_cells`], which the canvas draws
+    /// and the distance tool snaps to: the scene's tracker while more than
+    /// one site is shown, else `focus_tracks` (the focus's, on `VizState`).
+    pub(crate) fn shown_tracks_view(
+        &self,
+        focus_tracks: &StormTracks,
+        reference: Option<(f64, f64)>,
+    ) -> Option<crate::core::storm_tracks::TracksView> {
+        if crate::core::storm_cells::uses_scene(self.list.len()) {
+            self.scene.tracks.view(reference)
+        } else {
+            focus_tracks.view(reference)
+        }
+    }
+
+    /// The developer readout of [`Self::shown_cells`].
+    pub(crate) fn shown_cell_stats(&self) -> Option<crate::core::storm_cells::StormCellStats> {
+        if crate::core::storm_cells::uses_scene(self.list.len()) {
+            self.scene.cells.stats()
+        } else {
+            self.focus().cells.stats()
+        }
     }
 
     /// Every site's volume texture size, in list order, for the developer

@@ -158,13 +158,39 @@ impl DecodeWorker {
     /// Submit a storm cell detection on one cut.
     pub(crate) fn detect(&mut self, request: crate::core::storm_cells::DetectRequest) {
         let id = self.next_request_id();
-        self.pending_detect
-            .borrow_mut()
-            .insert(id, request.request_id);
+        self.pending_detect.borrow_mut().insert(
+            id,
+            DetectFor {
+                request_id: request.request_id,
+                scene: false,
+            },
+        );
         if *self.ready.borrow() {
             send_detect_request(&self.worker, id, &request);
         } else {
             self.queue.push(super::QueuedRequest::Detect(id, request));
+        }
+    }
+
+    /// Submit a storm cell detection on the composite grid of several
+    /// sites' cuts. Its reply is a `detected` message like `detect`'s.
+    pub(crate) fn detect_composite(
+        &mut self,
+        request: crate::core::storm_cells::SceneDetectRequest,
+    ) {
+        let id = self.next_request_id();
+        self.pending_detect.borrow_mut().insert(
+            id,
+            DetectFor {
+                request_id: request.request_id,
+                scene: true,
+            },
+        );
+        if *self.ready.borrow() {
+            send_detect_composite_request(&self.worker, id, &request);
+        } else {
+            self.queue
+                .push(super::QueuedRequest::DetectComposite(id, request));
         }
     }
 
@@ -414,13 +440,56 @@ pub(super) fn send_render_volume_request(
     }
 }
 
+/// The wire name of a cut's input.
+fn input_str(input: crate::core::storm_cells::CutInput) -> &'static str {
+    match input {
+        crate::core::storm_cells::CutInput::Stored => "stored",
+        crate::core::storm_cells::CutInput::Live { .. } => "live",
+    }
+}
+
+/// Send a composite storm cell detection request to the worker.
+pub(super) fn send_detect_composite_request(
+    worker: &Worker,
+    id: u64,
+    request: &crate::core::storm_cells::SceneDetectRequest,
+) {
+    let msg = DetectCompositeRequestMsg {
+        msg_type: RequestType::DetectComposite.as_str(),
+        id: id as f64,
+        sites: request
+            .key
+            .sites
+            .iter()
+            .zip(&request.radars)
+            .map(|(k, &(radar_lat, radar_lon))| DetectCompositeSiteMsg {
+                scan_key: k.scan_key.to_storage_key(),
+                elevation_number: k.elevation_number,
+                input: input_str(k.input),
+                radar_lat,
+                radar_lon,
+            })
+            .collect(),
+        params: &request.params,
+    };
+    let msg = match serde_wasm_bindgen::to_value(&msg) {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("Failed to serialize detect_composite request {}: {}", id, e);
+            return;
+        }
+    };
+    if let Err(e) = worker.post_message(&msg) {
+        log::error!("Failed to send detect_composite request {}: {:?}", id, e);
+    }
+}
+
 /// Send a storm cell detection request to the worker.
 pub(super) fn send_detect_request(
     worker: &Worker,
     id: u64,
     request: &crate::core::storm_cells::DetectRequest,
 ) {
-    use crate::core::storm_cells::CutInput;
     let key = &request.key;
     let scan_key = key.scan_key.to_storage_key();
     let msg = DetectRequestMsg {
@@ -428,10 +497,7 @@ pub(super) fn send_detect_request(
         id: id as f64,
         scan_key: &scan_key,
         elevation_number: key.elevation_number,
-        input: match key.input {
-            CutInput::Stored => "stored",
-            CutInput::Live { .. } => "live",
-        },
+        input: input_str(key.input),
         params: &request.params,
         radar_lat: request.radar_lat,
         radar_lon: request.radar_lon,

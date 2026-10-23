@@ -37,6 +37,10 @@
 //     Main → Worker:  { type: 'detect', id, scanKey, elevationNumber, input: 'stored' | 'live', params, radarLat, radarLon }
 //     Worker → Main:  { type: 'detected', id, result: StormCellsResult, fetchMs, detectMs, totalMs, azimuthCount, gateCount, complete }
 //
+//   Storm cell detection on the composite grid of several sites' cuts:
+//     Main → Worker:  { type: 'detect_composite', id, sites: [{ scanKey, elevationNumber, input, radarLat, radarLon }], params }
+//     Worker → Main:  { type: 'detected', id, ... } (as for 'detect'; azimuthCount and gateCount are the grid's rows and columns)
+//
 //   Errors:
 //     Worker → Main:  { type: 'error', id, message }
 //
@@ -252,6 +256,22 @@ self.onmessage = async function (e) {
                 radarLat: msg.radarLat,
                 radarLon: msg.radarLon,
                 volumeCuts: msg.volumeCuts || [],
+            });
+            const payload = Object.assign({}, result, { type: 'detected', id: msg.id });
+            self.postMessage(payload);
+        } catch (err) {
+            postError(msg.id, err);
+        }
+        return;
+    }
+
+    if (msg.type === 'detect_composite') {
+        try {
+            // worker_detect_composite: JsValue -> Promise<JsValue>; reads
+            // every site's cut as worker_detect does, then detects once.
+            const result = await wasm.worker_detect_composite({
+                sites: msg.sites,
+                params: msg.params,
             });
             const payload = Object.assign({}, result, { type: 'detected', id: msg.id });
             self.postMessage(payload);

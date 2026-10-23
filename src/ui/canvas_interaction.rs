@@ -357,6 +357,8 @@ pub(crate) fn pick_at(
             .storm_cells
             .then(|| {
                 let geo = projection.screen_to_geo(pos);
+                // A tap picks a cell on the phone only, which shows one
+                // site: its own cells.
                 crate::core::storm_cell_view::cell_at(
                     &site.cells.result,
                     &storm_cells.shown,
