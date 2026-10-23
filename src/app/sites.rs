@@ -25,12 +25,14 @@ impl WorkbenchApp {
         site
     }
 
-    /// Stop what is tied to sites that left the list: their streams, their
-    /// GPU objects and their queued scans.
+    /// Stop what is tied to sites that left the list: their streams and the
+    /// worker's accumulators behind them, their GPU objects and their queued
+    /// scans.
     fn retire_sites(&mut self, gone: Vec<subsystem::SiteState>) {
         for mut site in gone {
             log::info!("Site {} leaves the map", site.id.0);
             site.live.channel.stop();
+            self.render.coordinator.drop_site(site.id.clone());
             if let Some(gl) = self.gpu.gl.as_ref() {
                 site.gpu.release(gl);
             }
@@ -87,6 +89,22 @@ impl WorkbenchApp {
         if self.live.mode_state.is_active() {
             let index = self.sites.list.len() - 1;
             self.start_site_stream(ctx, index);
+        }
+    }
+
+    /// Keep the set within what the layout shows: a desktop window narrowed
+    /// into the phone's layout keeps only the focus
+    /// ([`sites_core::fit_to_layout`]). Called each frame once the layout is
+    /// known; a no-op while the set fits.
+    pub(crate) fn fit_sites_to_layout(&mut self) {
+        if let Some(change) = sites_core::fit_to_layout(
+            self.sites.list.len(),
+            self.sites.focus,
+            self.chrome.device_layout,
+        ) {
+            log::info!("The phone layout shows one site; keeping the focus");
+            let gone = self.sites.apply(change, None);
+            self.retire_sites(gone);
         }
     }
 
@@ -175,6 +193,10 @@ impl WorkbenchApp {
             let id = self.sites.focus().id.0.clone();
             self.persistence.adopt_site(&id);
         }
+        // The element now points at another radar; the old one's accumulator
+        // in the worker is never read again.
+        let old = self.sites.focus().id.clone();
+        self.render.coordinator.drop_site(old);
         self.sites.focus_mut().retarget(site_id, lat, lon);
         self.state.viz_state.centre_map_on(lat, lon);
         self.state

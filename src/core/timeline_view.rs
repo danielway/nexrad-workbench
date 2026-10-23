@@ -794,6 +794,11 @@ pub(crate) enum LaneBlockState {
     Stalled { newest_secs: f64 },
     /// A volume whose download failed.
     Failed,
+    /// A volume waiting in the download queue: hollow with a faint hatch.
+    Queued,
+    /// A volume downloading, or downloaded and not yet on the timeline: a
+    /// pulsing fill.
+    InFlight,
 }
 
 impl LaneBlockState {
@@ -805,6 +810,8 @@ impl LaneBlockState {
             LaneBlockState::LiveFilling { .. } => "Receiving",
             LaneBlockState::Stalled { .. } => "Stalled",
             LaneBlockState::Failed => "Download failed",
+            LaneBlockState::Queued => "Queued",
+            LaneBlockState::InFlight => "Downloading",
         }
     }
 }
@@ -819,11 +826,40 @@ pub(crate) struct LaneBlock {
     pub state: LaneBlockState,
 }
 
+/// One site's downloads as its lane reads them, by scan start (seconds).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct LaneDownloads {
+    /// Downloads that failed.
+    pub failed: Vec<i64>,
+    /// Scans waiting in the download queue.
+    pub queued: Vec<i64>,
+    /// Scans downloading, or downloaded and not yet on the timeline.
+    pub in_flight: Vec<i64>,
+}
+
+impl LaneDownloads {
+    /// The state of a volume the device does not hold, starting at `key`
+    /// (within [`SCAN_JOIN_TOLERANCE_SECS`]): queued before in flight (a
+    /// queued scan is also pending in the ledger), then failed, else
+    /// listed.
+    pub(crate) fn state_at(&self, key: i64) -> LaneBlockState {
+        if secs_hit(&self.queued, key) {
+            LaneBlockState::Queued
+        } else if secs_hit(&self.in_flight, key) {
+            LaneBlockState::InFlight
+        } else if secs_hit(&self.failed, key) {
+            LaneBlockState::Failed
+        } else {
+            LaneBlockState::Listed
+        }
+    }
+}
+
 /// The lane-only inputs beside the site's [`TimelineView`].
 #[derive(Clone, Copy)]
 pub(crate) struct LaneInputs<'i> {
-    /// Scan starts (seconds) of this site's failed downloads.
-    pub failed: &'i [i64],
+    /// This site's downloads: failed, queued and in flight.
+    pub downloads: &'i LaneDownloads,
     /// Collection time of the newest radial the site's stream has received.
     pub newest_chunk_secs: Option<f64>,
     /// The site's stream, classified ([`crate::core::session::Stream`]).
@@ -843,11 +879,11 @@ pub(crate) struct LaneVm {
 /// The lane for `site` over `[start, end]`, from its timeline view.
 ///
 /// - A cached scan is `Held`, unless it is indexed with no sweeps
-///   (completeness `Missing`), which reads as `Listed`, or `Failed` when
-///   its download failed.
+///   (completeness `Missing`), which reads as a volume not held.
 /// - A listing boundary that no cached scan or live volume covers (within
-///   [`SCAN_JOIN_TOLERANCE_SECS`]) is `Listed`, or `Failed` when a failed
-///   download matches its start within the same tolerance.
+///   [`SCAN_JOIN_TOLERANCE_SECS`]) is a volume not held.
+/// - A volume not held is `Queued`, `InFlight`, `Failed` or `Listed`, by
+///   its downloads ([`LaneDownloads::state_at`]).
 /// - The live volume, present only while the session streams, is
 ///   `LiveFilling`, or `Stalled` when the site's stream is stalled. Its
 ///   solid part ends at the newest chunk, clamped to the volume.
@@ -859,15 +895,12 @@ pub(crate) fn lane_vm(
     inputs: LaneInputs<'_>,
 ) -> LaneVm {
     let mut blocks: Vec<LaneBlock> = Vec::new();
-    let failed = |key: i64| secs_hit(inputs.failed, key);
 
     for (scan, clamped_end) in view.settled_scans_in_range(start, end) {
         let state = if scan.completeness != Some(crate::data::ScanCompleteness::Missing) {
             LaneBlockState::Held
-        } else if failed(scan.key_timestamp.round() as i64) {
-            LaneBlockState::Failed
         } else {
-            LaneBlockState::Listed
+            inputs.downloads.state_at(scan.key_timestamp.round() as i64)
         };
         blocks.push(LaneBlock {
             start_secs: scan.start_time,
@@ -883,11 +916,7 @@ pub(crate) fn lane_vm(
         blocks.push(LaneBlock {
             start_secs: b.start as f64,
             end_secs: b.end as f64,
-            state: if failed(b.start) {
-                LaneBlockState::Failed
-            } else {
-                LaneBlockState::Listed
-            },
+            state: inputs.downloads.state_at(b.start),
         });
     }
 
@@ -2762,12 +2791,79 @@ mod lane_tests {
         }
     }
 
-    fn lane_inputs(failed: &[i64], newest: Option<f64>, stream: Stream) -> LaneInputs<'_> {
+    fn lane_inputs(failed: &[i64], newest: Option<f64>, stream: Stream) -> LaneInputs<'static> {
+        let downloads = LaneDownloads {
+            failed: failed.to_vec(),
+            ..LaneDownloads::default()
+        };
         LaneInputs {
-            failed,
+            downloads: Box::leak(Box::new(downloads)),
             newest_chunk_secs: newest,
             stream,
         }
+    }
+
+    #[wasm_bindgen_test]
+    fn a_volume_not_held_reads_queued_then_in_flight_then_failed() {
+        let d = LaneDownloads {
+            failed: vec![1_000, 3_000],
+            queued: vec![1_000],
+            in_flight: vec![1_000, 2_000, 3_000],
+        };
+        assert_eq!(d.state_at(1_010), LaneBlockState::Queued);
+        assert_eq!(d.state_at(2_000), LaneBlockState::InFlight);
+        assert_eq!(d.state_at(3_000), LaneBlockState::InFlight);
+        assert_eq!(d.state_at(9_000), LaneBlockState::Listed);
+        let failed_only = LaneDownloads {
+            failed: vec![3_000],
+            ..LaneDownloads::default()
+        };
+        assert_eq!(failed_only.state_at(3_030), LaneBlockState::Failed);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_lanes_queued_and_downloading_volumes_take_their_states() {
+        let shadows = vec![
+            ScanBoundary {
+                start: 1_000,
+                end: 1_300,
+            },
+            ScanBoundary {
+                start: 1_300,
+                end: 1_600,
+            },
+            ScanBoundary {
+                start: 1_600,
+                end: 1_900,
+            },
+        ];
+        let cache = RadarTimeline::default();
+        let view = TimelineView::build(&cache, &shadows, None, None);
+        let downloads = LaneDownloads {
+            failed: Vec::new(),
+            queued: vec![1_600],
+            in_flight: vec![1_300],
+        };
+        let lane = lane_vm(
+            "KMLB",
+            &view,
+            0.0,
+            5_000.0,
+            LaneInputs {
+                downloads: &downloads,
+                newest_chunk_secs: None,
+                stream: Stream::Off,
+            },
+        );
+        let states: Vec<_> = lane.blocks.iter().map(|b| b.state).collect();
+        assert_eq!(
+            states,
+            vec![
+                LaneBlockState::Listed,
+                LaneBlockState::InFlight,
+                LaneBlockState::Queued
+            ]
+        );
     }
 
     /// A live volume anchored at `start_secs` that projects to `end_secs`.

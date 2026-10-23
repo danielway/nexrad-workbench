@@ -679,8 +679,8 @@ impl WorkbenchApp {
                 now_ms,
                 operations: &self.acquisition.state.operations,
                 queue_paused: self.acquisition.state.is_paused(),
-                ledger: self.sites.focus().ledger.summarize(now_ms),
-                awaiting_scan_starts: &self.sites.focus().ledger.awaiting_scan_starts(now_ms),
+                ledger: self.sites.ledger_summary(now_ms),
+                awaiting: &self.sites.awaiting_scans(now_ms),
                 worker: stats.worker_load,
                 last_worker_outcome_ms: stats.last_worker_outcome_ms,
                 gpu_render_in_flight: stats.pipeline.rendering,
@@ -1107,6 +1107,7 @@ impl eframe::App for WorkbenchApp {
         self.chrome.device_layout = self
             .state
             .refresh_mobile_mode(ctx, self.chrome.touch_screen);
+        self.fit_sites_to_layout();
 
         // Drain GPS-overlay async results before panels render so the
         // "My Location" checkbox sees coords/error on the same frame the

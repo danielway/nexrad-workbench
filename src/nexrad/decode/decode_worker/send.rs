@@ -124,6 +124,16 @@ impl DecodeWorker {
         }
     }
 
+    /// Tell the worker to forget `site`'s live accumulator. Fire and
+    /// forget: nothing waits on it, so it takes no request id.
+    pub(crate) fn drop_site(&mut self, site: crate::data::SiteId) {
+        if *self.ready.borrow() {
+            send_drop_site_request(&self.worker, &site);
+        } else {
+            self.queue.push(super::QueuedRequest::DropSite(site));
+        }
+    }
+
     /// Submit a volume render request: fetch all elevations, pack for ray marching.
     pub(crate) fn render_volume(
         &mut self,
@@ -385,6 +395,25 @@ pub(super) fn send_render_request(
 }
 
 /// Send a render_live request to the worker.
+/// Post a `drop_site`: the worker forgets `site`'s live accumulator. The
+/// worker sends no reply.
+pub(super) fn send_drop_site_request(worker: &Worker, site: &crate::data::SiteId) {
+    let request = DropSiteRequestMsg {
+        msg_type: RequestType::DropSite.as_str(),
+        site_id: &site.0,
+    };
+    let msg = match serde_wasm_bindgen::to_value(&request) {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("Failed to serialize drop_site for {}: {}", site.0, e);
+            return;
+        }
+    };
+    if let Err(e) = worker.post_message(&msg) {
+        log::error!("Failed to send drop_site for {}: {:?}", site.0, e);
+    }
+}
+
 pub(super) fn send_render_live_request(
     worker: &Worker,
     id: u64,

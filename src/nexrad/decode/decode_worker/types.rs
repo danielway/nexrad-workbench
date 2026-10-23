@@ -28,6 +28,8 @@ pub(super) enum RequestType {
     RenderVolume,
     Detect,
     DetectComposite,
+    /// Forget a site's live accumulator (the site left the map).
+    DropSite,
 }
 
 impl RequestType {
@@ -45,6 +47,7 @@ impl RequestType {
         Self::RenderVolume,
         Self::Detect,
         Self::DetectComposite,
+        Self::DropSite,
     ];
 
     /// Compile-time completeness check for [`Self::ALL`]: this match must list
@@ -61,6 +64,7 @@ impl RequestType {
             Self::RenderVolume => 5,
             Self::Detect => 6,
             Self::DetectComposite => 7,
+            Self::DropSite => 8,
         }
     }
 
@@ -74,6 +78,7 @@ impl RequestType {
             Self::RenderVolume => "render_volume",
             Self::Detect => "detect",
             Self::DetectComposite => "detect_composite",
+            Self::DropSite => "drop_site",
         }
     }
 }
@@ -484,6 +489,15 @@ pub(super) struct DetectCompositeRequestMsg<'a> {
     pub params: &'a crate::storm_cells::DetectionParams,
 }
 
+/// Request message that drops a site's live accumulator. No reply.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DropSiteRequestMsg<'a> {
+    #[serde(rename = "type")]
+    pub msg_type: &'a str,
+    pub site_id: &'a str,
+}
+
 /// Request message sent to the worker for live render operations.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -625,6 +639,8 @@ mod tests {
         assert_eq!(RequestType::RenderLive.as_str(), "render_live");
         assert_eq!(RequestType::RenderVolume.as_str(), "render_volume");
         assert_eq!(RequestType::Detect.as_str(), "detect");
+        assert_eq!(RequestType::DetectComposite.as_str(), "detect_composite");
+        assert_eq!(RequestType::DropSite.as_str(), "drop_site");
     }
 }
 
@@ -787,6 +803,8 @@ mod coverage_tests {
             RequestType::RenderLive.as_str(),
             RequestType::RenderVolume.as_str(),
             RequestType::Detect.as_str(),
+            RequestType::DetectComposite.as_str(),
+            RequestType::DropSite.as_str(),
         ];
         let responses = [
             ResponseType::Ready.as_str(),

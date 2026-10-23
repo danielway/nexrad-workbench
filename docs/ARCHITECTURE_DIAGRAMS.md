@@ -173,7 +173,7 @@ flowchart TB
     ui["UI shell — src/ui/**<br/>(panels, canvas, overlays, modals)"]
     cmd["① AppCommand / Intent<br/>= intents in"]
     derived["② subsystem::Derived + *Vm<br/>= view-model out"]
-    owners["③ 7 subsystems + AppState<br/>= state owners"]
+    owners["③ 8 subsystems + AppState<br/>= state owners"]
     eff["④ core::Effect (+ local action enums<br/>like PrevSweepAction)<br/>= effects out"]
     rt["Effect runtime<br/>app::effects::apply_effects"]
 
@@ -190,7 +190,7 @@ flowchart TB
 |---|---|---|
 | `AppCommand` (→ `Intent`) | intents in | `state::AppCommand`, `core::intent` |
 | `subsystem::Derived` + `*Vm` | view-model out | `subsystem::derived`, `core::diagnostics::DiagnosticsVm` |
-| 7 subsystems + `AppState` | state owners | `subsystem/**`, `state/**` |
+| 8 subsystems + `AppState` | state owners | `subsystem/**`, `state/**` |
 | `core::Effect` + local action enums | effects out | `core::effect`, `core::playback_manager::PrevSweepAction` |
 
 **Migration status:** P0–P4 + P6 complete, P5 partial (pure logic extracted; the
@@ -216,7 +216,7 @@ flowchart TB
         ui["ui/**<br/>panels · canvas · overlays · timeline · mobile · modals"]
     end
     subgraph L2["Subsystems — bounded state owners"]
-        sub["subsystem/**<br/>Acquisition · Render · Live · Timeline · Playback · Chrome · Diagnostics · Derived"]
+        sub["subsystem/**<br/>Sites · Acquisition · Render · Live · Timeline · Playback · Chrome · Diagnostics · Derived"]
     end
     subgraph L3["Functional core — pure decisions"]
         core["core/**<br/>intent · effect · persist · diagnostics · canvas · render · panels · acquisition"]
@@ -259,7 +259,7 @@ flowchart TB
 |---|---|
 | `main.rs` / `app/**` | App entry, `update()` frame loop, effect runtime, frame-loop methods |
 | `ui/**` | egui panels, canvas + overlays, timeline, mobile chrome, modals — *projection + intents only* |
-| `subsystem/**` | 7 bounded contexts that own a coherent slice of state + a typed API |
+| `subsystem/**` | 8 bounded contexts that own a coherent slice of state + a typed API |
 | `core/**` | Pure decision functions: the home of the architecture contract |
 | `state/**` | `AppState` data tree + already-pure decision helpers (~533 tests live here) |
 | `nexrad/**` | The data pipeline: acquire → worker → decode → cache → render + 3D + timing + detection |
@@ -272,18 +272,19 @@ flowchart TB
 ## 5. State Ownership
 
 `WorkbenchApp` is a thin coordinator. State is split across **`AppState`** (the
-shared data tree) and **7 subsystems** (bounded contexts), plus the GPU resources
+shared data tree) and **8 subsystems** (bounded contexts), plus the GPU resources
 and a few shell-only fields.
 
 ```mermaid
 flowchart TB
     app["WorkbenchApp<br/>(thin coordinator)"]
 
-    subgraph subs["7 subsystems (bounded state owners)"]
+    subgraph subs["8 subsystems (bounded state owners)"]
+        sites["Sites<br/>one SiteState per radar + focus index<br/>scans · render track · frame · GPU · ledger · SiteLive"]
         acq["Acquisition<br/>download pipeline + queue + op tracking"]
-        rend["Render<br/>worker pool + dedup + prev-sweep cache"]
-        live["Live<br/>streaming channel + LivePhase + projection engine"]
-        tl["Timeline<br/>scan inventory + shadow boundaries"]
+        rend["Render<br/>worker pool"]
+        live["Live<br/>session LivePhase + SessionVm"]
+        tl["Timeline<br/>storm-activity book"]
         pb["Playback<br/>cursor · speed · loop · realtime lock"]
         chr["Chrome<br/>sidebar/modal visibility flags"]
         diag["Diagnostics<br/>alerts · mPING · GPS · network monitor"]
@@ -291,7 +292,7 @@ flowchart TB
 
     state["AppState<br/>viz_state · layer_state · render_processing<br/>session_stats · national_mosaic · saved_events<br/>theme · is_mobile · frame_now · commands queue"]
 
-    gpu["GpuResources<br/>RadarGpuRenderer · Globe · GeoLine<br/>GlobeRadar · VolumeRay + GL context"]
+    gpu["GpuResources<br/>GL context · Globe · GeoLine<br/>(each site's RadarGpu · GlobeRadar · VolumeRay are on SiteGpu)"]
 
     misc["persistence · modals · geo_layers · last_favicon_mode"]
 
@@ -584,6 +585,9 @@ sequenceDiagram
     deactivate SL
 ```
 
+Each site on the map runs this sequence on its own loop and channel; every
+chunk names its site, and `CHUNK_ACCUM` holds one accumulator per site.
+
 ### 10c. The three time categories
 
 The timing model (`nexrad::timing`, `nexrad::projection`) reconciles three
@@ -605,8 +609,9 @@ flowchart LR
 `ProjectionEngine` is the single owner of projection inputs (VCP, filter,
 collection anchor, availability samples, S3 listings, cached sweeps). It memoizes
 a `Projection { plan: StreamingPlan, live_scan: ScanProjection }`, invalidated by
-an `input_revision` counter. `subsystem::Live` clones the frame's projection into
-`LiveRadarModel` so the canvas, timeline, and panels all read one consistent
+an `input_revision` counter. Each site has its own engine and its own
+streaming loop (on `SiteLive`); `Live::refresh` clones each site's projection into
+its `LiveRadarModel` so the canvas, timeline, and panels all read one consistent
 snapshot.
 
 ---
@@ -782,7 +787,8 @@ lowest reflectivity cut), the result cache and the decision of when it runs
 (`core::storm_cells`), and what the overlay shows (`core::storm_cell_view`:
 which cells draw in 2D and Rays, projected footprint rings, decluttered peak
 chips, the hit test and the hover/selected card). Only running the detector
-(a `detect` message to a decode worker) and painting that view-model
+(a `detect` message to a decode worker, or `detect_composite` on the
+composite grid of every shown site) and painting that view-model
 (outline over halo, faint group ring, chip, card) are in the shell.
 
 ---

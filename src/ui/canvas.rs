@@ -546,8 +546,8 @@ pub(crate) fn render_canvas_with_geo(
                         _ => (None, false),
                     }
                 };
-                // The other discs' marks first, fainter, so the focus's
-                // marks stay on top where discs overlap.
+                // The other discs' rings and marks first, fainter, so the
+                // focus's stay on top where discs overlap.
                 for other in &others {
                     let vm = site_overlay_vm(
                         state,
@@ -566,7 +566,7 @@ pub(crate) fn render_canvas_with_geo(
                             other.site.lat,
                             other.site.lon,
                         ),
-                        crate::core::canvas::sweep_marks_opacity(false),
+                        crate::core::canvas::disc_overlay_opacity(false),
                     );
                 }
                 let overlay_vm = site_overlay_vm(

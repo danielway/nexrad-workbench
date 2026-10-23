@@ -481,6 +481,17 @@ pub(crate) struct LedgerSummary {
     pub failed_backoff: u32,
 }
 
+impl LedgerSummary {
+    /// Two ledgers' counts together: the activity surface sums every site's.
+    pub(crate) fn merge(self, other: Self) -> Self {
+        Self {
+            awaiting_timeline: self.awaiting_timeline + other.awaiting_timeline,
+            unavailable: self.unavailable + other.unavailable,
+            failed_backoff: self.failed_backoff + other.failed_backoff,
+        }
+    }
+}
+
 /// In-memory ledger of recently requested scans, keyed by listing
 /// `scan_start`. Third dedup input to [`prefetch_already_satisfied`],
 /// alongside the queue snapshot and the timeline: it survives the queue's
@@ -656,6 +667,23 @@ impl RequestLedger {
             .iter()
             .filter(|(_, e)| match e.state {
                 LedgerState::AwaitingTimeline { since_ms } => {
+                    now_ms - since_ms <= LEDGER_PENDING_TTL_MS
+                }
+                _ => false,
+            })
+            .map(|(&k, _)| k)
+            .collect()
+    }
+
+    /// Scan starts requested and not yet on the timeline: enqueued,
+    /// downloading or ingesting, or ingested and awaiting the timeline,
+    /// TTL-filtered. A site's lane draws them as in flight unless the queue
+    /// still holds them.
+    pub(crate) fn in_progress_scan_starts(&self, now_ms: f64) -> Vec<i64> {
+        self.entries
+            .iter()
+            .filter(|(_, e)| match e.state {
+                LedgerState::Pending { since_ms } | LedgerState::AwaitingTimeline { since_ms } => {
                     now_ms - since_ms <= LEDGER_PENDING_TTL_MS
                 }
                 _ => false,
@@ -2424,6 +2452,45 @@ mod reducer_tests {
         let mut led = RequestLedger::default();
         led.note_enqueued(1300, Some(1), 0.0);
         assert_eq!(led.summarize(1.0), LedgerSummary::default());
+    }
+
+    #[wasm_bindgen_test]
+    fn in_progress_runs_from_enqueue_until_the_timeline_sees_the_scan() {
+        let mut led = RequestLedger::default();
+        led.note_enqueued(1300, Some(1), 0.0);
+        led.note_enqueued(2300, Some(1), 0.0);
+        led.note_ingested(2300, TOL, 10.0);
+        led.note_failed(3300, TOL, 10.0);
+        let mut starts = led.in_progress_scan_starts(20.0);
+        starts.sort();
+        assert_eq!(starts, vec![1300, 2300]);
+        // Past the TTL nothing is in progress.
+        assert!(led
+            .in_progress_scan_starts(LEDGER_PENDING_TTL_MS + 20.0)
+            .is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn summaries_merge_by_adding_each_count() {
+        let a = LedgerSummary {
+            awaiting_timeline: 2,
+            unavailable: 1,
+            failed_backoff: 0,
+        };
+        let b = LedgerSummary {
+            awaiting_timeline: 1,
+            unavailable: 0,
+            failed_backoff: 3,
+        };
+        assert_eq!(
+            a.merge(b),
+            LedgerSummary {
+                awaiting_timeline: 3,
+                unavailable: 1,
+                failed_backoff: 3,
+            }
+        );
+        assert_eq!(a.merge(LedgerSummary::default()), a);
     }
 
     /// An entry past its TTL no longer suppresses anything, so it must not be

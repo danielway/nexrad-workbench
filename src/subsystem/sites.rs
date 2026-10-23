@@ -406,12 +406,14 @@ impl Sites {
 
     /// The timeline lanes over `[start, end]`: one per site but the focus,
     /// in list order (the focus has the full track). `session` is the live
-    /// session; `failed` gives a site's failed download starts. Empty with
-    /// one site.
+    /// session; `downloads` gives a site's failed, queued and downloading
+    /// scans, to which each site's ledger adds the scans requested and not
+    /// yet on its timeline (as of `now_ms`). Empty with one site.
     pub(crate) fn lanes(
         &self,
         session: &crate::core::LiveModeState,
-        failed: impl Fn(&SiteId) -> Vec<i64>,
+        downloads: impl Fn(&SiteId) -> crate::core::timeline_view::LaneDownloads,
+        now_ms: f64,
         start: f64,
         end: f64,
     ) -> Vec<crate::core::timeline_view::LaneVm> {
@@ -420,14 +422,17 @@ impl Sites {
             .enumerate()
             .filter(|&(i, _)| i != self.focus)
             .map(|(_, s)| {
-                let failed = failed(&s.id);
+                let mut downloads = downloads(&s.id);
+                downloads
+                    .in_flight
+                    .extend(s.ledger.in_progress_scan_starts(now_ms));
                 crate::core::timeline_view::lane_vm(
                     &s.id.0,
                     &s.timeline_view(session.is_active()),
                     start,
                     end,
                     crate::core::timeline_view::LaneInputs {
-                        failed: &failed,
+                        downloads: &downloads,
                         newest_chunk_secs: s.live.volume.last_radial_time_secs,
                         stream: Stream::classify(
                             s.live.frame_status.activity,
@@ -457,6 +462,30 @@ impl Sites {
                     chunks_received: status.chunks_received,
                     last_chunk_age_secs: status.data_age_secs,
                 }
+            })
+            .collect()
+    }
+
+    /// Every site's request ledger counts, summed, for the activity surface.
+    pub(crate) fn ledger_summary(&self, now_ms: f64) -> crate::core::acquisition::LedgerSummary {
+        self.iter().map(|s| s.ledger.summarize(now_ms)).fold(
+            Default::default(),
+            crate::core::acquisition::LedgerSummary::merge,
+        )
+    }
+
+    /// Every site's scans in the ingest→timeline blackout, for the
+    /// activity surface's Finishing count.
+    pub(crate) fn awaiting_scans(&self, now_ms: f64) -> Vec<crate::core::activity::AwaitingScan> {
+        self.iter()
+            .flat_map(|s| {
+                s.ledger
+                    .awaiting_scan_starts(now_ms)
+                    .into_iter()
+                    .map(|scan_start| crate::core::activity::AwaitingScan {
+                        site: s.id.0.clone(),
+                        scan_start,
+                    })
             })
             .collect()
     }
@@ -655,7 +684,7 @@ mod tests {
             end: 1_300,
         });
         sites.focus = 1;
-        let lanes = sites.lanes(&session, |_| Vec::new(), 0.0, 5_000.0);
+        let lanes = sites.lanes(&session, |_| Default::default(), 0.0, 0.0, 5_000.0);
         let ids: Vec<_> = lanes.iter().map(|l| l.site.as_str()).collect();
         assert_eq!(ids, ["KDMX", "KFWS"]);
         assert!(lanes[0].blocks.is_empty());
@@ -672,13 +701,15 @@ mod tests {
         });
         let lanes = sites.lanes(
             &session,
-            |id| {
-                if id.0 == "KTLX" {
+            |id| crate::core::timeline_view::LaneDownloads {
+                failed: if id.0 == "KTLX" {
                     vec![1_000]
                 } else {
                     Vec::new()
-                }
+                },
+                ..Default::default()
             },
+            0.0,
             0.0,
             5_000.0,
         );
@@ -689,11 +720,28 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    fn a_lane_shows_its_sites_requests_in_flight_from_the_ledger() {
+        let session = crate::core::LiveModeState::default();
+        let mut sites = two_sites();
+        sites.list[1].shadows.push(ScanBoundary {
+            start: 1_000,
+            end: 1_300,
+        });
+        // Requested, no longer in the queue (downloaded, ingesting).
+        sites.list[1].ledger.note_enqueued(1_000, None, 0.0);
+        let lanes = sites.lanes(&session, |_| Default::default(), 10.0, 0.0, 5_000.0);
+        assert_eq!(
+            lanes[0].blocks[0].state,
+            crate::core::timeline_view::LaneBlockState::InFlight
+        );
+    }
+
+    #[wasm_bindgen_test]
     fn one_site_has_no_lanes() {
         let session = crate::core::LiveModeState::default();
         let sites = Sites::default();
         assert!(sites
-            .lanes(&session, |_| Vec::new(), 0.0, 5_000.0)
+            .lanes(&session, |_| Default::default(), 0.0, 0.0, 5_000.0)
             .is_empty());
     }
 
@@ -720,6 +768,18 @@ mod tests {
         assert_eq!(textures.len(), 2);
         assert_eq!(textures[1].site, "KTLX");
         assert!(textures.iter().all(|t| t.bytes == 0));
+    }
+
+    #[wasm_bindgen_test]
+    fn the_activity_surface_reads_every_sites_ledger() {
+        let mut sites = two_sites();
+        sites.list[0].ledger.note_ingested(1_000, 60, 0.0);
+        sites.list[1].ledger.note_ingested(1_000, 60, 0.0);
+        sites.list[1].ledger.note_ingested(2_000, 60, 0.0);
+        assert_eq!(sites.ledger_summary(10.0).awaiting_timeline, 3);
+        let awaiting = sites.awaiting_scans(10.0);
+        assert_eq!(awaiting.len(), 3);
+        assert_eq!(awaiting.iter().filter(|a| a.site == "KTLX").count(), 2);
     }
 
     #[wasm_bindgen_test]

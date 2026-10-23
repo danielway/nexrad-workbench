@@ -1527,10 +1527,62 @@ fn order_pair(a: f64, b: f64) -> (f64, f64) {
     }
 }
 
+/// Where a timeline load after a site change puts the playhead: the end of
+/// the newest cached range, or `None` to leave it. It stays when it already
+/// sits in cached data, when it follows live (moving it would trip the
+/// seek-while-live guard), and when a range is selected, because the user
+/// chose that time (a saved event opened on another site).
+pub(crate) fn auto_position_target(
+    ranges: &[super::radar::TimeRange],
+    playhead: f64,
+    selection: &Selection,
+) -> Option<f64> {
+    let newest = ranges.last()?;
+    if selection.is_live() || selection.range().is_some() {
+        return None;
+    }
+    if ranges.iter().any(|r| r.contains(playhead)) {
+        return None;
+    }
+    Some(newest.end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn fixed_range(a: f64, b: f64) -> Selection {
+        Selection::Range(RangeSelection {
+            bounds: Some((a, b)),
+            live: false,
+            basis: LoopBasis::Duration(b - a),
+        })
+    }
+
+    #[wasm_bindgen_test]
+    fn auto_position_moves_a_point_playhead_outside_the_data_to_the_newest_end() {
+        use super::super::radar::TimeRange;
+        let ranges = [TimeRange::new(100.0, 200.0), TimeRange::new(300.0, 400.0)];
+        let point = Selection::Point { live: false };
+        assert_eq!(auto_position_target(&ranges, 50.0, &point), Some(400.0));
+        assert_eq!(auto_position_target(&ranges, 150.0, &point), None);
+        assert_eq!(auto_position_target(&[], 50.0, &point), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn auto_position_leaves_a_live_playhead_and_a_chosen_range() {
+        use super::super::radar::TimeRange;
+        let ranges = [TimeRange::new(100.0, 200.0)];
+        let live = Selection::Point { live: true };
+        assert_eq!(auto_position_target(&ranges, 50.0, &live), None);
+        // A saved event opened on another site selects its range before the
+        // new site's timeline loads; the load must not move off it.
+        assert_eq!(
+            auto_position_target(&ranges, 900.0, &fixed_range(900.0, 960.0)),
+            None
+        );
+    }
 
     #[wasm_bindgen_test]
     fn enter_live_range_sets_loop_seed_and_resets_macro_cursor() {

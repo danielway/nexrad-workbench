@@ -3,16 +3,17 @@
 //! [`crate::core::timeline_view::LaneVm`]. Held volumes are solid, listed
 //! ones hollow, the live volume solid up to its newest chunk with a dashed
 //! outline to its projected end (red when the stream stalled), a failed
-//! download hollow with a red edge. The site id sits at the left edge over a
-//! dark backing.
+//! download hollow with a red edge, a queued one hollow with the track's
+//! faint hatch and one downloading with the track's pulsing fill. The site
+//! id sits at the left edge over a dark backing.
 
-use super::strokes::{stroke_dashed_rect, DashedBorder};
+use super::strokes::{fill_hatched_rect, stroke_dashed_rect, DashedBorder};
 use super::style::{LANE_GAP, LANE_H};
 use super::TimelineFrame;
 use crate::core::timeline_view::{LaneBlock, LaneBlockState, LaneVm};
 use crate::ui::theme;
 use crate::ui::theme::timeline as tl_colors;
-use eframe::egui::{FontId, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
+use eframe::egui::{Color32, FontId, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
 /// The lane rects under `track`, one per lane, top to bottom.
 pub(super) fn lane_rects(track: Rect, lanes: usize) -> Vec<Rect> {
@@ -34,12 +35,22 @@ pub(super) fn paint_lanes(
     lanes: &[LaneVm],
     rects: &[Rect],
 ) {
+    // The same free-running pulse as the track's archive downloads; a
+    // static half fill under reduced motion.
+    let ctx = painter.ctx();
+    let reduced = super::reduced_motion(ctx);
+    let pulse = (!reduced).then(|| (0.5 + 0.5 * (ctx.input(|i| i.time) * 3.0).sin()) as f32);
+    let mut animating = false;
     for (lane, rect) in lanes.iter().zip(rects) {
         let painter = painter.with_clip_rect(*rect);
         for block in &lane.blocks {
-            paint_block(&painter, frame, block, *rect);
+            animating |= block.state == LaneBlockState::InFlight;
+            paint_block(&painter, frame, block, *rect, pulse);
         }
         paint_label(&painter, &lane.site, *rect);
+    }
+    if animating && pulse.is_some() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(67));
     }
 }
 
@@ -50,7 +61,13 @@ fn span(frame: &TimelineFrame<'_>, rect: Rect, a: f64, b: f64) -> Option<(f32, f
     (x1 > x0 && x1 >= rect.left() && x0 <= rect.right()).then_some((x0, x1))
 }
 
-fn paint_block(painter: &Painter, frame: &TimelineFrame<'_>, block: &LaneBlock, rect: Rect) {
+fn paint_block(
+    painter: &Painter,
+    frame: &TimelineFrame<'_>,
+    block: &LaneBlock,
+    rect: Rect,
+    pulse: Option<f32>,
+) {
     let Some((x0, x1)) = span(frame, rect, block.start_secs, block.end_secs) else {
         return;
     };
@@ -78,6 +95,39 @@ fn paint_block(painter: &Painter, frame: &TimelineFrame<'_>, block: &LaneBlock, 
                 whole,
                 2.0,
                 Stroke::new(1.0_f32, theme::acquisition::FAILED),
+                StrokeKind::Inside,
+            );
+        }
+        LaneBlockState::Queued => {
+            painter.rect_filled(whole, 2.0, tl_colors::available_fill());
+            fill_hatched_rect(
+                painter,
+                whole,
+                Stroke::new(0.75_f32, tl_colors::cell_queued_hatch()),
+                4.0,
+            );
+        }
+        LaneBlockState::InFlight => {
+            let base = tl_colors::cell_inflight();
+            match pulse {
+                Some(pulse) => {
+                    let a = (90.0 + 60.0 * pulse) as u8;
+                    painter.rect_filled(
+                        whole,
+                        2.0,
+                        Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), a),
+                    );
+                }
+                None => {
+                    let half =
+                        Rect::from_min_max(Pos2::new(whole.left(), whole.center().y), whole.max);
+                    painter.rect_filled(half, 2.0, base);
+                }
+            }
+            painter.rect_stroke(
+                whole,
+                2.0,
+                Stroke::new(1.0_f32, tl_colors::cell_inflight_border()),
                 StrokeKind::Inside,
             );
         }

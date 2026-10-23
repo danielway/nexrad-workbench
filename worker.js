@@ -41,6 +41,9 @@
 //     Main → Worker:  { type: 'detect_composite', id, sites: [{ scanKey, elevationNumber, input, radarLat, radarLon }], params }
 //     Worker → Main:  { type: 'detected', id, ... } (as for 'detect'; azimuthCount and gateCount are the grid's rows and columns)
 //
+//   Drop a site (it left the map; forget its live accumulator, no reply):
+//     Main → Worker:  { type: 'drop_site', siteId }
+//
 //   Errors:
 //     Worker → Main:  { type: 'error', id, message }
 //
@@ -278,6 +281,19 @@ self.onmessage = async function (e) {
         } catch (err) {
             postError(msg.id, err);
         }
+        return;
+    }
+
+    if (msg.type === 'drop_site') {
+        // The site left the map: forget its accumulator. Queued behind the
+        // chunk ingests already sent, so none of them installs it again.
+        chunkIngestQueue = chunkIngestQueue.then(() => {
+            try {
+                wasm.worker_drop_site(msg.siteId);
+            } catch (err) {
+                console.error('drop_site failed: ' + describeError(err));
+            }
+        });
         return;
     }
 

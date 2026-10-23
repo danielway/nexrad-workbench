@@ -35,7 +35,8 @@ started with that site's id, its projection engine, the volume in progress
 arrivals) and its per-frame live models; each channel's results land on its
 own site, and in the worker each site's chunks fill their own accumulator
 (keyed by site id, which `ingest_chunk`, `render_live` and the live `detect`
-carry). The session (`subsystem::Live`, a `LiveModeState`) holds the one
+carry; a site that leaves the map sends `drop_site`, so its accumulator goes
+with it). The session (`subsystem::Live`, a `LiveModeState`) holds the one
 phase, exit reason, detached time and pulse: it starts streaming when the
 first site's stream starts, only the focus site's chunks move it between
 receiving and waiting, and it stops when the last site stops
@@ -45,7 +46,9 @@ On the timeline the focus site keeps the full track; every other site gets an
 11 px lane under it, in list order (`core::timeline_view::lane_vm`, assembled
 by `Sites::lanes`). A lane has one block per volume: held (on the device,
 solid), listed (in the archive listing but not held, hollow), failed (that
-site's download failed, hollow with a red edge), and the volume the site's
+site's download failed, hollow with a red edge), queued (hatched) and in
+flight (a pulsing fill, from the download queue and the site's request
+ledger until its timeline shows the scan), and the volume the site's
 stream is collecting, solid up to its newest radial and a dashed outline to
 its projected end. When that site's stream is stalled the dashed part is red
 from where its chunks stopped. Listings, failures and cached scans are joined

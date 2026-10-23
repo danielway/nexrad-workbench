@@ -283,6 +283,17 @@ pub(super) fn set_chunk_accum(site: &str, value: Option<ChunkAccumulator>) {
     });
 }
 
+/// Forget `site`'s accumulator: its site left the map, so its partial
+/// sweeps will never be read or flushed. Other sites' accumulators stay.
+///
+/// Called from the Web Worker via worker.js (`drop_site`), queued behind the
+/// chunk ingests already sent so none of them re-installs it.
+#[allow(unreachable_pub)] // wasm_bindgen export invoked from worker.js; must stay pub
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn worker_drop_site(site_id: String) {
+    set_chunk_accum(&site_id, None);
+}
+
 /// Ingest a single real-time chunk: decompress, decode, and store completed
 /// elevations to IDB incrementally.
 ///
@@ -805,6 +816,19 @@ mod accum_tests {
             with_chunk_accum(OTHER, |a| a.map(|x| x.total_chunks)),
             Some(7)
         );
+        set_chunk_accum(OTHER, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn dropping_a_site_forgets_only_its_accumulator() {
+        const OTHER: &str = "KTLX";
+        set_chunk_accum(SITE, Some(sample_accum()));
+        set_chunk_accum(OTHER, Some(sample_accum()));
+        worker_drop_site(SITE.to_string());
+        assert!(with_chunk_accum(SITE, |a| a.is_none()));
+        assert!(with_chunk_accum(OTHER, |a| a.is_some()));
+        // Dropping a site with no accumulator is harmless.
+        worker_drop_site(SITE.to_string());
         set_chunk_accum(OTHER, None);
     }
 }

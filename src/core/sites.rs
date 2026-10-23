@@ -5,7 +5,7 @@
 //! and a focus index. The decisions here work on the list of ids alone:
 //!
 //! - [`cap`]: how many sites a layout shows (three on a desktop, one on a
-//!   phone).
+//!   phone), and [`fit_to_layout`]: what a change of layout does to the set.
 //! - [`add`], [`remove`], [`set_focus`], [`only_focus`], [`select`]: what a
 //!   change to the set does, or why it is refused ([`Refusal::words`] is what
 //!   the picker says).
@@ -31,6 +31,13 @@ pub(crate) fn cap(layout: DeviceLayout) -> usize {
     } else {
         DESKTOP_CAP
     }
+}
+
+/// What the set does when the layout becomes `layout`: one that shows fewer
+/// sites than the `len` on the map (a desktop window narrowed into the
+/// phone's layout) keeps only the focus. `None` when the set fits.
+pub(crate) fn fit_to_layout(len: usize, focus: usize, layout: DeviceLayout) -> Option<Change> {
+    (len > cap(layout)).then_some(Change::Only { keep: focus })
 }
 
 /// What a change to the site set does, for the shell to carry out on the
@@ -271,6 +278,20 @@ mod tests {
         assert_eq!(cap(desktop()), 3);
         assert_eq!(cap(DeviceLayout::Phone { landscape: false }), 1);
         assert_eq!(cap(DeviceLayout::Phone { landscape: true }), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn turning_into_a_phone_keeps_only_the_focus() {
+        let phone = DeviceLayout::Phone { landscape: false };
+        assert_eq!(fit_to_layout(3, 1, phone), Some(Change::Only { keep: 1 }));
+        assert_eq!(
+            fit_to_layout(2, 0, DeviceLayout::Phone { landscape: true }),
+            Some(Change::Only { keep: 0 })
+        );
+        // One site fits the phone; any set fits the desktop.
+        assert_eq!(fit_to_layout(1, 0, phone), None);
+        assert_eq!(fit_to_layout(3, 2, desktop()), None);
+        assert_eq!(fit_to_layout(1, 0, desktop()), None);
     }
 
     #[wasm_bindgen_test]

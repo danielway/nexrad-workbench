@@ -42,8 +42,8 @@ impl PersistenceManager {
 
     /// Returns true if the focus site's id has changed since the last check,
     /// updating the internal tracker. Only a retarget of the focus element
-    /// (`SelectSite`, a saved event on another site) changes it; focus moves
-    /// within the list call [`Self::adopt_site`].
+    /// (`SelectSite`, which a saved event on another site also sends)
+    /// changes it; focus moves within the list call [`Self::adopt_site`].
     pub(crate) fn detect_site_change(&mut self, current_site_id: &str) -> bool {
         if current_site_id != self.previous_site_id {
             log::info!(

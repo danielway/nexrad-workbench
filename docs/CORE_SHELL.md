@@ -194,8 +194,11 @@ UI batch. Its phase-by-phase record is in git history.
   `src/nexrad/live/realtime/streaming/` (nine focused submodules); the loop
   function itself keeps its await ordering intact, since the timing is
   load-bearing and unverifiable headlessly.
-- **`LayoutCtx` still hands four subsystems as `&mut`** (`live`, `playback`,
-  `acquisition`, `chrome`, plus `modals` for widget buffers). `diagnostics` was
+- **`LayoutCtx` still hands five subsystems as `&mut`** (`sites`, `live`,
+  `playback`, `acquisition`, `chrome`, plus `modals` for widget buffers).
+  `sites` is `&mut` only because the transport calls the UI makes (`Live::seek`,
+  `Live::select_range`) can stop every site's stream channel; a saved event from
+  another site goes through `Intent::SelectSite`. `diagnostics` was
   narrowed to `&` in 2026-07 as a compiler-checked proof that no layer mutates
   it; each surviving `&mut` carries an inline doc naming the mutation that keeps
   it, so the next narrowing attempt starts with the answer. `chrome` is the

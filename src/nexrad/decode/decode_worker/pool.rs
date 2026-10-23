@@ -11,6 +11,8 @@
 //!   passes them through.
 //! - `detect` — pinned to worker 0 for a live cut (it reads the
 //!   accumulator), round-robined like `render` for a stored one.
+//! - `drop_site` — pinned to worker 0: it forgets a site's accumulator when
+//!   the site leaves the map.
 //!
 //! Each worker in the pool owns its own JS `Worker` handle and its own
 //! `pending_*` maps, so message correlation remains per-worker. `try_recv`
@@ -143,6 +145,12 @@ impl WorkerPool {
         product: String,
     ) {
         self.workers[LIVE_WORKER_INDEX].render_live(site, elevation_number, product);
+    }
+
+    /// Forget `site`'s live accumulator — pinned to the live worker, which
+    /// holds the accumulators.
+    pub(crate) fn drop_site(&mut self, site: crate::data::SiteId) {
+        self.workers[LIVE_WORKER_INDEX].drop_site(site);
     }
 
     /// Submit a volume render — round-robined across workers.
