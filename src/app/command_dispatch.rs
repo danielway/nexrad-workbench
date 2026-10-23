@@ -538,8 +538,9 @@ impl DispatchState<'_> {
             .then_some(self.diagnostics.gps.coords)
             .flatten();
         let viz = &mut self.state.viz_state;
+        let sites = &*self.sites;
         let tracks = (viz.storm_cells_visible && viz.storm_tracks_visible)
-            .then(|| viz.storm_tracks.view(None))
+            .then(|| sites.shown_tracks_view(&viz.storm_tracks, None))
             .flatten();
         let targets = crate::core::measure::SnapTargets {
             tracks: tracks.as_ref(),

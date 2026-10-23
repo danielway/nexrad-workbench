@@ -125,6 +125,21 @@ impl RenderCoordinator {
         }
     }
 
+    /// Submit a composite storm cell detection. Returns false when there is
+    /// no worker pool to take it.
+    pub(crate) fn detect_composite(
+        &mut self,
+        request: crate::core::storm_cells::SceneDetectRequest,
+    ) -> bool {
+        match self.worker {
+            Some(ref mut worker) => {
+                worker.detect_composite(request);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Forward raw bytes to worker for ingest. When `wanted_elevations` is
     /// non-empty, the worker stores only those cuts (filter-scoped fetch).
     #[allow(clippy::too_many_arguments)]

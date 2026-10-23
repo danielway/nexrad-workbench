@@ -53,7 +53,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::core::storm_cells::{
-    has_reflectivity, lowest_reflectivity_cut, CutInput, StormCellKey, StormCells,
+    has_reflectivity, lowest_reflectivity_cut, CellKey, CutInput, SceneCellKey, StormCellKey,
+    StormCells,
 };
 use crate::core::Scan;
 use crate::data::{ScanKey, UnixMillis};
@@ -116,9 +117,63 @@ pub(crate) fn history_keys(
     keys
 }
 
+/// The scene keys before `shown` that tracking asks to have detected,
+/// oldest first: at every volume start (on any of its sites) before the
+/// shown scene's time, the scene of each site's newest stored volume
+/// started by then, from [`history_keys`] per site plus the site's shown
+/// cut (`scans[i]` is the timeline of `shown.sites[i]`). A site with no
+/// such volume yet is left out of that scene, as a site with nothing
+/// displayed is left out of the shown one. At most [`HISTORY_VOLUMES`]
+/// scenes.
+pub(crate) fn scene_history_keys(scans: &[&[Scan]], shown: &SceneCellKey) -> Vec<SceneCellKey> {
+    // Each site's stored volumes before its shown one, and the shown one
+    // itself once stored (a scene before the shown one can hold it).
+    let per_site: Vec<Vec<StormCellKey>> = shown
+        .sites
+        .iter()
+        .zip(scans)
+        .map(|(k, s)| {
+            let mut keys = history_keys(s, &k.scan_key, shown.threshold_dbz);
+            keys.extend((k.input == CutInput::Stored).then(|| k.clone()));
+            keys
+        })
+        .collect();
+    if per_site.len() != shown.sites.len() {
+        return Vec::new();
+    }
+    let t = shown.time_ms();
+    let starts: BTreeSet<i64> = per_site
+        .iter()
+        .flatten()
+        .map(|k| k.scan_key.scan_start.0)
+        .filter(|&ms| ms < t)
+        .collect();
+    let mut keys = Vec::new();
+    for &at in starts.iter().rev() {
+        let sites: Vec<StormCellKey> = per_site
+            .iter()
+            .filter_map(|site| {
+                site.iter()
+                    .rev()
+                    .find(|k| k.scan_key.scan_start.0 <= at)
+                    .cloned()
+            })
+            .collect();
+        keys.push(SceneCellKey {
+            sites,
+            threshold_dbz: shown.threshold_dbz,
+        });
+        if keys.len() == HISTORY_VOLUMES {
+            break;
+        }
+    }
+    keys.reverse();
+    keys
+}
+
 #[derive(Clone, Debug)]
-struct StoredFrame {
-    key: StormCellKey,
+struct StoredFrame<K> {
+    key: K,
     frame: Frame,
     /// The tracker right after this volume: where a volume inserted after
     /// this one starts from.
@@ -155,18 +210,19 @@ pub(crate) enum TrackSync {
     Untracked,
 }
 
-/// The per-site track store.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct StormTracks {
+/// The track store: one for the focus site, one for the scene of several
+/// sites (keyed by [`SceneCellKey`]).
+#[derive(Clone, Debug)]
+pub(crate) struct StormTracks<K = StormCellKey> {
     /// The tracker a run starts from: no tracks, and the ID counter the
     /// run's first volume starts at.
     run_start: Tracker,
     /// Final frames by volume time.
-    frames: BTreeMap<i64, StoredFrame>,
+    frames: BTreeMap<i64, StoredFrame<K>>,
     /// The threshold the stored frames were detected at.
     threshold_dbz: Option<f32>,
     /// The shown volume's key, frame and letters.
-    current: Option<(StormCellKey, Frame, Letters)>,
+    current: Option<(K, Frame, Letters)>,
     /// The next letter to hand out. Only moves forward (a site change
     /// resets it), so a letter names one storm.
     next_letter: u32,
@@ -179,7 +235,22 @@ pub(crate) struct StormTracks {
     observations: u64,
 }
 
-impl StormTracks {
+impl<K> Default for StormTracks<K> {
+    fn default() -> Self {
+        Self {
+            run_start: Tracker::default(),
+            frames: BTreeMap::new(),
+            threshold_dbz: None,
+            current: None,
+            next_letter: 0,
+            letter_of_point: HashMap::new(),
+            last_sync: None,
+            observations: 0,
+        }
+    }
+}
+
+impl<K: CellKey> StormTracks<K> {
     /// Forget everything, ID counter included. For a site change.
     pub(crate) fn reset(&mut self) {
         *self = Self::default();
@@ -289,9 +360,9 @@ impl StormTracks {
     }
 
     /// Whether the volume of `key` has a frame for that cut.
-    fn framed(&self, key: &StormCellKey) -> bool {
+    fn framed(&self, key: &K) -> bool {
         self.frames
-            .get(&key.scan_key.scan_start.0)
+            .get(&key.time_ms())
             .is_some_and(|f| f.key.same_cut(key))
     }
 
@@ -319,20 +390,15 @@ impl StormTracks {
     pub(crate) fn sync(
         &mut self,
         enabled: bool,
-        cells: &StormCells,
-        history: &[StormCellKey],
+        cells: &StormCells<K>,
+        history: &[K],
     ) -> TrackSync {
         let outcome = self.sync_inner(enabled, cells, history);
         self.last_sync = Some(outcome);
         outcome
     }
 
-    fn sync_inner(
-        &mut self,
-        enabled: bool,
-        cells: &StormCells,
-        history: &[StormCellKey],
-    ) -> TrackSync {
+    fn sync_inner(&mut self, enabled: bool, cells: &StormCells<K>, history: &[K]) -> TrackSync {
         if !enabled {
             self.current = None;
             return TrackSync::Off;
@@ -341,11 +407,11 @@ impl StormTracks {
             self.current = None;
             return TrackSync::NoCells;
         };
-        if self.threshold_dbz != Some(key.threshold_dbz) {
+        if self.threshold_dbz != Some(key.threshold_dbz()) {
             self.restart();
-            self.threshold_dbz = Some(key.threshold_dbz);
+            self.threshold_dbz = Some(key.threshold_dbz());
         }
-        let t = key.scan_key.scan_start.0;
+        let t = key.time_ms();
         // Far before every frame: nothing links the two, start a new run.
         let max_gap_ms = self.run_start.params.max_gap_ms;
         if self
@@ -358,9 +424,9 @@ impl StormTracks {
         }
 
         // History volumes whose cells have landed but are not tracked yet.
-        let pending: Vec<StormCellKey> = history
+        let pending: Vec<K> = history
             .iter()
-            .filter(|h| h.scan_key.scan_start.0 < t)
+            .filter(|h| h.time_ms() < t)
             .filter(|h| !self.framed(h) && cells.cached_result(h).is_some())
             .cloned()
             .collect();
@@ -374,10 +440,7 @@ impl StormTracks {
         }
 
         let provisional = cells.is_provisional();
-        let mut new: Vec<(i64, StormCellKey)> = pending
-            .iter()
-            .map(|h| (h.scan_key.scan_start.0, h.clone()))
-            .collect();
+        let mut new: Vec<(i64, K)> = pending.iter().map(|h| (h.time_ms(), h.clone())).collect();
         if !provisional && !self.framed(&key) {
             new.push((t, key.clone()));
         }
@@ -416,13 +479,13 @@ impl StormTracks {
     /// every later frame again in time order (from cached cells; a frame
     /// whose cells were evicted is dropped, to be observed again when it is
     /// shown). Returns the number of later frames observed again.
-    fn insert(&mut self, new: Vec<(i64, StormCellKey)>, cells: &StormCells) -> usize {
+    fn insert(&mut self, new: Vec<(i64, K)>, cells: &StormCells<K>) -> usize {
         let Some(x0) = new.iter().map(|(t, _)| *t).min() else {
             return 0;
         };
         let mut tracker = self.state_before(x0);
         let mut letters = self.letters_before(x0);
-        let mut seq: BTreeMap<i64, StormCellKey> = self
+        let mut seq: BTreeMap<i64, K> = self
             .frames
             .split_off(&x0)
             .into_iter()
@@ -608,6 +671,7 @@ mod tests {
             elongation: 1.0,
             outline: Vec::new(),
             core_outline: Vec::new(),
+            sites: Vec::new(),
         }
     }
 
@@ -1096,5 +1160,84 @@ mod tests {
         // Nothing before the first volume.
         let displayed = ScanKey::new("KDMX", UnixMillis(ms(0)));
         assert!(history_keys(&scans, &displayed, 35.0).is_empty());
+    }
+
+    // ---- the scene --------------------------------------------------------
+
+    fn site_key(site: &str, at_ms: i64) -> StormCellKey {
+        StormCellKey {
+            scan_key: ScanKey::new(site, UnixMillis(at_ms)),
+            ..key(0)
+        }
+    }
+
+    /// The scene at volume `vol`: KAAA's volume and KBBB's, started a
+    /// minute before it.
+    fn scene_key(vol: i64) -> SceneCellKey {
+        SceneCellKey {
+            sites: vec![
+                site_key("KAAA", ms(vol)),
+                site_key("KBBB", ms(vol) - 60_000),
+            ],
+            threshold_dbz: 35.0,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn the_scene_is_tracked_with_one_letter_pool() {
+        let mut tracks: StormTracks<SceneCellKey> = StormTracks::default();
+        let mut cells: StormCells<SceneCellKey> = StormCells::default();
+        for vol in 0..4 {
+            cells.seed(scene_key(vol), result(vol), true, true);
+            let history: Vec<SceneCellKey> = (0..vol).map(scene_key).collect();
+            tracks.sync(true, &cells, &history);
+        }
+        let view = tracks.view(None).unwrap();
+        let a = view.for_cell(0).unwrap();
+        assert_eq!(a.label, "A");
+        assert_eq!(a.age_volumes, 4);
+        assert!((a.speed_kmh - 36.0).abs() < 0.5, "{}", a.speed_kmh);
+        assert_eq!(tracks.observed_times(), (0..4).map(ms).collect::<Vec<_>>());
+    }
+
+    /// `scan(vol)` started `offset_ms` later.
+    fn scan_at(vol: i64, offset_ms: i64) -> Scan {
+        let mut s = scan(vol, &[1]);
+        s.start_time += offset_ms as f64 / 1000.0;
+        s.end_time += offset_ms as f64 / 1000.0;
+        s.key_timestamp += offset_ms as f64 / 1000.0;
+        s
+    }
+
+    #[wasm_bindgen_test]
+    fn scene_history_steps_through_every_sites_volume_starts() {
+        // KAAA at 0, 5, ... min; KBBB two minutes after each.
+        let a: Vec<Scan> = (0..=5).map(|v| scan_at(v, 0)).collect();
+        let b: Vec<Scan> = (0..=4).map(|v| scan_at(v, 120_000)).collect();
+        let shown = SceneCellKey {
+            sites: vec![site_key("KAAA", ms(5)), site_key("KBBB", ms(4) + 120_000)],
+            threshold_dbz: 35.0,
+        };
+        let keys = scene_history_keys(&[&a, &b], &shown);
+        // Back from KBBB's 4 (the shown cut) to KAAA's 0, which has no
+        // KBBB volume before it and so is KAAA's alone.
+        assert_eq!(keys.len(), 10);
+        let starts = |k: &SceneCellKey| -> Vec<i64> {
+            k.sites.iter().map(|s| s.scan_key.scan_start.0).collect()
+        };
+        assert_eq!(starts(&keys[0]), vec![ms(0)]);
+        assert_eq!(starts(&keys[1]), vec![ms(0), ms(0) + 120_000]);
+        assert_eq!(starts(&keys[2]), vec![ms(1), ms(0) + 120_000]);
+        assert_eq!(starts(&keys[9]), vec![ms(4), ms(4) + 120_000]);
+        assert!(keys.windows(2).all(|w| w[0].time_ms() < w[1].time_ms()));
+        assert!(keys.iter().all(|k| k.time_ms() < shown.time_ms()));
+        // Never more than the history length.
+        let a: Vec<Scan> = (0..=20).map(|v| scan_at(v, 0)).collect();
+        let b: Vec<Scan> = (0..=20).map(|v| scan_at(v, 120_000)).collect();
+        let shown = SceneCellKey {
+            sites: vec![site_key("KAAA", ms(20)), site_key("KBBB", ms(19) + 120_000)],
+            threshold_dbz: 35.0,
+        };
+        assert_eq!(scene_history_keys(&[&a, &b], &shown).len(), HISTORY_VOLUMES);
     }
 }

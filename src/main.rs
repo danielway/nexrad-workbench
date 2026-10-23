@@ -733,7 +733,7 @@ impl WorkbenchApp {
                             .state
                             .latency_summary()
                             .map(|l| (l.avg_fetch_ms, l.p95_fetch_ms, l.avg_e2e_ms)),
-                        storm_cells: self.sites.focus().cells.stats(),
+                        storm_cells: self.sites.shown_cell_stats(),
                         volume_textures: self.sites.volume_textures(),
                     }),
             },

@@ -31,7 +31,8 @@
 //!   asked again when more of the volume's cuts are on device. The columns
 //!   are provisional ([`crate::storm_cells::VolumeStructure::complete`])
 //!   until every planned tilt is sampled. Only the displayed volume gets
-//!   one; history volumes (for tracking) do not.
+//!   one; history volumes (for tracking) and the scene's cells on the
+//!   composite grid ([`decide_scene`]) do not.
 //! - **Staleness.** One request is in flight at a time and replies carry its
 //!   id; a reply whose request is no longer in flight (a site change reset the
 //!   state, or the request timed out) is dropped. A cached result is shown
@@ -103,17 +104,100 @@ pub(crate) struct StormCellKey {
     pub threshold_dbz: f32,
 }
 
-impl StormCellKey {
-    /// Same volume, cut, role and threshold; the input may differ.
-    pub(crate) fn same_cut(&self, other: &Self) -> bool {
+/// What the cache, the request in flight and the tracker need of a key:
+/// one site's [`StormCellKey`], or the scene's [`SceneCellKey`] over several.
+pub(crate) trait CellKey: Clone + PartialEq + std::fmt::Debug {
+    /// The per-site keys the result covers: the key itself for a site, the
+    /// sorted list for the scene.
+    fn site_keys(&self) -> &[StormCellKey];
+    fn threshold_dbz(&self) -> f32;
+    /// Same volumes, cuts, roles and threshold; the inputs may differ.
+    fn same_cut(&self, other: &Self) -> bool;
+    /// The same key with every cut read from storage: the key a complete
+    /// live result also answers.
+    fn stored(&self) -> Self;
+    /// Built, at least in part, from a live cut.
+    fn is_live(&self) -> bool {
+        self.site_keys()
+            .iter()
+            .any(|k| matches!(k.input, CutInput::Live { .. }))
+    }
+    /// The time the tracker observes the result at, ms: the newest volume
+    /// start among the cuts.
+    fn time_ms(&self) -> i64 {
+        self.site_keys()
+            .iter()
+            .map(|k| k.scan_key.scan_start.0)
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+impl CellKey for StormCellKey {
+    fn site_keys(&self) -> &[StormCellKey] {
+        std::slice::from_ref(self)
+    }
+
+    fn threshold_dbz(&self) -> f32 {
+        self.threshold_dbz
+    }
+
+    fn same_cut(&self, other: &Self) -> bool {
         self.scan_key == other.scan_key
             && self.elevation_number == other.elevation_number
             && self.fallback == other.fallback
             && self.threshold_dbz == other.threshold_dbz
     }
+
+    fn stored(&self) -> Self {
+        Self {
+            input: CutInput::Stored,
+            ..self.clone()
+        }
+    }
 }
 
-/// Worker-side timing and grid size of one detection run.
+/// What the scene's result (detected once on the composite grid of every
+/// shown site, more than one) is computed for: each site's key, sorted by
+/// site, and the threshold. A new frame on any site, or a site joining or
+/// leaving, is a different key.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct SceneCellKey {
+    /// One key per site that contributes, sorted by site id.
+    pub sites: Vec<StormCellKey>,
+    pub threshold_dbz: f32,
+}
+
+impl CellKey for SceneCellKey {
+    fn site_keys(&self) -> &[StormCellKey] {
+        &self.sites
+    }
+
+    fn threshold_dbz(&self) -> f32 {
+        self.threshold_dbz
+    }
+
+    fn same_cut(&self, other: &Self) -> bool {
+        self.threshold_dbz == other.threshold_dbz
+            && self.sites.len() == other.sites.len()
+            && self
+                .sites
+                .iter()
+                .zip(&other.sites)
+                .all(|(a, b)| a.same_cut(b))
+    }
+
+    fn stored(&self) -> Self {
+        Self {
+            sites: self.sites.iter().map(CellKey::stored).collect(),
+            threshold_dbz: self.threshold_dbz,
+        }
+    }
+}
+
+/// Worker-side timing and grid size of one detection run. For the scene's
+/// composite grid, `azimuth_count` and `gate_count` are its rows and
+/// columns.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct DetectTiming {
     /// Reading the cut: the IndexedDB blob, or the accumulator's radials.
@@ -205,7 +289,19 @@ pub(crate) struct DetectRequest {
     pub volume_cuts: Vec<u8>,
 }
 
-/// A worker's answer to a [`DetectRequest`].
+/// Effect: ask a decode worker to detect on the composite grid of the
+/// scene's sites. The shell posts it as a `detect_composite` message and
+/// feeds the reply to the scene's [`StormCells::accept`].
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SceneDetectRequest {
+    pub request_id: u64,
+    pub key: SceneCellKey,
+    pub params: DetectionParams,
+    /// Each site's radar position, in `key.sites` order.
+    pub radars: Vec<(f64, f64)>,
+}
+
+/// A worker's answer to a [`DetectRequest`] or a [`SceneDetectRequest`].
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DetectReply {
     pub request_id: u64,
@@ -228,8 +324,8 @@ pub(crate) enum ReplyDisposition {
 }
 
 #[derive(Clone, Debug)]
-struct CacheEntry {
-    key: StormCellKey,
+struct CacheEntry<K> {
+    key: K,
     result: StormCellsResult,
     /// `None` for a failed run (cached as empty so it is not retried).
     timing: Option<DetectTiming>,
@@ -240,22 +336,23 @@ struct CacheEntry {
 }
 
 #[derive(Clone, Debug)]
-struct InFlight {
+struct InFlight<K> {
     request_id: u64,
-    key: StormCellKey,
+    key: K,
     sent_ms: f64,
     /// A volume request for these cuts.
     volume: Option<VolumeCuts>,
 }
 
 /// The shown detection result, the cache behind it, and the request in
-/// flight.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct StormCells {
+/// flight: one per site ([`StormCellKey`]) and one for the scene of several
+/// sites ([`SceneCellKey`]).
+#[derive(Clone, Debug)]
+pub(crate) struct StormCells<K = StormCellKey> {
     /// The cells and groups on screen. Empty is a valid result.
     pub result: StormCellsResult,
     /// The key `result` belongs to; `None` when nothing is shown.
-    pub computed_for: Option<StormCellKey>,
+    pub computed_for: Option<K>,
     /// Worker timing of the shown result (`None` for a failed run).
     pub timing: Option<DetectTiming>,
     /// The shown result was computed on a complete cut.
@@ -264,12 +361,27 @@ pub(crate) struct StormCells {
     /// when a newer volume part has landed.
     shown_volume_for: Option<VolumeCuts>,
     /// Least recently used first.
-    cache: Vec<CacheEntry>,
-    in_flight: Option<InFlight>,
+    cache: Vec<CacheEntry<K>>,
+    in_flight: Option<InFlight<K>>,
     next_request_id: u64,
 }
 
-impl StormCells {
+impl<K> Default for StormCells<K> {
+    fn default() -> Self {
+        Self {
+            result: StormCellsResult::default(),
+            computed_for: None,
+            timing: None,
+            complete: false,
+            cache: Vec::new(),
+            shown_volume_for: None,
+            in_flight: None,
+            next_request_id: 0,
+        }
+    }
+}
+
+impl<K: CellKey> StormCells<K> {
     /// Stop showing a result. The cache and any request in flight stay, so
     /// turning the layer back on (or returning to the volume) is instant.
     pub(crate) fn clear(&mut self) {
@@ -292,33 +404,32 @@ impl StormCells {
 
     /// The shown cells come from a live cut the stream has not finished.
     pub(crate) fn is_provisional(&self) -> bool {
-        self.computed_for
-            .as_ref()
-            .is_some_and(|k| matches!(k.input, CutInput::Live { .. }))
-            && !self.complete
+        self.computed_for.as_ref().is_some_and(CellKey::is_live) && !self.complete
     }
 
     fn shows_nothing(&self) -> bool {
         self.result.is_empty() && self.computed_for.is_none()
     }
 
-    fn cached(&self, key: &StormCellKey) -> Option<&CacheEntry> {
+    fn cached(&self, key: &K) -> Option<&CacheEntry<K>> {
         self.cache.iter().find(|e| &e.key == key)
     }
 
     /// The cached result for `key`, shown or not (a failed run is an empty
     /// result). Tracking reads the preceding volumes' cells from here.
-    pub(crate) fn cached_result(&self, key: &StormCellKey) -> Option<&StormCellsResult> {
+    pub(crate) fn cached_result(&self, key: &K) -> Option<&StormCellsResult> {
         self.cached(key).map(|e| &e.result)
     }
 
-    /// Execute an action's state change. Returns the worker request to post
-    /// for [`StormCellAction::Request`].
-    pub(crate) fn apply(
+    /// Execute an action's state change. For [`StormCellAction::Request`]
+    /// and [`StormCellAction::RequestVolume`] returns the new request's id,
+    /// key and cuts, now in flight, for the caller to describe as a worker
+    /// request.
+    pub(crate) fn execute(
         &mut self,
-        action: StormCellAction,
-        env: &StormCellEnv<'_>,
-    ) -> Option<DetectRequest> {
+        action: StormCellAction<K>,
+        now_ms: f64,
+    ) -> Option<(u64, K, Option<VolumeCuts>)> {
         match action {
             StormCellAction::Keep => None,
             StormCellAction::Clear => {
@@ -338,37 +449,30 @@ impl StormCells {
                 }
                 None
             }
-            StormCellAction::Request(key) => Some(self.request(key, None, env)),
-            StormCellAction::RequestVolume(key, cuts) => Some(self.request(key, Some(cuts), env)),
+            StormCellAction::Request(key) => Some(self.request(key, None, now_ms)),
+            StormCellAction::RequestVolume(key, cuts) => {
+                Some(self.request(key, Some(cuts), now_ms))
+            }
         }
     }
 
+    /// Put a request for `key` (a volume request when `volume` is set) in
+    /// flight and return its id, key and cuts.
     fn request(
         &mut self,
-        key: StormCellKey,
+        key: K,
         volume: Option<VolumeCuts>,
-        env: &StormCellEnv<'_>,
-    ) -> DetectRequest {
+        now_ms: f64,
+    ) -> (u64, K, Option<VolumeCuts>) {
         self.next_request_id += 1;
         let request_id = self.next_request_id;
-        let volume_cuts = volume.as_ref().map_or_else(Vec::new, |v| v.cuts.clone());
         self.in_flight = Some(InFlight {
             request_id,
             key: key.clone(),
-            sent_ms: env.now_ms,
-            volume,
+            sent_ms: now_ms,
+            volume: volume.clone(),
         });
-        DetectRequest {
-            request_id,
-            params: DetectionParams {
-                threshold_dbz: key.threshold_dbz,
-                ..DetectionParams::default()
-            },
-            key,
-            radar_lat: env.radar_lat,
-            radar_lon: env.radar_lon,
-            volume_cuts,
-        }
+        (request_id, key, volume)
     }
 
     /// Take a worker reply. It is cached only if it answers the request in
@@ -408,10 +512,7 @@ impl StormCells {
         }
         // A live cut that finished before the worker read it is the stored
         // cut's final answer too.
-        let stored_twin = (reply.complete && key.input != CutInput::Stored).then(|| StormCellKey {
-            input: CutInput::Stored,
-            ..key.clone()
-        });
+        let stored_twin = (reply.complete && key.is_live()).then(|| key.stored());
         self.insert(
             key,
             reply.result.clone(),
@@ -442,7 +543,7 @@ impl StormCells {
         let result = StormCellsResult {
             source: crate::storm_cells::DetectionSource {
                 params: DetectionParams {
-                    threshold_dbz: key.threshold_dbz,
+                    threshold_dbz: key.threshold_dbz(),
                     ..DetectionParams::default()
                 },
                 ..Default::default()
@@ -461,7 +562,7 @@ impl StormCells {
             .is_some_and(|f| f.request_id == request_id)
     }
 
-    fn take_in_flight(&mut self, request_id: u64) -> Option<(StormCellKey, Option<VolumeCuts>)> {
+    fn take_in_flight(&mut self, request_id: u64) -> Option<(K, Option<VolumeCuts>)> {
         match &self.in_flight {
             Some(f) if f.request_id == request_id => {
                 self.in_flight.take().map(|f| (f.key, f.volume))
@@ -472,20 +573,15 @@ impl StormCells {
 
     fn insert(
         &mut self,
-        key: StormCellKey,
+        key: K,
         result: StormCellsResult,
         timing: Option<DetectTiming>,
         complete: bool,
     ) {
         // Older provisional results for the cut are dead once a newer one or
         // the stored one exists.
-        let is_stored = key.input == CutInput::Stored;
-        self.cache.retain(|e| {
-            !(e.key == key
-                || (e.key.same_cut(&key)
-                    && matches!(e.key.input, CutInput::Live { .. })
-                    && (is_stored || matches!(key.input, CutInput::Live { .. }))))
-        });
+        self.cache
+            .retain(|e| !(e.key == key || (e.key.same_cut(&key) && e.key.is_live())));
         self.cache.push(CacheEntry {
             key,
             result,
@@ -502,13 +598,7 @@ impl StormCells {
     /// Put a result in the cache (and on screen when `show`), as a reply
     /// followed by a `Show` would.
     #[cfg(test)]
-    pub(crate) fn seed(
-        &mut self,
-        key: StormCellKey,
-        result: StormCellsResult,
-        complete: bool,
-        show: bool,
-    ) {
+    pub(crate) fn seed(&mut self, key: K, result: StormCellsResult, complete: bool, show: bool) {
         self.insert(key.clone(), result.clone(), None, complete);
         if show {
             self.result = result;
@@ -521,15 +611,74 @@ impl StormCells {
     /// Developer-mode summary of the shown result, `None` when nothing is
     /// shown.
     pub(crate) fn stats(&self) -> Option<StormCellStats> {
-        let key = self.computed_for.as_ref()?;
+        let key = self.computed_for.as_ref()?.site_keys();
         Some(StormCellStats {
             cells: self.result.cells.len() as u32,
             groups: self.result.groups.len() as u32,
-            elevation_number: key.elevation_number,
+            elevation_number: key.iter().map(|k| k.elevation_number).min().unwrap_or(0),
             elevation_deg: self.result.source.elevation_deg,
             timing: self.timing,
             provisional: self.is_provisional(),
-            fallback: key.fallback,
+            fallback: key.iter().any(|k| k.fallback),
+        })
+    }
+}
+
+impl StormCells {
+    /// Execute an action's state change. Returns the worker request to post
+    /// for [`StormCellAction::Request`] and
+    /// [`StormCellAction::RequestVolume`].
+    pub(crate) fn apply(
+        &mut self,
+        action: StormCellAction,
+        env: &StormCellEnv<'_>,
+    ) -> Option<DetectRequest> {
+        let (request_id, key, volume) = self.execute(action, env.now_ms)?;
+        Some(DetectRequest {
+            request_id,
+            params: DetectionParams {
+                threshold_dbz: key.threshold_dbz,
+                ..DetectionParams::default()
+            },
+            key,
+            radar_lat: env.radar_lat,
+            radar_lon: env.radar_lon,
+            volume_cuts: volume.map_or_else(Vec::new, |v| v.cuts),
+        })
+    }
+}
+
+impl StormCells<SceneCellKey> {
+    /// [`StormCells::apply`] for the scene: the request names every site's
+    /// cut and radar. Scene cells have no column, so a volume request
+    /// (which [`decide_scene`] never makes) is not sent.
+    pub(crate) fn apply_scene(
+        &mut self,
+        action: StormCellAction<SceneCellKey>,
+        env: &SceneCellEnv<'_>,
+    ) -> Option<SceneDetectRequest> {
+        if matches!(action, StormCellAction::RequestVolume(..)) {
+            return None;
+        }
+        let (request_id, key, _) = self.execute(action, env.now_ms)?;
+        let radars = key
+            .sites
+            .iter()
+            .map(|k| {
+                env.sites
+                    .iter()
+                    .find(|s| s.id == k.scan_key.site.0)
+                    .map_or((0.0, 0.0), |s| (s.env.radar_lat, s.env.radar_lon))
+            })
+            .collect();
+        Some(SceneDetectRequest {
+            request_id,
+            params: DetectionParams {
+                threshold_dbz: key.threshold_dbz,
+                ..DetectionParams::default()
+            },
+            key,
+            radars,
         })
     }
 }
@@ -620,19 +769,50 @@ pub(crate) struct StormCellEnv<'a> {
 
 /// What the shell does with the storm cell result.
 #[derive(Debug, PartialEq)]
-pub(crate) enum StormCellAction {
+pub(crate) enum StormCellAction<K = StormCellKey> {
     /// Leave everything as it is.
     Keep,
     /// Stop showing the result ([`StormCells::clear`]).
     Clear,
     /// Show the cached result for this key.
-    Show(StormCellKey),
+    Show(K),
     /// Ask a worker to detect for this key ([`StormCells::apply`] returns
     /// the request).
-    Request(StormCellKey),
+    Request(K),
     /// Ask a worker for the columns of the shown key's cells through these
-    /// cuts of its volume.
-    RequestVolume(StormCellKey, VolumeCuts),
+    /// cuts of its volume. One site's cells only: [`decide_scene`] never
+    /// asks, so cells found on the composite grid have no column.
+    RequestVolume(K, VolumeCuts),
+}
+
+/// One shown site in [`SceneCellEnv`].
+pub(crate) struct SceneSiteEnv<'a> {
+    /// The site's id, as its scan keys carry it.
+    pub id: &'a str,
+    /// The site's inputs, as [`decide`] takes them for that site alone
+    /// (its `history` is not read; the scene's is [`SceneCellEnv::history`]).
+    pub env: StormCellEnv<'a>,
+}
+
+/// Read-only inputs to [`decide_scene`]: every shown site's, and the
+/// settings they share.
+pub(crate) struct SceneCellEnv<'a> {
+    pub visible: bool,
+    pub view_mode: ViewMode,
+    pub threshold_dbz: f32,
+    pub now_ms: f64,
+    pub sites: &'a [SceneSiteEnv<'a>],
+    /// The scene keys before the shown one that tracking needs detected
+    /// (oldest first, see `core::storm_tracks::scene_history_keys`); empty
+    /// when tracks are off.
+    pub history: &'a [SceneCellKey],
+}
+
+/// Which result the canvas shows: the focus's own (one site on the map)
+/// or the scene's, detected on the composite grid of every site (more than
+/// one).
+pub(crate) fn uses_scene(site_count: usize) -> bool {
+    site_count > 1
 }
 
 /// The elevation number of a volume's lowest reflectivity cut: the lowest
@@ -715,7 +895,11 @@ enum Wanted {
     Nothing,
 }
 
-fn wanted(env: &StormCellEnv<'_>, displayed: &DisplayedSweep, state: &StormCells) -> Wanted {
+fn wanted<K: CellKey>(
+    env: &StormCellEnv<'_>,
+    displayed: &DisplayedSweep,
+    state: &StormCells<K>,
+) -> Wanted {
     let scan_key = &displayed.identity.scan_key;
     let vcp = env
         .volume
@@ -732,9 +916,9 @@ fn wanted(env: &StormCellEnv<'_>, displayed: &DisplayedSweep, state: &StormCells
                 && !k.fallback
                 && k.threshold_dbz == env.threshold_dbz
         };
-        if state.computed_for.as_ref().is_some_and(has_target)
-            || state.in_flight.as_ref().is_some_and(|f| has_target(&f.key))
-        {
+        let shown = state.computed_for.iter().flat_map(CellKey::site_keys);
+        let asked = state.in_flight.iter().flat_map(|f| f.key.site_keys());
+        if shown.chain(asked).any(has_target) {
             return Wanted::Hold;
         }
     }
@@ -796,17 +980,34 @@ pub(crate) fn decide(env: &StormCellEnv<'_>, state: &StormCells) -> StormCellAct
             };
         }
     };
+    let volume = wanted_volume(env, &key);
+    settle(key, volume, env.history, env.now_ms, state)
+}
+
+/// The cache and request rule [`decide`] and [`decide_scene`] share, once
+/// the wanted key is known: keep it if shown, show it if cached, else
+/// request it, one request at a time; while a request is in flight the
+/// previous result stays. Once it is shown, show a newer volume part,
+/// then request the `volume` part when the cache lacks it for exactly
+/// those cuts, then the `history` keys that are not cached, nearest first.
+fn settle<K: CellKey>(
+    key: K,
+    volume: Option<VolumeCuts>,
+    history: &[K],
+    now_ms: f64,
+    state: &StormCells<K>,
+) -> StormCellAction<K> {
     let busy = state
         .in_flight
         .as_ref()
-        .is_some_and(|f| env.now_ms - f.sent_ms < REQUEST_TIMEOUT_MS);
+        .is_some_and(|f| now_ms - f.sent_ms < REQUEST_TIMEOUT_MS);
     if state.computed_for.as_ref() == Some(&key) {
         let entry = state.cached(&key);
         // A newer volume part landed for the shown cells.
         if let Some(e) = entry.filter(|e| e.volume_for != state.shown_volume_for) {
             return StormCellAction::Show(e.key.clone());
         }
-        if let Some(cuts) = wanted_volume(env, &key) {
+        if let Some(cuts) = volume {
             if entry.is_some_and(|e| e.volume_for.as_ref() != Some(&cuts)) {
                 return if busy {
                     StormCellAction::Keep
@@ -815,7 +1016,7 @@ pub(crate) fn decide(env: &StormCellEnv<'_>, state: &StormCells) -> StormCellAct
                 };
             }
         }
-        let missing = env.history.iter().rev().find(|h| state.cached(h).is_none());
+        let missing = history.iter().rev().find(|h| state.cached(h).is_none());
         return match missing {
             Some(h) if !busy => StormCellAction::Request(h.clone()),
             _ => StormCellAction::Keep,
@@ -828,6 +1029,63 @@ pub(crate) fn decide(env: &StormCellEnv<'_>, state: &StormCells) -> StormCellAct
         return StormCellAction::Keep;
     }
     StormCellAction::Request(key)
+}
+
+/// [`decide`] for the scene of several sites: one result on the composite
+/// grid of every shown site's cut.
+///
+/// Each site contributes the key [`decide`] would want for it alone (its
+/// displayed volume's lowest reflectivity cut, or the displayed
+/// reflectivity sweep). A site with nothing displayed is left out; a site
+/// whose wanted cut is held (just finished live, not listed yet) holds the
+/// whole scene; a site whose volume has no usable cut keeps the cut the
+/// shown scene has for that volume, else is left out. The keys, sorted by
+/// site, and the threshold are the scene key; the cache and request rule is
+/// the per-site one.
+pub(crate) fn decide_scene(
+    env: &SceneCellEnv<'_>,
+    state: &StormCells<SceneCellKey>,
+) -> StormCellAction<SceneCellKey> {
+    let clear = || {
+        if state.shows_nothing() {
+            StormCellAction::Keep
+        } else {
+            StormCellAction::Clear
+        }
+    };
+    if !env.visible {
+        return clear();
+    }
+    if env.view_mode == ViewMode::Globe3D {
+        return StormCellAction::Keep;
+    }
+    let mut keys: Vec<StormCellKey> = Vec::new();
+    for site in env.sites {
+        let Some(displayed) = site.env.displayed else {
+            continue;
+        };
+        match wanted(&site.env, displayed, state) {
+            Wanted::Key(key) => keys.push(key),
+            Wanted::Hold => return StormCellAction::Keep,
+            Wanted::Nothing => {
+                let kept = state.computed_for.iter().flat_map(|k| &k.sites).find(|k| {
+                    k.scan_key == displayed.identity.scan_key
+                        && k.threshold_dbz == env.threshold_dbz
+                });
+                keys.extend(kept.cloned());
+            }
+        }
+    }
+    if keys.is_empty() {
+        return clear();
+    }
+    keys.sort_by(|a, b| a.scan_key.site.0.cmp(&b.scan_key.site.0));
+    let key = SceneCellKey {
+        sites: keys,
+        threshold_dbz: env.threshold_dbz,
+    };
+    // Scene cells have no column: no volume part.
+    settle(key, None, env.history, env.now_ms, state)
 }
 
 /// The cuts to sample for the columns of `key`'s cells: the displayed
@@ -984,6 +1242,7 @@ mod tests {
             elongation: 1.0,
             outline: Vec::new(),
             core_outline: Vec::new(),
+            sites: Vec::new(),
         };
         StormCellsResult {
             cells: (0..n as u32).map(cell).collect(),
@@ -1668,6 +1927,292 @@ mod tests {
             decide(&env(Some(&d), Some(&vol)), &state),
             StormCellAction::Keep
         );
+    }
+
+    // ── The scene ────────────────────────────────────────────────────
+
+    /// `displayed(vol, ..)` on another site.
+    fn displayed_at(site: &str, vol: i64) -> DisplayedSweep {
+        let mut d = displayed(vol, 3, "velocity");
+        d.identity.scan_key = ScanKey::new(site, scan_key(vol).scan_start);
+        d
+    }
+
+    fn scene_frame(
+        state: &mut StormCells<SceneCellKey>,
+        env: &SceneCellEnv<'_>,
+    ) -> Option<SceneDetectRequest> {
+        let action = decide_scene(env, state);
+        state.apply_scene(action, env)
+    }
+
+    fn scene_env<'a>(sites: &'a [SceneSiteEnv<'a>]) -> SceneCellEnv<'a> {
+        SceneCellEnv {
+            visible: true,
+            view_mode: ViewMode::Flat2D,
+            threshold_dbz: 35.0,
+            now_ms: 1_000.0,
+            sites,
+            history: &[],
+        }
+    }
+
+    fn scene_reply(req: &SceneDetectRequest, n: usize, complete: bool) -> DetectReply {
+        DetectReply {
+            request_id: req.request_id,
+            result: cells(n),
+            timing: timing(),
+            complete,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn more_than_one_site_uses_the_scene() {
+        assert!(!uses_scene(1));
+        assert!(uses_scene(2));
+        assert!(uses_scene(3));
+    }
+
+    #[wasm_bindgen_test]
+    fn the_scene_key_is_every_sites_lowest_cut_sorted_by_site() {
+        let (v0, v1) = (volume(0, &[1, 3]), volume(1, &[1, 2, 3]));
+        let (fws, aaa) = (displayed(0, 3, "velocity"), displayed_at("KAAA", 1));
+        let sites = [
+            SceneSiteEnv {
+                id: "KFWS",
+                env: env(Some(&fws), Some(&v0)),
+            },
+            SceneSiteEnv {
+                id: "KAAA",
+                env: StormCellEnv {
+                    radar_lat: 30.0,
+                    radar_lon: -95.0,
+                    ..env(Some(&aaa), Some(&v1))
+                },
+            },
+        ];
+        let mut state = StormCells::default();
+        let req = scene_frame(&mut state, &scene_env(&sites)).expect("one request");
+        let ids: Vec<&str> = req
+            .key
+            .sites
+            .iter()
+            .map(|k| k.scan_key.site.0.as_str())
+            .collect();
+        assert_eq!(ids, vec!["KAAA", "KFWS"]);
+        assert!(req
+            .key
+            .sites
+            .iter()
+            .all(|k| k.elevation_number == 1 && k.input == CutInput::Stored && !k.fallback));
+        assert_eq!(req.radars, vec![(30.0, -95.0), (32.57, -97.30)]);
+        assert_eq!(req.params.threshold_dbz, 35.0);
+        // One request at a time: the next frame waits.
+        assert_eq!(scene_frame(&mut state, &scene_env(&sites)), None);
+        assert_eq!(
+            state.accept(scene_reply(&req, 2, true)),
+            ReplyDisposition::Cached
+        );
+        assert_eq!(scene_frame(&mut state, &scene_env(&sites)), None);
+        assert_eq!(state.computed_for.as_ref(), Some(&req.key));
+        assert_eq!(state.result.cells.len(), 2);
+        assert_eq!(
+            decide_scene(&scene_env(&sites), &state),
+            StormCellAction::Keep
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_new_frame_on_any_site_is_a_new_scene() {
+        let (v0, v1) = (volume(0, &[1]), volume(1, &[1]));
+        let fws = displayed(0, 1, "reflectivity");
+        let mut aaa = displayed_at("KAAA", 0);
+        let mut state = StormCells::default();
+        let first = {
+            let sites = [
+                SceneSiteEnv {
+                    id: "KFWS",
+                    env: env(Some(&fws), Some(&v0)),
+                },
+                SceneSiteEnv {
+                    id: "KAAA",
+                    env: env(Some(&aaa), Some(&v0)),
+                },
+            ];
+            let req = scene_frame(&mut state, &scene_env(&sites)).unwrap();
+            state.accept(scene_reply(&req, 1, true));
+            scene_frame(&mut state, &scene_env(&sites));
+            req.key
+        };
+        aaa = displayed_at("KAAA", 1);
+        let sites = [
+            SceneSiteEnv {
+                id: "KFWS",
+                env: env(Some(&fws), Some(&v0)),
+            },
+            SceneSiteEnv {
+                id: "KAAA",
+                env: env(Some(&aaa), Some(&v1)),
+            },
+        ];
+        let req = scene_frame(&mut state, &scene_env(&sites)).expect("a new key");
+        assert_ne!(req.key, first);
+        assert!(!req.key.same_cut(&first));
+        assert_eq!(req.key.time_ms(), scan_key(1).scan_start.0);
+        // Back to the first frame while the second is in the worker: the
+        // first is still the one shown.
+        let aaa0 = displayed_at("KAAA", 0);
+        let sites = [
+            SceneSiteEnv {
+                id: "KFWS",
+                env: env(Some(&fws), Some(&v0)),
+            },
+            SceneSiteEnv {
+                id: "KAAA",
+                env: env(Some(&aaa0), Some(&v0)),
+            },
+        ];
+        assert_eq!(
+            decide_scene(&scene_env(&sites), &state),
+            StormCellAction::Keep
+        );
+        assert_eq!(state.computed_for, Some(first));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_site_with_nothing_displayed_is_left_out_of_the_scene() {
+        let v0 = volume(0, &[1]);
+        let fws = displayed(0, 1, "reflectivity");
+        let sites = [
+            SceneSiteEnv {
+                id: "KFWS",
+                env: env(Some(&fws), Some(&v0)),
+            },
+            SceneSiteEnv {
+                id: "KAAA",
+                env: env(None, None),
+            },
+        ];
+        let mut state = StormCells::default();
+        let req = scene_frame(&mut state, &scene_env(&sites)).unwrap();
+        assert_eq!(req.key.sites.len(), 1);
+        // Nobody displays anything: nothing to show, nothing to ask.
+        let none = [SceneSiteEnv {
+            id: "KAAA",
+            env: env(None, None),
+        }];
+        assert_eq!(
+            decide_scene(&scene_env(&none), &StormCells::default()),
+            StormCellAction::Keep
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn the_scene_follows_the_overlay_switch_and_waits_in_3d() {
+        let v0 = volume(0, &[1]);
+        let fws = displayed(0, 1, "reflectivity");
+        let sites = [SceneSiteEnv {
+            id: "KFWS",
+            env: env(Some(&fws), Some(&v0)),
+        }];
+        let mut state = StormCells::default();
+        let req = scene_frame(&mut state, &scene_env(&sites)).unwrap();
+        state.accept(scene_reply(&req, 1, true));
+        scene_frame(&mut state, &scene_env(&sites));
+        let globe = SceneCellEnv {
+            view_mode: ViewMode::Globe3D,
+            ..scene_env(&sites)
+        };
+        assert_eq!(decide_scene(&globe, &state), StormCellAction::Keep);
+        let off = SceneCellEnv {
+            visible: false,
+            ..scene_env(&sites)
+        };
+        assert_eq!(decide_scene(&off, &state), StormCellAction::Clear);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_streaming_site_makes_the_scene_provisional_per_chunk() {
+        let plan = vcp(&[0.5, 0.5, 0.9]);
+        let v0 = volume(0, &[1]);
+        let fws = displayed(0, 1, "reflectivity");
+        let live_d = displayed_at("KAAA", 1);
+        let mut progress = LiveCutProgress {
+            scan_key: live_d.identity.scan_key.clone(),
+            elevation_number: 1,
+            radials: 120,
+        };
+        let mut state = StormCells::default();
+        let run = |state: &mut StormCells<SceneCellKey>, progress: &LiveCutProgress, done| {
+            let sites = [
+                SceneSiteEnv {
+                    id: "KFWS",
+                    env: env(Some(&fws), Some(&v0)),
+                },
+                SceneSiteEnv {
+                    id: "KAAA",
+                    env: live(&live_d, &plan, progress),
+                },
+            ];
+            let req = scene_frame(state, &scene_env(&sites)).expect("a request");
+            state.accept(scene_reply(&req, 1, done));
+            scene_frame(state, &scene_env(&sites));
+            req.key
+        };
+        let k120 = run(&mut state, &progress, false);
+        assert!(k120.is_live());
+        assert!(state.is_provisional());
+        progress.radials = 360;
+        let k360 = run(&mut state, &progress, true);
+        assert!(k360.same_cut(&k120) && k360 != k120);
+        // The provisional results are gone; the complete one answers the
+        // stored scene, which the next frame asks for once KAAA's cut is
+        // listed.
+        assert!(state.cached_result(&k120).is_none());
+        assert!(state.cached_result(&k360).is_none());
+        let stored = k360.stored();
+        assert!(!stored.is_live());
+        assert!(state.cached_result(&stored).is_some());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_scene_never_asks_for_a_volume_part() {
+        // Both sites have every tilt stored: alone, each would ask for its
+        // columns once its cells are shown.
+        let (v0, v1) = (volume(0, &[1, 2, 3, 4, 5]), volume(1, &[1, 2, 3, 4, 5]));
+        let (fws, aaa) = (displayed(0, 1, "reflectivity"), displayed_at("KAAA", 1));
+        let sites = [
+            SceneSiteEnv {
+                id: "KFWS",
+                env: env(Some(&fws), Some(&v0)),
+            },
+            SceneSiteEnv {
+                id: "KAAA",
+                env: env(Some(&aaa), Some(&v1)),
+            },
+        ];
+        let e = scene_env(&sites);
+        let mut state = StormCells::default();
+        let req = scene_frame(&mut state, &e).expect("the cells");
+        state.accept(scene_reply(&req, 2, true));
+        assert_eq!(scene_frame(&mut state, &e), None, "shows the cells");
+        assert_eq!(state.computed_for.as_ref(), Some(&req.key));
+        assert_eq!(decide_scene(&e, &state), StormCellAction::Keep);
+        assert_eq!(state.result.volume, None);
+        // A volume action handed to the scene is not sent.
+        let cuts = volume_cuts(v0.vcp_pattern.as_ref(), &v0.sweeps);
+        assert_eq!(
+            state.apply_scene(StormCellAction::RequestVolume(req.key.clone(), cuts), &e),
+            None
+        );
+        assert!(!state.awaits(req.request_id + 1));
+        // The same site alone does ask.
+        let mut alone = StormCells::default();
+        let e = env(Some(&fws), Some(&v0));
+        let req = requested(&mut alone, &e);
+        alone.accept(reply(&req, cells(2), true));
+        assert!(frame(&mut alone, &e).is_none());
+        assert_eq!(requested(&mut alone, &e).volume_cuts, vec![1, 3, 5]);
     }
 
     // ── Volume ──────────────────────────────────────────────────────

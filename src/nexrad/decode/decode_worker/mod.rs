@@ -40,7 +40,7 @@ pub(crate) struct DecodeWorker {
     pending_render_live: Rc<RefCell<HashMap<RequestId, types::LiveRenderContext>>>,
     pending_volume: Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
     /// Storm cell detections, mapped to the core's request id.
-    pending_detect: Rc<RefCell<HashMap<RequestId, u64>>>,
+    pending_detect: Rc<RefCell<HashMap<RequestId, types::DetectFor>>>,
     results: Rc<RefCell<Vec<WorkerOutcome>>>,
     /// Requests queued before the worker was ready.
     queue: Vec<QueuedRequest>,
@@ -68,6 +68,7 @@ enum QueuedRequest {
     RenderLive(RequestId, crate::data::SiteId, u8, String),
     RenderVolume(RequestId, String, String, Vec<u8>),
     Detect(RequestId, crate::core::storm_cells::DetectRequest),
+    DetectComposite(RequestId, crate::core::storm_cells::SceneDetectRequest),
 }
 
 impl DecodeWorker {
@@ -107,7 +108,7 @@ impl DecodeWorker {
             Rc::new(RefCell::new(HashMap::new()));
         let pending_volume: Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>> =
             Rc::new(RefCell::new(HashMap::new()));
-        let pending_detect: Rc<RefCell<HashMap<RequestId, u64>>> =
+        let pending_detect: Rc<RefCell<HashMap<RequestId, types::DetectFor>>> =
             Rc::new(RefCell::new(HashMap::new()));
         let results: Rc<RefCell<Vec<WorkerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
 
@@ -236,6 +237,9 @@ impl DecodeWorker {
                     }
                     QueuedRequest::Detect(id, request) => {
                         send::send_detect_request(&self.worker, id, &request);
+                    }
+                    QueuedRequest::DetectComposite(id, request) => {
+                        send::send_detect_composite_request(&self.worker, id, &request);
                     }
                     QueuedRequest::RenderVolume(id, scan_key, product, elev_nums) => {
                         send::send_render_volume_request(

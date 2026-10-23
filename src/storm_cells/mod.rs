@@ -6,7 +6,12 @@
 //! point (`nexrad::decode::worker_api::detect`) feeds it a stored or live
 //! sweep, and `core` re-exports its result types.
 //!
-//! Pipeline, all in polar (azimuth × gate) index space:
+//! Pipeline, all in index space (rows × columns) over one of two
+//! geometries (`geometry`): a radar's polar sweep (azimuth × gate, the
+//! single-site path, [`detect_cells`]) or the Cartesian composite grid of
+//! several radars (`composite`, [`detect_cells_cartesian`]). Only the
+//! geometry knows where a pixel is and how big; the steps below are the
+//! same on both.
 //!
 //! 1. Decode raw gate codes to dBZ and apply a 3×3 median filter
 //!    (`median`), so single-gate spikes cannot set a cell's peak. The peak of a cell is the maximum of the filtered field.
@@ -28,9 +33,11 @@
 //! echo that can belong to a cell; a cell needs a core of envelope + 10 dB.
 
 mod components;
+pub(crate) mod composite;
 #[cfg(test)]
 mod corpus_tests;
 mod features;
+mod geometry;
 mod median;
 mod model;
 mod outline;
@@ -39,6 +46,8 @@ pub(crate) mod track;
 pub(crate) mod volume;
 mod watershed;
 
+pub(crate) use geometry::CartesianInput;
+use geometry::Grid;
 #[cfg(test)]
 pub(crate) use model::{CellColumn, VolumeStructure};
 pub(crate) use model::{DetectionSource, StormCell, StormCellsResult, StormGroup};
@@ -117,21 +126,32 @@ impl Default for DetectionParams {
 /// Run detection over the provided sweep. The result's `source` carries
 /// `params`; the caller fills in the sweep identity it knows.
 pub(crate) fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> StormCellsResult {
-    detect(input, params).result
+    detect(input.into(), params).result
+}
+
+/// Run detection over a Cartesian grid (the composite of several radars).
+/// Each cell names the radars that see it, nearest first, and its bearing
+/// and range are from the first of them.
+pub(crate) fn detect_cells_cartesian(
+    input: &CartesianInput,
+    params: &DetectionParams,
+) -> StormCellsResult {
+    detect(input.into(), params).result
 }
 
 /// Run detection on the volume's lowest reflectivity cut (elevation number
 /// `elevation_number`, measured at `elevation_deg`) and return, beside the
 /// result, a sampler over the cells' footprints. Feed it the volume's higher
 /// tilts ([`volume::VolumeSampler::add_tilt`]) and store
-/// [`volume::VolumeSampler::finish`] in the result's `volume`.
+/// [`volume::VolumeSampler::finish`] in the result's `volume`. One radar
+/// only: cells found on the composite grid have no column.
 pub(crate) fn detect_cells_for_volume(
     input: &DetectionInput,
     params: &DetectionParams,
     elevation_number: u8,
     elevation_deg: f32,
 ) -> (StormCellsResult, volume::VolumeSampler) {
-    let d = detect(input, params);
+    let d = detect(input.into(), params);
     let sampler = volume::VolumeSampler::new(
         input,
         elevation_number,
@@ -151,7 +171,7 @@ struct Detection {
     filtered: Vec<f32>,
 }
 
-fn detect(input: &DetectionInput, params: &DetectionParams) -> Detection {
+fn detect(input: Grid<'_>, params: &DetectionParams) -> Detection {
     let mut result = StormCellsResult {
         source: DetectionSource {
             params: params.clone(),
@@ -159,59 +179,32 @@ fn detect(input: &DetectionInput, params: &DetectionParams) -> Detection {
         },
         ..StormCellsResult::default()
     };
-    if input.azimuth_count == 0 || input.gate_count == 0 || input.azimuths.is_empty() {
+    let Some(values) = input.values() else {
         return Detection {
             result,
             footprints: Vec::new(),
             filtered: Vec::new(),
         };
-    }
-    if input.gate_values.len() < input.azimuth_count * input.gate_count
-        || input.azimuths.len() < input.azimuth_count
-    {
-        return Detection {
-            result,
-            footprints: Vec::new(),
-            filtered: Vec::new(),
-        };
-    }
-
-    let az_adjacent = components::precompute_az_adjacency(input.azimuths, input.azimuth_count);
-    let decoder = median::Decoder {
-        scale: input.data_scale,
-        offset: input.data_offset,
     };
-    // Rows with a negative azimuth are padding from partial sweeps.
-    let row_valid: Vec<bool> = input.azimuths[..input.azimuth_count]
-        .iter()
-        .map(|a| *a >= 0.0)
-        .collect();
+    let (_, gate_count) = input.shape();
+
+    let az_adjacent = input.row_adjacency();
+    let decoder = input.decoder();
+    let row_valid = input.row_valid();
     let filtered = median::median3x3(
-        input.gate_values,
+        values,
         &decoder,
         &row_valid,
         &az_adjacent,
-        input.gate_count,
+        gate_count,
         params.threshold_dbz,
     );
 
-    let az_spacing_rad = (features::radial_width_deg(input) as f64).to_radians();
-    let gate_area_km2: Vec<f64> = (0..input.gate_count)
-        .map(|g| {
-            let range_km = input.first_gate_km + (g as f64 + 0.5) * input.gate_interval_km;
-            range_km * az_spacing_rad * input.gate_interval_km
-        })
-        .collect();
+    let gate_area_km2 = input.column_area_km2();
 
-    let seg = segment::segment(
-        &filtered,
-        &az_adjacent,
-        input.gate_count,
-        &gate_area_km2,
-        params,
-    );
-    let half_spacing = components::median_spacing_deg(input.azimuths, input.azimuth_count) * 0.5;
-    let mut shed = watershed::Watershed::new(&filtered, &az_adjacent, input.gate_count);
+    let seg = segment::segment(&filtered, &az_adjacent, gate_count, &gate_area_km2, params);
+    let half_spacing = input.half_spacing_deg();
+    let mut shed = watershed::Watershed::new(&filtered, &az_adjacent, gate_count);
     // A lone storm's cell is its envelope; its drawn core is the component
     // around its peak at the core level (the lowest rung at or above the
     // envelope + core margin), labeled here because segmentation keeps
@@ -221,7 +214,7 @@ fn detect(input: &DetectionInput, params: &DetectionParams) -> Detection {
         .iter()
         .copied()
         .find(|l| *l >= params.threshold_dbz + params.core_margin_dbz);
-    let mut core_labeler = components::Labeler::new(&filtered, &az_adjacent, input.gate_count);
+    let mut core_labeler = components::Labeler::new(&filtered, &az_adjacent, gate_count);
 
     // Cells, tagged with the index of their envelope while it is a group,
     // and their footprint gates.
@@ -274,12 +267,20 @@ fn detect(input: &DetectionInput, params: &DetectionParams) -> Detection {
             } else {
                 let peak_gate = pixels
                     .iter()
-                    .map(|&(a, g)| a as usize * input.gate_count + g as usize)
+                    .map(|&(a, g)| a as usize * gate_count + g as usize)
                     .max_by(|&x, &y| filtered[x].total_cmp(&filtered[y]));
                 core_level
                     .zip(peak_gate)
                     .and_then(|(l, seed)| core_labeler.fill(seed, l, 1))
             };
+            // On a composite grid the radars that see the footprint, and
+            // its bearing and range from the nearest of them.
+            let seen = input.sightings(pixels, (fp.lat, fp.lon));
+            let (bearing_from_radar_deg, range_from_radar_km) = seen
+                .first()
+                .map_or((fp.bearing_from_radar_deg, fp.range_from_radar_km), |s| {
+                    (s.bearing_deg, s.range_km)
+                });
             let cell = StormCell {
                 id: 0,
                 group_id: None,
@@ -291,8 +292,8 @@ fn detect(input: &DetectionInput, params: &DetectionParams) -> Detection {
                 lat: fp.lat,
                 lon: fp.lon,
                 bounds: fp.bounds,
-                bearing_from_radar_deg: fp.bearing_from_radar_deg,
-                range_from_radar_km: fp.range_from_radar_km,
+                bearing_from_radar_deg,
+                range_from_radar_km,
                 orientation_deg: fp.orientation_deg,
                 elongation: fp.elongation,
                 // A lone cell's footprint is its envelope, drawn as a faint
@@ -310,6 +311,7 @@ fn detect(input: &DetectionInput, params: &DetectionParams) -> Detection {
                 core_outline: core.map_or_else(Vec::new, |px| {
                     outline::outline(&px, input, half_spacing, outline::TOLERANCE_KM)
                 }),
+                sites: seen.into_iter().map(|s| s.site).collect(),
             };
             cells.push((cell, group_idx, owned));
         }

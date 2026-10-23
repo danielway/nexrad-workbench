@@ -1,21 +1,23 @@
-//! Footprint outlines: trace a component's outer boundary in polar index
-//! space, place it on the ground, and simplify it.
+//! Footprint outlines: trace a component's outer boundary in index space,
+//! place it on the ground, and simplify it.
 //!
-//! The boundary is traced along gate edges (a "crack-following" walk over
-//! the corners of the azimuth × gate grid), keeping the component on the
+//! The boundary is traced along pixel edges (a "crack-following" walk over
+//! the corners of the row × column grid), keeping the component on the
 //! left and joining pixels that touch only at a corner, to match the
 //! 8-connected labeling. Holes are ignored: the outline is the outer ring.
 //!
-//! Before tracing, the component's radials are unrolled so the azimuth axis
-//! is contiguous: the walk starts after the widest run of radials the
-//! component does not touch, so a cell straddling 0°/360° is one ring. A
-//! component that touches every radial (a rain shield around the radar) is
-//! cut at radial 0, which gives a ring with a zero-width slit along that
-//! radial; drawn filled or stroked it still covers the right area.
+//! On a polar sweep, before tracing, the component's radials are unrolled
+//! so the azimuth axis is contiguous: the walk starts after the widest run
+//! of radials the component does not touch, so a cell straddling 0°/360° is
+//! one ring. A component that touches every radial (a rain shield around
+//! the radar) is cut at radial 0, which gives a ring with a zero-width slit
+//! along that radial; drawn filled or stroked it still covers the right
+//! area. A Cartesian grid does not wrap, so its walk starts at the
+//! component's southmost row and corners map to the ground linearly.
 
 use super::components::Pixel;
+use super::geometry::{Frame, Grid};
 use super::model::MAX_OUTLINE_VERTICES;
-use super::{DetectionInput, KM_PER_DEG};
 
 /// Simplification tolerance for cell outlines, in km.
 pub(super) const TOLERANCE_KM: f64 = 1.0;
@@ -33,18 +35,21 @@ pub(super) const MAX_EDGE_KM: f64 = 10.0;
 /// Outline of `pixels` as a closed (lat, lon) ring: first point repeated at
 /// the end, simplified to `tolerance_km` with no edge longer than
 /// [`MAX_EDGE_KM`] and at most `MAX_OUTLINE_VERTICES` distinct vertices.
-pub(super) fn outline(
+///
+/// `half_spacing_deg` is half a radial's angular width (polar only).
+pub(super) fn outline<'a>(
     pixels: &[Pixel],
-    input: &DetectionInput,
+    input: impl Into<Grid<'a>>,
     half_spacing_deg: f64,
     tolerance_km: f64,
 ) -> Vec<(f64, f64)> {
     if pixels.is_empty() {
         return Vec::new();
     }
-    let n = input.azimuth_count;
+    let geometry: Grid<'a> = input.into();
+    let n = geometry.shape().0;
 
-    // Unroll the azimuth axis.
+    // Unroll the row axis.
     let mut occupied = vec![false; n];
     let (mut gmin, mut gmax) = (u16::MAX, 0u16);
     for &(a, g) in pixels {
@@ -52,7 +57,10 @@ pub(super) fn outline(
         gmin = gmin.min(g);
         gmax = gmax.max(g);
     }
-    let start = unroll_start(&occupied);
+    let start = match geometry {
+        Grid::Polar(_) => unroll_start(&occupied),
+        Grid::Cartesian(_) => occupied.iter().position(|o| *o).unwrap_or(0),
+    };
     let width = occupied.iter().filter(|o| **o).count();
     let height = (gmax - gmin) as usize + 1;
     let mut mask = vec![false; width * height];
@@ -72,34 +80,42 @@ pub(super) fn outline(
     let y0 = (0..height as i32).find(|&y| fg(0, y)).unwrap_or(0);
     let ring = trace(&fg, (0, y0), width, height);
 
-    // Corners → radar-local km (x = east, y = north).
-    let az_edge = |x: i32| -> f64 {
-        let x = x as usize;
-        if x < width {
-            input.azimuths[(start + x) % n] as f64 - half_spacing_deg
-        } else {
-            input.azimuths[(start + width - 1) % n] as f64 + half_spacing_deg
+    // Corners → local km (x = east, y = north).
+    let km: Vec<(f64, f64)> = match geometry {
+        Grid::Polar(input) => {
+            let az_edge = |x: i32| -> f64 {
+                let x = x as usize;
+                if x < width {
+                    input.azimuths[(start + x) % n] as f64 - half_spacing_deg
+                } else {
+                    input.azimuths[(start + width - 1) % n] as f64 + half_spacing_deg
+                }
+            };
+            ring.iter()
+                .map(|&(x, y)| {
+                    let az = az_edge(x).to_radians();
+                    let r = input.first_gate_km + (gmin as f64 + y as f64) * input.gate_interval_km;
+                    (r * az.sin(), r * az.cos())
+                })
+                .collect()
         }
+        // Rows run north, columns east, from the grid's south-west corner.
+        Grid::Cartesian(input) => ring
+            .iter()
+            .map(|&(x, y)| {
+                (
+                    (gmin as f64 + y as f64) * input.cell_km,
+                    ((start + x as usize) as f64) * input.cell_km,
+                )
+            })
+            .collect(),
     };
-    let km: Vec<(f64, f64)> = ring
-        .iter()
-        .map(|&(x, y)| {
-            let az = az_edge(x).to_radians();
-            let r = input.first_gate_km + (gmin as f64 + y as f64) * input.gate_interval_km;
-            (r * az.sin(), r * az.cos())
-        })
-        .collect();
 
     let simplified = simplify_ring(&km, tolerance_km, MAX_EDGE_KM, MAX_OUTLINE_VERTICES);
-    let cos_lat = input.radar_lat.to_radians().cos().max(1e-6);
+    let frame = Frame::new(geometry);
     let mut out: Vec<(f64, f64)> = simplified
         .iter()
-        .map(|&(x, y)| {
-            (
-                input.radar_lat + y / KM_PER_DEG,
-                input.radar_lon + x / (KM_PER_DEG * cos_lat),
-            )
-        })
+        .map(|&(x, y)| frame.lat_lon(x, y))
         .collect();
     if let Some(&first) = out.first() {
         out.push(first);
@@ -285,6 +301,7 @@ fn seg_dist(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
 
 #[cfg(test)]
 mod coverage_tests {
+    use super::super::{DetectionInput, KM_PER_DEG};
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
