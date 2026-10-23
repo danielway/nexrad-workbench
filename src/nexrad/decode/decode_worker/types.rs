@@ -883,6 +883,7 @@ mod detect_wire_tests {
                     (41.25, -94.55),
                 ],
                 sites: vec!["KDMX".into()],
+                observed_ms: None,
             }],
             ..StormCellsResult::default()
         };

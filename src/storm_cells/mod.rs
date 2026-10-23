@@ -312,6 +312,7 @@ fn detect(input: Grid<'_>, params: &DetectionParams) -> Detection {
                     outline::outline(&px, input, half_spacing, outline::TOLERANCE_KM)
                 }),
                 sites: seen.into_iter().map(|s| s.site).collect(),
+                observed_ms: input.observed_ms(pixels),
             };
             cells.push((cell, group_idx, owned));
         }

@@ -37,8 +37,9 @@
 //!
 //! **Letters.** The tracker's IDs are internal; the letters shown are
 //! handed out here, from a counter that only moves forward. A track gets
-//! one once it has been seen in two volumes (or at once when it split off
-//! a lettered track); a track seen once has none and uses none up. Each
+//! one once it has been seen in two cuts (two volumes on one site; on the
+//! scene, two cuts of the radar that shapes it), or at once when it split
+//! off a lettered track; a track seen once has none and uses none up. Each
 //! lettered track's centroids remember its letter, so when a replay
 //! observes a track again (even one that now becomes lettered a volume
 //! earlier) it takes the same letter back instead of a new one.
@@ -235,10 +236,12 @@ pub(crate) struct StormTracks<K = StormCellKey> {
     observations: u64,
 }
 
-impl<K> Default for StormTracks<K> {
+impl<K: CellKey> Default for StormTracks<K> {
     fn default() -> Self {
+        let mut run_start = Tracker::default();
+        run_start.params.coast_ms = K::COAST_MS;
         Self {
-            run_start: Tracker::default(),
+            run_start,
             frames: BTreeMap::new(),
             threshold_dbz: None,
             current: None,
@@ -672,6 +675,7 @@ mod tests {
             outline: Vec::new(),
             core_outline: Vec::new(),
             sites: Vec::new(),
+            observed_ms: None,
         }
     }
 
@@ -1239,5 +1243,115 @@ mod tests {
             threshold_dbz: 35.0,
         };
         assert_eq!(scene_history_keys(&[&a, &b], &shown).len(), HISTORY_VOLUMES);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_scene_store_coasts_thirteen_minutes_and_the_site_store_by_volumes() {
+        let mut scene: StormTracks<SceneCellKey> = StormTracks::default();
+        assert_eq!(scene.run_start.params.coast_ms, 13 * 60_000);
+        scene.reset();
+        assert_eq!(scene.run_start.params.coast_ms, 13 * 60_000);
+        let site: StormTracks = StormTracks::default();
+        assert_eq!(site.run_start.params.coast_ms, 0);
+        assert_eq!(site.run_start.params, TrackParams::default());
+    }
+
+    /// A three-site scene: KAAA cuts every 4.5 min and shapes the storm;
+    /// KBBB and KCCC cut 1.5 and 3 min after each KAAA cut. Scene `f` is
+    /// at `T0 + f * 1.5 min`.
+    fn three_site_scene(f: i64) -> SceneCellKey {
+        let step = 90_000;
+        let newest = |offset: i64| {
+            let k = (f - offset).div_euclid(3);
+            T0_MS + (3 * k + offset) * step
+        };
+        let mut sites = vec![site_key("KAAA", newest(0))];
+        if f >= 1 {
+            sites.push(site_key("KBBB", newest(1)));
+        }
+        if f >= 2 {
+            sites.push(site_key("KCCC", newest(2)));
+        }
+        SceneCellKey {
+            sites,
+            threshold_dbz: 35.0,
+        }
+    }
+
+    /// The scene's cells: the storm (36 km/h east, as KAAA's cut has it,
+    /// gone from KAAA's third cut) and a still storm 60 km north.
+    fn three_site_result(f: i64) -> StormCellsResult {
+        let cut = f / 3;
+        let cut_ms = T0_MS + cut * 270_000;
+        let mut cells = Vec::new();
+        if cut != 2 {
+            cells.push(cell(0, 2.7 * cut as f64, 0.0));
+        }
+        cells.push(cell(cells.len() as u32, 0.0, 60.0));
+        for c in &mut cells {
+            c.observed_ms = Some(cut_ms);
+        }
+        StormCellsResult {
+            cells,
+            ..StormCellsResult::default()
+        }
+    }
+
+    /// The storm's label in scene `f`, if it has one.
+    fn storm_label(tracks: &StormTracks<SceneCellKey>, f: i64) -> Option<String> {
+        if f / 3 == 2 {
+            return None;
+        }
+        tracks
+            .view(None)
+            .and_then(|v| v.for_cell(0).map(|t| t.label.clone()))
+    }
+
+    #[wasm_bindgen_test]
+    fn a_scene_storm_keeps_its_letter_between_its_radars_cuts() {
+        let frames = 13i64;
+        let history = |f: i64| -> Vec<SceneCellKey> { (0..f).map(three_site_scene).collect() };
+        // In order.
+        let mut tracks: StormTracks<SceneCellKey> = StormTracks::default();
+        let mut cells: StormCells<SceneCellKey> = StormCells::default();
+        let mut in_order = Vec::new();
+        for f in 0..frames {
+            cells.seed(three_site_scene(f), three_site_result(f), true, true);
+            tracks.sync(true, &cells, &history(f));
+            in_order.push(storm_label(&tracks, f));
+        }
+        // Lettered once its radar has cut twice (scene 3), and the same
+        // letter after the cut it was missing from.
+        assert_eq!(in_order[..3], [None, None, None]);
+        for f in [3, 4, 5, 9, 10, 11, 12] {
+            assert_eq!(in_order[f].as_deref(), Some("A"), "scene {f}");
+        }
+        let a = tracks.view(None).unwrap().for_cell(0).cloned().unwrap();
+        assert_eq!(a.age_volumes, 4, "one point per KAAA cut");
+        assert!((a.speed_kmh - 36.0).abs() < 0.5, "{}", a.speed_kmh);
+
+        // Out of order: the last scene first, then the KAAA scenes as
+        // history, then the rest.
+        let mut tracks: StormTracks<SceneCellKey> = StormTracks::default();
+        let mut cells: StormCells<SceneCellKey> = StormCells::default();
+        for f in [0, 3, 6, 9] {
+            cells.seed(three_site_scene(f), three_site_result(f), true, false);
+        }
+        cells.seed(three_site_scene(12), three_site_result(12), true, true);
+        tracks.sync(true, &cells, &history(12));
+        for f in (1..12).filter(|f| f % 3 != 0) {
+            cells.seed(three_site_scene(f), three_site_result(f), true, false);
+        }
+        tracks.sync(true, &cells, &history(12));
+        for f in 0..frames {
+            cells.seed(three_site_scene(f), three_site_result(f), true, true);
+            tracks.sync(true, &cells, &history(f));
+            assert_eq!(storm_label(&tracks, f), in_order[f as usize], "scene {f}");
+        }
+        assert_eq!(
+            tracks.observed_times(),
+            (0..frames).map(|f| T0_MS + f * 90_000).collect::<Vec<_>>()
+        );
+        assert_eq!(tracks.newest_label().as_deref(), Some("B"));
     }
 }

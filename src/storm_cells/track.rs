@@ -3,15 +3,24 @@
 //! SCIT-style centroid tracking, fed one detection result per volume in time
 //! order ([`Tracker::observe`]):
 //!
-//! 1. **Predict.** Each live track predicts where its cell is now from its
-//!    last centroid and its motion (a weighted linear fit over its last
-//!    [`TrackParams::fit_points`] centroids, recent ones weighted more). A
-//!    track seen once borrows the motion of the tracks around it, and a
-//!    track whose own fit is weak is blended toward it in proportion to
-//!    the missing confidence (fragment hops make young fits unreliable).
+//! **Cut time.** A cell's echo was seen when its cut was: on the composite
+//! grid of several radars, the volume start of the radar that shaped most
+//! of its footprint (`StormCell::observed_ms`), which can be older than the
+//! frame, since each frame brings one radar's new cut and keeps the
+//! others'. On one radar's sweep it is the volume's time. Every (track,
+//! cell) pair is judged at that time, never before the track's last point.
+//!
+//! 1. **Predict.** Each live track predicts where its cell is at the
+//!    pair's time from its last centroid and its motion (a weighted linear
+//!    fit over its last [`TrackParams::fit_points`] centroids, recent ones
+//!    weighted more). A track seen once borrows the motion of the tracks
+//!    around it, and a track whose own fit is weak is blended toward it in
+//!    proportion to the missing confidence (fragment hops make young fits
+//!    unreliable).
 //! 2. **Match.** Every (track, cell) pair whose distance from the
 //!    prediction is within the search radius
-//!    (`base_radius_km + max_speed_kmh × gap`) is a candidate, with a cost
+//!    (`base_radius_km + max_speed_kmh × gap`, the gap from the track's last
+//!    point to the pair's time) is a candidate, with a cost
 //!    that adds the distance (as a fraction of the radius), the change in
 //!    area (log ratio) and the change in peak, less a bonus in proportion
 //!    to the footprints' overlap: the share of the track's last footprint
@@ -21,13 +30,19 @@
 //!    breaks its core into fragments: the piece that holds most of the
 //!    storm wins over a nearer, smaller one.
 //!    Pairs are taken greedily, cheapest first; ties go to the older track,
-//!    then the stronger cell, so the outcome is deterministic.
+//!    then the stronger cell, so the outcome is deterministic. A matched
+//!    cell from a cut the track has already seen (another radar's frame)
+//!    replaces the track's last point instead of adding one, so the path
+//!    and the motion fit hold one point per cut.
 //! 3. **Coast and end.** A track with no match coasts (its position is
-//!    advected along its motion) for [`TrackParams::coast_volumes`] volumes;
-//!    one more miss ends it. A gap between volumes longer than
+//!    advected along its motion) for [`TrackParams::coast_volumes`] volumes
+//!    and at least [`TrackParams::coast_ms`] since it was last seen; a miss
+//!    past both ends it. A gap between volumes longer than
 //!    [`TrackParams::max_gap_ms`] ends every track first: nothing is
 //!    matched across a hole in the data.
-//! 4. **Start.** A cell with no match starts a track with the next ID.
+//! 4. **Start.** A cell with no match starts a track with the next ID,
+//!    first seen at the cell's time, unless its cut is no newer than the
+//!    last volume (echo already seen then, left without a track).
 //!    IDs ([`track_label`]: A..Z, AA, AB, ...) are allocated once per
 //!    tracker and never reused, so a label names one storm for the whole
 //!    session.
@@ -68,6 +83,12 @@ pub(crate) type TrackId = u32;
 /// straight line clear it.
 pub(crate) const MIN_FORECAST_CONFIDENCE: f64 = 0.4;
 
+/// [`TrackParams::coast_ms`] for tracks on the composite grid of several
+/// radars. A single-site track ends on its third missed volume, about 13
+/// min at the usual 4.1-4.5 min cadence; composite frames come every 1-2
+/// min, at any radar's volume start, so the floor holds the same time.
+pub(crate) const COMPOSITE_COAST_MS: i64 = 13 * 60_000;
+
 /// Short name for a track: 0 → "A", 25 → "Z", 26 → "AA", 27 → "AB", ...
 /// (bijective base 26, like spreadsheet columns).
 pub(crate) fn track_label(id: TrackId) -> String {
@@ -92,6 +113,13 @@ pub(crate) struct TrackParams {
     pub max_speed_kmh: f64,
     /// Volumes a track survives without a match before it ends.
     pub coast_volumes: u32,
+    /// ...and the least time since it was last seen before it can end, ms.
+    /// 0 ends it by `coast_volumes` alone. On the composite grid frames
+    /// come at every radar's volume start, a minute or two apart, so a
+    /// storm shaped by one radar is not seen again for that radar's whole
+    /// cycle; counting frames alone would end it first.
+    #[serde(default)]
+    pub coast_ms: i64,
     /// A longer gap between observed volumes ends every track.
     pub max_gap_ms: i64,
     /// Centroids used for the motion fit (the most recent ones).
@@ -123,6 +151,7 @@ impl Default for TrackParams {
             base_radius_km: 15.0,
             max_speed_kmh: 60.0,
             coast_volumes: 2,
+            coast_ms: 0,
             max_gap_ms: 20 * 60 * 1000,
             fit_points: 5,
             history_len: 24,
@@ -209,7 +238,9 @@ pub(crate) struct Track {
     /// [`TrackParams::history_len`].
     pub points: Vec<TrackPoint>,
     pub start_ms: i64,
-    /// Volumes in which the track was matched (its age in volumes).
+    /// Cuts in which the track was matched (its age in cuts): one per
+    /// volume on one radar; on the composite grid a frame that matches it
+    /// to a cut it has already seen does not count.
     pub volumes: u32,
     /// Consecutive volumes without a match; coasting while above zero.
     pub missed: u32,
@@ -345,14 +376,15 @@ pub(crate) struct TrackSnapshot {
     pub motion: Motion,
     pub start_ms: i64,
     pub last_seen_ms: i64,
-    /// Volumes the track was matched in, this one included.
+    /// Cuts the track was matched in, this one's included (see
+    /// [`Track::volumes`]).
     pub age_volumes: u32,
     /// Minutes from the first to the last observed centroid.
     pub age_minutes: f64,
     /// Peak at the last observed centroid.
     pub peak_dbz: f32,
-    /// Peak change over the last three observed volumes (fewer for a young
-    /// track), dB; `None` for a one-volume track.
+    /// Peak change over the last three observed cuts (fewer for a young
+    /// track), dB; `None` for a track seen in one cut.
     pub peak_trend_db: Option<f32>,
     pub stationary: bool,
     pub coasting: bool,
@@ -406,8 +438,9 @@ pub(crate) struct Frame {
     pub time_ms: i64,
     /// Computed from a provisional result: nothing was committed.
     pub provisional: bool,
-    /// The track of each cell, indexed like the result's cells. `None` only
-    /// in a provisional frame, for a cell that would start a track.
+    /// The track of each cell, indexed like the result's cells. `None` in a
+    /// provisional frame for a cell that would start a track, and for a
+    /// cell no track matched whose cut is no newer than the last volume.
     pub cell_tracks: Vec<Option<TrackId>>,
     /// Every track alive at this volume (matched and coasting), by id.
     pub tracks: Vec<TrackSnapshot>,
@@ -501,10 +534,10 @@ impl Tracker {
         };
 
         // A hole in the data: nothing matches across it.
-        if self
+        let gap = self
             .last_time_ms
-            .is_some_and(|last| time_ms - last > params.max_gap_ms)
-        {
+            .is_some_and(|last| time_ms - last > params.max_gap_ms);
+        if gap {
             for t in self.tracks.drain(..) {
                 frame.ended.push(EndedTrack {
                     id: t.id,
@@ -515,37 +548,34 @@ impl Tracker {
             self.units.clear();
         }
 
+        // When each cell's echo was seen: its cut's start on the composite
+        // grid (cells shaped by a radar that has not updated keep their
+        // old time), else this volume's. A pair is judged at the cell's
+        // time, never before the track's last point.
+        let seen_at: Vec<i64> = result
+            .cells
+            .iter()
+            .map(|c| c.observed_ms.unwrap_or(time_ms))
+            .collect();
+        let pair_at = |track: &Track, ci: usize| seen_at[ci].max(track.last().time_ms);
+
         // Candidate pairs within each track's search radius.
         let fields: Vec<Option<Motion>> = (0..self.tracks.len())
             .map(|ti| motion_field(&self.tracks, ti))
             .collect();
-        let predictions: Vec<((f64, f64), f64)> = self
-            .tracks
-            .iter()
-            .zip(&fields)
-            .map(|(t, field)| {
-                (
-                    t.predict(time_ms, field.as_ref()),
-                    t.radius_km(time_ms, &params),
-                )
-            })
-            .collect();
-        let anchors: Vec<(f64, f64)> = self
-            .tracks
-            .iter()
-            .zip(&fields)
-            .map(|(t, field)| t.overlap_anchor(time_ms, field.as_ref()))
-            .collect();
         let mut candidates: Vec<(f64, usize, usize, f64)> = Vec::new();
-        for (ti, (track, &(pred, radius))) in self.tracks.iter().zip(&predictions).enumerate() {
+        for (ti, track) in self.tracks.iter().enumerate() {
             let last = track.last();
-            let anchor = anchors[ti];
+            let field = fields[ti].as_ref();
             for (ci, cell) in result.cells.iter().enumerate() {
-                let d = distance_km(pred, (cell.lat, cell.lon));
+                let at = pair_at(track, ci);
+                let radius = track.radius_km(at, &params);
+                let d = distance_km(track.predict(at, field), (cell.lat, cell.lon));
                 if d > radius {
                     continue;
                 }
                 let area_ratio = (cell.area_km2.max(0.1) / last.area_km2.max(0.1)) as f64;
+                let anchor = track.overlap_anchor(at, field);
                 let overlap = overlap_share(track, anchor, &cell.outline);
                 let cost = d / radius
                     + params.area_weight * area_ratio.ln().abs()
@@ -584,8 +614,10 @@ impl Tracker {
         }
 
         // An unmatched cell inside a matched track's moved footprint is a
-        // fragment of that storm (the oldest such track, if several).
-        let fragment_of: Vec<Option<TrackId>> = result
+        // fragment of that storm (the oldest such track, if several); failing
+        // that, next to a matched track (within its radius, the nearest) it
+        // split off that one.
+        let split_from_of: Vec<Option<TrackId>> = result
             .cells
             .iter()
             .enumerate()
@@ -593,37 +625,62 @@ impl Tracker {
                 if cell_track[ci].is_some() {
                     return None;
                 }
-                self.tracks
-                    .iter()
-                    .zip(&anchors)
-                    .zip(&track_cell)
-                    .filter(|(_, matched)| matched.is_some())
-                    .filter(|((t, &anchor), _)| in_moved_footprint(t, anchor, (cell.lat, cell.lon)))
-                    .map(|((t, _), _)| t.id)
-                    .min()
+                let pos = (cell.lat, cell.lon);
+                let matched = || {
+                    self.tracks
+                        .iter()
+                        .enumerate()
+                        .filter(|(ti, _)| track_cell[*ti].is_some())
+                };
+                let fragment_of = matched()
+                    .filter(|(ti, t)| {
+                        let anchor = t.overlap_anchor(pair_at(t, ci), fields[*ti].as_ref());
+                        in_moved_footprint(t, anchor, pos)
+                    })
+                    .map(|(_, t)| t.id)
+                    .min();
+                fragment_of.or_else(|| {
+                    matched()
+                        .map(|(ti, t)| {
+                            let at = pair_at(t, ci);
+                            let pred = t.predict(at, fields[ti].as_ref());
+                            (distance_km(pred, pos), t.radius_km(at, &params), ti, t.id)
+                        })
+                        .filter(|&(d, radius, _, _)| d <= radius)
+                        .min_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)))
+                        .map(|(_, _, _, id)| id)
+                })
             })
             .collect();
 
         // Update matched tracks; coast or end the rest.
-        let old_ids: Vec<TrackId> = self.tracks.iter().map(|t| t.id).collect();
         let mut kept: Vec<Track> = Vec::with_capacity(self.tracks.len());
         let mut kept_cell: Vec<Option<u32>> = Vec::with_capacity(self.tracks.len());
         for (ti, mut track) in std::mem::take(&mut self.tracks).into_iter().enumerate() {
             match track_cell[ti] {
                 Some(ci) => {
                     let cell = &result.cells[ci];
-                    track.points.push(TrackPoint {
-                        time_ms,
+                    let at = pair_at(&track, ci);
+                    let point = TrackPoint {
+                        time_ms: at,
                         lat: cell.lat,
                         lon: cell.lon,
                         peak_dbz: cell.peak_dbz,
                         area_km2: cell.area_km2,
-                    });
-                    if track.points.len() > params.history_len.max(3) {
-                        track.points.remove(0);
+                    };
+                    if at == track.last().time_ms {
+                        // The same cut seen again (another radar's frame):
+                        // the storm as it now reads, at the time it was seen.
+                        let n = track.points.len();
+                        track.points[n - 1] = point;
+                    } else {
+                        track.points.push(point);
+                        if track.points.len() > params.history_len.max(3) {
+                            track.points.remove(0);
+                        }
+                        track.volumes += 1;
                     }
                     track.footprint.clone_from(&cell.outline);
-                    track.volumes += 1;
                     track.missed = 0;
                     track.merging_into = None;
                     track.refit(&params);
@@ -635,7 +692,8 @@ impl Tracker {
                     if lost_to[ti].is_some() {
                         track.merging_into = lost_to[ti];
                     }
-                    if track.missed > params.coast_volumes {
+                    let unseen_ms = time_ms - track.last().time_ms;
+                    if track.missed > params.coast_volumes && unseen_ms > params.coast_ms {
                         frame.ended.push(EndedTrack {
                             id: track.id,
                             end_ms: track.last().time_ms,
@@ -651,7 +709,9 @@ impl Tracker {
             }
         }
 
-        // Unmatched cells start tracks (final results only).
+        // Unmatched cells start tracks (final results only), unless nothing
+        // in them is newer than the last volume: echo already seen and not
+        // matched then is no new storm.
         let mut cell_tracks: Vec<Option<TrackId>> = vec![None; result.cells.len()];
         for (track, cell) in kept.iter().zip(&kept_cell) {
             if let Some(ci) = cell {
@@ -663,19 +723,10 @@ impl Tracker {
                 if cell_tracks[ci].is_some() {
                     continue;
                 }
-                let pos = (cell.lat, cell.lon);
-                // A fragment of, or else next to, a track matched in this
-                // volume: a split.
-                let split_from = fragment_of[ci].or_else(|| {
-                    predictions
-                        .iter()
-                        .enumerate()
-                        .filter(|(ti, _)| track_cell[*ti].is_some())
-                        .map(|(ti, &(pred, radius))| (distance_km(pred, pos), radius, ti))
-                        .filter(|&(d, radius, _)| d <= radius)
-                        .min_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)))
-                        .map(|(_, _, ti)| old_ids[ti])
-                });
+                if !gap && self.last_time_ms.is_some_and(|l| seen_at[ci] <= l) {
+                    continue;
+                }
+                let split_from = split_from_of[ci];
                 let split_origin = split_from
                     .and_then(|pid| kept.iter().find(|t| t.id == pid))
                     .map(|t| t.last().pos());
@@ -684,13 +735,13 @@ impl Tracker {
                 kept.push(Track {
                     id,
                     points: vec![TrackPoint {
-                        time_ms,
+                        time_ms: seen_at[ci],
                         lat: cell.lat,
                         lon: cell.lon,
                         peak_dbz: cell.peak_dbz,
                         area_km2: cell.area_km2,
                     }],
-                    start_ms: time_ms,
+                    start_ms: seen_at[ci],
                     volumes: 1,
                     missed: 0,
                     motion: Motion::default(),
@@ -1127,6 +1178,7 @@ mod tests {
                 outline: cell.rect.map(box_ring).unwrap_or_default(),
                 core_outline: Vec::new(),
                 sites: Vec::new(),
+                observed_ms: None,
             });
             if let Some(g) = cell.group {
                 while r.groups.len() <= g as usize {
@@ -1159,6 +1211,17 @@ mod tests {
     fn ids(frame: &Frame) -> Vec<Option<TrackId>> {
         frame.cell_tracks.clone()
     }
+
+    /// `r` with each cell's echo seen at the given cut time (a composite
+    /// cell's `observed_ms`), `None` for the volume's own time.
+    fn seen(mut r: StormCellsResult, at: &[Option<i64>]) -> StormCellsResult {
+        for (c, &ms) in r.cells.iter_mut().zip(at) {
+            c.observed_ms = ms;
+        }
+        r
+    }
+
+    const MIN: i64 = 60_000;
 
     #[wasm_bindgen_test]
     fn labels_run_a_to_z_then_two_letters() {
@@ -1469,6 +1532,189 @@ mod tests {
             }]
         );
         assert!(f.track(1).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn a_same_cut_seen_again_replaces_the_point() {
+        let mut tr = Tracker::default();
+        let f = tr
+            .observe(T0, &seen(result(vec![c(0.0, 0.0)]), &[Some(T0)]), false)
+            .unwrap();
+        assert_eq!(ids(&f), vec![Some(0)]);
+        // Another radar's frame a minute on: the storm is still the first
+        // cut's, read a little differently where the new radar overlaps.
+        let again = seen(result(vec![c(0.4, 0.2).peak(56.0)]), &[Some(T0)]);
+        let f = tr.observe(T0 + MIN, &again, false).unwrap();
+        assert_eq!(ids(&f), vec![Some(0)]);
+        let s = f.track(0).unwrap();
+        assert_eq!((s.age_volumes, s.trail.len()), (1, 1), "no point added");
+        assert_eq!(s.last_seen_ms, T0, "seen when its cut was");
+        assert_eq!(s.trail[0], (again.cells[0].lat, again.cells[0].lon));
+        assert_eq!(s.peak_dbz, 56.0);
+        assert!(!s.coasting);
+        assert_eq!(tr.tracks()[0].motion, Motion::default(), "no stall fitted");
+        // The storm's radar updates: a new point.
+        let next = seen(result(vec![c(3.0, 0.0)]), &[Some(t(1))]);
+        let f = tr.observe(t(1), &next, false).unwrap();
+        let s = f.track(0).unwrap();
+        assert_eq!((s.age_volumes, s.trail.len()), (2, 2));
+        assert_eq!(s.last_seen_ms, t(1));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_pair_is_judged_at_the_cells_time() {
+        // A storm moving east at 48 km/h, its radar cutting every 4.5 min.
+        let cut = |k: i64| T0 + k * 9 * MIN / 2;
+        let x = |k: i64| 3.6 * k as f64;
+        let mut tr = Tracker::default();
+        for k in 0..3 {
+            let r = seen(result(vec![c(x(k), 0.0)]), &[Some(cut(k))]);
+            tr.observe(cut(k), &r, false).unwrap();
+        }
+        // A stale frame 3 min after the last cut: the same cut again.
+        let stale = seen(result(vec![c(x(2), 0.0)]), &[Some(cut(2))]);
+        tr.observe(cut(2) + 3 * MIN, &stale, false).unwrap();
+        // The storm's radar cuts again 4.5 min after its last cut, 1.5 min
+        // after the last frame. The cell is 18 km off the motion's
+        // forecast: within the radius for 4.5 min (19.5 km), not for 1.5
+        // min (16.5 km).
+        let fresh = seen(result(vec![c(x(3), 18.0)]), &[Some(cut(3))]);
+        let f = tr.observe(cut(3), &fresh, false).unwrap();
+        assert_eq!(ids(&f), vec![Some(0)]);
+        let s = f.track(0).unwrap();
+        assert_eq!(s.age_volumes, 4);
+        assert_eq!(tr.next_id(), 1, "no new track");
+    }
+
+    /// A storm seen in volumes 0..=2 of `step_ms` and then gone: the frame
+    /// it ends at (`None` if it outlives `frames`).
+    fn ends_at(params: TrackParams, step_ms: i64, frames: i64) -> Option<i64> {
+        let mut tr = Tracker {
+            params,
+            ..Tracker::default()
+        };
+        for v in 0..frames {
+            let r = if v <= 2 {
+                result(vec![c(v as f64, 0.0)])
+            } else {
+                StormCellsResult::default()
+            };
+            let f = tr.observe(T0 + v * step_ms, &r, false).unwrap();
+            if !f.ended.is_empty() {
+                assert_eq!(f.ended[0].reason, EndReason::Lost);
+                assert_eq!(f.ended[0].end_ms, T0 + 2 * step_ms);
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    #[wasm_bindgen_test]
+    fn coasting_on_a_fast_cadence_lasts_the_time_floor() {
+        let floor = TrackParams {
+            coast_ms: COMPOSITE_COAST_MS,
+            ..TrackParams::default()
+        };
+        // 90-s frames, last seen at 3 min: alive through 15 min (12 min
+        // unseen), ended at 16.5 min (13.5 min unseen).
+        assert_eq!(ends_at(floor.clone(), 3 * MIN / 2, 20), Some(11));
+        // On a 5-minute cadence the floor is under three volumes: the
+        // third miss still ends it.
+        assert_eq!(ends_at(floor, VOL_MS, 20), Some(5));
+    }
+
+    #[wasm_bindgen_test]
+    fn with_no_floor_the_third_miss_ends_at_any_cadence() {
+        assert_eq!(TrackParams::default().coast_ms, 0);
+        for step in [3 * MIN / 2, VOL_MS, 9 * MIN] {
+            assert_eq!(ends_at(TrackParams::default(), step, 20), Some(5), "{step}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn a_cell_with_no_new_data_starts_no_track() {
+        let mut tr = Tracker::default();
+        // The first frame of a run starts every cell, old cuts included.
+        let first = seen(
+            result(vec![c(0.0, 0.0), c(0.0, 80.0)]),
+            &[Some(T0), Some(T0 - 3 * MIN)],
+        );
+        let f = tr.observe(T0, &first, false).unwrap();
+        assert_eq!(ids(&f), vec![Some(0), Some(1)]);
+        // Next frame: both storms on, plus two new cells far away, one from
+        // a cut no newer than the last frame and one from the new cut.
+        let next = seen(
+            result(vec![c(1.0, 0.0), c(0.0, 80.0), c(-80.0, 0.0), c(80.0, 0.0)]),
+            &[
+                Some(T0 + 2 * MIN),
+                Some(T0 - 3 * MIN),
+                Some(T0),
+                Some(T0 + 2 * MIN),
+            ],
+        );
+        let f = tr.observe(T0 + 2 * MIN, &next, false).unwrap();
+        assert_eq!(ids(&f), vec![Some(0), Some(1), None, Some(2)]);
+        assert_eq!(f.track(2).unwrap().start_ms, T0 + 2 * MIN);
+        // A new track starts when its cut was.
+        let later = seen(
+            result(vec![c(2.0, 0.0), c(80.0, 40.0)]),
+            &[None, Some(T0 + 3 * MIN)],
+        );
+        let f = tr.observe(T0 + 4 * MIN, &later, false).unwrap();
+        let new = f.track_of_cell(1).unwrap();
+        assert_eq!(
+            (new.start_ms, new.last_seen_ms),
+            (T0 + 3 * MIN, T0 + 3 * MIN)
+        );
+    }
+
+    /// Case 2 of the composite study in miniature: a storm shaped by one
+    /// radar (cuts every 4.5 min) drops out of one of its cuts, and the two
+    /// other radars' frames in between bring nothing new on it.
+    fn storm_through_other_radars_frames(params: TrackParams) -> Vec<Frame> {
+        let mut tr = Tracker {
+            params,
+            ..Tracker::default()
+        };
+        // Frames every 1.5 min; the storm's radar at every third.
+        let mut frames = Vec::new();
+        for f in 0..13i64 {
+            let t = T0 + f * 3 * MIN / 2;
+            let cut_k = f / 3;
+            let cut_t = T0 + cut_k * 9 * MIN / 2;
+            // 36 km/h east: 2.7 km per cut. Gone from cut 2.
+            let cells = if cut_k == 2 {
+                vec![c(60.0, 60.0)]
+            } else {
+                vec![c(2.7 * cut_k as f64, 0.0), c(60.0, 60.0)]
+            };
+            let at: Vec<Option<i64>> = cells.iter().map(|_| Some(cut_t)).collect();
+            frames.push(tr.observe(t, &seen(result(cells), &at), false).unwrap());
+        }
+        frames
+    }
+
+    #[wasm_bindgen_test]
+    fn a_storm_shaped_by_one_radar_survives_other_radars_frames() {
+        let floor = TrackParams {
+            coast_ms: COMPOSITE_COAST_MS,
+            ..TrackParams::default()
+        };
+        let frames = storm_through_other_radars_frames(floor);
+        // Missed in frames 6, 7 and 8 (7.5 min unseen at 8), matched again
+        // at its radar's next cut (frame 9) and after.
+        assert!(frames.iter().all(|f| f.ended.is_empty()));
+        for f in &frames[9..] {
+            assert_eq!(f.cell_tracks[0], Some(0));
+        }
+        let s = frames[12].track(0).unwrap();
+        assert_eq!(s.age_volumes, 4, "one point per cut it was in");
+        assert!((s.motion.speed_kmh() - 36.0).abs() < 0.5, "{:?}", s.motion);
+        // Counting frames alone, it ends one frame before that cut.
+        let frames = storm_through_other_radars_frames(TrackParams::default());
+        assert_eq!(frames[8].ended.len(), 1);
+        assert_eq!(frames[8].ended[0].id, 0);
+        assert_ne!(frames[9].cell_tracks[0], Some(0));
     }
 
     #[wasm_bindgen_test]

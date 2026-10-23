@@ -3,12 +3,16 @@
 //!
 //! - **Cells.** Square, [`CELL_KM`] on a side, in the flat (equirectangular)
 //!   projection about the grid's south-west corner, with `cos(lat)` taken
-//!   at the grid's centre (the `KM_PER_DEG` convention the detector uses
-//!   everywhere).
+//!   at the radars' mean latitude (the `KM_PER_DEG` convention the detector
+//!   uses everywhere).
 //! - **Extent.** The union of every cut's echo bounding box (gates at or
 //!   above the threshold), padded by [`PAD_KM`], so the grid covers the
 //!   storms and not the whole of every disc; a cut with no echo adds
-//!   nothing, and with no echo anywhere there is no grid.
+//!   nothing, and with no echo anywhere there is no grid. The box is then
+//!   snapped outward onto a fixed lattice (whole cells from 0° latitude and
+//!   longitude, for the same radars), so a cell's grid cells, and so its
+//!   footprint, do not move when another radar's echo grows or shrinks the
+//!   box.
 //! - **Value.** Each cell takes, from every radar that covers its centre,
 //!   the gate there: the nearest radial (none past 1.5 radial widths, a
 //!   gap) and the gate whose span holds the range, the same lookup the 2D
@@ -39,6 +43,9 @@ pub(crate) const MAX_SITES: usize = 8;
 /// One radar's cut and its id.
 pub(crate) struct CompositeCut<'a> {
     pub site: &'a str,
+    /// The cut's volume start, Unix ms: when this radar last saw what the
+    /// cut shows.
+    pub time_ms: i64,
     /// The cut, with the radar's position.
     pub sweep: DetectionInput<'a>,
 }
@@ -52,7 +59,8 @@ pub(crate) struct Extent {
     /// South-west corner of cell (0, 0).
     pub origin_lat: f64,
     pub origin_lon: f64,
-    /// `cos` of the centre's latitude.
+    /// `cos` of the latitude the projection is taken at: the box's centre
+    /// from [`extent`], the radars' mean once on the lattice.
     pub cos_lat: f64,
     pub rows: usize,
     pub cols: usize,
@@ -67,6 +75,9 @@ pub(crate) struct CompositeGrid {
     pub values: Vec<f32>,
     /// Per cell, bit `i` for `sites[i]` having a valid gate there.
     pub mask: Vec<u8>,
+    /// Per cell, the index into `sites` of the radar whose gate gave the
+    /// value (the first of equal maxima); `u8::MAX` where none did.
+    pub winner: Vec<u8>,
     pub sites: Vec<GridSite>,
 }
 
@@ -76,6 +87,7 @@ impl CompositeGrid {
         CartesianInput {
             values: &self.values,
             mask: &self.mask,
+            winner: &self.winner,
             rows: self.extent.rows,
             cols: self.extent.cols,
             cell_km: CELL_KM,
@@ -190,6 +202,28 @@ pub(crate) fn extent(boxes: &[LatLonBox], pad_km: f64, cell_km: f64) -> Option<E
     })
 }
 
+/// `ext` moved onto the fixed lattice of [`CELL_KM`] cells at `cos_lat`:
+/// the south-west corner snapped down to whole cells from 0° latitude and
+/// longitude, and enough rows and columns to still cover `ext`'s north-east
+/// corner.
+fn on_lattice(ext: Extent, cos_lat: f64) -> Extent {
+    let cos_lat = cos_lat.max(1e-6);
+    let dlat = CELL_KM / KM_PER_DEG;
+    let dlon = CELL_KM / (KM_PER_DEG * cos_lat);
+    let north = ext.origin_lat + ext.rows as f64 * CELL_KM / KM_PER_DEG;
+    let east = ext.origin_lon + ext.cols as f64 * CELL_KM / (KM_PER_DEG * ext.cos_lat);
+    let origin_lat = (ext.origin_lat / dlat).floor() * dlat;
+    let origin_lon = (ext.origin_lon / dlon).floor() * dlon;
+    let cells = |span: f64, step: f64| ((span / step).ceil() as usize).clamp(1, u16::MAX as usize);
+    Extent {
+        origin_lat,
+        origin_lon,
+        cos_lat,
+        rows: cells(north - origin_lat, dlat),
+        cols: cells(east - origin_lon, dlon),
+    }
+}
+
 /// Azimuth bins per degree in [`Radials::table`]: 0.01°, far finer than a
 /// radial, so the bin's nearest radial is the point's nearest radial but
 /// for points within 0.005° of halfway between two radials.
@@ -256,10 +290,15 @@ pub(crate) fn resample(cuts: &[CompositeCut], threshold_dbz: f32) -> Option<Comp
         .iter()
         .filter_map(|c| echo_box(&c.sweep, threshold_dbz))
         .collect();
-    let ext = extent(&boxes, PAD_KM, CELL_KM)?;
+    let mean_lat = cuts.iter().map(|c| c.sweep.radar_lat).sum::<f64>() / cuts.len().max(1) as f64;
+    let ext = on_lattice(
+        extent(&boxes, PAD_KM, CELL_KM)?,
+        mean_lat.to_radians().cos(),
+    );
     let cells = ext.rows * ext.cols;
     let mut values = vec![0.0f32; cells];
     let mut mask = vec![0u8; cells];
+    let mut winner = vec![u8::MAX; cells];
     let lon_km = KM_PER_DEG * ext.cos_lat;
 
     for (bit, cut) in cuts.iter().enumerate() {
@@ -320,6 +359,7 @@ pub(crate) fn resample(cuts: &[CompositeCut], threshold_dbz: f32) -> Option<Comp
                 // the maximum.
                 if mask[i] == 1 << bit || v > values[i] {
                     values[i] = v;
+                    winner[i] = bit as u8;
                 }
             }
         }
@@ -328,12 +368,14 @@ pub(crate) fn resample(cuts: &[CompositeCut], threshold_dbz: f32) -> Option<Comp
         extent: ext,
         values,
         mask,
+        winner,
         sites: cuts
             .iter()
             .map(|c| GridSite {
                 id: c.site.to_string(),
                 lat: c.sweep.radar_lat,
                 lon: c.sweep.radar_lon,
+                time_ms: c.time_ms,
             })
             .collect(),
     })
@@ -480,6 +522,7 @@ mod tests {
         let cut = Cut::new(27.7, -82.4, 100, |_, _| 20.0);
         let cuts = [CompositeCut {
             site: "KTBW",
+            time_ms: 0,
             sweep: cut.sweep(),
         }];
         assert!(resample(&cuts, 35.0).is_none());
@@ -500,6 +543,7 @@ mod tests {
         );
         let cuts = [CompositeCut {
             site: "KTBW",
+            time_ms: 0,
             sweep: cut.sweep(),
         }];
         let grid = resample(&cuts, 35.0).unwrap();
@@ -528,10 +572,12 @@ mod tests {
         let cuts = [
             CompositeCut {
                 site: "KTBW",
+                time_ms: 0,
                 sweep: a.sweep(),
             },
             CompositeCut {
                 site: "KMLB",
+                time_ms: 0,
                 sweep: b.sweep(),
             },
         ];
@@ -557,6 +603,7 @@ mod tests {
         }
         let cuts = [CompositeCut {
             site: "KTBW",
+            time_ms: 0,
             sweep: cut.sweep(),
         }];
         let grid = resample(&cuts, 35.0).unwrap();
@@ -580,10 +627,12 @@ mod tests {
         let cuts = [
             CompositeCut {
                 site: "KTBW",
+                time_ms: 0,
                 sweep: a.sweep(),
             },
             CompositeCut {
                 site: "KMLB",
+                time_ms: 0,
                 sweep: b.sweep(),
             },
         ];
@@ -617,15 +666,136 @@ mod tests {
         let cuts = [
             CompositeCut {
                 site: "KJAX",
+                time_ms: 0,
                 sweep: j.sweep(),
             },
             CompositeCut {
                 site: "KTBW",
+                time_ms: 0,
                 sweep: a.sweep(),
             },
         ];
         let (r, _) = detect_composite(&cuts, &DetectionParams::default());
         assert_eq!(r.cells.len(), 1);
         assert_eq!(r.cells[0].sites, vec!["KTBW".to_string()]);
+    }
+
+    #[wasm_bindgen_test]
+    fn each_cell_carries_its_cut_time() {
+        // A storm both radars see: KTBW's cut has the stronger core, KMLB's
+        // (listed first, newer) the stronger rim, which is most of the
+        // footprint. A second storm only KTBW sees.
+        const WEST: (f64, f64) = (27.7, -83.5);
+        let rim = |at: (f64, f64), core: f32, rim: f32| {
+            move |lat: f64, lon: f64| {
+                let d = km(at, (lat, lon));
+                if d < 6.0 {
+                    core
+                } else if d < 12.0 {
+                    rim
+                } else {
+                    0.0
+                }
+            }
+        };
+        let both = rim(STORM, 55.0, 40.0);
+        let west = rim(WEST, 55.0, 40.0);
+        let tbw = Cut::new(27.7, -82.4, 200, move |la, lo| {
+            both(la, lo).max(west(la, lo))
+        });
+        let mlb = Cut::new(28.1, -80.65, 200, rim(STORM, 50.0, 45.0));
+        let cuts = [
+            CompositeCut {
+                site: "KMLB",
+                time_ms: 2_000,
+                sweep: mlb.sweep(),
+            },
+            CompositeCut {
+                site: "KTBW",
+                time_ms: 1_000,
+                sweep: tbw.sweep(),
+            },
+        ];
+        let grid = resample(&cuts, 35.0).unwrap();
+        assert_eq!(grid.sites[0].time_ms, 2_000);
+        assert_eq!(grid.sites[1].time_ms, 1_000);
+        // Where only KTBW reaches, KTBW gave the value; where nobody has a
+        // valid gate, nobody did.
+        let only_tbw = (0..grid.mask.len())
+            .find(|&i| grid.mask[i] == 0b10)
+            .unwrap();
+        assert_eq!(grid.winner[only_tbw], 1);
+        assert!((0..grid.mask.len())
+            .filter(|&i| grid.mask[i] == 0)
+            .all(|i| grid.winner[i] == u8::MAX));
+        let (r, _) = detect_composite(&cuts, &DetectionParams::default());
+        assert_eq!(r.cells.len(), 2, "{:?}", r.cells);
+        let near = |at: (f64, f64)| {
+            r.cells
+                .iter()
+                .find(|c| km(at, (c.lat, c.lon)) < 3.0)
+                .expect("cell")
+        };
+        assert_eq!(near(STORM).observed_ms, Some(2_000));
+        assert_eq!(near(WEST).observed_ms, Some(1_000));
+        // One radar's sweep carries no cut time: the result's is the sweep's.
+        let polar = super::super::detect_cells(&tbw.sweep(), &DetectionParams::default());
+        assert!(polar.cells.iter().all(|c| c.observed_ms.is_none()));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_far_cut_leaves_a_storm_it_does_not_cover_unchanged() {
+        // KTBW sees the storm; KXXX's 100 km disc is far from it, and its
+        // echo moves between two of its cuts, growing the grid's box west
+        // and north.
+        let a = Cut::new(27.7, -82.4, 150, storm(STORM, 6.0, 55.0));
+        let far: (f64, f64) = (29.5, -83.6);
+        let cos = far.0.to_radians().cos();
+        let patch = |north: f64, east: f64| {
+            storm(
+                (
+                    far.0 + north / KM_PER_DEG,
+                    far.1 + east / (KM_PER_DEG * cos),
+                ),
+                4.0,
+                50.0,
+            )
+        };
+        let b1 = Cut::new(far.0, far.1, 100, patch(20.0, 0.0));
+        let b2 = Cut::new(far.0, far.1, 100, patch(30.0, -60.0));
+        let cell_near_storm = |b: &Cut| {
+            let cuts = [
+                CompositeCut {
+                    site: "KTBW",
+                    time_ms: 0,
+                    sweep: a.sweep(),
+                },
+                CompositeCut {
+                    site: "KXXX",
+                    time_ms: 0,
+                    sweep: b.sweep(),
+                },
+            ];
+            let grid = resample(&cuts, 35.0).unwrap();
+            let (r, _) = detect_composite(&cuts, &DetectionParams::default());
+            let cell = r
+                .cells
+                .into_iter()
+                .find(|c| km(STORM, (c.lat, c.lon)) < 3.0)
+                .expect("the storm");
+            (grid.extent, cell)
+        };
+        let (e1, c1) = cell_near_storm(&b1);
+        let (e2, c2) = cell_near_storm(&b2);
+        // The boxes differ, the lattice does not.
+        assert!(e2.origin_lon < e1.origin_lon && e2.cols > e1.cols);
+        assert_eq!(e1.cos_lat, e2.cos_lat);
+        let step = CELL_KM / (KM_PER_DEG * e1.cos_lat);
+        let shift = (e1.origin_lon - e2.origin_lon) / step;
+        assert!((shift - shift.round()).abs() < 1e-6, "{shift}");
+        assert!((c1.lat - c2.lat).abs() < 1e-9 && (c1.lon - c2.lon).abs() < 1e-9);
+        assert_eq!(c1.area_km2, c2.area_km2);
+        assert_eq!(c1.peak_dbz, c2.peak_dbz);
+        assert_eq!(c1.gate_count, c2.gate_count);
     }
 }

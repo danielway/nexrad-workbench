@@ -1062,6 +1062,7 @@ mod tests {
             outline: square(lat, lon, h),
             core_outline: Vec::new(),
             sites: Vec::new(),
+            observed_ms: None,
         }
     }
 

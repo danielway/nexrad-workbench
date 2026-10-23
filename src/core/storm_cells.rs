@@ -107,6 +107,9 @@ pub(crate) struct StormCellKey {
 /// What the cache, the request in flight and the tracker need of a key:
 /// one site's [`StormCellKey`], or the scene's [`SceneCellKey`] over several.
 pub(crate) trait CellKey: Clone + PartialEq + std::fmt::Debug {
+    /// The least time a track on these results coasts before it can end,
+    /// ms (`TrackParams::coast_ms`); 0 = by volumes alone.
+    const COAST_MS: i64 = 0;
     /// The per-site keys the result covers: the key itself for a site, the
     /// sorted list for the scene.
     fn site_keys(&self) -> &[StormCellKey];
@@ -169,6 +172,8 @@ pub(crate) struct SceneCellKey {
 }
 
 impl CellKey for SceneCellKey {
+    const COAST_MS: i64 = crate::storm_cells::track::COMPOSITE_COAST_MS;
+
     fn site_keys(&self) -> &[StormCellKey] {
         &self.sites
     }
@@ -1243,6 +1248,7 @@ mod tests {
             outline: Vec::new(),
             core_outline: Vec::new(),
             sites: Vec::new(),
+            observed_ms: None,
         };
         StormCellsResult {
             cells: (0..n as u32).map(cell).collect(),

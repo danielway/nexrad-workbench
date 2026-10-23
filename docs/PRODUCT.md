@@ -856,7 +856,10 @@ Interactive measurement and analysis affordances on the 2D canvas:
     one 500 m grid around the echo, taking the higher reflectivity where
     discs overlap. A storm two radars see is one storm with one outline,
     one chip and one letter, and the tracks, paths and arrows come from
-    one tracker over the whole map. The card measures bearing and range
+    one tracker over the whole map. A storm is seen anew only when the
+    radar that shapes it cuts again, so on the composite a track coasts at
+    least 13 minutes before it ends, and a new storm gets its letter at
+    that radar's second cut. The card measures bearing and range
     from the nearest site that sees the cell and ends with the sites that
     see it (`KTBW · KMLB`). These cells have no column yet: the card
     leaves out the echo top and column line, which are one radar's. In
