@@ -71,6 +71,28 @@ impl SiteGpu {
         }
     }
 
+    /// Give back this site's volume texture, when it holds one. Returns
+    /// whether it did, so the caller can let the next volume request
+    /// through once the site is back inside the budget.
+    pub(crate) fn release_volume(&mut self, gl: &glow::Context) -> bool {
+        let Some(Ok(mut r)) = self.volume_ray.as_ref().map(|r| r.lock()) else {
+            return false;
+        };
+        let held = r.texture_bytes() > 0 || r.has_data();
+        if held {
+            r.clear_volume(gl);
+        }
+        held
+    }
+
+    /// Bytes this site's volume texture takes; 0 when it holds none.
+    pub(crate) fn volume_bytes(&self) -> u64 {
+        self.volume_ray
+            .as_ref()
+            .and_then(|r| r.lock().ok().map(|r| r.texture_bytes()))
+            .unwrap_or(0)
+    }
+
     /// Create whichever renderers this site does not have yet. Cheap once
     /// they exist, so the frame loop calls it for every site.
     pub(crate) fn ensure(&mut self, gl: &Arc<glow::Context>) {
@@ -412,6 +434,24 @@ impl Sites {
             .collect()
     }
 
+    /// Which sites may hold a volume on `layout`, in list order
+    /// ([`crate::core::volume_plan::resident_volumes`]).
+    pub(crate) fn volume_residency(&self, layout: crate::core::phone::DeviceLayout) -> Vec<bool> {
+        use crate::core::volume_plan::{resident_volumes, volume_budget};
+        resident_volumes(self.list.len(), self.focus, volume_budget(layout))
+    }
+
+    /// Every site's volume texture size, in list order, for the developer
+    /// readout.
+    pub(crate) fn volume_textures(&self) -> Vec<crate::core::volume_plan::VolumeTexture> {
+        self.iter()
+            .map(|s| crate::core::volume_plan::VolumeTexture {
+                site: s.id.0.clone(),
+                bytes: s.gpu.volume_bytes(),
+            })
+            .collect()
+    }
+
     /// The ids in list order, for [`crate::core::sites::route`].
     pub(crate) fn ids(&self) -> Vec<SiteId> {
         self.iter().map(|s| s.id.clone()).collect()
@@ -594,6 +634,31 @@ mod tests {
         assert!(sites
             .lanes(&session, |_| Vec::new(), 0.0, 5_000.0)
             .is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_focus_holds_its_volume_first() {
+        use crate::core::phone::DeviceLayout;
+        let mut sites = two_sites();
+        sites.list.push(SiteState::new("KFWS", 32.57, -97.30));
+        sites.focus = 2;
+        assert_eq!(
+            sites.volume_residency(DeviceLayout::Desktop),
+            vec![true, true, true]
+        );
+        assert_eq!(
+            sites.volume_residency(DeviceLayout::Phone { landscape: false }),
+            vec![false, false, true]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_site_without_renderers_holds_no_volume_bytes() {
+        let sites = two_sites();
+        let textures = sites.volume_textures();
+        assert_eq!(textures.len(), 2);
+        assert_eq!(textures[1].site, "KTLX");
+        assert!(textures.iter().all(|t| t.bytes == 0));
     }
 
     #[wasm_bindgen_test]

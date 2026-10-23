@@ -86,6 +86,12 @@ impl RenderTrack {
         self.last_volume_render = None;
     }
 
+    /// Forget the last volume request, so the same volume can be asked for
+    /// again (its texture was given back).
+    pub(crate) fn forget_volume_render(&mut self) {
+        self.last_volume_render = None;
+    }
+
     /// Clear the scan (no scan in range); the elevations stay.
     pub(crate) fn clear_scan_key(&mut self) {
         self.scan_key = None;

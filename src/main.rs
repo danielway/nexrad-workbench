@@ -700,7 +700,7 @@ impl WorkbenchApp {
                 dev: self
                     .state
                     .dev_mode
-                    .then_some(core::activity::ActivityDevInputs {
+                    .then(|| core::activity::ActivityDevInputs {
                         cross_origin_isolated: self.state.cross_origin_isolated,
                         avg_fetch_ms: stats.median_chunk_latency_ms,
                         avg_processing_ms: stats.median_processing_time_ms,
@@ -734,6 +734,7 @@ impl WorkbenchApp {
                             .latency_summary()
                             .map(|l| (l.avg_fetch_ms, l.p95_fetch_ms, l.avg_e2e_ms)),
                         storm_cells: self.sites.focus().cells.stats(),
+                        volume_textures: self.sites.volume_textures(),
                     }),
             },
             settle,

@@ -594,6 +594,9 @@ fn render_dev_rows(
     for (label, ms) in detail.render_phases.iter().flatten() {
         detail_row(ui, label, format!("{ms:.1} ms"), label_color, value_color);
     }
+    for (label, bytes) in &detail.volume_rows {
+        detail_row(ui, label, bytes.clone(), label_color, value_color);
+    }
     if let Some(stats) = detail.storm_cells {
         detail_row(ui, "Storm cells", stats.label(), label_color, value_color);
     }

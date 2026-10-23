@@ -20,6 +20,13 @@ impl WorkbenchApp {
             for site in self.sites.iter_mut() {
                 site.gpu.ensure(gl);
             }
+            // A site past the volume budget gives its volume texture back.
+            let resident = self.sites.volume_residency(self.chrome.device_layout);
+            for (site, keep) in self.sites.iter_mut().zip(resident) {
+                if !keep && site.gpu.release_volume(gl) {
+                    site.render.forget_volume_render();
+                }
+            }
         }
 
         // Safety release for the scrub level. The timeline strip owns this
