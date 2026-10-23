@@ -25,7 +25,7 @@ const PAD: f32 = 6.0;
 
 fn mosaic_stamp(ctx: &super::OverlayContext) -> Option<String> {
     let state = ctx.state;
-    if !(state.layer_state.geo.national_mosaic && ctx.derived.data_is_live) {
+    if !(state.layer_state.geo.national_mosaic && ctx.derived.data_is_live()) {
         return None;
     }
     format_mosaic_stamp(state.national_mosaic.image_time(), state.use_local_time)

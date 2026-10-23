@@ -1422,7 +1422,9 @@ pub(crate) struct PickCandidates {
 pub(crate) struct PickLayers {
     pub sites: bool,
     pub mping: bool,
-    /// Either alert class is on and live overlays apply at the playhead.
+    /// Either alert class is on and live overlays apply
+    /// ([`crate::core::recency::live_overlays_off`] finds no reason to hide
+    /// them).
     pub alerts: bool,
     /// Storm cells draw and a tap selects one (the phone; the desktop
     /// hovers instead).

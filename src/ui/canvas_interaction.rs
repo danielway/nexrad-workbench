@@ -310,7 +310,7 @@ pub(crate) fn pick_at(
     let layers = crate::core::canvas::PickLayers {
         sites: geo_layers.nexrad_sites,
         mping: geo_layers.mping,
-        alerts: (show_warnings || show_other) && derived.data_is_live,
+        alerts: (show_warnings || show_other) && derived.data_is_live(),
         // The phone taps a cell for its card; the desktop hovers.
         storm_cells: state.is_mobile && !storm_cells.shown.is_empty(),
     };

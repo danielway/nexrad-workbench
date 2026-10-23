@@ -373,7 +373,7 @@ pub(super) fn render_layers_section(
     }
 
     section(ui, "Live");
-    if let Some(note) = panels::live_layers_note(derived.data_is_live) {
+    if let Some(note) = panels::live_layers_note(derived.live_overlays_off) {
         ui.label(
             RichText::new(note)
                 .size(theme::CAPTION)
