@@ -3,9 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-    <!-- viewport-fit=cover lets the canvas extend into the iPhone safe areas
-         (notch, home indicator) when installed as a home-screen PWA. -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <!-- No viewport-fit=cover: on iOS 27 a home-screen app with it draws under
+         the status bar whatever the status bar style, and iOS blurs the top
+         of the page there, over the top bar. Without it the page stays inside
+         the safe area and iOS fills the status bar and home indicator strips
+         with the page's black background. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>NEXRAD Workbench</title>
 
     <!-- Browser favicon. SVG is live-recolored by `setFaviconColor` (see below) to
@@ -19,12 +22,10 @@
     <!-- iOS "Add to Home Screen" PWA metadata. The manifest's display:standalone
          covers modern browsers, but iOS Safari still reads these legacy tags to
          decide whether to launch without Safari chrome. There is no
-         apple-mobile-web-app-status-bar-style tag on purpose: since iOS 26, a
-         page drawn under the status bar gets a blur over its top (where the
-         top bar sits), and with `black-translucent` the viewport also comes up
-         short by the status bar's height (WebKit bug 301108). iOS 27 still
-         drew under the bar with `black`; only the default style starts the
-         page below an opaque bar, tinted by theme-color, so theme-color is
+         apple-mobile-web-app-status-bar-style tag on purpose: with
+         `black-translucent`, iOS 26+ also makes the viewport short by the
+         status bar's height (WebKit bug 301108), leaving a gap at the bottom.
+         The default style's bar is tinted by theme-color, so theme-color is
          the app's black. iOS keeps the style an app was installed with, so a
          change here only reaches an installed app after it is removed and
          added again. -->
@@ -65,7 +66,7 @@
     
 <script type="module">
 import init, * as bindings from '/nexrad-workbench/pr-preview/pr-278/nexrad-workbench-496a75ad8b185ecd.js';
-const wasm = await init({ module_or_path: '/nexrad-workbench/pr-preview/pr-278/nexrad-workbench-ceda09eb664f23a7_bg.wasm' });
+const wasm = await init({ module_or_path: '/nexrad-workbench/pr-preview/pr-278/nexrad-workbench-31e0f4db5f21cda9_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -207,9 +208,9 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
         }
 
         /* iOS safe-area insets exposed as CSS custom properties so the WASM
-           app can read them via getComputedStyle. Needed because the canvas
-           extends under the home indicator (and the notch in landscape) with
-           viewport-fit=cover, and egui has to compensate in its own layout. */
+           app can read them via getComputedStyle. Without viewport-fit=cover
+           they read 0 and the page stays clear of the status bar and home
+           indicator; egui's chrome still pads by them should they be set. */
         :root {
             --sa-inset-top: env(safe-area-inset-top, 0px);
             --sa-inset-right: env(safe-area-inset-right, 0px);
@@ -267,7 +268,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             to { transform: rotate(360deg); }
         }
     </style>
-<link rel="modulepreload" href="/nexrad-workbench/pr-preview/pr-278/nexrad-workbench-496a75ad8b185ecd.js" crossorigin="anonymous" integrity="sha384-bjarCgSs1ZrjQwWtVSR24RCLnKMUb7xKW6zDhWvQv+/h3BXiRn6Mhp/QMZMkq9eH"><link rel="preload" href="/nexrad-workbench/pr-preview/pr-278/nexrad-workbench-ceda09eb664f23a7_bg.wasm" crossorigin="anonymous" integrity="sha384-xa1wtgMVaT6squzLUpz/1YHOSruWUTOxS5fLXtqq2F1d+XtmBiVGJr7KgAiG+QV8" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/nexrad-workbench/pr-preview/pr-278/nexrad-workbench-496a75ad8b185ecd.js" crossorigin="anonymous" integrity="sha384-bjarCgSs1ZrjQwWtVSR24RCLnKMUb7xKW6zDhWvQv+/h3BXiRn6Mhp/QMZMkq9eH"><link rel="preload" href="/nexrad-workbench/pr-preview/pr-278/nexrad-workbench-31e0f4db5f21cda9_bg.wasm" crossorigin="anonymous" integrity="sha384-SoXnEjsHbG6NHoKbkGo/AeqMc/8TtcF2tugzqVoA9NeABIui9Ad0TR/ocFaVm8ze" as="fetch" type="application/wasm"></head>
 <body>
     <canvas id="app_canvas"></canvas>
     <div id="loading_text">
