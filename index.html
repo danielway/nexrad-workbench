@@ -109,17 +109,17 @@
                 var n = parseFloat(v);
                 return isFinite(n) ? n : 0;
             }
-            // iOS 26+ blurs a band below the status bar of a home-screen
-            // app, about 35 pt past the bar's own height on an iPhone SE
-            // with iOS 27, and the page draws under the bar whatever the
-            // status bar style or viewport-fit. Count that band as inset so
-            // the top chrome sits clear of it. `navigator.standalone` is
-            // iOS-only, so Android and desktop installs are untouched.
+            // iOS 26+ blurs a band below the status bar, about 35 pt past
+            // the bar's own height on an iPhone SE with iOS 27, and the page
+            // draws under the bar whatever the status bar style or
+            // viewport-fit. Count that band as inset so the top chrome sits
+            // clear of it. Only a page drawn under a status bar has a top
+            // inset, so desktop and Android browsers are untouched.
             var IOS_STATUS_BLUR = 36;
             window.__nexradSafeAreaInsets = function () {
                 var cs = getComputedStyle(document.documentElement);
                 var top = parsePx(cs.getPropertyValue('--sa-inset-top'));
-                if (navigator.standalone === true && top > 0) {
+                if (top > 0) {
                     top += IOS_STATUS_BLUR;
                 }
                 return {
