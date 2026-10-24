@@ -80,6 +80,12 @@ pub(crate) struct StormCell {
     /// caller's.
     #[serde(default)]
     pub sites: Vec<String>,
+    /// When the footprint's echo was observed, Unix ms: the volume start of
+    /// the cut that shaped most of it (the radar whose gates gave most of
+    /// its pixels) on the composite grid. `None` on one radar's sweep, where
+    /// the whole result is that sweep's.
+    #[serde(default)]
+    pub observed_ms: Option<i64>,
 }
 
 /// A group: one envelope component that resolved into two or more cells

@@ -287,7 +287,7 @@ pub fn worker_detect_composite(params: wasm_bindgen::JsValue) -> js_sys::Promise
             .map_err(|e| JsValue::from_str(&format!("Invalid detect_composite params: {}", e)))?;
 
         let t_fetch = web_time::Instant::now();
-        let mut cuts: Vec<(String, CutData, &CompositeSiteParams)> = Vec::new();
+        let mut cuts: Vec<(String, i64, CutData, &CompositeSiteParams)> = Vec::new();
         let mut complete = true;
         for site in &p.sites {
             let scan_key = ScanKey::from_storage_key(&site.scan_key)
@@ -299,19 +299,21 @@ pub fn worker_detect_composite(params: wasm_bindgen::JsValue) -> js_sys::Promise
             };
             complete &= live.is_none();
             let id = scan_key.site.0.clone();
+            let time_ms = scan_key.scan_start.0;
             let cut = match live {
                 Some(cut) => cut,
                 None => stored_cut(scan_key, site.elevation_number).await?,
             };
-            cuts.push((id, cut, site));
+            cuts.push((id, time_ms, cut, site));
         }
         let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
 
         let t_detect = web_time::Instant::now();
         let inputs: Vec<CompositeCut> = cuts
             .iter()
-            .map(|(id, cut, site)| CompositeCut {
+            .map(|(id, time_ms, cut, site)| CompositeCut {
                 site: id,
+                time_ms: *time_ms,
                 sweep: DetectionInput {
                     azimuths: &cut.azimuths,
                     gate_values: &cut.gate_values,
@@ -340,7 +342,7 @@ pub fn worker_detect_composite(params: wasm_bindgen::JsValue) -> js_sys::Promise
         result.source.product = Some("Reflectivity".to_string());
         result.source.elevation_deg = cuts
             .iter()
-            .map(|(_, c, _)| c.elevation_deg)
+            .map(|(_, _, c, _)| c.elevation_deg)
             .reduce(f32::min);
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;

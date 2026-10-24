@@ -14,6 +14,7 @@
 
 use std::io::Read;
 
+use super::composite::{detect_composite, CompositeCut};
 use super::{detect_cells, DetectionInput, DetectionParams, StormCell, StormCellsResult};
 
 struct Fixture {
@@ -68,10 +69,9 @@ fn load(bytes: &[u8]) -> Fixture {
     }
 }
 
-/// Detect on a fixture; also returns the radar position.
-fn detect(bytes: &[u8], threshold_dbz: f32) -> (StormCellsResult, (f64, f64)) {
-    let f = load(bytes);
-    let input = DetectionInput {
+/// A fixture as the detector's input.
+fn input(f: &Fixture) -> DetectionInput<'_> {
+    DetectionInput {
         azimuths: &f.azimuths,
         gate_values: &f.gates,
         azimuth_count: f.azimuths.len(),
@@ -83,9 +83,14 @@ fn detect(bytes: &[u8], threshold_dbz: f32) -> (StormCellsResult, (f64, f64)) {
         radar_lat: f.radar_lat,
         radar_lon: f.radar_lon,
         azimuth_spacing_deg: None,
-    };
+    }
+}
+
+/// Detect on a fixture; also returns the radar position.
+fn detect(bytes: &[u8], threshold_dbz: f32) -> (StormCellsResult, (f64, f64)) {
+    let f = load(bytes);
     let r = detect_cells(
-        &input,
+        &input(&f),
         &DetectionParams {
             threshold_dbz,
             ..DetectionParams::default()
@@ -659,4 +664,263 @@ fn greenfield_columns_reach_supercell_heights() {
     assert_eq!(col.max_dbz, Some(63.0), "{}", report.join("\n"));
     assert!((2.5..=3.5).contains(&col.max_dbz_height_km.unwrap()));
     assert!((13.5..=15.0).contains(&col.echo_top_km.unwrap()));
+}
+
+// --- Three radars, 2026-10-23 16:01-16:13Z (the composite) --------------
+
+/// The radars the composite case is built from, as the app lists a scene's
+/// sites (by id), and each one's cuts with their volume starts. Positions
+/// come from the fixtures' headers.
+/// A cut's volume start (Unix ms) and its fixture.
+type TimedCut = (i64, &'static [u8]);
+
+const THREE_SITES: [(&str, [TimedCut; 3]); 3] = [
+    (
+        "KABR",
+        [
+            (
+                1_792_771_410_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KABR20261023_160330_V06_el1.bin"),
+            ),
+            (
+                1_792_771_681_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KABR20261023_160801_V06_el1.bin"),
+            ),
+            (
+                1_792_771_953_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KABR20261023_161233_V06_el1.bin"),
+            ),
+        ],
+    ),
+    (
+        "KDMX",
+        [
+            (
+                1_792_771_488_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KDMX20261023_160448_V06_el1.bin"),
+            ),
+            (
+                1_792_771_752_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KDMX20261023_160912_V06_el1.bin"),
+            ),
+            (
+                1_792_772_012_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KDMX20261023_161332_V06_el1.bin"),
+            ),
+        ],
+    ),
+    (
+        "KFSD",
+        [
+            (
+                1_792_771_287_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KFSD20261023_160127_V06_el1.bin"),
+            ),
+            (
+                1_792_771_556_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KFSD20261023_160556_V06_el1.bin"),
+            ),
+            (
+                1_792_771_826_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KFSD20261023_161026_V06_el1.bin"),
+            ),
+        ],
+    ),
+];
+
+/// KDMX's 16:04:48Z volume start: the first scene with all three radars.
+const KDMX_1604: i64 = 1_792_771_488_000;
+
+/// One scene: at a volume start, each radar's newest cut by then, detected
+/// once on the composite at 22 dBZ (the threshold of the recording).
+struct Scene {
+    time_ms: i64,
+    /// The radar whose new cut made this scene.
+    site: &'static str,
+    /// Each radar's cut start in this scene, in `THREE_SITES` order.
+    cut_ms: Vec<i64>,
+    result: StormCellsResult,
+}
+
+/// The seven scenes from 16:04:48Z to 16:13:32Z: one KDMX cycle across
+/// the recording's SE merge and split, with KABR and KFSD frames between.
+/// Detected once and shared by the tests below.
+fn three_site_scenes() -> &'static [Scene] {
+    static SCENES: std::sync::OnceLock<Vec<Scene>> = std::sync::OnceLock::new();
+    SCENES.get_or_init(|| {
+        let fixtures: Vec<Vec<(i64, Fixture)>> = THREE_SITES
+            .iter()
+            .map(|(_, cuts)| cuts.iter().map(|&(t, b)| (t, load(b))).collect())
+            .collect();
+        let mut starts: Vec<(i64, &'static str)> = THREE_SITES
+            .iter()
+            .flat_map(|(site, cuts)| cuts.iter().map(move |&(t, _)| (t, *site)))
+            .filter(|&(t, _)| t >= KDMX_1604)
+            .collect();
+        starts.sort();
+        let params = DetectionParams {
+            threshold_dbz: 22.0,
+            ..DetectionParams::default()
+        };
+        starts
+            .into_iter()
+            .map(|(time_ms, site)| {
+                let newest: Vec<&(i64, Fixture)> = fixtures
+                    .iter()
+                    .map(|cuts| cuts.iter().rev().find(|(t, _)| *t <= time_ms).unwrap())
+                    .collect();
+                let cuts: Vec<CompositeCut> = THREE_SITES
+                    .iter()
+                    .zip(&newest)
+                    .map(|((id, _), (t, f))| CompositeCut {
+                        site: id,
+                        time_ms: *t,
+                        sweep: input(f),
+                    })
+                    .collect();
+                let (result, _) = detect_composite(&cuts, &params);
+                Scene {
+                    time_ms,
+                    site,
+                    cut_ms: newest.iter().map(|(t, _)| *t).collect(),
+                    result,
+                }
+            })
+            .collect()
+    })
+}
+
+/// The cells of `c`'s group (or `c` alone).
+fn group_of<'a>(r: &'a StormCellsResult, c: &'a StormCell) -> Vec<&'a StormCell> {
+    match c.group_id {
+        Some(g) => r.groups[g as usize]
+            .cell_ids
+            .iter()
+            .map(|&id| &r.cells[id as usize])
+            .collect(),
+        None => vec![c],
+    }
+}
+
+/// The same cell on two grids: equal but for the rounding of positions
+/// counted from two lattice origins.
+fn same_cell(a: &StormCell, b: &StormCell) -> bool {
+    let near = |p: (f64, f64), q: (f64, f64)| (p.0 - q.0).abs() < 1e-9 && (p.1 - q.1).abs() < 1e-9;
+    near((a.lat, a.lon), (b.lat, b.lon))
+        && a.area_km2 == b.area_km2
+        && a.peak_dbz == b.peak_dbz
+        && a.gate_count == b.gate_count
+        && a.outline.len() == b.outline.len()
+        && a.outline.iter().zip(&b.outline).all(|(&p, &q)| near(p, q))
+}
+
+/// A KABR cut changes the composite only where KABR has gates: every group
+/// it does not reach comes out of the scene identical to the scene before,
+/// because the grid sits on a fixed lattice instead of re-anchoring to the
+/// echo's new bounding box.
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn a_far_radars_cut_leaves_the_storms_it_does_not_reach_unchanged() {
+    let scenes = three_site_scenes();
+    assert_eq!(scenes.len(), 7);
+    let mut checked = 0;
+    for w in scenes.windows(2) {
+        let (before, now) = (&w[0].result, &w[1].result);
+        check_invariants(now);
+        if w[1].site != "KABR" {
+            continue;
+        }
+        for c in &now.cells {
+            if group_of(now, c)
+                .iter()
+                .any(|m| m.sites.iter().any(|s| s == "KABR"))
+            {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                before.cells.iter().any(|b| same_cell(b, c)),
+                "{} at {}: {c:?}",
+                w[1].site,
+                w[1].time_ms
+            );
+        }
+    }
+    assert!(checked >= 5, "{checked} cells checked");
+}
+
+/// Each cell carries the start of the cut that shaped it: one of its
+/// scene's cuts, and for what KDMX shapes, KDMX's 16:04:48Z through the
+/// KFSD and KABR frames until KDMX cuts again (the SE core among them).
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn composite_cells_carry_the_time_of_their_cut() {
+    let scenes = three_site_scenes();
+    for s in scenes {
+        for c in &s.result.cells {
+            let at = c.observed_ms.expect("a composite cell has a cut time");
+            assert!(s.cut_ms.contains(&at), "{at} not in {:?}", s.cut_ms);
+        }
+    }
+    let se_core = (43.4, -94.7);
+    for s in &scenes[..3] {
+        let core = s
+            .result
+            .cells
+            .iter()
+            .find(|c| km((c.lat, c.lon), se_core) < 30.0 && c.peak_dbz >= 50.0)
+            .unwrap_or_else(|| panic!("the SE core at {}", s.time_ms));
+        assert_eq!(core.observed_ms, Some(KDMX_1604), "{} {core:?}", s.site);
+    }
+}
+
+/// Tracked over the scenes as the app's scene store tracks them (13 min
+/// coasting floor): a storm only KDMX shapes gains no point from the KFSD
+/// and KABR frames between KDMX's cuts, and no track ends in this one KDMX
+/// cycle. Counting frames alone, some do.
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn composite_tracks_count_cuts_and_coast_between_a_radars_cuts() {
+    use super::track::{TrackParams, Tracker, COMPOSITE_COAST_MS};
+    let scenes = three_site_scenes();
+    let run = |params: TrackParams| {
+        let mut tr = Tracker::default();
+        tr.params = params;
+        scenes
+            .iter()
+            .map(|s| tr.observe(s.time_ms, &s.result, false).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let frames = run(TrackParams {
+        coast_ms: COMPOSITE_COAST_MS,
+        ..TrackParams::default()
+    });
+    assert!(frames.iter().all(|f| f.ended.is_empty()), "no track ends");
+
+    // Tracks matched in every scene to cells KDMX's 16:04:48 cut shaped,
+    // up to KDMX's next cut: one point each.
+    let kdmx_next = scenes
+        .iter()
+        .position(|s| s.time_ms > KDMX_1604 && s.site == "KDMX")
+        .unwrap();
+    assert_eq!(kdmx_next, 3);
+    let mut held = 0;
+    for (ci, cell) in scenes[0].result.cells.iter().enumerate() {
+        let Some(id) = frames[0].cell_tracks[ci] else {
+            continue;
+        };
+        let same_cut = (1..kdmx_next).all(|f| {
+            frames[f]
+                .track(id)
+                .and_then(|t| t.cell_id)
+                .is_some_and(|c| scenes[f].result.cells[c as usize].observed_ms == Some(KDMX_1604))
+        });
+        if cell.observed_ms != Some(KDMX_1604) || !same_cut {
+            continue;
+        }
+        let t = frames[kdmx_next - 1].track(id).unwrap();
+        assert_eq!((t.age_volumes, t.last_seen_ms), (1, KDMX_1604), "{t:?}");
+        held += 1;
+    }
+    assert!(held > 0);
+
+    let by_frames = run(TrackParams::default());
+    assert!(by_frames.iter().any(|f| !f.ended.is_empty()));
 }

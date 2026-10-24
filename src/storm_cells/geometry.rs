@@ -13,7 +13,8 @@
 //!   radars (`composite`). Rows run south to north, columns west to east,
 //!   nothing wraps, and every cell has the same area. Positions are km from
 //!   the grid's south-west corner, placed on the map with the flat
-//!   projection about that corner (`cos(lat)` taken at the grid's centre),
+//!   projection about that corner (`cos(lat)` taken at the radars' mean
+//!   latitude on the composite),
 //!   so a cell centre maps to lat/lon linearly.
 //!
 //! [`Frame`] carries what one pass over pixels needs (the radial width, the
@@ -31,6 +32,8 @@ pub(crate) struct GridSite {
     pub id: String,
     pub lat: f64,
     pub lon: f64,
+    /// The start of the volume its cut comes from, Unix ms.
+    pub time_ms: i64,
 }
 
 /// Borrowed view of a Cartesian grid (see the module docs).
@@ -40,6 +43,9 @@ pub(crate) struct CartesianInput<'a> {
     pub values: &'a [f32],
     /// Per cell, bit `i` set when `sites[i]` had a valid gate there.
     pub mask: &'a [u8],
+    /// Per cell, the index into `sites` of the radar that gave the value;
+    /// `u8::MAX` (or past the end of the slice) where none did.
+    pub winner: &'a [u8],
     pub rows: usize,
     pub cols: usize,
     /// Side of one square cell, km.
@@ -47,8 +53,10 @@ pub(crate) struct CartesianInput<'a> {
     /// South-west corner of cell (0, 0).
     pub origin_lat: f64,
     pub origin_lon: f64,
-    /// `cos` of the grid centre's latitude: km per degree of longitude is
-    /// `KM_PER_DEG * cos_lat` everywhere on the grid.
+    /// `cos` of the latitude the grid's projection is taken at (the
+    /// composite takes the radars' mean, so the lattice stays put as the
+    /// echo moves): km per degree of longitude is `KM_PER_DEG * cos_lat`
+    /// everywhere on the grid.
     pub cos_lat: f64,
     /// The radars behind `mask`, at most eight.
     pub sites: &'a [GridSite],
@@ -204,6 +212,31 @@ impl<'a> Grid<'a> {
         seen.sort_by(|a, b| a.range_km.total_cmp(&b.range_km).then(a.site.cmp(&b.site)));
         seen
     }
+
+    /// When the echo of a footprint was observed: the volume start of the
+    /// radar whose gates gave most of its pixels (a tie goes to the radar
+    /// listed first). `None` on a polar grid, where the caller knows the
+    /// one radar's time, or when no pixel has a radar.
+    pub(super) fn observed_ms(&self, pixels: &[Pixel]) -> Option<i64> {
+        let Grid::Cartesian(c) = self else {
+            return None;
+        };
+        let mut counts = vec![0usize; c.sites.len()];
+        for &(r, col) in pixels {
+            let w = c
+                .winner
+                .get(r as usize * c.cols + col as usize)
+                .copied()
+                .unwrap_or(u8::MAX) as usize;
+            if let Some(n) = counts.get_mut(w) {
+                *n += 1;
+            }
+        }
+        // `max_by_key` keeps the last of equal maxima; scan in reverse so
+        // the lowest index wins a tie.
+        let (best, n) = counts.iter().enumerate().rev().max_by_key(|(_, n)| **n)?;
+        (*n > 0).then(|| c.sites[best].time_ms)
+    }
 }
 
 /// Compass bearing (degrees) and range (km) of `to` from `from`, in the flat
@@ -332,6 +365,7 @@ mod tests {
         CartesianInput {
             values,
             mask,
+            winner: &[],
             rows: 4,
             cols: 3,
             cell_km: 0.5,
@@ -387,16 +421,19 @@ mod tests {
                 id: "KJAX".into(),
                 lat: 30.48,
                 lon: -81.70,
+                time_ms: 0,
             },
             GridSite {
                 id: "KMLB".into(),
                 lat: 28.11,
                 lon: -80.65,
+                time_ms: 0,
             },
             GridSite {
                 id: "KTBW".into(),
                 lat: 27.70,
                 lon: -82.40,
+                time_ms: 0,
             },
         ];
         let v = vec![0.0; 12];
@@ -423,5 +460,56 @@ mod tests {
         let (b, r) = bearing_range_from((35.0, -97.0), (35.0, -97.0 + 10.0 / (KM_PER_DEG * cos)));
         assert!((b - 90.0).abs() < 1e-3, "{b}");
         assert!((r - 10.0).abs() < 1e-3, "{r}");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_footprint_is_observed_when_most_of_its_pixels_were() {
+        let site = |id: &str, time_ms| GridSite {
+            id: id.into(),
+            lat: 28.0,
+            lon: -82.0,
+            time_ms,
+        };
+        let sites = vec![site("KAAA", 10), site("KBBB", 20), site("KCCC", 30)];
+        let (v, m) = (vec![0.0; 12], vec![0u8; 12]);
+        // Rows of three: KCCC, KBBB, KBBB, then KAAA, KCCC and nobody.
+        let winner = [2, 2, 2, 1, 1, 1, 1, 1, 1, 0, 2, u8::MAX];
+        let g = CartesianInput {
+            winner: &winner,
+            ..grid(&v, &m, &sites)
+        };
+        let g = Grid::from(&g);
+        let all: Vec<Pixel> = (0..4u16)
+            .flat_map(|r| (0..3u16).map(move |c| (r, c)))
+            .collect();
+        assert_eq!(g.observed_ms(&all), Some(20));
+        // One pixel each of KAAA and KCCC: a tie goes to the first site.
+        assert_eq!(g.observed_ms(&[(3, 0), (3, 1)]), Some(10));
+        // Pixels no radar gave: no time.
+        assert_eq!(g.observed_ms(&[(3, 2)]), None);
+        assert_eq!(g.observed_ms(&[]), None);
+        // A grid without winners (or shorter than the grid) gives none.
+        let bare = grid(&v, &m, &sites);
+        assert_eq!(Grid::from(&bare).observed_ms(&all), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_polar_sweep_has_no_observed_time() {
+        let az: Vec<f32> = (0..4).map(|i| i as f32 * 90.0).collect();
+        let gates = vec![50.0; 8];
+        let input = DetectionInput {
+            azimuths: &az,
+            gate_values: &gates,
+            azimuth_count: 4,
+            gate_count: 2,
+            first_gate_km: 0.0,
+            gate_interval_km: 1.0,
+            data_scale: 0.0,
+            data_offset: 0.0,
+            radar_lat: 28.0,
+            radar_lon: -82.0,
+            azimuth_spacing_deg: None,
+        };
+        assert_eq!(Grid::from(&input).observed_ms(&[(0, 0), (1, 1)]), None);
     }
 }

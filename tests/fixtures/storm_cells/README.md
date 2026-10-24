@@ -22,6 +22,15 @@ enough to check in:
 | `KDMX20240521_202422_V06_el1.bin` | [KDMX 2024-05-21 20:24:22Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/05/21/KDMX/KDMX20240521_202422_V06) | Greenfield, the next volume (tracking) | 95 KB |
 | `KDMX20240521_201727_V06_vol.bin` | [KDMX 2024-05-21 20:17:27Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/05/21/KDMX/KDMX20240521_201727_V06) | Greenfield, the volume's 13 upper reflectivity tilts over the line's sector (columns, #178) | 118 KB |
 | `KDMX20240715_115714_V06_el1.bin` | [KDMX 2024-07-15 11:57:14Z](https://unidata-nexrad-level2.s3.amazonaws.com/2024/07/15/KDMX/KDMX20240715_115714_V06) | Clear-air control (wind-farm clutter, Minnesota storms at range) | 89 KB |
+| `KABR20261023_160330_V06_el1.bin` | [KABR 2026-10-23 16:03:30Z](https://unidata-nexrad-level2.s3.amazonaws.com/2026/10/23/KABR/KABR20261023_160330_V06) | Three sites on one composite, 16:01-16:13Z (multi-site tracking) | 41 KB |
+| `KABR20261023_160801_V06_el1.bin` | [KABR 2026-10-23 16:08:01Z](https://unidata-nexrad-level2.s3.amazonaws.com/2026/10/23/KABR/KABR20261023_160801_V06) | Three sites on one composite, 16:01-16:13Z (multi-site tracking) | 41 KB |
+| `KABR20261023_161233_V06_el1.bin` | [KABR 2026-10-23 16:12:33Z](https://unidata-nexrad-level2.s3.amazonaws.com/2026/10/23/KABR/KABR20261023_161233_V06) | Three sites on one composite, 16:01-16:13Z (multi-site tracking) | 41 KB |
+| `KDMX20261023_160448_V06_el1.bin` | [KDMX 2026-10-23 16:04:48Z](https://unidata-nexrad-level2.s3.amazonaws.com/2026/10/23/KDMX/KDMX20261023_160448_V06) | Three sites on one composite, 16:01-16:13Z (multi-site tracking) | 44 KB |
+| `KDMX20261023_160912_V06_el1.bin` | [KDMX 2026-10-23 16:09:12Z](https://unidata-nexrad-level2.s3.amazonaws.com/2026/10/23/KDMX/KDMX20261023_160912_V06) | Three sites on one composite, 16:01-16:13Z (multi-site tracking) | 44 KB |
+| `KDMX20261023_161332_V06_el1.bin` | [KDMX 2026-10-23 16:13:32Z](https://unidata-nexrad-level2.s3.amazonaws.com/2026/10/23/KDMX/KDMX20261023_161332_V06) | Three sites on one composite, 16:01-16:13Z (multi-site tracking) | 45 KB |
+| `KFSD20261023_160127_V06_el1.bin` | [KFSD 2026-10-23 16:01:27Z](https://unidata-nexrad-level2.s3.amazonaws.com/2026/10/23/KFSD/KFSD20261023_160127_V06) | Three sites on one composite, 16:01-16:13Z (multi-site tracking) | 42 KB |
+| `KFSD20261023_160556_V06_el1.bin` | [KFSD 2026-10-23 16:05:56Z](https://unidata-nexrad-level2.s3.amazonaws.com/2026/10/23/KFSD/KFSD20261023_160556_V06) | Three sites on one composite, 16:01-16:13Z (multi-site tracking) | 41 KB |
+| `KFSD20261023_161026_V06_el1.bin` | [KFSD 2026-10-23 16:10:26Z](https://unidata-nexrad-level2.s3.amazonaws.com/2026/10/23/KFSD/KFSD20261023_161026_V06) | Three sites on one composite, 16:01-16:13Z (multi-site tracking) | 41 KB |
 
 Source: NOAA NEXRAD Level II archive, served by the NOAA Open Data
 Dissemination program at `https://unidata-nexrad-level2.s3.amazonaws.com/`
@@ -40,6 +49,15 @@ a81a8f0e38ec983f6b91e85d4ac6809f2565e38fea341a429e3a4e06f9b84ba3  KDMX20240521_2
 2a9c31a4d85490cdadae3eeb10f23956d61a0d2b9a5f448280c5cd29187f4e7f  KFWS20240528_102649_V06
 ee2227be58c2c6536af2b4d9386feeb0b407ac43d9e7d70379f6cbbabea5f90e  KTBW20241009_195926_V06
 2651944305c05630f88bd02ea967ef257a4aa956f0157d0adc21e4114b0500b6  KDMX20240715_115714_V06
+33696df1395af312bca4a408ab52e75c3bc72bc996a04d417cbecb1ad826b377  KABR20261023_160330_V06
+c81afba4e3b9e1f7af142f3e587afd1a228ea1934f53c23be2b8ae5a15eacff8  KABR20261023_160801_V06
+cd95dfa56b4793b80d8edf357aea7003ac18c5f282e4711adfc4f0c6c1dcc8cf  KABR20261023_161233_V06
+eb2fb9f6a9d0984d0dce0c9d8503a3e746cc1a540814f7ffd39e4905cf8b18be  KDMX20261023_160448_V06
+728bd183016acba39d7d39c8d9dd7aebd011d06ab7cd576d0901aacc934fe6f0  KDMX20261023_160912_V06
+f65f76b4fb0904c7b8f190d2d368af4828019100c5b639ff65a4b6e653f3e6cb  KDMX20261023_161332_V06
+07e713e98926e906981c6a8168a7962b2359914615f9df04be4b8bec98b9b3e1  KFSD20261023_160127_V06
+6375d9ced72abb58cea94e9c617eccc4fda696b706dd27e477fb723fd1d76416  KFSD20261023_160556_V06
+91156e2c0576102b4fe3443f7b45f3715bdbcd72e37af880b261ff459ad7cc4c  KFSD20261023_161026_V06
 ```
 
 ## Format
@@ -107,7 +125,16 @@ for p in 2024/05/21/KDMX/KDMX20240521_201727_V06 \
          2024/05/21/KDMX/KDMX20240521_202422_V06 \
          2024/05/28/KFWS/KFWS20240528_102649_V06 \
          2024/10/09/KTBW/KTBW20241009_195926_V06 \
-         2024/07/15/KDMX/KDMX20240715_115714_V06; do
+         2024/07/15/KDMX/KDMX20240715_115714_V06 \
+         2026/10/23/KABR/KABR20261023_160330_V06 \
+         2026/10/23/KABR/KABR20261023_160801_V06 \
+         2026/10/23/KABR/KABR20261023_161233_V06 \
+         2026/10/23/KDMX/KDMX20261023_160448_V06 \
+         2026/10/23/KDMX/KDMX20261023_160912_V06 \
+         2026/10/23/KDMX/KDMX20261023_161332_V06 \
+         2026/10/23/KFSD/KFSD20261023_160127_V06 \
+         2026/10/23/KFSD/KFSD20261023_160556_V06 \
+         2026/10/23/KFSD/KFSD20261023_161026_V06; do
   curl -sSfO "https://unidata-nexrad-level2.s3.amazonaws.com/$p"
 done
 
@@ -147,6 +174,14 @@ The expectations encode the study's observations
 - Greenfield columns (`_vol.bin`): every storm on the line has an echo
   top of 12-15.5 km and echo on most tilts; the Greenfield storm has the
   strongest column, 63 dBZ about 3 km up.
+- Three sites (KABR, KDMX, KFSD, 2026-10-23), detected on the composite
+  at 22 dBZ in the seven scenes from 16:04:48Z (one at each volume start):
+  a KABR cut leaves every storm in a group KABR does not reach unchanged
+  (the grid's fixed lattice); each cell carries the start of the cut that
+  shaped it, and the 50+ dBZ core on the Iowa-Minnesota line keeps KDMX's
+  16:04:48Z through the KFSD and KABR frames; tracked with the composite's
+  13 minute coasting floor, a storm KDMX shapes gains no point between
+  KDMX's cuts and no track ends, where counting frames alone ends some.
 - Clear air: cells only at the Minnesota complex plus exactly one clutter
   cluster (Greene County). A correlation coefficient filter in a later
   change should bring the clutter count to zero.

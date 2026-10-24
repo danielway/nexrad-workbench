@@ -777,8 +777,9 @@ Interactive measurement and analysis affordances on the 2D canvas:
     on the phone) so they read on every part of the palette. Intensity is
     never the stroke's color.
   - **Chip.** The cell's peak dBZ sits in a small mono chip at the outline's
-    top-right (11 px; 12 px on the phone). Chips are placed strongest first
-    and skipped when they would crowd one already placed; an outline smaller
+    top-right (11 px; 12 px on the phone), or its bottom-right when that
+    spot is taken. Chips are placed strongest first and skipped when both
+    spots would crowd one already placed; an outline smaller
     than about 14 px on screen carries none. With Tracks on the chip leads
     with the track's letter (`B 58`) and ends with ↑ or ↓ when the peak
     moved more than 3 dB over the last three volumes.
@@ -856,7 +857,10 @@ Interactive measurement and analysis affordances on the 2D canvas:
     one 500 m grid around the echo, taking the higher reflectivity where
     discs overlap. A storm two radars see is one storm with one outline,
     one chip and one letter, and the tracks, paths and arrows come from
-    one tracker over the whole map. The card measures bearing and range
+    one tracker over the whole map. A storm is seen anew only when the
+    radar that shapes it cuts again, so on the composite a track coasts at
+    least 13 minutes before it ends, and a new storm gets its letter at
+    that radar's second cut. The card measures bearing and range
     from the nearest site that sees the cell and ends with the sites that
     see it (`KTBW · KMLB`). These cells have no column yet: the card
     leaves out the echo top and column line, which are one radar's. In
