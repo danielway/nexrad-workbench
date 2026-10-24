@@ -27,11 +27,22 @@
 //     Worker → Main:  { type: 'volume_decoded', id, buffer: ArrayBuffer, sweepMeta, wordSize, ... }
 //
 //   Live render (partial sweep from in-memory accumulator, synchronous):
-//     Main → Worker:  { type: 'render_live', id, elevationNumber, product }
+//     Main → Worker:  { type: 'render_live', id, siteId, elevationNumber, product }
 //     Worker → Main:  { type: 'live_decoded', id, azimuths: ArrayBuffer, gateValues: ArrayBuffer, ... }
 //     Worker → Main:  { type: 'live_superseded', id, elevationNumber, currentElevation }
 //       (the elevation was stored to IDB after the request was sent, so the
 //       accumulator no longer holds it; not an error, the main thread ignores it)
+//
+//   Storm cell detection (one reflectivity cut, stored in IDB or live in the accumulator):
+//     Main → Worker:  { type: 'detect', id, scanKey, elevationNumber, input: 'stored' | 'live', params, radarLat, radarLon }
+//     Worker → Main:  { type: 'detected', id, result: StormCellsResult, fetchMs, detectMs, totalMs, azimuthCount, gateCount, complete }
+//
+//   Storm cell detection on the composite grid of several sites' cuts:
+//     Main → Worker:  { type: 'detect_composite', id, sites: [{ scanKey, elevationNumber, input, radarLat, radarLon }], params }
+//     Worker → Main:  { type: 'detected', id, ... } (as for 'detect'; azimuthCount and gateCount are the grid's rows and columns)
+//
+//   Drop a site (it left the map; forget its live accumulator, no reply):
+//     Main → Worker:  { type: 'drop_site', siteId }
 //
 //   Errors:
 //     Worker → Main:  { type: 'error', id, message }
@@ -234,10 +245,63 @@ self.onmessage = async function (e) {
         return;
     }
 
+    if (msg.type === 'detect') {
+        try {
+            // worker_detect: JsValue -> Promise<JsValue>. A live request reads
+            // the accumulator synchronously; a stored one awaits IDB. A
+            // non-empty volumeCuts also samples those tilts for the cells'
+            // columns (the reply's result.volume).
+            const result = await wasm.worker_detect({
+                scanKey: msg.scanKey,
+                elevationNumber: msg.elevationNumber,
+                input: msg.input,
+                params: msg.params,
+                radarLat: msg.radarLat,
+                radarLon: msg.radarLon,
+                volumeCuts: msg.volumeCuts || [],
+            });
+            const payload = Object.assign({}, result, { type: 'detected', id: msg.id });
+            self.postMessage(payload);
+        } catch (err) {
+            postError(msg.id, err);
+        }
+        return;
+    }
+
+    if (msg.type === 'detect_composite') {
+        try {
+            // worker_detect_composite: JsValue -> Promise<JsValue>; reads
+            // every site's cut as worker_detect does, then detects once.
+            const result = await wasm.worker_detect_composite({
+                sites: msg.sites,
+                params: msg.params,
+            });
+            const payload = Object.assign({}, result, { type: 'detected', id: msg.id });
+            self.postMessage(payload);
+        } catch (err) {
+            postError(msg.id, err);
+        }
+        return;
+    }
+
+    if (msg.type === 'drop_site') {
+        // The site left the map: forget its accumulator. Queued behind the
+        // chunk ingests already sent, so none of them installs it again.
+        chunkIngestQueue = chunkIngestQueue.then(() => {
+            try {
+                wasm.worker_drop_site(msg.siteId);
+            } catch (err) {
+                console.error('drop_site failed: ' + describeError(err));
+            }
+        });
+        return;
+    }
+
     if (msg.type === 'render_live') {
         try {
             // worker_render_live: JsValue -> JsValue (synchronous, reads from memory)
             const result = wasm.worker_render_live({
+                siteId: msg.siteId,
                 product: msg.product,
                 elevationNumber: msg.elevationNumber,
             });
