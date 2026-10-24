@@ -72,9 +72,9 @@ fn draw_mobile_top_bar(
     chrome: &mut crate::subsystem::Chrome,
 ) {
     let ctx = root_ui.ctx().clone();
-    // iOS safe area: when installed as a home-screen PWA, the canvas extends
-    // under the translucent status bar / notch. Pad the top so OS icons
-    // don't overlap our content.
+    // iOS safe area: zero in portrait now that the installed app uses an
+    // opaque status bar (index.html), but kept so any top inset the browser
+    // reports still keeps OS icons off our content.
     let (inset_top, _inset_right, _inset_bottom, _inset_left) = super::safe_area_insets();
     let frame = Frame::NONE.fill(theme::MAP).inner_margin(Margin::ZERO);
 
