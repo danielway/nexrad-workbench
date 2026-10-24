@@ -803,7 +803,10 @@ fn render_map_toolbar(ui: &egui::Ui, rect: &egui::Rect, state: &mut AppState) {
     let inset = crate::core::map_chrome::TOOLBAR_INSET;
     egui::Area::new(egui::Id::new(MAP_TOOLBAR_ID))
         .fixed_pos(rect.left_top() + egui::vec2(inset, inset))
-        .order(egui::Order::Foreground)
+        // Middle, like the caption: dialogs live in Foreground and only
+        // restack when their stack changes, so a Foreground area first shown
+        // after that (the toolbar under the first-run site picker) drew on top.
+        .order(egui::Order::Middle)
         .show(ui.ctx(), |ui| {
             egui::Frame::new()
                 .fill(theme::map::scrim())
