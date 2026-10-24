@@ -14,21 +14,22 @@
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
     <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png">
     <link rel="manifest" href="assets/manifest.webmanifest">
-    <meta name="theme-color" content="#ff9b2e">
+    <meta name="theme-color" content="#000000">
 
     <!-- iOS "Add to Home Screen" PWA metadata. The manifest's display:standalone
          covers modern browsers, but iOS Safari still reads these legacy tags to
-         decide whether to launch without Safari chrome and how to style the
-         status bar. The status bar is opaque `black`, not `black-translucent`:
-         since iOS 26, a translucent bar blurs the top of the page (where the
-         top bar sits) and the viewport comes up short by the status bar's
-         height, leaving a gap at the bottom (WebKit bug 301108). With an
-         opaque bar the page starts below it and env(safe-area-inset-top) is 0.
-         iOS keeps the style an app was installed with, so a change here only
-         reaches an installed app after it is removed and added again. -->
+         decide whether to launch without Safari chrome. There is no
+         apple-mobile-web-app-status-bar-style tag on purpose: since iOS 26, a
+         page drawn under the status bar gets a blur over its top (where the
+         top bar sits), and with `black-translucent` the viewport also comes up
+         short by the status bar's height (WebKit bug 301108). iOS 27 still
+         drew under the bar with `black`; only the default style starts the
+         page below an opaque bar, tinted by theme-color, so theme-color is
+         the app's black. iOS keeps the style an app was installed with, so a
+         change here only reaches an installed app after it is removed and
+         added again. -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <meta name="apple-mobile-web-app-title" content="NEXRAD">
 
     <!-- Privacy-friendly aggregate pageview analytics. Include the host in the
