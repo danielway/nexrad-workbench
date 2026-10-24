@@ -174,7 +174,7 @@ pub(crate) fn render_canvas_with_geo(
                     radius: coverage_km as f32 * site_screen.px_per_km,
                 });
 
-                if state.layer_state.geo.national_mosaic && derived.data_is_live {
+                if state.layer_state.geo.national_mosaic && derived.data_is_live() {
                     draw_national_mosaic(
                         &painter,
                         &projection,
@@ -208,7 +208,7 @@ pub(crate) fn render_canvas_with_geo(
                 // over the radar below.
                 let show_warnings = state.layer_state.geo.alerts_warnings;
                 let show_other = state.layer_state.geo.alerts_other;
-                let alerts_active = derived.data_is_live && !diagnostics.alerts.alerts.is_empty();
+                let alerts_active = derived.data_is_live() && !diagnostics.alerts.alerts.is_empty();
                 if show_warnings && alerts_active {
                     render_alerts(
                         &painter,

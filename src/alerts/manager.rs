@@ -44,10 +44,11 @@ impl AlertsManager {
 
     /// Called every frame. Drains any events, kicks off a new fetch when due.
     ///
-    /// `is_live` should reflect [`crate::state::recency::data_is_live`] —
-    /// when the user is scrubbed far behind wall-clock the alerts overlay
-    /// is hidden so we skip the poll. Computed by the caller so this
-    /// manager doesn't need to reach back into `AppState`.
+    /// `is_live` should reflect [`crate::subsystem::Derived::data_is_live`] —
+    /// when the user is scrubbed far behind wall-clock, or plays a loop that
+    /// reaches further back, the alerts overlay is hidden so we skip the
+    /// poll. Computed by the caller so this manager doesn't need to reach
+    /// back into `AppState`.
     ///
     /// `errors` is the app-wide error collector; failures encountered
     /// while polling are pushed here in addition to landing in

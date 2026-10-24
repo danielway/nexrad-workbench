@@ -998,11 +998,11 @@ impl eframe::App for WorkbenchApp {
         );
         self.state.national_mosaic.poll_tick(
             ctx,
-            self.state.layer_state.geo.national_mosaic && early_derived.data_is_live,
+            self.state.layer_state.geo.national_mosaic && early_derived.data_is_live(),
         );
         // NWS alerts and mPING storm reports — polled if due.
         let diagnostics_inputs = subsystem::diagnostics::DiagnosticsInputs {
-            is_live: early_derived.data_is_live,
+            is_live: early_derived.data_is_live(),
             mping_layer_visible: self.state.layer_state.geo.mping,
             mping_pinned_to_now: self.playback.state.is_pinned()
                 || self.playback.state.is_live_range(),
