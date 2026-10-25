@@ -115,7 +115,7 @@
             // Safari tabs don't. Count most of that band as inset: the top
             // bar's own top margin (~12 pt above its controls) covers the
             // faint end of the blur, so its controls start clear of it.
-            var IOS_STATUS_BLUR = 24;
+            var IOS_STATUS_BLUR = 0;
             var homeScreenApp = null;
             function iosHomeScreenApp() {
                 if (navigator.standalone === true) return true;
@@ -241,6 +241,11 @@
             display: block;
             width: 100%;
             height: 100%;
+            /* A full-width fixed box with a solid background at the top edge
+               is reported to make iOS 26+ skip its scroll edge blur in a
+               home-screen app and tint with this colour instead (WebKit's
+               fixed container edges). theme::MAP, the top bar's fill. */
+            background-color: #06080c;
             /* Prevent the browser from claiming touch gestures (pinch-to-zoom,
                double-tap-to-zoom, swipe-to-scroll) so they reach egui as
                multi-touch events. */
