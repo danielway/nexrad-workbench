@@ -82,6 +82,9 @@ pub(crate) struct Overview {
     /// the overview moves, or the view merely rides the clock while
     /// streaming, the overview is left where the user put it.
     last_view: Option<(f64, f64, f64)>,
+    /// Now at the last [`Overview::reconcile`], so an overview on the live
+    /// edge slides by exactly the time that passed.
+    last_now: Option<f64>,
 }
 
 impl Default for Overview {
@@ -92,6 +95,7 @@ impl Default for Overview {
             follows_now: true,
             extra_future: 0.0,
             last_view: None,
+            last_now: None,
         }
     }
 }
@@ -120,6 +124,7 @@ impl Overview {
     /// moved in sight, and keep it inside the archive era and short of the
     /// future.
     pub(crate) fn reconcile(&mut self, view_start: f64, view_span: f64, now: f64, era_start: f64) {
+        let end = self.end();
         if view_span.is_finite() && view_span > 0.0 {
             if view_span > self.span * WIDEN_AT_FRAC {
                 self.span = view_span / WIDEN_TO_FRAC;
@@ -131,8 +136,13 @@ impl Overview {
         }
         self.span = self.span.min(Self::max_span(now, era_start));
         if self.follows_now {
-            self.start = self.max_end(now) - self.span;
+            // Slide with the clock, keeping the right edge where a zoom left
+            // it (anchored at the pointer, it can sit anywhere from now to
+            // the slack past it), never past the slack.
+            let passed = self.last_now.map_or(f64::INFINITY, |t| (now - t).max(0.0));
+            self.start = (end + passed).min(self.max_end(now)) - self.span;
         }
+        self.last_now = Some(now);
         if view_start.is_finite() && view_span > 0.0 {
             let moved = self
                 .last_view
@@ -761,6 +771,23 @@ mod tests {
         assert!(approx(ov.start, start));
         ov.reconcile(NOW - H + 60.0, H, NOW + 60.0, ERA);
         assert!(approx(ov.start, start + 60.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn zooming_in_near_the_live_edge_keeps_the_anchor_and_rides_the_clock() {
+        let mut ov = live_overview();
+        let anchor = NOW - H;
+        ov.zoom(anchor, 0.5, H, NOW, ERA);
+        let frac = (anchor - ov.start) / ov.span;
+        assert!(ov.follows_now);
+        // The next frame leaves the time under the pointer where it was,
+        // and later frames slide it with the clock.
+        ov.reconcile(NOW - H, H, NOW, ERA);
+        assert!(approx((anchor - ov.start) / ov.span, frac));
+        let start = ov.start;
+        ov.reconcile(NOW - H + 60.0, H, NOW + 60.0, ERA);
+        assert!(approx(ov.start, start + 60.0));
+        assert!(ov.follows_now);
     }
 
     #[wasm_bindgen_test]
