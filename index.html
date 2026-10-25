@@ -65,15 +65,16 @@
     <link data-trunk rel="copy-file" href="worker.js" />
     <link data-trunk rel="copy-file" href="service-worker.js" />
 
-    <!-- Favicon/PWA assets. Only these files under assets/ are shipped; the
-         shapefiles in assets/vectors/ and the alert zone geometry in
-         assets/zone_geometry.json are already baked into the binary via
-         include_bytes! and must not be duplicated into dist/. -->
+    <!-- Favicon/PWA assets and the alert zone geometry, which the app fetches
+         the first time a zone-only alert needs it. The shapefiles in
+         assets/vectors/ are baked into the binary via include_bytes! and must
+         not be duplicated into dist/. -->
     <link data-trunk rel="copy-file" href="assets/favicon.svg"           data-target-path="assets" />
     <link data-trunk rel="copy-file" href="assets/apple-touch-icon.png"  data-target-path="assets" />
     <link data-trunk rel="copy-file" href="assets/icon-192.png"          data-target-path="assets" />
     <link data-trunk rel="copy-file" href="assets/icon-512.png"          data-target-path="assets" />
     <link data-trunk rel="copy-file" href="assets/manifest.webmanifest"  data-target-path="assets" />
+    <link data-trunk rel="copy-file" href="assets/zone_geometry.json"    data-target-path="assets" />
 
     <script>
         // Register the service worker for the installed app's offline shell

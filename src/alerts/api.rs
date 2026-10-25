@@ -11,6 +11,7 @@ use wasm_bindgen_futures::JsFuture;
 
 use super::channel::{AlertsChannel, AlertsEvent};
 use super::parse::parse_response;
+use super::zones::ZONE_GEOMETRY_URL;
 use crate::net::retry::{parse_retry_after, with_retry, Verdict, DEFAULT_POLICY};
 
 /// Endpoint for currently-active alerts across the US. The API returns
@@ -138,4 +139,52 @@ async fn fetch_attempt(if_none_match: Option<String>) -> Verdict<FetchOutcome> {
     };
 
     Verdict::Ok(FetchOutcome::Updated { body, etag })
+}
+
+/// Spawn a fetch of the zone-geometry table beside the app. The body (or why
+/// it couldn't be had) is pushed into `channel` as [`AlertsEvent::ZoneTable`].
+pub(crate) fn spawn_zone_table_fetch(ctx: eframe::egui::Context, channel: AlertsChannel) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let body = with_retry(&DEFAULT_POLICY, "zone table", |_attempt| async {
+            zone_table_attempt().await
+        })
+        .await;
+        channel.push(AlertsEvent::ZoneTable(body));
+        ctx.request_repaint();
+    });
+}
+
+async fn zone_table_attempt() -> Verdict<Vec<u8>> {
+    let Some(window) = web_sys::window() else {
+        return Verdict::Terminal("no window".into());
+    };
+    let resp_value = match JsFuture::from(window.fetch_with_str(ZONE_GEOMETRY_URL)).await {
+        Ok(v) => v,
+        Err(e) => {
+            log::debug!("zone table: network error: {}", err_text(e));
+            return Verdict::Retry { after: None };
+        }
+    };
+    let resp: web_sys::Response = match resp_value.dyn_into() {
+        Ok(r) => r,
+        Err(_) => return Verdict::Terminal("invalid response object".into()),
+    };
+    let status = resp.status();
+    if status == 408 || status == 429 || (500..=599).contains(&status) {
+        return Verdict::Retry { after: None };
+    }
+    if !resp.ok() {
+        return Verdict::Terminal(format!("HTTP {}", status));
+    }
+    let buffer = match resp.array_buffer() {
+        Ok(p) => p,
+        Err(e) => return Verdict::Terminal(format!("failed to read body: {}", err_text(e))),
+    };
+    match JsFuture::from(buffer).await {
+        Ok(v) => Verdict::Ok(js_sys::Uint8Array::new(&v).to_vec()),
+        Err(e) => {
+            log::debug!("zone table: body read error: {}", err_text(e));
+            Verdict::Retry { after: None }
+        }
+    }
 }
