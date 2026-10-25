@@ -614,17 +614,6 @@ fn render_dev_rows(
             value_color,
         );
     }
-    detail_row(
-        ui,
-        "Cross-origin isolated",
-        if detail.cross_origin_isolated {
-            "active".into()
-        } else {
-            "inactive".into()
-        },
-        label_color,
-        value_color,
-    );
 }
 
 /// The recent-request log, absorbed from the old dev-only network modal.

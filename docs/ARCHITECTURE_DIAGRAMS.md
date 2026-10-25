@@ -33,7 +33,7 @@ flowchart TB
         app["NEXRAD Workbench<br/>(Rust → WASM, egui + WebGL2)"]
         idb[("IndexedDB<br/>nexrad-workbench v5")]
         ls[("localStorage<br/>preferences, timing stats")]
-        sw["service-worker.js<br/>COOP/COEP + net metrics"]
+        sw["service-worker.js<br/>app shell cache + net metrics"]
     end
 
     s3["AWS S3<br/>noaa-nexrad-level2<br/>(archive + realtime chunks)"]
@@ -44,7 +44,7 @@ flowchart TB
     user <--> app
     app <--> idb
     app <--> ls
-    app -.COOP/COEP, metrics.-> sw
+    app -.metrics.-> sw
     app -->|HTTPS GET| s3
     app -->|HTTPS GET| nws
     app -->|HTTPS GET| mping
@@ -62,8 +62,6 @@ flowchart TB
 | **NOAA MRMS WMS** | CONUS composite reflectivity overlay | `nexrad::national_mosaic` |
 
 Everything else — decode, projection, rendering, caching — happens locally.
-Cross-origin isolation (COOP/COEP via the service worker) unlocks
-`SharedArrayBuffer`; the app degrades gracefully if it's unavailable.
 
 ---
 

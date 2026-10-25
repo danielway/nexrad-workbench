@@ -64,7 +64,7 @@ fastest, so this table names *responsibilities*; find the file with `grep`.
 | File | Purpose |
 |------|---------|
 | `worker.js` | ES module Web Worker — dispatches `postMessage` commands to WASM exports |
-| `service-worker.js` | Cross-origin isolation headers (COOP/COEP) and network metric collection |
+| `service-worker.js` | App shell cache for the installed app and network metric collection |
 | `index.html` | WASM entry point with Trunk build directives, service worker registration |
 | `build.rs` | Version stamping + invokes the architecture ratchet (`tools/arch_check.rs`) |
 

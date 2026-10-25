@@ -76,24 +76,11 @@
     <link data-trunk rel="copy-file" href="assets/manifest.webmanifest"  data-target-path="assets" />
 
     <script>
-        // Register service worker for cross-origin isolation + network monitoring.
-        // If the SW is not yet controlling this page, register it and reload so
-        // the COOP/COEP response headers take effect before the app loads.
+        // Register the service worker for the installed app's offline shell
+        // and the request readout. It takes control of this page once it
+        // activates (clients.claim), so no reload is needed.
         if ('serviceWorker' in navigator) {
-            if (!navigator.serviceWorker.controller) {
-                navigator.serviceWorker.register('service-worker.js').then(function(reg) {
-                    var sw = reg.installing || reg.waiting;
-                    if (sw) {
-                        sw.addEventListener('statechange', function() {
-                            if (sw.state === 'activated') {
-                                window.location.reload();
-                            }
-                        });
-                    } else if (reg.active) {
-                        window.location.reload();
-                    }
-                });
-            }
+            navigator.serviceWorker.register('service-worker.js').catch(function () {});
         }
     </script>
 

@@ -135,13 +135,3 @@ impl NetworkMonitor {
         }
     }
 }
-
-/// Check whether the current browsing context is cross-origin isolated
-/// (i.e., `self.crossOriginIsolated` is true), which means `SharedArrayBuffer`
-/// is available.
-pub(crate) fn is_cross_origin_isolated() -> bool {
-    js_sys::Reflect::get(&js_sys::global(), &"crossOriginIsolated".into())
-        .ok()
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-}
