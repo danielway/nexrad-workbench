@@ -112,6 +112,35 @@ pub(crate) const LOG_LEVEL: log::LevelFilter = if cfg!(debug_assertions) {
     log::LevelFilter::Info
 };
 
+/// Send `log` output to the browser console at [`LOG_LEVEL`], keeping only
+/// errors from the decoder: nexrad-decode 1.0.0-rc.3 warns once per TDWR
+/// radial about the padding after it (see `record_decode::record_ranges`).
+pub(crate) fn init_logger() {
+    struct Logger(eframe::WebLogger);
+
+    impl log::Log for Logger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            if metadata.target().starts_with("nexrad_decode") {
+                return metadata.level() <= log::Level::Error;
+            }
+            self.0.enabled(metadata)
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata()) {
+                self.0.log(record);
+            }
+        }
+
+        fn flush(&self) {
+            self.0.flush();
+        }
+    }
+
+    log::set_max_level(LOG_LEVEL);
+    log::set_boxed_logger(Box::new(Logger(eframe::WebLogger::new(LOG_LEVEL)))).ok();
+}
+
 /// Entry point for the WASM application.
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub async fn start() {
@@ -123,7 +152,7 @@ pub async fn start() {
     use eframe::wasm_bindgen::JsCast as _;
 
     // Redirect `log` messages to `console.log`:
-    eframe::WebLogger::init(LOG_LEVEL).ok();
+    init_logger();
 
     let web_options = eframe::WebOptions::default();
 
