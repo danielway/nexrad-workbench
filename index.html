@@ -109,31 +109,10 @@
                 var n = parseFloat(v);
                 return isFinite(n) ? n : 0;
             }
-            // An iOS 26+ home-screen app gets a blur over the top of the
-            // page, under the status bar and about 35 pt past it, whatever
-            // the status bar style or viewport-fit (iPhone SE, iOS 27).
-            // Safari tabs don't. Count most of that band as inset: the top
-            // bar's own top margin (~12 pt above its controls) covers the
-            // faint end of the blur, so its controls start clear of it.
-            var IOS_STATUS_BLUR = 24;
-            var homeScreenApp = null;
-            function iosHomeScreenApp() {
-                if (navigator.standalone === true) return true;
-                var standalone = window.matchMedia &&
-                    window.matchMedia('(display-mode: standalone)').matches;
-                var ios = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
-                    (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
-                return standalone && ios;
-            }
             window.__nexradSafeAreaInsets = function () {
                 var cs = getComputedStyle(document.documentElement);
-                var top = parsePx(cs.getPropertyValue('--sa-inset-top'));
-                if (homeScreenApp === null) homeScreenApp = iosHomeScreenApp();
-                if (homeScreenApp) {
-                    top += IOS_STATUS_BLUR;
-                }
                 return {
-                    top: top,
+                    top: parsePx(cs.getPropertyValue('--sa-inset-top')),
                     right: parsePx(cs.getPropertyValue('--sa-inset-right')),
                     bottom: parsePx(cs.getPropertyValue('--sa-inset-bottom')),
                     left: parsePx(cs.getPropertyValue('--sa-inset-left')),
@@ -241,6 +220,12 @@
             display: block;
             width: 100%;
             height: 100%;
+            /* iOS 26+ blurs the top of a home-screen app (the Liquid Glass
+               scroll edge effect), over the phone top bar. WebKit skips it
+               when a full-width fixed box with a solid background touches the
+               top edge and tints with that colour instead, so the canvas gets
+               one: theme::MAP, the top bar's fill. */
+            background-color: #06080c;
             /* Prevent the browser from claiming touch gestures (pinch-to-zoom,
                double-tap-to-zoom, swipe-to-scroll) so they reach egui as
                multi-touch events. */
