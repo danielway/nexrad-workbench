@@ -64,7 +64,7 @@
     
 <script type="module">
 import init, * as bindings from '/nexrad-workbench/pr-preview/pr-278/nexrad-workbench-496a75ad8b185ecd.js';
-const wasm = await init({ module_or_path: '/nexrad-workbench/pr-preview/pr-278/nexrad-workbench-df79b034057b9898_bg.wasm' });
+const wasm = await init({ module_or_path: '/nexrad-workbench/pr-preview/pr-278/nexrad-workbench-72bcfe632a094a0b_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -120,17 +120,25 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
                 var n = parseFloat(v);
                 return isFinite(n) ? n : 0;
             }
-            // iOS 26+ blurs a band below the status bar, about 35 pt past
-            // the bar's own height on an iPhone SE with iOS 27, and the page
-            // draws under the bar whatever the status bar style or
-            // viewport-fit. Count that band as inset so the top chrome sits
-            // clear of it. Only a page drawn under a status bar has a top
-            // inset, so desktop and Android browsers are untouched.
+            // An iOS 26+ home-screen app gets a blur over the top ~35 pt of
+            // the page, just below the status bar, whatever the status bar
+            // style or viewport-fit (iPhone SE, iOS 27). Safari tabs don't.
+            // Count that band as inset so the top chrome sits clear of it.
             var IOS_STATUS_BLUR = 36;
+            var homeScreenApp = null;
+            function iosHomeScreenApp() {
+                if (navigator.standalone === true) return true;
+                var standalone = window.matchMedia &&
+                    window.matchMedia('(display-mode: standalone)').matches;
+                var ios = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+                    (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+                return standalone && ios;
+            }
             window.__nexradSafeAreaInsets = function () {
                 var cs = getComputedStyle(document.documentElement);
                 var top = parsePx(cs.getPropertyValue('--sa-inset-top'));
-                if (top > 0) {
+                if (homeScreenApp === null) homeScreenApp = iosHomeScreenApp();
+                if (homeScreenApp) {
                     top += IOS_STATUS_BLUR;
                 }
                 return {
@@ -277,7 +285,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             to { transform: rotate(360deg); }
         }
     </style>
-<link rel="modulepreload" href="/nexrad-workbench/pr-preview/pr-278/nexrad-workbench-496a75ad8b185ecd.js" crossorigin="anonymous" integrity="sha384-bjarCgSs1ZrjQwWtVSR24RCLnKMUb7xKW6zDhWvQv+/h3BXiRn6Mhp/QMZMkq9eH"><link rel="preload" href="/nexrad-workbench/pr-preview/pr-278/nexrad-workbench-df79b034057b9898_bg.wasm" crossorigin="anonymous" integrity="sha384-q5eAiILF6TnPke9QESQE/KnqKaoxp9oB42qIkzrPHhn3js84pirVvb7gClP2bJPs" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/nexrad-workbench/pr-preview/pr-278/nexrad-workbench-496a75ad8b185ecd.js" crossorigin="anonymous" integrity="sha384-bjarCgSs1ZrjQwWtVSR24RCLnKMUb7xKW6zDhWvQv+/h3BXiRn6Mhp/QMZMkq9eH"><link rel="preload" href="/nexrad-workbench/pr-preview/pr-278/nexrad-workbench-72bcfe632a094a0b_bg.wasm" crossorigin="anonymous" integrity="sha384-6A/bhUB85xxFlk9MX53yBafSVCWW7Q9xYCXT22XAYhN8ePwSfdMW2r9xgKE+/Kks" as="fetch" type="application/wasm"></head>
 <body>
     <canvas id="app_canvas"></canvas>
     <div id="loading_text">
