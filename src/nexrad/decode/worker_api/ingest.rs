@@ -33,7 +33,13 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         // --- Phase 0: Split into LDM records ---
         let t_split = web_time::Instant::now();
-        let file = nexrad_data::volume::File::new(data);
+        // Archive files from before about 2016 are gzip-wrapped (`.gz` on
+        // S3); `decompress` inflates those and passes the rest through.
+        let file = nexrad_data::volume::File::new(data)
+            .decompress()
+            .map_err(|e| {
+                wasm_bindgen::JsValue::from_str(&format!("Failed to gunzip archive: {}", e))
+            })?;
         // Scan identity comes from the decoded volume-header collection time
         // (whole seconds), never the S3 filename. This matches the realtime
         // path's `volume_header_start_secs` and `decode_start_chunk`, so an

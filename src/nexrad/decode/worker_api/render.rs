@@ -91,13 +91,17 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         };
 
         // Extract radial_times if present (format version >= 1)
+        // The times follow the f32 azimuths, so with an odd radial count
+        // (common in pre-2008 legacy volumes) they start off an 8-byte
+        // boundary and a Float64Array view over the blob would throw. Copy
+        // the bytes out instead; the copy's buffer is aligned.
         let rt_buf = if header.radial_times_offset > 0 {
-            let rt_view = js_sys::Float64Array::new_with_byte_offset_and_length(
+            let rt_bytes = js_sys::Uint8Array::new_with_byte_offset_and_length(
                 &blob_buffer,
-                header.radial_times_offset as u32,
-                header.azimuth_count,
+                header.radial_times_offset,
+                header.azimuth_count * 8,
             );
-            Some(rt_view.slice(0, header.azimuth_count).buffer())
+            Some(rt_bytes.slice(0, header.azimuth_count * 8).buffer())
         } else {
             None
         };
