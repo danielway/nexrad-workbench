@@ -21,6 +21,8 @@ pub(crate) enum AlertsEvent {
     NotModified,
     /// Fetch failed with a human-readable reason.
     Error(String),
+    /// The zone-geometry table's body, or why it couldn't be fetched.
+    ZoneTable(Result<Vec<u8>, String>),
 }
 
 /// Shared buffer for events produced by the async fetch.
