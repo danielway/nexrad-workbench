@@ -244,7 +244,7 @@ fn stop_control(ui: &mut egui::Ui, current: StripZoom, narrow: bool) -> Option<S
         let resp = ui
             .interact(
                 seg.expand2(egui::vec2(1.0, 9.0)),
-                ui.id().with(("phone_stop", zoom_pill_label(*stop))),
+                ui.scope_id().with(("phone_stop", zoom_pill_label(*stop))),
                 Sense::click(),
             )
             .on_hover_text("Zoom: now, 3 hours or the day");

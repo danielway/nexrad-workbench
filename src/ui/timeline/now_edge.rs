@@ -120,7 +120,7 @@ fn render_inline_now(
     let cap_rect = cap_geometry(painter, overlay_rect, now_x, &label);
 
     let resp = ui
-        .interact(cap_rect, ui.id().with("now_live_cap"), Sense::click())
+        .interact(cap_rect, ui.scope_id().with("now_live_cap"), Sense::click())
         .on_hover_text(match cap {
             NowCap::Live if is_live => "Streaming live — click to stop",
             NowCap::Rejoin => "Stream running in background — click to rejoin live",
@@ -183,7 +183,11 @@ fn render_edge_chip(
     let chip_rect = Rect::from_min_size(Pos2::new(left, overlay_rect.top() + 1.0), size);
 
     let resp = ui
-        .interact(chip_rect, ui.id().with("now_live_chip"), Sense::click())
+        .interact(
+            chip_rect,
+            ui.scope_id().with("now_live_chip"),
+            Sense::click(),
+        )
         .on_hover_text(if session.now_cap == NowCap::Rejoin {
             "Stream running — jump back to live"
         } else {

@@ -90,8 +90,12 @@ fn draw_color_scale(ui: &mut egui::Ui, scrim: Rect, product: &crate::core::Radar
         Stroke::new(1.0_f32, theme::map::scrim_edge()),
         StrokeKind::Inside,
     );
-    ui.interact(scrim, ui.id().with("color_scale"), egui::Sense::hover())
-        .on_hover_text(&vm.hover);
+    ui.interact(
+        scrim,
+        ui.scope_id().with("color_scale"),
+        egui::Sense::hover(),
+    )
+    .on_hover_text(&vm.hover);
     painter.galley(
         Pos2::new(scrim.right() - pad - title.size().x, scrim.top() + pad),
         title,

@@ -47,7 +47,7 @@ pub(super) fn render_selection_strip(
 
     let response = ui.interact(
         rect,
-        ui.id().with("selection_strip"),
+        ui.scope_id().with("selection_strip"),
         Sense::click_and_drag(),
     );
     let now = frame.now_secs;

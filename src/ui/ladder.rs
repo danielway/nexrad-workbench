@@ -137,7 +137,7 @@ pub(super) fn ladder(
         } else {
             Sense::hover()
         };
-        let mut resp = ui.interact(r, ui.id().with(("ladder_row", i)), sense);
+        let mut resp = ui.interact(r, ui.scope_id().with(("ladder_row", i)), sense);
         if vm.picks {
             resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
             if resp.hovered() {
@@ -340,7 +340,7 @@ fn paint_bar(
             egui::StrokeKind::Outside,
         );
     }
-    let id = ui.id().with(("ladder_bar", bar.elevation_number));
+    let id = ui.scope_id().with(("ladder_bar", bar.elevation_number));
     let sense = if bar.fetch.is_some() {
         Sense::click()
     } else {

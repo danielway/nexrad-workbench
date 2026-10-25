@@ -26,7 +26,7 @@ use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 /// Where the top bar's site control was drawn this frame (egui memory key);
 /// the picker anchors under it.
 pub(crate) fn anchor_id() -> egui::Id {
-    egui::Id::new("site_picker_anchor")
+    egui::Id::unique("site_picker_anchor")
 }
 
 /// Transient state for the site picker.
@@ -167,7 +167,7 @@ fn draw_site_picker(
             // two-way binding: the egui widget owns this value while the
             // user edits it.
             egui::TextEdit::singleline(&mut picker.query)
-                .id(egui::Id::new("site_picker_search"))
+                .id(egui::Id::unique("site_picker_search"))
                 .hint_text("Site ID, city, state or zip")
                 .desired_width(f32::INFINITY),
         );

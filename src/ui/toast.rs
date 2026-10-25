@@ -13,7 +13,7 @@ use eframe::egui::{self, RichText};
 const GAP: f32 = 8.0;
 
 fn anchor_id() -> egui::Id {
-    egui::Id::new("__toast_anchor_y")
+    egui::Id::unique("__toast_anchor_y")
 }
 
 /// The top bar that drew this frame records its bottom edge here.
@@ -42,7 +42,7 @@ impl Layer for ToastLayer {
             .unwrap_or(0.0);
         // At phone width a long failure wraps inside the screen.
         let max_w = (egui_ctx.content_rect().width() - 48.0).max(160.0);
-        let area = egui::Area::new(egui::Id::new("toast_surface"))
+        let area = egui::Area::new(egui::Id::unique("toast_surface"))
             .order(egui::Order::Tooltip)
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, bar_bottom + GAP))
             .show(egui_ctx, |ui| {
