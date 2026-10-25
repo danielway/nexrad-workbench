@@ -185,8 +185,6 @@ pub(crate) struct AppState {
 
     // ------------------------------------------------------------------------
     // Environment and sticky session facts.
-    /// Whether the browsing context is cross-origin isolated (SharedArrayBuffer available).
-    pub cross_origin_isolated: bool,
     /// Sticky flag — set the first time any touch event is seen. Used by
     /// the auto-detection in [`AppState::refresh_mobile_mode`] so that a
     /// touch laptop (or phone rotated from portrait to landscape) doesn't

@@ -195,7 +195,7 @@ collection time is not yet late if the ingest-lag window hasn't elapsed.
   toggles, and a collapsed **Details**
   disclosure holding session totals and the recent-request log. Raw request
   counts and deep diagnostics (per-phase timings, worker queue depth, FPS,
-  cross-origin isolation, VCP forecast) appear inside Details only in
+  VCP forecast) appear inside Details only in
   developer mode.
 
 ## 5. The Timeline

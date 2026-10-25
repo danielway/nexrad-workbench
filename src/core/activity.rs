@@ -98,7 +98,6 @@ pub(crate) struct ActivityInputs<'a> {
 /// Dev-only inputs, surfaced under the sheet's Details disclosure.
 #[derive(Default, Clone)]
 pub(crate) struct ActivityDevInputs {
-    pub cross_origin_isolated: bool,
     pub avg_fetch_ms: Option<f64>,
     pub avg_processing_ms: Option<f64>,
     pub avg_render_ms: Option<f64>,
@@ -402,7 +401,6 @@ pub(crate) struct ActivityDetailVm {
     pub failed_requests: u32,
     pub worker: WorkerLoad,
     pub http_in_flight: u32,
-    pub cross_origin_isolated: bool,
     pub avg_fetch_ms: Option<f64>,
     pub avg_processing_ms: Option<f64>,
     pub avg_render_ms: Option<f64>,
@@ -730,7 +728,6 @@ impl ActivityVm {
                 failed_requests: inputs.sw_aggregate.failed_requests,
                 worker: inputs.worker,
                 http_in_flight: inputs.http_in_flight,
-                cross_origin_isolated: dev.cross_origin_isolated,
                 avg_fetch_ms: dev.avg_fetch_ms,
                 avg_processing_ms: dev.avg_processing_ms,
                 avg_render_ms: dev.avg_render_ms,
@@ -1828,14 +1825,10 @@ mod coverage_tests {
         let mut f = Fixture::new();
         f.http_in_flight = 4;
         f.worker = ingesting(2);
-        f.dev = Some(ActivityDevInputs {
-            cross_origin_isolated: true,
-            ..ActivityDevInputs::default()
-        });
+        f.dev = Some(ActivityDevInputs::default());
         let detail = f.vm().detail.expect("detail");
         assert_eq!(detail.http_in_flight, 4);
         assert_eq!(detail.worker.ingest, 2);
-        assert!(detail.cross_origin_isolated);
     }
 
     #[wasm_bindgen_test]

@@ -614,12 +614,6 @@ impl WorkbenchApp {
             last_favicon_live: None,
         };
 
-        // Check cross-origin isolation status on startup
-        app.state.cross_origin_isolated = subsystem::network_monitor::is_cross_origin_isolated();
-        if !app.state.cross_origin_isolated {
-            log::warn!("Not cross-origin isolated: SharedArrayBuffer unavailable");
-        }
-
         // Attach the service-worker network monitor for every user: it is the
         // high-fidelity source behind the activity surface's throughput and
         // recent-request readouts, not a dev-only diagnostic. `new()` still
@@ -701,7 +695,6 @@ impl WorkbenchApp {
                     .state
                     .dev_mode
                     .then(|| core::activity::ActivityDevInputs {
-                        cross_origin_isolated: self.state.cross_origin_isolated,
                         avg_fetch_ms: stats.median_chunk_latency_ms,
                         avg_processing_ms: stats.median_processing_time_ms,
                         avg_render_ms: stats.avg_render_time_ms,
