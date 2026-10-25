@@ -109,11 +109,13 @@
                 var n = parseFloat(v);
                 return isFinite(n) ? n : 0;
             }
-            // An iOS 26+ home-screen app gets a blur over the top ~35 pt of
-            // the page, just below the status bar, whatever the status bar
-            // style or viewport-fit (iPhone SE, iOS 27). Safari tabs don't.
-            // Count that band as inset so the top chrome sits clear of it.
-            var IOS_STATUS_BLUR = 36;
+            // An iOS 26+ home-screen app gets a blur over the top of the
+            // page, under the status bar and about 35 pt past it, whatever
+            // the status bar style or viewport-fit (iPhone SE, iOS 27).
+            // Safari tabs don't. Count most of that band as inset: the top
+            // bar's own top margin (~12 pt above its controls) covers the
+            // faint end of the blur, so its controls start clear of it.
+            var IOS_STATUS_BLUR = 24;
             var homeScreenApp = null;
             function iosHomeScreenApp() {
                 if (navigator.standalone === true) return true;
