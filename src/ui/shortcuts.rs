@@ -718,6 +718,9 @@ fn handle_continuous_movement(
 // Help overlay
 // ---------------------------------------------------------------------------
 
+/// Below this content width the help map stacks its sections in one column.
+const TWO_COLUMN_MIN_WIDTH: f32 = 620.0;
+
 pub(super) struct ShortcutsHelpLayer;
 
 impl super::layout::Layer for ShortcutsHelpLayer {
@@ -738,16 +741,31 @@ impl super::layout::Layer for ShortcutsHelpLayer {
 fn draw_shortcuts_help(ctx: &egui::Context, state: &mut AppState) {
     let out = super::dialog::Dialog::new(DialogId::ShortcutsHelp, "Keyboard shortcuts")
         .subtitle("Shortcuts pause while a dialog is open; ? closes this one")
+        .width(super::dialog::Width::Full)
         .show(ctx, |ui| {
             let max_h = ctx.input(|i| i.viewport_rect().height()) * 0.65;
+            let is_3d = state.viz_state.view_mode() == ViewMode::Globe3D;
+            let mac = ctx.os() == egui::os::OperatingSystem::Mac;
             egui::ScrollArea::vertical()
                 .max_height(max_h)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    let is_3d = state.viz_state.view_mode() == ViewMode::Globe3D;
-                    let mac = ctx.os() == egui::os::OperatingSystem::Mac;
-                    for section in SECTION_ORDER {
-                        render_help_section(ui, section, is_3d, mac);
+                    // Playback is as long as the other three sections together,
+                    // so two columns fit the whole map without scrolling.
+                    if ui.available_width() >= TWO_COLUMN_MIN_WIDTH {
+                        ui.columns(2, |cols| {
+                            let (first, rest) = SECTION_ORDER.split_at(1);
+                            for section in first {
+                                render_help_section(&mut cols[0], section, is_3d, mac);
+                            }
+                            for section in rest {
+                                render_help_section(&mut cols[1], section, is_3d, mac);
+                            }
+                        });
+                    } else {
+                        for section in SECTION_ORDER {
+                            render_help_section(ui, section, is_3d, mac);
+                        }
                     }
                 });
         });
