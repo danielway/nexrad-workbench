@@ -138,7 +138,8 @@ pub(crate) use prefs::Preferences;
 pub(crate) use streaming_filter::StreamingFilter;
 pub(crate) use streaming_plan::{ChunkProjectedTimes, ChunkProjectionInfo, StreamingPlan};
 pub(crate) use timeline_geometry::{
-    block_extent, cell_gap_px, layout_block, should_draw_sweep_texture, MIN_BLOCK_W,
+    block_extent, cell_gap_px, layout_block, should_divide_listed_volumes,
+    should_draw_sweep_texture, MIN_BLOCK_W,
 };
 pub(crate) use timeline_interaction::{
     clamp_view_start, resolve_gesture, zoom_about, StripGesture, StripInput,

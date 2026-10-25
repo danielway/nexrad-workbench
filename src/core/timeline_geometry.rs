@@ -146,6 +146,17 @@ pub(crate) fn cell_gap_px(block_px: f32) -> f32 {
     }
 }
 
+/// Whether listed (archive-only) volumes are wide enough to each get a
+/// divider inside their merged hollow region.
+///
+/// Listed volumes merge into one dashed region at the Macro tier, which hid
+/// where the volumes are until a hover found one. Above the same 6 px that
+/// separates downloaded blocks ([`cell_gap_px`]), a hairline at each volume
+/// start brings the cadence back.
+pub(crate) fn should_divide_listed_volumes(block_px: f32) -> bool {
+    cell_gap_px(block_px) > 0.0
+}
+
 /// Whether a block is wide enough to draw per-sweep boundary hairlines.
 ///
 /// Answers the audit's "all the intermediary elevations vanish": once a block
@@ -163,6 +174,14 @@ pub(crate) fn should_draw_sweep_texture(block_px: f32, sweep_count: usize) -> bo
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn listed_volumes_are_divided_once_they_are_6px_wide() {
+        assert!(!should_divide_listed_volumes(5.9));
+        assert!(should_divide_listed_volumes(6.0));
+        // Five-minute volumes over a 2 h 45 min view on a 1600 px strip.
+        assert!(should_divide_listed_volumes(1600.0 * 5.0 / 165.0));
+    }
 
     fn approx(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6

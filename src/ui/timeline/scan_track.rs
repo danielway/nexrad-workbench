@@ -23,7 +23,8 @@
 use super::strokes::{stroke_dashed_rect, DashedBorder};
 use super::TimelineFrame;
 use crate::core::{
-    block_extent, cell_gap_px, layout_block, should_draw_sweep_texture, Scan, MIN_BLOCK_W,
+    block_extent, cell_gap_px, layout_block, should_divide_listed_volumes,
+    should_draw_sweep_texture, Scan, MIN_BLOCK_W,
 };
 use crate::data::ScanCompleteness;
 use crate::state::DownloadProgress;
@@ -352,6 +353,25 @@ fn render_shadow_regions(painter: &Painter, frame: &TimelineFrame<'_>, fade: f32
                 ),
             );
         }
+    }
+
+    // A divider at each listed volume's start, so the merged region still
+    // shows where each volume is.
+    let divider = Stroke::new(1.0_f32, faded(tl_colors::cell_available_border(), fade));
+    for b in &visible {
+        let x = ts_to_x(b.start as f64);
+        let width = ts_to_x(b.end as f64) - x;
+        if x <= rect.left() + 1.0 || x >= rect.right() - 1.0 || !should_divide_listed_volumes(width)
+        {
+            continue;
+        }
+        painter.line_segment(
+            [
+                Pos2::new(x, rect.top() + 6.0),
+                Pos2::new(x, rect.bottom() - 6.0),
+            ],
+            divider,
+        );
     }
 }
 
