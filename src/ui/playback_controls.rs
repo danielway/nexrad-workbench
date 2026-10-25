@@ -42,7 +42,7 @@ pub(super) fn render_playback_controls(
     }
     // The calendar: pick a day by its storm activity, or type a time.
     let calendar = ui
-        .button(RichText::new(egui_phosphor::regular::CALENDAR_BLANK).size(14.0))
+        .button(RichText::new(crate::ui::icons::CALENDAR_BLANK).size(14.0))
         .on_hover_text("Go to a day (G)");
     ui.ctx()
         .data_mut(|d| d.insert_temp(super::go_to_day::anchor_id(), calendar.rect));
@@ -71,8 +71,8 @@ pub(super) fn render_playback_controls(
     ui.separator();
 
     let glyph = match vm.play {
-        PlayButton::Play => egui_phosphor::regular::PLAY,
-        PlayButton::Pause => egui_phosphor::regular::PAUSE,
+        PlayButton::Play => crate::ui::icons::PLAY,
+        PlayButton::Pause => crate::ui::icons::PAUSE,
     };
     if ui
         .button(RichText::new(glyph).size(14.0))
@@ -84,12 +84,12 @@ pub(super) fn render_playback_controls(
     for (dir, glyph, hover) in [
         (
             StepDir::Back,
-            egui_phosphor::regular::SKIP_BACK,
+            crate::ui::icons::SKIP_BACK,
             "Previous frame (←; Shift+← for a volume)",
         ),
         (
             StepDir::Forward,
-            egui_phosphor::regular::SKIP_FORWARD,
+            crate::ui::icons::SKIP_FORWARD,
             "Next frame (→; Shift+→ for a volume)",
         ),
     ] {

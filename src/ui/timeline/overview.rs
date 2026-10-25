@@ -713,9 +713,9 @@ fn paint_view_box(
     if x1 < lane.left() || x0 > lane.right() {
         let left = x1 < lane.left();
         let label = if left {
-            format!("{} view", egui_phosphor::regular::CARET_LEFT)
+            format!("{} view", crate::ui::icons::CARET_LEFT)
         } else {
-            format!("view {}", egui_phosphor::regular::CARET_RIGHT)
+            format!("view {}", crate::ui::icons::CARET_RIGHT)
         };
         let galley = painter.layout_no_wrap(label, FontId::proportional(10.0), edge);
         let size = galley.size() + Vec2::new(10.0, 2.0);

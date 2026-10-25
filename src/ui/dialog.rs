@@ -146,7 +146,7 @@ fn header(ui: &mut egui::Ui, title: &str, subtitle: Option<&str>, dismissible: b
                 close = ui
                     .add(
                         egui::Button::new(
-                            RichText::new(egui_phosphor::regular::X)
+                            RichText::new(crate::ui::icons::X)
                                 .size(theme::BODY)
                                 .color(theme::TEXT_DIM),
                         )
@@ -279,7 +279,7 @@ impl<'a> Sheet<'a> {
                             close |= ui
                                 .add(
                                     egui::Button::new(
-                                        RichText::new(egui_phosphor::regular::X)
+                                        RichText::new(crate::ui::icons::X)
                                             .size(theme::BODY)
                                             .color(theme::TEXT_DIM),
                                     )
@@ -451,7 +451,7 @@ pub(crate) fn secondary(ui: &mut egui::Ui, label: &str) -> egui::Response {
 pub(crate) fn destructive(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(sized(
         egui::Button::new(
-            RichText::new(format!("{} {label}", egui_phosphor::regular::TRASH))
+            RichText::new(format!("{} {label}", crate::ui::icons::TRASH))
                 .color(theme::dialog::DESTRUCTIVE),
         )
         .fill(egui::Color32::TRANSPARENT)

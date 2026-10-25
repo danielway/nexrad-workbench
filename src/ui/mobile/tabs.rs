@@ -141,7 +141,7 @@ fn render_transport_row(
                     chrome.phone_selected_start,
                     chrome.phone_loading.is_some(),
                     &clock,
-                    egui_phosphor::regular::ARROW_RIGHT,
+                    crate::ui::icons::ARROW_RIGHT,
                 );
                 // "Loop what's in view" loops the row's window on the phone.
                 let view_start = playback.state.timeline_view_start;

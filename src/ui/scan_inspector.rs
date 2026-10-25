@@ -21,9 +21,9 @@ use crate::core::Intent;
 use crate::core::{FrameCell, FrameCellState, FrameJoinInputs, ScanContainer};
 use crate::state::{format_bytes, AppState};
 use crate::subsystem::{Acquisition, Chrome, Live, Playback};
+use crate::ui::icons;
 use crate::ui::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, ScrollArea, Vec2};
-use egui_phosphor::regular as icons;
 
 pub(super) struct ScanInspectorLayer;
 

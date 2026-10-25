@@ -158,7 +158,7 @@ fn draw_event_modal(
                 if !form.name.trim().is_empty() {
                     ui.add_space(4.0);
                     ui.label(
-                        RichText::new(format!("{} {msg}", egui_phosphor::regular::WARNING))
+                        RichText::new(format!("{} {msg}", crate::ui::icons::WARNING))
                             .size(theme::CAPTION)
                             .color(theme::TEXT),
                     );

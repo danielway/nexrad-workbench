@@ -22,9 +22,9 @@
 use crate::core::activity::{ActivityGlyph, ActivityState, ActivityVm};
 use crate::core::Intent;
 use crate::state::AppState;
+use crate::ui::icons;
 use crate::ui::theme;
 use eframe::egui::{self, Color32, RichText};
-use egui_phosphor::regular as icons;
 
 /// Sine period for the activity pulse, in radians per second.
 const PULSE_RATE: f64 = 3.0;

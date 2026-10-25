@@ -28,6 +28,7 @@ mod data_colors;
 pub(crate) mod dialog;
 mod event_modal;
 mod go_to_day;
+mod icons;
 mod ladder;
 mod layout;
 mod mobile;

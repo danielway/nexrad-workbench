@@ -784,7 +784,7 @@ const MAP_TOOLBAR_ID: &str = "map_toolbar";
 /// color.
 fn render_map_toolbar(ui: &egui::Ui, rect: &egui::Rect, state: &mut AppState) {
     use crate::core::panels::MapTool;
-    use egui_phosphor::regular as icons;
+    use crate::ui::icons;
     let tools = [
         (
             MapTool::Probe,
