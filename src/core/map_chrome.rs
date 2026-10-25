@@ -74,6 +74,10 @@ pub(crate) struct ChromeInputs<'a> {
     pub width: f32,
     /// Canvas height, points.
     pub height: f32,
+    /// Room kept clear along the canvas's top edge, points: where the canvas
+    /// runs under an inset (the iPhone status bar and its blur) with the
+    /// phone's top bar hidden ([`top_clearance`]). Zero otherwise.
+    pub top: f32,
     /// The map toolbar (2D only), pinned at the top-left corner.
     pub toolbar: Option<ChromeSize>,
     /// The colour scale, pinned at the top-right corner.
@@ -162,13 +166,14 @@ impl Row {
 /// Lay out the map's chrome (see the module doc for the rule).
 pub(crate) fn layout_map_chrome(i: &ChromeInputs<'_>) -> ChromeLayout {
     let (w, h) = (i.width.max(0.0), i.height.max(0.0));
+    let top = i.top.clamp(0.0, h);
     let toolbar = i
         .toolbar
-        .map(|s| rect(TOOLBAR_INSET, TOOLBAR_INSET, s.w, s.h));
+        .map(|s| rect(TOOLBAR_INSET, top + TOOLBAR_INSET, s.w, s.h));
     let color_scale = i.color_scale.map(|s| {
         let sw = s.w.min((w - 2.0 * CHROME_MARGIN).max(0.0));
-        let sh = s.h.min((h - 2.0 * CHROME_MARGIN).max(0.0));
-        rect(w - CHROME_MARGIN - sw, CHROME_MARGIN, sw, sh)
+        let sh = s.h.min((h - top - 2.0 * CHROME_MARGIN).max(0.0));
+        rect(w - CHROME_MARGIN - sw, top + CHROME_MARGIN, sw, sh)
     });
 
     // The right end of a row spanning `top..bottom`: the canvas margin, or
@@ -231,7 +236,7 @@ pub(crate) fn layout_map_chrome(i: &ChromeInputs<'_>) -> ChromeLayout {
 
     // Nothing rises past the top margin or into the toolbar or the scale.
     let blocked = |r: ScreenBounds| {
-        r.min_y < CHROME_MARGIN
+        r.min_y < top + CHROME_MARGIN
             || r.min_x < 0.0
             || r.max_x > w
             || toolbar.is_some_and(|t| t.expanded(TRAY_GAP).intersects(r))
@@ -249,6 +254,14 @@ pub(crate) fn layout_map_chrome(i: &ChromeInputs<'_>) -> ChromeLayout {
         color_scale,
         tray,
     }
+}
+
+/// How far down the canvas's top-edge chrome must start: the part of the
+/// top inset (`inset_top`, screen points from the top of the page) that the
+/// canvas, starting at `canvas_top`, runs under. Zero while the phone's top
+/// bar covers the inset; the full inset once the bar has slid away.
+pub(crate) fn top_clearance(canvas_top: f32, inset_top: f32) -> f32 {
+    (inset_top - canvas_top).max(0.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +385,7 @@ mod tests {
         ChromeInputs {
             width: w,
             height: h,
+            top: 0.0,
             toolbar: Some(TOOLBAR),
             color_scale: Some(color_scale_size(h)),
             tray,
@@ -529,6 +543,7 @@ mod tests {
         let layout = layout_map_chrome(&ChromeInputs {
             width: 300.0,
             height: 400.0,
+            top: 0.0,
             toolbar: None,
             color_scale: None,
             tray: &tray,
@@ -563,6 +578,39 @@ mod tests {
                 s.h - 2.0 * COLOR_SCALE_PAD - COLOR_SCALE_TITLE_H - 4.0
             });
         }
+    }
+
+    #[wasm_bindgen_test]
+    fn top_clearance_moves_the_top_chrome_down() {
+        let (w, h) = CANVASES[0];
+        let mut tray = vec![(TrayItem::ScaleBar, SCALE_BAR)];
+        tray.extend(legends(2));
+        let top = 44.0;
+        let layout = layout_map_chrome(&ChromeInputs {
+            top,
+            ..inputs(w, h, &tray)
+        });
+        assert_sound(&layout, w, h);
+        let t = layout.toolbar.unwrap();
+        assert_eq!((t.min_x, t.min_y), (TOOLBAR_INSET, top + TOOLBAR_INSET));
+        let cs = layout.color_scale.unwrap();
+        assert_eq!(cs.min_y, top + CHROME_MARGIN);
+        assert!(cs.max_y <= h - CHROME_MARGIN);
+        // The tray stays on the bottom edge.
+        let bar = layout.tray_rect(TrayItem::ScaleBar).unwrap();
+        assert_eq!(bar.max_y, h - CHROME_MARGIN);
+    }
+
+    #[wasm_bindgen_test]
+    fn top_clearance_is_what_the_canvas_runs_under() {
+        // Top bar shown: the canvas starts below the inset.
+        assert_eq!(top_clearance(104.0, 44.0), 0.0);
+        // Bar gone: the canvas starts at the page top.
+        assert_eq!(top_clearance(0.0, 44.0), 44.0);
+        // Mid-slide: only the part still under the inset.
+        assert_eq!(top_clearance(30.0, 44.0), 14.0);
+        // Desktop: no inset.
+        assert_eq!(top_clearance(0.0, 0.0), 0.0);
     }
 
     // ---- labels ----
