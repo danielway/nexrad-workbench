@@ -52,7 +52,7 @@ impl RailTab {
         match self {
             RailTab::View => Some((
                 "keys: P product, E tilt",
-                "P cycles the product; E steps down the tilt ladder and Shift+E up it",
+                "P steps through the products and Shift+P back; E steps down the tilt ladder and Shift+E up it",
             )),
             _ => None,
         }
