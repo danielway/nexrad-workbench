@@ -1,8 +1,8 @@
 # Architecture Standard: Functional Core, Thin Shell
 
 **Status: binding standard for all new and changed code; existing code has been
-migrated to it, apart from one deferred UI batch (see "Where the codebase
-stands").** The one-paragraph rule lives in [CLAUDE.md](../CLAUDE.md); this is
+migrated to it, apart from one accepted exception: the interactive panels'
+direct `&mut` writes (see "Where the codebase stands").** The one-paragraph rule lives in [CLAUDE.md](../CLAUDE.md); this is
 the full reference — the contract, the seams in this codebase, what counts as a
 violation, how to test, and where the migration stands.
 
@@ -55,7 +55,7 @@ effect boundary is the new piece.
 
 | Seam | Role | Today (2026-07) |
 |---|---|---|
-| `Intent` ([intent.rs](../src/core/intent.rs)) | **Intents in** | Defined in the core (the old `AppCommand` name is gone). UI code pushes intents via `AppState::push_command`; the main loop drains and dispatches them. Remaining gap: the interactive panels' direct `&mut` writes (the deferred batch under "Where the codebase stands"). Goal: `Intent` becomes the *only* way the UI changes anything. |
+| `Intent` ([intent.rs](../src/core/intent.rs)) | **Intents in** | Defined in the core (the old `AppCommand` name is gone). UI code pushes intents via `AppState::push_command`; the main loop drains and dispatches them. The one exception: the interactive panels' direct `&mut` writes (see "Where the codebase stands"). Everything else changes state only through an `Intent`. |
 | `subsystem::Derived` ([derived.rs](../src/subsystem/derived.rs)) | **View-model out** | Exists but minimal — a small per-frame cache; panels still read subsystem internals directly at scale. `DiagnosticsVm` and `core::activity::ActivityVm` are the complete per-panel view-models (the pattern to propagate). Goal: a *complete* per-panel view-model the panels read exclusively. |
 | The subsystems + `AppState` | **State owners** | Exist (S1) and are thin/clean. The decision mass that used to live in `src/app/*` has been extracted into pure core reducers (see the status note below); `src/app/*` is now assemble → reduce → execute shells. |
 | `Effect` ([effect.rs](../src/core/effect.rs)) | **Effects out** | Exists; executed by the shell runtime [`WorkbenchApp::apply_effects`](../src/app/effects.rs). Carries the simple cross-cutting effects (URL push, prefs save, geolocation). Heavy per-decision effects use local action enums — the `resolve_prev_sweep -> PrevSweepAction` idiom ([playback_manager.rs](../src/core/playback_manager.rs)) — now generalized into the Env/Slices/Actions reducer pattern (see ARCHITECTURE.md). |
@@ -149,8 +149,8 @@ needs eyes.
 
 ## Where the codebase stands
 
-The migration to this standard is complete outside one deliberately deferred
-UI batch. Its phase-by-phase record is in git history.
+The migration to this standard is complete apart from one accepted exception.
+Its phase-by-phase record is in git history.
 
 - **Done.** The domain model lives in [`core/domain/`](../src/core/domain/),
   and `Intent` is defined in [`core/intent.rs`](../src/core/intent.rs). The
@@ -171,13 +171,15 @@ UI batch. Its phase-by-phase record is in git history.
   (session view-model, transport, ladder, timeline, dialogs, phone). The
   layering is enforced by `tools/arch_check.rs`; see ARCHITECTURE.md
   "Architecture Enforcement".
-- **Deferred.** The broad `&mut state` → intent rewrite for the interactive
-  panels (transport, layer checkboxes, camera, text edit), and reshaping
-  `LayoutCtx` into `&ViewModel` plus an intent sink. That half is mechanical
-  but has one-frame-lag risk on an interactive hot path that can't be unit
-  tested, and several mutations (camera/WASD, `playback.advance`, two-way
-  checkbox bindings) must stay `&mut` regardless. Take it on only with manual
-  QA in a real browser.
+- **Accepted exception.** The interactive panels (transport, layer
+  checkboxes, camera, text edit) still write `&mut state` directly, and
+  `LayoutCtx` was not reshaped into `&ViewModel` plus an intent sink. This is
+  settled, not pending: the rewrite would be mechanical, but it risks a
+  one-frame lag on an interactive hot path that can't be unit tested, and
+  several mutations (camera/WASD, `playback.advance`, two-way checkbox
+  bindings) would stay `&mut` regardless. New panels still follow the
+  standard; if this code is reworked, do it with manual QA in a real
+  browser.
 
 ### Carve-outs (where the standard bends)
 - **GPU paint is irreducibly shell.** The standard governs *what to upload / which
@@ -211,7 +213,7 @@ layer plus the shell halves of core types (localStorage/clock impls),
 `src/subsystem/` holds the thin bounded owners, and `src/app/` is
 assemble → reduce → execute shells over the core reducers plus the `Effect`
 runtime. What remains shell-heavy by choice is the interactive UI surface (the
-deferred batch) and the carve-outs above.
+accepted exception) and the carve-outs above.
 
 ## Related deferred cleanups
 

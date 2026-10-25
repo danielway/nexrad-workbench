@@ -15,7 +15,7 @@ bash scripts/bootstrap.sh
 ```
 
 `wasm-bindgen-cli` must be **exactly** the version in `Cargo.lock` (currently
-`0.2.114`). CI and `scripts/bootstrap.sh` pin it; `cargo install` without
+`0.2.127`). CI and `scripts/bootstrap.sh` pin it; `cargo install` without
 `--version` installs latest and breaks `cargo test --bin nexrad-workbench`.
 
 ## Build Commands
@@ -94,7 +94,7 @@ Always commit at natural milestones — a self-contained fix, a completed featur
 
 All code follows a strict **functional core / imperative shell** split. This is the
 binding rule for new and changed code; existing code has been migrated to it apart
-from one deferred UI batch. Full pattern, seams, test recipe, and migration status:
+from one accepted exception (the interactive panels' direct `&mut` writes). Full pattern, seams, test recipe, and migration status:
 [CORE_SHELL.md](docs/CORE_SHELL.md).
 
 - **The headless core owns all state and business logic.** Decision logic is pure
