@@ -19,11 +19,16 @@
     <!-- iOS "Add to Home Screen" PWA metadata. The manifest's display:standalone
          covers modern browsers, but iOS Safari still reads these legacy tags to
          decide whether to launch without Safari chrome and how to style the
-         status bar. `black-translucent` lets the app paint under the status bar
-         together with viewport-fit=cover above. -->
+         status bar. The status bar is opaque `black`, not `black-translucent`:
+         since iOS 26, a translucent bar blurs the top of the page (where the
+         top bar sits) and the viewport comes up short by the status bar's
+         height, leaving a gap at the bottom (WebKit bug 301108). With an
+         opaque bar the page starts below it and env(safe-area-inset-top) is 0.
+         iOS keeps the style an app was installed with, so a change here only
+         reaches an installed app after it is removed and added again. -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <meta name="apple-mobile-web-app-title" content="NEXRAD">
 
     <!-- Privacy-friendly aggregate pageview analytics. Include the host in the
@@ -58,8 +63,8 @@
 
     
 <script type="module">
-import init, * as bindings from '/nexrad-workbench/pr-preview/pr-245/nexrad-workbench-cfc2c1179c6a3677.js';
-const wasm = await init({ module_or_path: '/nexrad-workbench/pr-preview/pr-245/nexrad-workbench-86806abbe3d738a2_bg.wasm' });
+import init, * as bindings from '/nexrad-workbench/pr-preview/pr-245/nexrad-workbench-ff298ac4b383f853.js';
+const wasm = await init({ module_or_path: '/nexrad-workbench/pr-preview/pr-245/nexrad-workbench-ff298ac4b383f853_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -71,10 +76,11 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     
     
 
-    <!-- Favicon/PWA assets. Only these files under assets/ are shipped; the
-         shapefiles in assets/vectors/ and the alert zone geometry in
-         assets/zone_geometry.json are already baked into the binary via
-         include_bytes! and must not be duplicated into dist/. -->
+    <!-- Favicon/PWA assets and the alert zone geometry, which the app fetches
+         the first time a zone-only alert needs it. The shapefiles in
+         assets/vectors/ are baked into the binary via include_bytes! and must
+         not be duplicated into dist/. -->
+    
     
     
     
@@ -82,24 +88,11 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     
 
     <script>
-        // Register service worker for cross-origin isolation + network monitoring.
-        // If the SW is not yet controlling this page, register it and reload so
-        // the COOP/COEP response headers take effect before the app loads.
+        // Register the service worker for the installed app's offline shell
+        // and the request readout. It takes control of this page once it
+        // activates (clients.claim), so no reload is needed.
         if ('serviceWorker' in navigator) {
-            if (!navigator.serviceWorker.controller) {
-                navigator.serviceWorker.register('service-worker.js').then(function(reg) {
-                    var sw = reg.installing || reg.waiting;
-                    if (sw) {
-                        sw.addEventListener('statechange', function() {
-                            if (sw.state === 'activated') {
-                                window.location.reload();
-                            }
-                        });
-                    } else if (reg.active) {
-                        window.location.reload();
-                    }
-                });
-            }
+            navigator.serviceWorker.register('service-worker.js').catch(function () {});
         }
     </script>
 
@@ -202,9 +195,8 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
         /* iOS safe-area insets exposed as CSS custom properties so the WASM
            app can read them via getComputedStyle. Needed because the canvas
-           extends under the status bar / home indicator when installed as a
-           PWA (viewport-fit=cover + apple-mobile-web-app-status-bar-style
-           black-translucent), and egui has to compensate in its own layout. */
+           extends under the home indicator (and the notch in landscape) with
+           viewport-fit=cover, and egui has to compensate in its own layout. */
         :root {
             --sa-inset-top: env(safe-area-inset-top, 0px);
             --sa-inset-right: env(safe-area-inset-right, 0px);
@@ -227,6 +219,12 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             display: block;
             width: 100%;
             height: 100%;
+            /* iOS 26+ blurs the top of a home-screen app (the Liquid Glass
+               scroll edge effect), over the phone top bar. WebKit skips it
+               when a full-width fixed box with a solid background touches the
+               top edge and tints with that colour instead, so the canvas gets
+               one: theme::MAP, the top bar's fill. */
+            background-color: #06080c;
             /* Prevent the browser from claiming touch gestures (pinch-to-zoom,
                double-tap-to-zoom, swipe-to-scroll) so they reach egui as
                multi-touch events. */
@@ -262,7 +260,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             to { transform: rotate(360deg); }
         }
     </style>
-<link rel="modulepreload" href="/nexrad-workbench/pr-preview/pr-245/nexrad-workbench-cfc2c1179c6a3677.js" crossorigin="anonymous" integrity="sha384-hNcO5WymbgkUDBjuuiXRK8W3KsupIXBFaiz8wn+Ii5n091lBMM8kzwsn7EerL+Ii"><link rel="preload" href="/nexrad-workbench/pr-preview/pr-245/nexrad-workbench-86806abbe3d738a2_bg.wasm" crossorigin="anonymous" integrity="sha384-Huvh6Tc61nE1/Hak9NmNXiE6Xi0TKDRNB1nkpv5bFr65owz4C7TFYnezuxBIJ0Co" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/nexrad-workbench/pr-preview/pr-245/nexrad-workbench-ff298ac4b383f853.js" crossorigin="anonymous" integrity="sha384-HbJ/SwtDgbm5QfbNlMBqTDp4wTCOliJjxAIu0UetS6s662LUqzE43KUTAbIBOQJ0"><link rel="preload" href="/nexrad-workbench/pr-preview/pr-245/nexrad-workbench-ff298ac4b383f853_bg.wasm" crossorigin="anonymous" integrity="sha384-3AnrBgjV5y8hMT4rSNl2zUI9viuxDkDuKkbeXjao/F7Lm6xQ8jlppKAbTeIRp8qV" as="fetch" type="application/wasm"></head>
 <body>
     <canvas id="app_canvas"></canvas>
     <div id="loading_text">
