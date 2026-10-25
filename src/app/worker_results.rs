@@ -17,6 +17,14 @@ impl WorkbenchApp {
         while let Some(result) = self.acquisition.coordinator.cache_load_channel.try_recv() {
             self.handle_cache_load_outcome(result);
         }
+        // An eviction removed scans: reload the timeline so their cells stop
+        // reading as downloaded.
+        if self.acquisition.coordinator.evicted.take() {
+            self.state
+                .push_command(crate::core::Intent::RefreshTimeline {
+                    auto_position: false,
+                });
+        }
 
         let outcomes = self.render.coordinator.try_recv();
         if !outcomes.is_empty() {
@@ -647,6 +655,14 @@ impl WorkbenchApp {
             return;
         };
         let target = &self.sites.list[site];
+        // A late reply for a volume or product the site has moved off.
+        if !target
+            .render
+            .wants_volume(&volume_data.scan_key, &volume_data.product)
+        {
+            log::debug!("Volume for {} dropped: superseded", volume_data.scan_key);
+            return;
+        }
 
         // Upload to volume ray renderer
         if let (Some(ref renderer), Some(ref gl)) = (&target.gpu.volume_ray, &self.gpu.gl) {

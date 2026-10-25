@@ -235,6 +235,9 @@ pub(crate) struct VolumeSweepMeta {
 pub(crate) struct VolumeData {
     /// The site whose volume this is, so the reply reaches its site.
     pub site: crate::data::SiteId,
+    /// The scan the volume was packed from, so a reply for a volume the
+    /// site has since moved off is dropped.
+    pub scan_key: crate::data::ScanKey,
     /// Packed raw gate values (all sweeps concatenated).
     /// Byte width per value is determined by `word_size`.
     pub buffer: Vec<u8>,

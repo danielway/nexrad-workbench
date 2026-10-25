@@ -948,12 +948,14 @@ impl WorkbenchApp {
         let facade = self.acquisition.coordinator.facade().clone();
         let quota = self.state.storage_settings.quota_bytes;
         let target = self.state.storage_settings.eviction_target_bytes;
+        let evicted_flag = self.acquisition.coordinator.evicted.clone();
         let ctx_clone = ctx.clone();
         wasm_bindgen_futures::spawn_local(async move {
             match facade.check_and_evict(quota, target).await {
                 Ok((evicted, count, quota_warning)) => {
                     if evicted {
                         log::debug!("Eviction complete: removed {} scans", count);
+                        evicted_flag.set(true);
                     }
                     if let Some(warning) = quota_warning {
                         log::warn!("Quota warning: {}", warning);
