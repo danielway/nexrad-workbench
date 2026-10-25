@@ -64,7 +64,7 @@
     
 <script type="module">
 import init, * as bindings from '/nexrad-workbench/pr-preview/pr-280/nexrad-workbench-d0a98b31d52fe05b.js';
-const wasm = await init({ module_or_path: '/nexrad-workbench/pr-preview/pr-280/nexrad-workbench-3c5ed5da8a175ac0_bg.wasm' });
+const wasm = await init({ module_or_path: '/nexrad-workbench/pr-preview/pr-280/nexrad-workbench-d7aeb13f66e194e8_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -120,31 +120,10 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
                 var n = parseFloat(v);
                 return isFinite(n) ? n : 0;
             }
-            // An iOS 26+ home-screen app gets a blur over the top of the
-            // page, under the status bar and about 35 pt past it, whatever
-            // the status bar style or viewport-fit (iPhone SE, iOS 27).
-            // Safari tabs don't. Count most of that band as inset: the top
-            // bar's own top margin (~12 pt above its controls) covers the
-            // faint end of the blur, so its controls start clear of it.
-            var IOS_STATUS_BLUR = 0;
-            var homeScreenApp = null;
-            function iosHomeScreenApp() {
-                if (navigator.standalone === true) return true;
-                var standalone = window.matchMedia &&
-                    window.matchMedia('(display-mode: standalone)').matches;
-                var ios = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
-                    (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
-                return standalone && ios;
-            }
             window.__nexradSafeAreaInsets = function () {
                 var cs = getComputedStyle(document.documentElement);
-                var top = parsePx(cs.getPropertyValue('--sa-inset-top'));
-                if (homeScreenApp === null) homeScreenApp = iosHomeScreenApp();
-                if (homeScreenApp) {
-                    top += IOS_STATUS_BLUR;
-                }
                 return {
-                    top: top,
+                    top: parsePx(cs.getPropertyValue('--sa-inset-top')),
                     right: parsePx(cs.getPropertyValue('--sa-inset-right')),
                     bottom: parsePx(cs.getPropertyValue('--sa-inset-bottom')),
                     left: parsePx(cs.getPropertyValue('--sa-inset-left')),
@@ -252,10 +231,11 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             display: block;
             width: 100%;
             height: 100%;
-            /* A full-width fixed box with a solid background at the top edge
-               is reported to make iOS 26+ skip its scroll edge blur in a
-               home-screen app and tint with this colour instead (WebKit's
-               fixed container edges). theme::MAP, the top bar's fill. */
+            /* iOS 26+ blurs the top of a home-screen app (the Liquid Glass
+               scroll edge effect), over the phone top bar. WebKit skips it
+               when a full-width fixed box with a solid background touches the
+               top edge and tints with that colour instead, so the canvas gets
+               one: theme::MAP, the top bar's fill. */
             background-color: #06080c;
             /* Prevent the browser from claiming touch gestures (pinch-to-zoom,
                double-tap-to-zoom, swipe-to-scroll) so they reach egui as
@@ -292,7 +272,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             to { transform: rotate(360deg); }
         }
     </style>
-<link rel="modulepreload" href="/nexrad-workbench/pr-preview/pr-280/nexrad-workbench-d0a98b31d52fe05b.js" crossorigin="anonymous" integrity="sha384-vR5nuRGm6xqOi4kXPbOaBmjDDYvXR3XXKyQUEjbrPTwAJoJwOo7A3/FsxaNvOoNm"><link rel="preload" href="/nexrad-workbench/pr-preview/pr-280/nexrad-workbench-3c5ed5da8a175ac0_bg.wasm" crossorigin="anonymous" integrity="sha384-mIGyPDC9iwfdtIh/O+JMeW6ajcGlLz0TvaoXcSiSxxrViHC086ZtcsUY6qq7f4Cl" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/nexrad-workbench/pr-preview/pr-280/nexrad-workbench-d0a98b31d52fe05b.js" crossorigin="anonymous" integrity="sha384-vR5nuRGm6xqOi4kXPbOaBmjDDYvXR3XXKyQUEjbrPTwAJoJwOo7A3/FsxaNvOoNm"><link rel="preload" href="/nexrad-workbench/pr-preview/pr-280/nexrad-workbench-d7aeb13f66e194e8_bg.wasm" crossorigin="anonymous" integrity="sha384-rR6nLVLQiQcPNgvdsuJJjj2n4hcAosNsTCwlc+7tzY7izrKmI4DPKfqUo9Kglyk7" as="fetch" type="application/wasm"></head>
 <body>
     <canvas id="app_canvas"></canvas>
     <div id="loading_text">
