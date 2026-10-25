@@ -19,9 +19,9 @@ use crate::core::storm_cells;
 use crate::core::top_bar::{TopBarIntent, TopBarVm};
 use crate::core::{Intent, InterpolationMode};
 use crate::state::{format_bytes, AppState, StorageSettings};
+use crate::ui::icons;
 use crate::ui::theme;
 use eframe::egui::{self, RichText, ScrollArea};
-use egui_phosphor::regular as icons;
 
 /// The rail's width.
 const RAIL_W: f32 = 44.0;

@@ -109,8 +109,7 @@ fn draw_mping_modal(
             // Status line — the most recent fetch outcome. Failure is the ⚠
             // glyph in text color (red means now).
             let status = if let Some(err) = diagnostics.mping.last_error.as_deref() {
-                RichText::new(format!("{} {}", egui_phosphor::regular::WARNING, err))
-                    .color(theme::TEXT)
+                RichText::new(format!("{} {}", crate::ui::icons::WARNING, err)).color(theme::TEXT)
             } else if diagnostics.mping.fetch_in_flight {
                 RichText::new("Fetching reports\u{2026}").color(theme::TEXT_DIM)
             } else if diagnostics.mping.last_success_ms > 0.0 {

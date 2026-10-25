@@ -24,9 +24,9 @@ use crate::core::activity::{
 use crate::core::dialogs::DialogId;
 use crate::core::Intent;
 use crate::state::{format_bytes, AppState};
+use crate::ui::icons;
 use crate::ui::theme;
 use eframe::egui::{self, RichText, ScrollArea};
-use egui_phosphor::regular as icons;
 
 pub(super) struct ActivitySheetLayer;
 

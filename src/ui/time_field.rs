@@ -121,7 +121,7 @@ pub(crate) fn time_field(
         }
         if let Some(error) = &editing.error {
             ui.label(
-                RichText::new(format!("{} {error}", egui_phosphor::regular::WARNING))
+                RichText::new(format!("{} {error}", crate::ui::icons::WARNING))
                     .size(theme::CAPTION)
                     .color(theme::TEXT),
             );

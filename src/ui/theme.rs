@@ -607,10 +607,11 @@ pub(crate) fn text_styles() -> std::collections::BTreeMap<TextStyle, FontId> {
 
 const PLEX_SANS: &str = "IBMPlexSans-Regular";
 const PLEX_MONO: &str = "IBMPlexMono-Regular";
+const PHOSPHOR: &str = "Phosphor-Regular";
 
 /// The app's font set: IBM Plex Sans (proportional) and IBM Plex Mono
 /// (monospace) first, egui's bundled fonts kept behind them as glyph
-/// fallbacks, and the Phosphor icon font.
+/// fallbacks, and the Phosphor icons the app draws ([`super::icons`]).
 pub(crate) fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
@@ -633,7 +634,15 @@ pub(crate) fn font_definitions() -> egui::FontDefinitions {
         .entry(FontFamily::Monospace)
         .or_default()
         .insert(0, PLEX_MONO.to_owned());
-    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    // The icons go second among the proportional fonts: after Plex Sans and
+    // ahead of egui's fallback fonts.
+    fonts.font_data.insert(
+        PHOSPHOR.to_owned(),
+        egui::FontData::from_static(include_bytes!("../../assets/fonts/Phosphor-Regular.ttf"))
+            .into(),
+    );
+    let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
+    proportional.insert(proportional.len().min(1), PHOSPHOR.to_owned());
     fonts
 }
 

@@ -14,12 +14,12 @@ use crate::ui::time_format::parts;
 use eframe::egui::{self, Color32, RichText, Sense, Stroke};
 
 // Icon-font glyphs (the text font has no arrows).
-const ARROW: &str = egui_phosphor::regular::ARROW_RIGHT;
+const ARROW: &str = crate::ui::icons::ARROW_RIGHT;
 
 /// The chip's glyphs in the icon font, standing in for the design's ● ⟲ →.
 const ICON_GLYPHS: ChipGlyphs = ChipGlyphs {
-    live: egui_phosphor::regular::BROADCAST,
-    loop_mark: egui_phosphor::regular::REPEAT,
+    live: crate::ui::icons::BROADCAST,
+    loop_mark: crate::ui::icons::REPEAT,
     arrow: ARROW,
 };
 
@@ -57,7 +57,7 @@ pub(crate) fn render_selection_chip(
     let response = if let Some(chip) = &style.phone {
         phone_chip_button(ui, chip, style.max_width).on_hover_text(label.hover())
     } else {
-        let caret = |t: &str| format!("{t} {}", egui_phosphor::regular::CARET_DOWN);
+        let caret = |t: &str| format!("{t} {}", crate::ui::icons::CARET_DOWN);
         // In a tight row the chip takes the longest of the core's forms that
         // fits: the caret goes first (the chip's frame already reads as a
         // button), then the words the core lets go of; the shortest form
@@ -210,7 +210,7 @@ fn render_menu(
         if menu.can_save_event
             && entry(
                 ui,
-                format!("{} Save as event", egui_phosphor::regular::BOOKMARK_SIMPLE),
+                format!("{} Save as event", crate::ui::icons::BOOKMARK_SIMPLE),
                 false,
                 ChipAction::SaveAsEvent,
                 keys,
@@ -224,10 +224,7 @@ fn render_menu(
     group_heading(ui, "A point in time");
     if entry(
         ui,
-        format!(
-            "{} Live · the newest frame",
-            egui_phosphor::regular::BROADCAST
-        ),
+        format!("{} Live · the newest frame", crate::ui::icons::BROADCAST),
         menu.at_live,
         ChipAction::Live,
         keys,
@@ -258,10 +255,7 @@ fn render_menu(
     }
     if entry(
         ui,
-        format!(
-            "{} Go to a day\u{2026}",
-            egui_phosphor::regular::CALENDAR_BLANK
-        ),
+        format!("{} Go to a day\u{2026}", crate::ui::icons::CALENDAR_BLANK),
         false,
         ChipAction::GoToDay,
         keys,
@@ -389,7 +383,7 @@ fn phone_chip_button(
         .painter()
         .layout_no_wrap(chip.text.clone(), font, text_color);
     let caret = ui.painter().layout_no_wrap(
-        egui_phosphor::regular::CARET_DOWN.to_string(),
+        crate::ui::icons::CARET_DOWN.to_string(),
         egui::FontId::proportional(11.0),
         if chip.tone == ChipTone::Live {
             theme::alpha(theme::TEXT, 200)
