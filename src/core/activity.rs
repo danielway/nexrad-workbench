@@ -138,16 +138,19 @@ pub(crate) struct SiteStream {
     /// Seconds since the newest radial the site's stream received; `None`
     /// before the first one or while not streaming.
     pub last_chunk_age_secs: Option<f64>,
+    /// Seconds until a failed stream starts again, while retrying.
+    pub retry_in_secs: Option<f64>,
 }
 
 /// The stream the chip speaks for: the site's own with one site; with more,
 /// the healthiest of them, so one quiet site never hides another receiving.
 pub(crate) fn headline_stream(sites: &[SiteStream]) -> Stream {
-    const ORDER: [Stream; 6] = [
+    const ORDER: [Stream; 7] = [
         Stream::Receiving,
         Stream::Connecting,
         Stream::Waiting,
         Stream::Stalled,
+        Stream::Retrying,
         Stream::Failed,
         Stream::Off,
     ];
@@ -499,7 +502,10 @@ pub(crate) fn site_sections(
                 id: s.id.clone(),
                 focus: i == focus,
                 stream_line: site_stream_line(s),
-                unhealthy: matches!(s.stream, Stream::Stalled | Stream::Failed),
+                unhealthy: matches!(
+                    s.stream,
+                    Stream::Stalled | Stream::Retrying | Stream::Failed
+                ),
                 failed: failures.len() as u32,
                 first_error: failures.first().map(|e| e.to_string()),
             }
@@ -512,6 +518,15 @@ fn site_stream_line(s: &SiteStream) -> String {
     let word = match s.stream {
         Stream::Off => return "Not streaming".to_string(),
         Stream::Failed => return "Stream failed".to_string(),
+        Stream::Retrying => {
+            return match s.retry_in_secs {
+                Some(secs) if secs >= 1.0 => format!(
+                    "Stream failed \u{00b7} retrying in {}",
+                    crate::core::format_lag(secs.ceil())
+                ),
+                _ => "Stream failed \u{00b7} retrying".to_string(),
+            }
+        }
         Stream::Connecting => "Connecting",
         Stream::Receiving => "Receiving",
         Stream::Waiting => "Waiting",
@@ -1205,6 +1220,7 @@ mod coverage_tests {
             stream,
             chunks_received: 0,
             last_chunk_age_secs: None,
+            retry_in_secs: None,
         }
     }
 
@@ -2276,6 +2292,29 @@ mod coverage_tests {
             site_stream_line(&site("KJAX", Stream::Failed)),
             "Stream failed"
         );
+        let mut retrying = site("KJAX", Stream::Retrying);
+        retrying.retry_in_secs = Some(11.2);
+        assert_eq!(
+            site_stream_line(&retrying),
+            "Stream failed \u{00b7} retrying in 0:12"
+        );
+        retrying.retry_in_secs = Some(0.0);
+        assert_eq!(
+            site_stream_line(&retrying),
+            "Stream failed \u{00b7} retrying"
+        );
+    }
+
+    /// A failed stream that will start again says so on the chip, and holds
+    /// still: nothing is arriving.
+    #[wasm_bindgen_test]
+    fn a_retrying_stream_reads_reconnecting() {
+        let mut f = Fixture::new();
+        f.sites[0].stream = Stream::Retrying;
+        let vm = f.vm();
+        assert_eq!(vm.state, ActivityState::Streaming);
+        assert_eq!(vm.headline.label, "Reconnecting");
+        assert!(!vm.headline.animate);
     }
 
     #[wasm_bindgen_test]

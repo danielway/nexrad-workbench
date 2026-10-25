@@ -11,7 +11,8 @@
 //! **ACTUAL** state parsed from radial/message headers
 //! (`current_volume.confirmed`, `last_radial_time_secs`, the diagnostics
 //! records); each site holds its own. The session phase moves on what the
-//! sites report ([`session_phase_after`], [`session_stream_ended`]).
+//! sites report ([`session_phase_after`]); a site whose stream fails waits
+//! and starts again ([`StreamRetry`], [`due_restarts`]).
 //! **PROJECTED** timing (the forward-looking [`crate::core::StreamingPlan`])
 //! is produced and owned by each site's [`crate::core::projection::ProjectionEngine`];
 //! the per-frame `Projection` is held on [`crate::subsystem::SiteLive::frame_projection`]
@@ -178,6 +179,9 @@ pub(crate) enum StreamActivity {
     Waiting,
     /// Past the normal cadence with nothing arriving.
     Stalled,
+    /// The site's stream failed and starts again after a wait
+    /// ([`StreamRetry`]).
+    Retrying,
 }
 
 /// Derive the stream's activity from the live phase, connect elapsed
@@ -265,6 +269,8 @@ pub(crate) enum SiteStreamEvent {
     Chunk { awaiting_target: bool },
     /// The site's volume completed.
     VolumeComplete,
+    /// The site's failed stream was started again.
+    Restarted,
 }
 
 /// The session phase after `event` from one site, or `None` to keep it.
@@ -289,7 +295,77 @@ pub(crate) fn session_phase_after(
             LivePhase::Streaming
         }),
         SiteStreamEvent::VolumeComplete => from_focus.then_some(LivePhase::Streaming),
+        SiteStreamEvent::Restarted => from_focus.then_some(LivePhase::AcquiringLock),
     }
+}
+
+/// Seconds to wait before starting a failed stream again, by failures in a
+/// row; the last wait repeats.
+pub(crate) const STREAM_RETRY_BACKOFF_SECS: [f64; 4] = [5.0, 15.0, 30.0, 60.0];
+
+/// A site whose stream failed, waiting to start it again. The session stays
+/// live meanwhile; only the user stopping it ends the retries.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StreamRetry {
+    /// Failures in a row, this one included.
+    pub failures: u32,
+    /// When to start the stream again (Unix seconds).
+    pub retry_at: f64,
+    /// What the last failure said.
+    pub error: String,
+    /// The stream has been started again and has not received data yet.
+    pub started: bool,
+}
+
+impl StreamRetry {
+    /// The retry after a failure at `now`. `previous` is the retry pending
+    /// when the failed attempt started, if it was a retry; a stream that
+    /// received data in between starts over at the first wait.
+    pub(crate) fn after_failure(previous: Option<&StreamRetry>, error: String, now: f64) -> Self {
+        let failures = previous.map_or(1, |p| p.failures + 1);
+        let wait = STREAM_RETRY_BACKOFF_SECS
+            [(failures as usize - 1).min(STREAM_RETRY_BACKOFF_SECS.len() - 1)];
+        Self {
+            failures,
+            retry_at: now + wait,
+            error,
+            started: false,
+        }
+    }
+
+    /// Whether the site is waiting out the retry (not yet started again).
+    pub(crate) fn is_waiting(&self) -> bool {
+        !self.started
+    }
+
+    /// Whether the wait is over.
+    pub(crate) fn is_due(&self, now: f64) -> bool {
+        now >= self.retry_at
+    }
+
+    /// Seconds left to wait, never negative.
+    pub(crate) fn in_secs(&self, now: f64) -> f64 {
+        (self.retry_at - now).max(0.0)
+    }
+}
+
+/// The sites whose failed stream should start again now: those waiting out
+/// a retry that is due, while the session is live. `retries` is every
+/// site's pending retry, in list order.
+pub(crate) fn due_restarts(
+    session_active: bool,
+    retries: &[Option<&StreamRetry>],
+    now: f64,
+) -> Vec<usize> {
+    if !session_active {
+        return Vec::new();
+    }
+    retries
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.is_some_and(|r| r.is_waiting() && r.is_due(now)))
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// One site's share of a session-wide stop: its volume in progress and its
@@ -313,12 +389,6 @@ pub(crate) fn stop_session(
         site.volume.clear();
         site.engine.reset_volume_observations();
     }
-}
-
-/// Whether the session's stream has ended: once no site still streams.
-/// A site whose channel fails stops alone; the session stops with the last.
-pub(crate) fn session_stream_ended(sites_streaming: impl IntoIterator<Item = bool>) -> bool {
-    !sites_streaming.into_iter().any(|streaming| streaming)
 }
 
 /// The session half of live mode: whether the app is streaming at all, how
@@ -1584,6 +1654,61 @@ mod coverage_tests {
         assert_eq!(s.last_exit_reason, Some(LiveExitReason::ConnectionError));
     }
 
+    // ── stream retries ──
+
+    #[wasm_bindgen_test]
+    fn retries_back_off_and_hold_at_the_longest_wait() {
+        let first = StreamRetry::after_failure(None, "timed out".into(), 100.0);
+        assert_eq!(first.failures, 1);
+        assert_eq!(first.retry_at, 105.0);
+        let second = StreamRetry::after_failure(Some(&first), "timed out".into(), 105.0);
+        assert_eq!(second.retry_at, 120.0);
+        let mut retry = second;
+        for _ in 0..5 {
+            retry = StreamRetry::after_failure(Some(&retry), "timed out".into(), 200.0);
+        }
+        assert_eq!(retry.failures, 7);
+        assert_eq!(retry.retry_at, 260.0);
+        assert_eq!(retry.error, "timed out");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_retry_is_due_once_its_wait_is_over() {
+        let retry = StreamRetry::after_failure(None, "timed out".into(), 100.0);
+        assert!(!retry.is_due(104.9));
+        assert_eq!(retry.in_secs(102.0), 3.0);
+        assert!(retry.is_due(105.0));
+        assert_eq!(retry.in_secs(110.0), 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn only_due_waiting_retries_restart_and_only_while_live() {
+        let due = StreamRetry::after_failure(None, "timed out".into(), 100.0);
+        let later = StreamRetry::after_failure(None, "timed out".into(), 103.0);
+        let mut started = due.clone();
+        started.started = true;
+        let retries = [Some(&due), None, Some(&later), Some(&started)];
+        assert_eq!(due_restarts(true, &retries, 106.0), vec![0]);
+        assert_eq!(due_restarts(true, &retries, 108.0), vec![0, 2]);
+        assert!(due_restarts(false, &retries, 108.0).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn restarting_the_focus_site_reconnects_the_session() {
+        assert_eq!(
+            session_phase_after(LivePhase::WaitingForChunk, SiteStreamEvent::Restarted, true),
+            Some(LivePhase::AcquiringLock)
+        );
+        assert_eq!(
+            session_phase_after(
+                LivePhase::WaitingForChunk,
+                SiteStreamEvent::Restarted,
+                false
+            ),
+            None
+        );
+    }
+
     // ── wait_for_next_chunk ──
 
     #[wasm_bindgen_test]
@@ -1762,15 +1887,5 @@ mod coverage_tests {
         s.record_chunk_arrival(ChunkArrivalStat::minimal_for_test(9999, 0.0));
         assert_eq!(s.chunk_arrivals.len(), 1024);
         assert_eq!(s.chunk_arrivals.last().unwrap().sequence, 1023);
-    }
-
-    #[wasm_bindgen_test]
-    fn the_session_ends_when_the_last_site_stops() {
-        assert!(!session_stream_ended([true]));
-        assert!(!session_stream_ended([false, true, false]));
-        assert!(session_stream_ended([false]));
-        assert!(session_stream_ended([false, false, false]));
-        // No sites streaming at all is an ended session.
-        assert!(session_stream_ended(std::iter::empty()));
     }
 }

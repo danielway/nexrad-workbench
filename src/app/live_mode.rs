@@ -38,6 +38,31 @@ impl WorkbenchApp {
         }
     }
 
+    /// Start again every site whose failed stream has waited out its retry
+    /// ([`crate::core::due_restarts`]).
+    pub(crate) fn restart_due_streams(&mut self, ctx: &egui::Context) {
+        let now = self.state.frame_now.secs();
+        let retries: Vec<_> = self.sites.iter().map(|s| s.live.retry.as_ref()).collect();
+        let due = crate::core::due_restarts(self.live.mode_state.is_active(), &retries, now);
+        for site in due {
+            let state = &mut self.sites.list[site];
+            if let Some(retry) = state.live.retry.as_mut() {
+                log::info!(
+                    "Retrying live stream for {} (failure {})",
+                    state.id.0,
+                    retry.failures
+                );
+                retry.started = true;
+            }
+            self.live.mode_state.apply_site_event(
+                crate::core::SiteStreamEvent::Restarted,
+                site == self.sites.focus,
+                now,
+            );
+            self.start_site_stream(ctx, site);
+        }
+    }
+
     /// Start site `site`'s stream, with that site's id and projection
     /// engine: at session start for every site, and for a site added while
     /// the session is live.
@@ -431,8 +456,9 @@ impl WorkbenchApp {
 
         self.live.stop(&mut self.sites, reason);
         self.playback.state.exit_live(crate::core::FreezeAt::Keep);
-        for site in self.sites.iter() {
+        for site in self.sites.list.iter_mut() {
             site.live.channel.stop();
+            site.live.retry = None;
         }
 
         // Halt playback: every remaining stop path (explicit stop, error,
@@ -488,6 +514,8 @@ impl WorkbenchApp {
                     from_focus,
                     now,
                 );
+                // Data arrived: a restarted stream is healthy again.
+                self.sites.list[site].live.retry = None;
                 let volume = &mut self.sites.list[site].live.volume;
                 volume.chunks_received = chunks_in_volume;
                 if let Some(stat) = arrival_stat {
@@ -584,24 +612,17 @@ impl WorkbenchApp {
             }
             nexrad::RealtimeResult::Error(msg) => {
                 log::error!("Realtime streaming error: {}", msg);
-                // A failed channel stops its own site; the session stops
-                // with the last site still streaming.
-                let others_streaming = self
-                    .sites
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| *index != site)
-                    .map(|(_, other)| other.live.channel.is_active());
-                if crate::core::session_stream_ended(others_streaming) {
-                    self.stop_live_mode(crate::core::LiveExitReason::ConnectionError);
-                    // Preserve error message (stop_live_mode clears it)
-                    self.live.mode_state.error_message = Some(msg.clone());
-                } else {
-                    let live = &mut self.sites.list[site].live;
-                    live.channel.stop();
-                    live.volume.clear();
-                    live.engine.borrow_mut().reset_volume_observations();
-                }
+                // A failed channel stops its own site, which waits and starts
+                // again (`restart_due_streams`); the session stays live.
+                let live = &mut self.sites.list[site].live;
+                live.channel.stop();
+                live.volume.clear();
+                live.engine.borrow_mut().reset_volume_observations();
+                live.retry = Some(crate::core::StreamRetry::after_failure(
+                    live.retry.as_ref(),
+                    msg.clone(),
+                    now,
+                ));
 
                 // Track error as a failed acquisition operation
                 let err_site_id = self.sites.list[site].id.0.clone();

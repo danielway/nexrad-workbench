@@ -1024,6 +1024,7 @@ impl eframe::App for WorkbenchApp {
         // live edge moves continuously, so request a repaint to keep it smooth
         // even when the user isn't interacting.
         self.tick_live();
+        self.restart_due_streams(ctx);
         if self.live.mode_state.is_active() {
             // Pinned: the live edge moves every frame — repaint fast. Detached
             // (background stream while browsing): the now-line and in-progress

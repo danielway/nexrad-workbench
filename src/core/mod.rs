@@ -128,8 +128,8 @@ pub(crate) use domain::worker::{
 pub(crate) use effect::{Effect, LocationResult, LocationSource};
 pub(crate) use geo_layers::GeoLayer;
 pub(crate) use live_mode::{
-    session_stream_ended, should_stop_for_detached_idle, ExpectedSweep, LiveExitReason,
-    LiveModeState, LivePhase, LiveVolumeState, SiteStreamEvent, SiteStreamSlice, StreamActivity,
+    due_restarts, should_stop_for_detached_idle, ExpectedSweep, LiveExitReason, LiveModeState,
+    LivePhase, LiveVolumeState, SiteStreamEvent, SiteStreamSlice, StreamActivity, StreamRetry,
 };
 pub(crate) use live_radar_model::LiveRadarModel;
 pub(crate) use live_status::{derive_live_status, LiveStatus, LiveStatusInputs};
