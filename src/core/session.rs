@@ -68,6 +68,8 @@ pub(crate) enum Stream {
     Waiting,
     /// Past the normal cadence with nothing arriving.
     Stalled,
+    /// The stream failed and starts again after a wait.
+    Retrying,
     /// The stream ended on a connection error.
     Failed,
 }
@@ -100,6 +102,7 @@ impl Stream {
             StreamActivity::Receiving => Stream::Receiving,
             StreamActivity::Waiting => Stream::Waiting,
             StreamActivity::Stalled => Stream::Stalled,
+            StreamActivity::Retrying => Stream::Retrying,
         }
     }
 
@@ -107,7 +110,11 @@ impl Stream {
     pub(crate) fn is_running(self) -> bool {
         matches!(
             self,
-            Stream::Connecting | Stream::Receiving | Stream::Waiting | Stream::Stalled
+            Stream::Connecting
+                | Stream::Receiving
+                | Stream::Waiting
+                | Stream::Stalled
+                | Stream::Retrying
         )
     }
 
@@ -124,6 +131,7 @@ impl Stream {
             Stream::Connecting => Some("Connecting"),
             Stream::Receiving => Some("Receiving"),
             Stream::Waiting => Some("Waiting"),
+            Stream::Retrying => Some("Reconnecting"),
             Stream::Off | Stream::Stalled | Stream::Failed => None,
         }
     }
@@ -447,6 +455,7 @@ impl SessionVm {
             playhead,
             now,
             inputs.any_site_streams,
+            stream == Stream::Retrying,
             inputs.live_cut.as_ref().and_then(|c| c.elevation_angle),
             &inputs.caption_context,
         );
@@ -718,6 +727,13 @@ fn stream_line(
                 format_lag(status.phase_elapsed_secs)
             ),
         }),
+        Stream::Retrying => Some(match status.retry_in_secs {
+            Some(secs) if secs >= 1.0 => format!(
+                "stream failed \u{00b7} retrying in {}",
+                format_lag(secs.ceil())
+            ),
+            _ => "stream failed \u{00b7} retrying".to_string(),
+        }),
         Stream::Failed => Some("stream failed".to_string()),
     }
 }
@@ -733,6 +749,7 @@ fn stream_hover(stream: Stream, status: &LiveStatus) -> Option<&'static str> {
         } else {
             "No data has arrived for a while"
         }),
+        Stream::Retrying => Some("The live stream failed and will start again on its own"),
         Stream::Failed => Some("The live stream lost its connection — GO LIVE to try again"),
     }
 }
@@ -883,7 +900,9 @@ mod tests {
                 StreamActivity::Off => LivePhase::Idle,
                 StreamActivity::Connecting => LivePhase::AcquiringLock,
                 StreamActivity::Receiving => LivePhase::Streaming,
-                StreamActivity::Waiting | StreamActivity::Stalled => LivePhase::WaitingForChunk,
+                StreamActivity::Waiting | StreamActivity::Stalled | StreamActivity::Retrying => {
+                    LivePhase::WaitingForChunk
+                }
             };
             self.status = status;
             self
@@ -1492,6 +1511,20 @@ mod tests {
             s.vm().canvas_caption_text(&Utc).as_deref(),
             Some("no frame yet · waiting for 0.5° (antenna on 4.0°)")
         );
+
+        // Pinned while the stream waits to start again: say it failed.
+        let mut s = S::at(t(12, 0, 0)).streaming(waiting(30.0, None).retrying(11.5));
+        s.selection = PINNED;
+        s.caption = tilt(300.0);
+        let vm = s.vm();
+        assert_eq!(
+            vm.canvas_caption_text(&Utc).as_deref(),
+            Some("no frame yet · live stream failed, retrying")
+        );
+        assert_eq!(
+            vm.activity_chip.as_deref(),
+            Some("stream failed \u{00b7} retrying in 0:12")
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1680,6 +1713,7 @@ mod tests {
         assert_eq!(Stream::Connecting.headline_word(), Some("Connecting"));
         assert_eq!(Stream::Receiving.headline_word(), Some("Receiving"));
         assert_eq!(Stream::Waiting.headline_word(), Some("Waiting"));
+        assert_eq!(Stream::Retrying.headline_word(), Some("Reconnecting"));
         for s in [Stream::Off, Stream::Stalled, Stream::Failed] {
             assert_eq!(s.headline_word(), None);
         }

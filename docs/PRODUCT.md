@@ -358,9 +358,14 @@ mode — it is a tether state.
   channel, and a site added while live starts its stream at once. The tether,
   the stop and the stream's phase (connecting, receiving, waiting) belong to
   the session, not to a site: the phase follows the focus's chunks, the
-  session streams from the first site's start until the last site's stream
-  ends (a site whose stream fails stops alone), and going live or stopping
-  acts on every site together.
+  session streams from the first site's start until the user stops it, and
+  going live or stopping acts on every site together.
+- **A failed stream:** a site whose stream fails (it never connects, or the
+  connection drops) starts again on its own after 5 s, then 15 s, 30 s and
+  every 60 s, until it receives data or the user stops the stream. Meanwhile
+  the session stays live, the activity chip says "Reconnecting", its line
+  reads "stream failed · retrying in 0:12", and a map with nothing current
+  says "live stream failed, retrying".
 - **Stopping:** stop is explicit and symmetric with go-live. While tethered,
   the timeline now-cap ("◉ LIVE"), the selection chip's "Stop the stream", and
   **Shift+L** all stop the stream at the live edge; on mobile (which has no

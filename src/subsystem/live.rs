@@ -70,6 +70,9 @@ pub(crate) struct SiteLive {
     /// This frame's stream measurements — an input to the session
     /// view-model. Rebuilt in [`SiteLive::refresh`].
     pub frame_status: crate::core::LiveStatus,
+    /// Set while the site's stream has failed and waits to start again, or
+    /// has started again and not yet received a chunk.
+    pub retry: Option<crate::core::StreamRetry>,
 }
 
 impl Default for SiteLive {
@@ -87,6 +90,7 @@ impl SiteLive {
             engine: new_shared_engine(),
             frame_projection: None,
             frame_status: crate::core::LiveStatus::default(),
+            retry: None,
         }
     }
 
@@ -205,6 +209,11 @@ impl SiteLive {
             expected_sweep,
             now_secs: now,
         });
+        if let Some(retry) = self.retry.as_ref().filter(|r| r.is_waiting()) {
+            if session.is_active() {
+                self.frame_status = self.frame_status.retrying(retry.in_secs(now));
+            }
+        }
     }
 
     /// The cut this site's stream is filling, for the session's

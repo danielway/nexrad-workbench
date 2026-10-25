@@ -461,6 +461,7 @@ impl Sites {
                     stream: Stream::classify(status.activity, phase, last_exit),
                     chunks_received: status.chunks_received,
                     last_chunk_age_secs: status.data_age_secs,
+                    retry_in_secs: status.retry_in_secs,
                 }
             })
             .collect()

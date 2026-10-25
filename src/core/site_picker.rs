@@ -163,7 +163,7 @@ pub(crate) struct OnMapStatus {
 
 fn on_map_status(site: &OnMap) -> OnMapStatus {
     let dot = match site.stream {
-        Stream::Stalled => Some(LiveDot::Stalled),
+        Stream::Stalled | Stream::Retrying => Some(LiveDot::Stalled),
         s if s.is_running() => Some(LiveDot::Streaming),
         _ => None,
     };

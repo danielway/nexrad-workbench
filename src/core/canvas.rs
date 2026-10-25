@@ -501,6 +501,8 @@ pub(crate) enum CaptionReason {
     Downloading,
     /// A running stream will bring it; the antenna is elsewhere.
     Waiting { antenna_deg: Option<f32> },
+    /// The live stream failed and will start again on its own.
+    Reconnecting,
     /// Nothing is coming. `fetch` is the listed scan the user can fetch.
     NoData { fetch: Option<i64> },
 }
@@ -545,11 +547,13 @@ pub(crate) enum CanvasCaption {
 /// - `now`: this frame's wall clock (the playhead's time when pinned).
 /// - `stream_running` / `antenna_deg`: whether a stream will bring the next
 ///   frame, and the tilt the antenna is on.
+/// - `reconnecting`: the focus site's stream failed and waits to start again.
 pub(crate) fn decide_canvas_caption(
     frame: Option<&crate::core::session::FrameFact>,
     playhead: crate::core::session::Playhead,
     now: f64,
     stream_running: bool,
+    reconnecting: bool,
     antenna_deg: Option<f32>,
     ctx: &CaptionContext,
 ) -> CanvasCaption {
@@ -573,6 +577,8 @@ pub(crate) fn decide_canvas_caption(
     };
     let reason = if ctx.fetch_covers_playhead {
         CaptionReason::Downloading
+    } else if pinned && reconnecting {
+        CaptionReason::Reconnecting
     } else if pinned && stream_running {
         CaptionReason::Waiting { antenna_deg }
     } else {
@@ -706,6 +712,9 @@ impl CaptionLine {
     }
 }
 
+/// The caption's words while the live stream waits to start again.
+const RECONNECTING: &str = "live stream failed, retrying";
+
 fn tilt_word(tilt_deg: Option<f32>) -> Option<String> {
     tilt_deg.map(|t| format!("{t:.1}°"))
 }
@@ -771,6 +780,9 @@ pub(crate) fn caption_line(
                     waiting(tilt_deg, antenna_deg)
                 )));
             }
+            CaptionReason::Reconnecting => {
+                segs.push(words(format!("no frame yet · {RECONNECTING}")));
+            }
             CaptionReason::NoData { fetch } => {
                 segs.push(words(match tilt_word(tilt_deg) {
                     Some(t) => format!("no {t} data at "),
@@ -803,6 +815,7 @@ pub(crate) fn caption_line(
                 CaptionReason::Waiting { antenna_deg } => {
                     segs.push(words(waiting(tilt_deg, antenna_deg)))
                 }
+                CaptionReason::Reconnecting => segs.push(words(RECONNECTING.to_string())),
                 CaptionReason::NoData { fetch } => {
                     segs.push(words(match tilt_word(tilt_deg) {
                         Some(t) => format!("no {t} at {}", clock.hm(playhead)),
