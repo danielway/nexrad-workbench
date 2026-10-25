@@ -257,6 +257,11 @@ pub(crate) struct RadarTimeline {
 /// Default: 15 minutes (scans are typically 5 minutes apart)
 const MAX_CONTIGUOUS_GAP_SECS: f64 = 15.0 * 60.0;
 
+/// How long after its start a partial scan still counts as the volume under
+/// the playhead when no later scan is stored: the longest VCPs (31, 32) take
+/// about ten minutes.
+const PARTIAL_SCAN_REACH_SECS: f64 = 10.0 * 60.0;
+
 impl RadarTimeline {
     /// Get contiguous time ranges covered by this data.
     ///
@@ -292,13 +297,25 @@ impl RadarTimeline {
 
     /// Find the scan containing the given timestamp.
     ///
+    /// A partial scan (one tilt fetched) ends where its stored sweeps end,
+    /// but the volume itself runs on until the next one starts, so it
+    /// counts as under the playhead until the next stored scan begins, at
+    /// most [`PARTIAL_SCAN_REACH_SECS`] after its start.
+    ///
     /// Uses binary search on the sorted scan list for O(log n) lookup.
     pub(crate) fn find_scan_at_timestamp(&self, ts: f64) -> Option<&Scan> {
         // partition_point returns the first index where start_time > ts,
         // so the candidate scan is the one just before that.
         let idx = self.scans.partition_point(|s| s.start_time <= ts);
         let scan = self.scans.get(idx.wrapping_sub(1))?;
-        (ts <= scan.end_time).then_some(scan)
+        let end = if scan.is_partial() {
+            scan.end_time.max(scan.start_time + PARTIAL_SCAN_REACH_SECS)
+        } else {
+            scan.end_time
+        };
+        // The next scan starts after ts (partition_point), so a partial
+        // scan's reach never overlaps it.
+        (ts <= end).then_some(scan)
     }
 
     /// Find the most recent scan at or before the given timestamp, within a time window.
@@ -1957,6 +1974,38 @@ mod coverage_tests {
         assert!(tl.find_scan_at_timestamp(500.0).is_none());
         // ts inside the gap after the scan's end -> None (end check fails).
         assert!(tl.find_scan_at_timestamp(1400.0).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn a_partial_scan_reaches_until_the_next_volume() {
+        // One tilt of a volume starting at 1000 is stored (it ends at 1030);
+        // the next stored volume starts at 1270.
+        let mut partial = scan(1000.0, 1030.0);
+        partial.completeness = Some(ScanCompleteness::PartialWithVcp);
+        let tl = RadarTimeline {
+            scans: vec![partial.clone(), scan(1270.0, 1540.0)],
+        };
+        assert_eq!(
+            tl.find_scan_at_timestamp(1200.0).unwrap().start_time,
+            1000.0
+        );
+        assert_eq!(
+            tl.find_scan_at_timestamp(1270.0).unwrap().start_time,
+            1270.0
+        );
+
+        // With nothing stored after it, it reaches ten minutes.
+        let alone = RadarTimeline {
+            scans: vec![partial],
+        };
+        assert!(alone.find_scan_at_timestamp(1600.0).is_some());
+        assert!(alone.find_scan_at_timestamp(1601.0).is_none());
+
+        // A complete scan still ends at its end.
+        let tl = RadarTimeline {
+            scans: vec![scan(1000.0, 1030.0)],
+        };
+        assert!(tl.find_scan_at_timestamp(1200.0).is_none());
     }
 
     // --- next_any_sweep_end / prev_any_sweep_end (untested) ---
