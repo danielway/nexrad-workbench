@@ -173,6 +173,20 @@ pub(crate) fn render_canvas_with_geo(
                     center: site_screen.center,
                     radius: coverage_km as f32 * site_screen.px_per_km,
                 });
+                // The mosaic gives way under every site showing data, not
+                // just the focus.
+                let mosaic_cutouts: Vec<RadarCutout> = sites
+                    .iter()
+                    .filter(|s| data_range_km_of(s).is_some())
+                    .map(|s| {
+                        let screen =
+                            super::canvas_overlays::SiteScreen::new(&projection, s.lat, s.lon);
+                        RadarCutout {
+                            center: screen.center,
+                            radius: coverage_km as f32 * screen.px_per_km,
+                        }
+                    })
+                    .collect();
 
                 if state.layer_state.geo.national_mosaic && derived.data_is_live() {
                     draw_national_mosaic(
@@ -180,7 +194,7 @@ pub(crate) fn render_canvas_with_geo(
                         &projection,
                         &state.national_mosaic,
                         state.viz_state.zoom(),
-                        radar_cutout,
+                        &mosaic_cutouts,
                     );
                 }
 

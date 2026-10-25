@@ -4,10 +4,10 @@
 //! remains correctly georegistered under the map's latitude-corrected
 //! projection. Drawn before vector layers so borders sit on top.
 //!
-//! When an active site is showing data, the mosaic punches a circular hole
-//! centered on the site's coverage so the two layers don't visually overlap.
-//! Cells that cross the circle are tessellated into a dense sub-grid with
-//! per-vertex alpha so the boundary follows the circle closely.
+//! Every site showing data punches a circular hole in the mosaic over its
+//! coverage so the two layers don't visually overlap. Cells that cross a
+//! circle are tessellated into a dense sub-grid with per-vertex alpha so the
+//! boundary follows the circles closely.
 
 use crate::geo::MapProjection;
 use crate::nexrad::NationalMosaic;
@@ -26,13 +26,13 @@ const FADE_END_ZOOM: f32 = 2.5;
 /// the view is panned far from center; 10×10 keeps edges accurate.
 const WARP_GRID: usize = 10;
 
-/// Sub-grid resolution for cells that straddle the active-site cutout
-/// circle. Higher values produce a smoother circle at the cost of extra
+/// Sub-grid resolution for cells that straddle a site's cutout circle.
+/// Higher values produce a smoother circle at the cost of extra
 /// triangles; 32 keeps the boundary within ~1 base-cell/32 ≈ a few pixels
 /// even when the straddling cell is large on screen.
 const CUTOUT_SUBDIV: usize = 32;
 
-/// Circular cutout region around the active radar site, in screen pixels.
+/// Circular cutout region around one site's coverage, in screen pixels.
 #[derive(Clone, Copy)]
 pub(crate) struct RadarCutout {
     pub center: Pos2,
@@ -44,7 +44,7 @@ pub(crate) fn draw_national_mosaic(
     projection: &MapProjection,
     mosaic: &NationalMosaic,
     zoom: f32,
-    cutout: Option<RadarCutout>,
+    cutouts: &[RadarCutout],
 ) {
     let texture = match mosaic.texture() {
         Some(t) => t,
@@ -99,28 +99,25 @@ pub(crate) fn draw_national_mosaic(
             let fy0 = j as f32 / WARP_GRID as f32;
             let fy1 = (j + 1) as f32 / WARP_GRID as f32;
 
-            match cutout {
-                None => emit_quad(&mut mesh, p00, p10, p01, p11, fx0, fx1, fy0, fy1, tint),
-                Some(c) => match classify_cell(p00, p10, p01, p11, c) {
-                    CellClass::Inside => continue,
-                    CellClass::Outside => {
-                        emit_quad(&mut mesh, p00, p10, p01, p11, fx0, fx1, fy0, fy1, tint)
-                    }
-                    CellClass::Straddle => emit_subdivided(
-                        &mut mesh,
-                        projection,
-                        lons[i],
-                        lons[i + 1],
-                        lats[j],
-                        lats[j + 1],
-                        fx0,
-                        fx1,
-                        fy0,
-                        fy1,
-                        c,
-                        tint,
-                    ),
-                },
+            match classify_cell_all(p00, p10, p01, p11, cutouts) {
+                CellClass::Inside => continue,
+                CellClass::Outside => {
+                    emit_quad(&mut mesh, p00, p10, p01, p11, fx0, fx1, fy0, fy1, tint)
+                }
+                CellClass::Straddle => emit_subdivided(
+                    &mut mesh,
+                    projection,
+                    lons[i],
+                    lons[i + 1],
+                    lats[j],
+                    lats[j + 1],
+                    fx0,
+                    fx1,
+                    fy0,
+                    fy1,
+                    cutouts,
+                    tint,
+                ),
             }
         }
     }
@@ -137,7 +134,29 @@ enum CellClass {
     Straddle,
 }
 
-/// Classify a cell against the cutout circle. Uses farthest-corner and
+/// Classify a cell against every cutout: inside when one circle swallows
+/// it, outside when it misses them all, otherwise straddling (a cell covered
+/// only by the union of several circles straddles; its sub-quads inside the
+/// union are dropped in [`emit_subdivided`]).
+fn classify_cell_all(
+    p00: Pos2,
+    p10: Pos2,
+    p01: Pos2,
+    p11: Pos2,
+    cutouts: &[RadarCutout],
+) -> CellClass {
+    let mut class = CellClass::Outside;
+    for &c in cutouts {
+        match classify_cell(p00, p10, p01, p11, c) {
+            CellClass::Inside => return CellClass::Inside,
+            CellClass::Straddle => class = CellClass::Straddle,
+            CellClass::Outside => {}
+        }
+    }
+    class
+}
+
+/// Classify a cell against one cutout circle. Uses farthest-corner and
 /// AABB-closest-point tests, which are exact for convex cells: straddling
 /// cells fall into `Straddle`, including the case where the circle lies
 /// entirely inside a single cell.
@@ -204,9 +223,9 @@ fn emit_quad(
 }
 
 /// Tessellate a straddling cell into `CUTOUT_SUBDIV × CUTOUT_SUBDIV` sub-
-/// quads, each carrying per-vertex alpha set to 0 inside the circle and the
-/// full tint alpha outside. Sub-cells whose corners are all inside the
-/// circle are dropped entirely to save fill.
+/// quads, each carrying per-vertex alpha set to 0 inside any circle and the
+/// full tint alpha outside them all. Sub-cells whose corners are all inside
+/// are dropped entirely to save fill.
 #[allow(clippy::too_many_arguments)]
 fn emit_subdivided(
     mesh: &mut egui::Mesh,
@@ -219,7 +238,7 @@ fn emit_subdivided(
     fx1: f32,
     fy0: f32,
     fy1: f32,
-    cutout: RadarCutout,
+    cutouts: &[RadarCutout],
     tint: Color32,
 ) {
     let base = mesh.vertices.len() as u32;
@@ -233,7 +252,10 @@ fn emit_subdivided(
             let lat = lat0 + (lat1 - lat0) * ty;
             let pos = projection.geo_to_screen(Coord { x: lon, y: lat });
             let uv = egui::pos2(fx0 + (fx1 - fx0) * tx as f32, fy0 + (fy1 - fy0) * ty as f32);
-            let alpha = if (pos - cutout.center).length() <= cutout.radius {
+            let alpha = if cutouts
+                .iter()
+                .any(|c| (pos - c.center).length() <= c.radius)
+            {
                 0
             } else {
                 tint.a()
@@ -353,6 +375,41 @@ mod coverage_tests {
             Pos2::new(0.0, 1.0),
             Pos2::new(1.0, 1.0),
             c,
+        );
+        assert!(matches!(cls, CellClass::Outside));
+    }
+
+    // ---- classify_cell_all: several sites' cutouts -----------------------
+
+    fn unit_cell(x: f32, y: f32) -> CellClass {
+        let cuts = [cut(0.0, 0.0, 5.0), cut(100.0, 0.0, 5.0)];
+        classify_cell_all(
+            Pos2::new(x, y),
+            Pos2::new(x + 1.0, y),
+            Pos2::new(x, y + 1.0),
+            Pos2::new(x + 1.0, y + 1.0),
+            &cuts,
+        )
+    }
+
+    #[wasm_bindgen_test]
+    fn classify_all_cuts_under_every_site_not_just_the_first() {
+        // Inside the first circle, inside the second, and between them.
+        assert!(matches!(unit_cell(0.0, 0.0), CellClass::Inside));
+        assert!(matches!(unit_cell(100.0, 0.0), CellClass::Inside));
+        assert!(matches!(unit_cell(50.0, 0.0), CellClass::Outside));
+        // Crossing the second circle's edge.
+        assert!(matches!(unit_cell(104.5, 0.0), CellClass::Straddle));
+    }
+
+    #[wasm_bindgen_test]
+    fn classify_all_with_no_sites_keeps_every_cell() {
+        let cls = classify_cell_all(
+            Pos2::new(0.0, 0.0),
+            Pos2::new(1.0, 0.0),
+            Pos2::new(0.0, 1.0),
+            Pos2::new(1.0, 1.0),
+            &[],
         );
         assert!(matches!(cls, CellClass::Outside));
     }
