@@ -38,9 +38,9 @@ impl Layer for PressSheetLayer {
 /// The glyph beside each row.
 fn icon(row: PressRow) -> &'static str {
     match row {
-        PressRow::LoopFromHere => egui_phosphor::regular::ARROW_LINE_RIGHT,
-        PressRow::LoopToHere => egui_phosphor::regular::ARROW_LINE_LEFT,
-        PressRow::Inspect => egui_phosphor::regular::MAGNIFYING_GLASS,
+        PressRow::LoopFromHere => crate::ui::icons::ARROW_LINE_RIGHT,
+        PressRow::LoopToHere => crate::ui::icons::ARROW_LINE_LEFT,
+        PressRow::Inspect => crate::ui::icons::MAGNIFYING_GLASS,
     }
 }
 

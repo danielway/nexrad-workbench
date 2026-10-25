@@ -71,8 +71,10 @@ pub(crate) struct DispatchState<'a> {
     pub live: &'a mut subsystem::Live,
     pub diagnostics: &'a mut subsystem::Diagnostics,
     pub chrome: &'a mut subsystem::Chrome,
-    /// Read-only: the frames a step can land on.
+    /// Read-only: the storm-activity book (the calendar's landing reads it).
     pub timeline: &'a subsystem::Timeline,
+    /// The sites: a step lands on the focus site's frames.
+    pub sites: &'a mut subsystem::Sites,
 }
 
 /// Handle the intents that are pure state transitions. Returns `Some(intent)`
@@ -112,9 +114,15 @@ pub(crate) fn dispatch_state_only(
         } => {
             let now = s.state.frame_now.secs();
             let pause = s.state.pause_stream_while_reviewing;
-            if s.live
-                .select_range(&mut s.playback.state, start, end, to_live, now, pause)
-            {
+            if s.live.select_range(
+                s.sites,
+                &mut s.playback.state,
+                start,
+                end,
+                to_live,
+                now,
+                pause,
+            ) {
                 // Arm the bulk fetch for the new range (selection = the fetch).
                 s.state.selection_just_finalized = s.playback.state.selection_range();
             }
@@ -123,7 +131,7 @@ pub(crate) fn dispatch_state_only(
             let now = s.state.frame_now.secs();
             let pause = s.state.pause_stream_while_reviewing;
             if s.live
-                .select_fixed_range(&mut s.playback.state, start, end, now, pause)
+                .select_fixed_range(s.sites, &mut s.playback.state, start, end, now, pause)
             {
                 s.state.selection_just_finalized = s.playback.state.selection_range();
             }
@@ -205,7 +213,7 @@ pub(crate) fn dispatch_state_only(
 
         // ---- Canvas / map overlays --------------------------------
         Intent::ShowAlertOnMap(id) => s.show_alert_on_map(id),
-        Intent::PlaceDistancePoint { lat, lon } => s.place_distance_point(lat, lon),
+        Intent::Measure(intent) => s.measure(intent),
         Intent::ToggleMapTool(tool) => {
             let viz = &mut s.state.viz_state;
             let t = crate::core::panels::toggle_map_tool(
@@ -216,11 +224,22 @@ pub(crate) fn dispatch_state_only(
             viz.data_probe_enabled = t.probe;
             viz.distance_tool_active = t.distance;
             if t.clear_points {
-                viz.distance_start = None;
-                viz.distance_end = None;
+                viz.measurement = Default::default();
             }
         }
         Intent::SetGeoLayer(layer, on) => layer.set(&mut s.state.layer_state.geo, on),
+        Intent::StormCells(intent) => {
+            let viz = &mut s.state.viz_state;
+            crate::core::storm_cell_view::reduce(
+                crate::core::storm_cell_view::StormCellControls {
+                    visible: &mut viz.storm_cells_visible,
+                    threshold_dbz: &mut viz.storm_cell_threshold_dbz,
+                    tracks: &mut viz.storm_tracks_visible,
+                    pointer: &mut viz.storm_cell_pointer,
+                },
+                intent,
+            );
+        }
 
         // ---- Top bar ------------------------------------------------
         Intent::TopBar(intent) => s.top_bar(intent),
@@ -301,6 +320,10 @@ pub(crate) fn dispatch_state_only(
         // about which half of the partition owns it. The reason each one
         // is here:
         //   SelectSite ........ tears down GPU/render/stream state
+        //   AddSite ........... starts the new site's stream
+        //   RemoveSite ........ stops its stream, releases its GPU objects
+        //   SetFocus .......... recentres the camera, moves the latch
+        //   OnlyFocus ......... RemoveSite for every other site
         //   OpenExternalUrl ... web_sys window.open
         //   LocateMeForSite ... browser geolocation
         //   SubmitZip ......... network geocode lookup
@@ -315,6 +338,10 @@ pub(crate) fn dispatch_state_only(
         //   RetryWorker ....... constructs the decode worker
         //   Diagnostics ....... reducer effects (geolocation / URL open)
         shell @ (Intent::SelectSite { .. }
+        | Intent::AddSite { .. }
+        | Intent::RemoveSite { .. }
+        | Intent::SetFocus { .. }
+        | Intent::OnlyFocus
         | Intent::OpenExternalUrl(_)
         | Intent::LocateMeForSite
         | Intent::SubmitZip(_)
@@ -330,6 +357,46 @@ pub(crate) fn dispatch_state_only(
         | Intent::Diagnostics(_)) => return Some(shell),
     }
     None
+}
+
+/// The body of [`DispatchState::transport_with`] over just the fields a
+/// transport reducer touches. The reducer also gets the focus site's scans,
+/// lent beside every site's stream (a step walks them).
+fn transport_over<R>(
+    state: &state::AppState,
+    playback: &mut subsystem::Playback,
+    live: &mut subsystem::Live,
+    sites: &mut subsystem::Sites,
+    reduce: impl FnOnce(
+        &crate::core::transport::TransportEnv,
+        crate::core::transport::TransportSlices<'_>,
+        &crate::core::RadarTimeline,
+    ) -> (crate::core::transport::TransportActions, R),
+) -> R {
+    let env = crate::core::transport::TransportEnv {
+        now_secs: state.frame_now.secs(),
+        pause_stream_while_reviewing: state.pause_stream_while_reviewing,
+        frame_secs: playback.state.median_frame_spacing(),
+    };
+    let live_mode = &mut live.mode_state;
+    let (actions, out) =
+        subsystem::live::with_site_streams_and_focus_scans(sites, |streams, scans| {
+            reduce(
+                &env,
+                crate::core::transport::TransportSlices {
+                    live_mode,
+                    sites: streams,
+                    playback: &mut playback.state,
+                },
+                scans,
+            )
+        });
+    if actions.stop_channel {
+        for site in sites.iter() {
+            site.live.channel.stop();
+        }
+    }
+    out
 }
 
 impl DispatchState<'_> {
@@ -357,22 +424,13 @@ impl DispatchState<'_> {
             crate::core::transport::TransportSlices<'_>,
         ) -> (crate::core::transport::TransportActions, R),
     ) -> R {
-        let (actions, out) = reduce(
-            &crate::core::transport::TransportEnv {
-                now_secs: self.state.frame_now.secs(),
-                pause_stream_while_reviewing: self.state.pause_stream_while_reviewing,
-                frame_secs: self.playback.state.median_frame_spacing(),
-            },
-            crate::core::transport::TransportSlices {
-                live_mode: &mut self.live.mode_state,
-                engine: &mut self.live.engine.borrow_mut(),
-                playback: &mut self.playback.state,
-            },
-        );
-        if actions.stop_channel {
-            self.live.channel.stop();
-        }
-        out
+        transport_over(
+            self.state,
+            self.playback,
+            self.live,
+            self.sites,
+            |env, slices, _| reduce(env, slices),
+        )
     }
 
     /// Apply a top-bar intent. Every arm is a plain state write; the one
@@ -387,8 +445,10 @@ impl DispatchState<'_> {
                 // The product picks the cut inside a fixed angle's row.
                 let entries = self.state.current_elevation_list(
                     &self.playback.state,
-                    &self.timeline.scans,
-                    self.live
+                    &self.sites.focus().scans,
+                    self.sites
+                        .focus()
+                        .live
                         .radar_model
                         .volume
                         .as_ref()
@@ -445,38 +505,48 @@ impl DispatchState<'_> {
     ) {
         let viz = &self.state.viz_state;
         let volumetric = viz.volume_3d_active();
-        let tilt = match viz.elevation_selection {
-            crate::core::ElevationSelection::Fixed {
-                elevation_number, ..
-            } => Some(elevation_number),
-            crate::core::ElevationSelection::Latest => None,
-        };
-        let timeline = self.timeline;
-        let index = crate::core::transport::ScanFrames {
-            scans: &timeline.scans,
-            tilt,
-            volumes: volumetric || unit == crate::core::transport::StepUnit::Volume,
-        };
-        self.transport(|env, slices| crate::core::transport::reduce_step(env, slices, &index, dir));
+        let tilt = crate::core::tilt::TiltFilter::from(&viz.elevation_selection);
+        let volumes = volumetric || unit == crate::core::transport::StepUnit::Volume;
+        transport_over(
+            self.state,
+            self.playback,
+            self.live,
+            self.sites,
+            |env, slices, scans| {
+                let index = crate::core::transport::ScanFrames {
+                    scans,
+                    tilt,
+                    volumes,
+                };
+                (
+                    crate::core::transport::reduce_step(env, slices, &index, dir),
+                    (),
+                )
+            },
+        );
     }
 
-    /// Place the next distance-tool endpoint at `(lat, lon)`. Which endpoint
-    /// that is comes from the pure
-    /// [`crate::core::canvas::decide_distance_click`].
-    fn place_distance_point(&mut self, lat: f64, lon: f64) {
+    /// The distance tool: place, drag or clear an endpoint. What it lands
+    /// on (a map point, a lettered track, "My location") is the pure
+    /// [`crate::core::measure::reduce`]; this lends it the snap targets.
+    fn measure(&mut self, intent: crate::core::measure::MeasureIntent) {
+        let my_location = self
+            .state
+            .layer_state
+            .geo
+            .gps_location
+            .then_some(self.diagnostics.gps.coords)
+            .flatten();
         let viz = &mut self.state.viz_state;
-        match crate::core::canvas::decide_distance_click(
-            viz.distance_start.is_some(),
-            viz.distance_end.is_some(),
-        ) {
-            crate::core::canvas::DistancePlacement::Start => {
-                viz.distance_start = Some((lat, lon));
-                viz.distance_end = None;
-            }
-            crate::core::canvas::DistancePlacement::End => {
-                viz.distance_end = Some((lat, lon));
-            }
-        }
+        let sites = &*self.sites;
+        let tracks = (viz.storm_cells_visible && viz.storm_tracks_visible)
+            .then(|| sites.shown_tracks_view(&viz.storm_tracks, None))
+            .flatten();
+        let targets = crate::core::measure::SnapTargets {
+            tracks: tracks.as_ref(),
+            my_location,
+        };
+        crate::core::measure::reduce(&mut viz.measurement, intent, &targets, self.state.is_mobile);
     }
 
     /// "Show on map": enable the alert's overlay class and center the 2D view on
@@ -494,16 +564,8 @@ impl DispatchState<'_> {
         } else {
             self.state.layer_state.geo.alerts_other = true;
         }
-        if let Some((center_lat, center_lon)) = focus.center {
-            self.state.viz_state.center_lat = center_lat;
-            self.state.viz_state.center_lon = center_lon;
-            self.state
-                .viz_state
-                .set_pan_offset(eframe::egui::Vec2::ZERO);
-            self.state
-                .viz_state
-                .camera
-                .center_on(center_lat, center_lon);
+        if let Some((lat, lon)) = focus.center {
+            self.state.viz_state.centre_map_on(lat, lon);
         }
         // Both surfaces must close so a detail opened from the list exposes the
         // newly focused map instead of immediately resurfacing the list.
@@ -522,13 +584,13 @@ impl DispatchState<'_> {
         // we flip it back to Queued.
         let scan_params = self.acquisition.state.find(op_id).and_then(|op| {
             if let state::OperationKind::ArchiveDownload {
+                site_id,
                 file_name,
                 scan_start,
                 scan_end,
-                ..
             } = &op.kind
             {
-                Some((file_name.clone(), *scan_start, *scan_end))
+                Some((site_id.clone(), file_name.clone(), *scan_start, *scan_end))
             } else {
                 None
             }
@@ -537,7 +599,7 @@ impl DispatchState<'_> {
         // Reset the operation row (Queued, front of pending) regardless.
         self.acquisition.state.retry_failed(op_id);
 
-        let Some((file_name, scan_start, scan_end)) = scan_params else {
+        let Some((site_id, file_name, scan_start, scan_end)) = scan_params else {
             // Non-download operations (listings/realtime) have no queue item to
             // re-enqueue; the status reset is all retry means for them.
             return;
@@ -552,6 +614,7 @@ impl DispatchState<'_> {
         let elevation_filter = self.active_elevation_filter();
 
         let item = crate::nexrad::download_queue::QueueItem::new(
+            crate::data::SiteId::new(site_id),
             date,
             file_name,
             scan_start,
@@ -568,7 +631,7 @@ impl DispatchState<'_> {
     /// operation and re-enqueues, reusing the same `requeue` path the failed-cell
     /// retry uses so the two state machines stay correlated.
     fn fetch_scan(&mut self, scan_start: i64, elevation_filter: Option<u8>) {
-        let site_id = self.state.viz_state.site_id.clone();
+        let site_id = self.sites.focus().id.0.clone();
         let Some(date) = chrono::DateTime::from_timestamp(scan_start, 0).map(|dt| dt.date_naive())
         else {
             return;
@@ -607,6 +670,7 @@ impl DispatchState<'_> {
                     scan_end,
                 });
         let item = crate::nexrad::download_queue::QueueItem::new(
+            crate::data::SiteId::new(site_id),
             date,
             file_name,
             scan_start,
@@ -656,11 +720,14 @@ impl WorkbenchApp {
                 diagnostics: &mut self.diagnostics,
                 chrome: &mut self.chrome,
                 timeline: &self.timeline,
+                sites: &mut self.sites,
             };
             dispatch_state_only(cmd, &mut bundle, outcome)
         };
         if std::mem::take(&mut outcome.fresh_render) {
-            self.render.coordinator.force_fresh_render();
+            for site in self.sites.list.iter_mut() {
+                site.render.force_fresh_render();
+            }
         }
         let Some(cmd) = cmd else {
             return;
@@ -671,6 +738,10 @@ impl WorkbenchApp {
             Intent::SelectSite { site_id, lat, lon } => {
                 self.apply_site_selection(&site_id, lat, lon)
             }
+            Intent::AddSite { site_id, lat, lon } => self.add_site(ctx, &site_id, lat, lon),
+            Intent::RemoveSite { site_id } => self.remove_site(&site_id),
+            Intent::SetFocus { site_id } => self.set_focus(&site_id),
+            Intent::OnlyFocus => self.only_focus(),
             Intent::OpenExternalUrl(url) => {
                 self.apply_effects(ctx, vec![crate::core::Effect::OpenUrl(url)])
             }
@@ -742,9 +813,10 @@ impl WorkbenchApp {
             | Intent::CancelOperation(_)
             | Intent::ReorderOperation(..)
             | Intent::ShowAlertOnMap(_)
-            | Intent::PlaceDistancePoint { .. }
+            | Intent::Measure(_)
             | Intent::ToggleMapTool(_)
             | Intent::SetGeoLayer(..)
+            | Intent::StormCells(_)
             | Intent::TopBar(_)
             | Intent::ClearCache
             | Intent::ResetSettings
@@ -764,62 +836,6 @@ impl WorkbenchApp {
                 unreachable!("state-only intent was not consumed by dispatch_state_only")
             }
         }
-    }
-
-    /// Apply a site selection: retarget viz, center the camera, remember the
-    /// preference, close the modal, and queue the timeline/alerts refresh.
-    ///
-    /// Every site-picking surface (modal list, zip/geolocation result, canvas
-    /// marker click) routes here through [`Intent::SelectSite`], so this is the
-    /// single place a site change happens.
-    fn apply_site_selection(&mut self, site_id: &str, lat: f64, lon: f64) {
-        // Every pick — list, search, zip, location or map — completes the
-        // first visit and ends "Pick on map" (restoring the Sites layer).
-        self.chrome.site_required = false;
-        if let Some(was_on) = self.chrome.site_map_pick.take() {
-            self.state.layer_state.geo.nexrad_sites = was_on;
-        }
-        crate::core::site_picker::push_recent(&mut self.state.recent_sites, site_id);
-        self.state.preferred_site = Some(site_id.to_string());
-        self.chrome.site_modal_open = false;
-        if site_id == self.state.viz_state.site_id {
-            // Picking the current site is allowed (a first visit can keep the
-            // default site); nothing to retarget, but a deferred boot tether
-            // still starts.
-            if std::mem::take(&mut self.state.start_live_on_site_select) {
-                self.state.push_command(crate::core::Intent::StartLive);
-            }
-            return;
-        }
-        self.state.viz_state.site_id = site_id.to_string();
-        self.state.viz_state.center_lat = lat;
-        self.state.viz_state.center_lon = lon;
-        self.state
-            .viz_state
-            .set_pan_offset(eframe::egui::Vec2::ZERO);
-        self.state.viz_state.camera.center_on(lat, lon);
-        self.state
-            .push_command(crate::core::Intent::RefreshTimeline {
-                auto_position: true,
-            });
-        self.state.push_command(crate::core::Intent::Diagnostics(
-            crate::core::diagnostics::DiagnosticsIntent::RefreshAlerts,
-        ));
-        self.state.preferred_site = Some(site_id.to_string());
-        self.chrome.site_modal_open = false;
-
-        // Boot-tether deferred from a first visit (no site at launch): now that
-        // a site exists, open tethered to live (spec §7). One-shot — consumed
-        // here so later mid-session site re-selections don't auto-tether.
-        if std::mem::take(&mut self.state.start_live_on_site_select) {
-            self.state.push_command(crate::core::Intent::StartLive);
-        }
-
-        // Tear down the previous radar's stream/GPU/cache state now, in the
-        // same step that retargeted `viz_state` — otherwise the frame between
-        // here and the next `apply_frame_setup` would paint the old site's
-        // sweep under the new site's projection.
-        self.sync_to_active_site();
     }
 
     /// Apply a diagnostics overlay intent through the pure
@@ -851,7 +867,9 @@ impl WorkbenchApp {
             // correct (spec §11.2): the data the displayed frame came from is
             // gone, so drop it rather than holding a stale frame with a
             // discrepancy caption.
-            self.clear_display_no_scan();
+            for site in 0..self.sites.list.len() {
+                self.clear_display_no_scan(site);
+            }
             // Reset the acquisition machinery to match the now-empty cache:
             // the queue, its drawer operations, the progress ghosts, the
             // prefetch settle (its resolved marker would otherwise suppress
@@ -864,8 +882,10 @@ impl WorkbenchApp {
             self.acquisition.coordinator.download_queue.clear();
             self.acquisition.state.cancel_all();
             self.state.download_progress.clear();
-            self.acquisition.prefetch_settle = crate::core::acquisition::PrefetchSettle::default();
-            self.acquisition.request_ledger.clear();
+            for site in self.sites.iter_mut() {
+                site.prefetch_settle = crate::core::acquisition::PrefetchSettle::default();
+                site.ledger.clear();
+            }
         } else {
             // Cache loader is busy; replay the request on the next frame.
             self.state.push_command(crate::core::Intent::ClearCacheNow);
@@ -910,10 +930,10 @@ impl WorkbenchApp {
             self.acquisition
                 .coordinator
                 .cache_load_channel
-                .load_site_timeline(
+                .load_site_timelines(
                     ctx.clone(),
                     self.acquisition.coordinator.facade().clone(),
-                    self.state.viz_state.site_id.clone(),
+                    self.sites.iter().map(|s| s.id.0.clone()).collect(),
                 );
         } else {
             // Cache loader is busy; replay (without auto-position) next frame.
@@ -976,7 +996,7 @@ mod probe_tests {
         let _t = crate::subsystem::Timeline::default();
         let _c = crate::subsystem::Chrome::new();
         let _d = crate::subsystem::Diagnostics::new();
-        let _l = crate::subsystem::Live::new(crate::nexrad::live::realtime::RealtimeChannel::new());
+        let _l = crate::subsystem::Live::new();
     }
 }
 
@@ -1014,6 +1034,7 @@ mod dispatch_tests {
         diagnostics: crate::subsystem::Diagnostics,
         chrome: crate::subsystem::Chrome,
         timeline: crate::subsystem::Timeline,
+        sites: crate::subsystem::Sites,
         outcome: CommandOutcome,
     }
 
@@ -1023,10 +1044,11 @@ mod dispatch_tests {
                 state: crate::state::AppState::default(),
                 playback: crate::subsystem::Playback::default(),
                 acquisition: crate::subsystem::Acquisition::new(crate::data::MainThreadStore::new()),
-                live: crate::subsystem::Live::new(crate::nexrad::RealtimeChannel::new()),
+                live: crate::subsystem::Live::new(),
                 diagnostics: crate::subsystem::Diagnostics::new(),
                 chrome: crate::subsystem::Chrome::new(),
                 timeline: crate::subsystem::Timeline::default(),
+                sites: crate::subsystem::Sites::default(),
                 outcome: CommandOutcome::default(),
             }
         }
@@ -1042,6 +1064,7 @@ mod dispatch_tests {
                 diagnostics: &mut self.diagnostics,
                 chrome: &mut self.chrome,
                 timeline: &self.timeline,
+                sites: &mut self.sites,
             };
             dispatch_state_only(intent, &mut bundle, &mut self.outcome)
         }
@@ -1158,12 +1181,16 @@ mod dispatch_tests {
             Intent::CancelOperation(1),
             Intent::ReorderOperation(1, 1),
             Intent::ShowAlertOnMap("a1".to_string()),
-            Intent::PlaceDistancePoint {
+            Intent::Measure(crate::core::measure::MeasureIntent::Place {
                 lat: 41.0,
                 lon: -93.0,
-            },
+                km_per_px: 1.0,
+            }),
             Intent::ToggleMapTool(crate::core::panels::MapTool::Probe),
             Intent::SetGeoLayer(GeoLayer::Cities, false),
+            Intent::StormCells(crate::core::storm_cell_view::StormCellIntent::SetVisible(
+                true,
+            )),
             Intent::TopBar(TopBarIntent::ToggleTimeZone),
             Intent::ClearCache,
             Intent::ResetSettings,
@@ -1194,7 +1221,7 @@ mod dispatch_tests {
             },
             Intent::InspectScan(1_000.0),
         ];
-        assert_eq!(state_only.len(), 42);
+        assert_eq!(state_only.len(), 43);
         for intent in state_only {
             let mut f = Fixture::new();
             assert_eq!(
@@ -1217,6 +1244,18 @@ mod dispatch_tests {
                 lat: 45.0,
                 lon: -98.0,
             },
+            Intent::AddSite {
+                site_id: "KMLB".to_string(),
+                lat: 28.1,
+                lon: -80.65,
+            },
+            Intent::RemoveSite {
+                site_id: "KMLB".to_string(),
+            },
+            Intent::SetFocus {
+                site_id: "KMLB".to_string(),
+            },
+            Intent::OnlyFocus,
             Intent::OpenExternalUrl("https://example.com/changelog"),
             Intent::LocateMeForSite,
             Intent::SubmitZip("50309".to_string()),
@@ -1233,7 +1272,7 @@ mod dispatch_tests {
             Intent::RetryWorker,
             Intent::Diagnostics(crate::core::diagnostics::DiagnosticsIntent::RefreshAlerts),
         ];
-        assert_eq!(shell.len(), 14);
+        assert_eq!(shell.len(), 18);
         for intent in shell {
             let mut f = Fixture::new();
             let left = f.dispatch(intent.clone());
@@ -1353,7 +1392,7 @@ mod dispatch_tests {
             f.acquisition
                 .coordinator
                 .download_queue
-                .find_by_scan_start(1_000)
+                .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
                 .is_none(),
             "skip must NOT re-enqueue the download (that is RetryFailed)"
         );
@@ -1389,7 +1428,7 @@ mod dispatch_tests {
             .acquisition
             .coordinator
             .download_queue
-            .find_by_scan_start(1_000)
+            .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
             .expect("retry must re-enqueue the download item");
         assert_eq!(item.operation_id, Some(a), "both machines stay correlated");
         // Default viz elevation selection is Fixed { elevation_number: 1 }.
@@ -1402,7 +1441,7 @@ mod dispatch_tests {
     #[wasm_bindgen_test]
     fn fetch_scan_creates_an_operation_and_enqueues_the_listed_file() {
         let mut f = Fixture::new();
-        let site = f.state.viz_state.site_id.clone();
+        let site = f.sites.focus().id.0.clone();
         let date = chrono::DateTime::from_timestamp(1_000, 0)
             .unwrap()
             .date_naive();
@@ -1442,7 +1481,7 @@ mod dispatch_tests {
             .acquisition
             .coordinator
             .download_queue
-            .find_by_scan_start(1_000)
+            .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
             .expect("fetch must enqueue the download item");
         assert_eq!(item.operation_id, Some(op.id));
         assert_eq!(
@@ -1469,7 +1508,7 @@ mod dispatch_tests {
             .acquisition
             .coordinator
             .download_queue
-            .find_by_scan_start(1_000)
+            .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
             .is_none());
         assert!(f.toast().is_some_and(|t| t.contains("still listing")));
     }
@@ -1922,6 +1961,27 @@ mod dispatch_tests {
         assert!(GeoLayer::Cities.get(&f.state.layer_state.geo));
     }
 
+    /// The storm cell intents reach the viz state: the checkbox, the
+    /// clamped slider, and the pointer, which turning the overlay off drops.
+    #[wasm_bindgen_test]
+    fn storm_cell_intents_write_the_viz_state() {
+        use crate::core::storm_cell_view::StormCellIntent as S;
+        let mut f = Fixture::new();
+        f.apply(Intent::StormCells(S::SetVisible(true)));
+        f.apply(Intent::StormCells(S::SetThreshold(99.0)));
+        f.apply(Intent::StormCells(S::Hover(Some((41.0, -93.0)))));
+        let viz = &f.state.viz_state;
+        assert!(viz.storm_cells_visible);
+        assert_eq!(
+            viz.storm_cell_threshold_dbz,
+            crate::core::storm_cells::THRESHOLD_MAX_DBZ
+        );
+        assert_eq!(viz.storm_cell_pointer.hover, Some((41.0, -93.0)));
+        f.apply(Intent::StormCells(S::SetVisible(false)));
+        assert!(!f.state.viz_state.storm_cells_visible);
+        assert_eq!(f.state.viz_state.storm_cell_pointer.hover, None);
+    }
+
     /// Choosing a mode sticks through any zoom, and the speed always stays
     /// one the chosen mode can express (an fps in Frames).
     #[wasm_bindgen_test]
@@ -1942,34 +2002,48 @@ mod dispatch_tests {
         assert!(f.playback.state.speed.macro_frames_per_second().is_some());
     }
 
-    /// `PlaceDistancePoint` cycles start → end → start, so a third click
+    /// A measure click cycles start → end → start, so a third click
     /// restarts the measurement rather than dragging the old end point.
     #[wasm_bindgen_test]
-    fn place_distance_point_cycles_start_end_start() {
+    fn measure_place_cycles_start_end_start() {
+        use crate::core::measure::{Endpoint, MeasureIntent};
         let mut f = Fixture::new();
+        let place = |lat, lon| {
+            Intent::Measure(MeasureIntent::Place {
+                lat,
+                lon,
+                km_per_px: 1.0,
+            })
+        };
+        let at = |e: &Option<Endpoint>| e.as_ref().map(|e| (e.lat, e.lon));
 
-        f.apply(Intent::PlaceDistancePoint {
-            lat: 41.0,
-            lon: -93.0,
-        });
-        assert_eq!(f.state.viz_state.distance_start, Some((41.0, -93.0)));
-        assert_eq!(f.state.viz_state.distance_end, None);
+        f.apply(place(41.0, -93.0));
+        let m = &f.state.viz_state.measurement;
+        assert_eq!(at(&m.start), Some((41.0, -93.0)));
+        assert_eq!(at(&m.end), None);
 
-        f.apply(Intent::PlaceDistancePoint {
-            lat: 42.0,
-            lon: -94.0,
-        });
-        assert_eq!(f.state.viz_state.distance_start, Some((41.0, -93.0)));
-        assert_eq!(f.state.viz_state.distance_end, Some((42.0, -94.0)));
+        f.apply(place(42.0, -94.0));
+        let m = &f.state.viz_state.measurement;
+        assert_eq!(at(&m.start), Some((41.0, -93.0)));
+        assert_eq!(at(&m.end), Some((42.0, -94.0)));
 
-        f.apply(Intent::PlaceDistancePoint {
-            lat: 43.0,
-            lon: -95.0,
-        });
-        assert_eq!(f.state.viz_state.distance_start, Some((43.0, -95.0)));
+        f.apply(place(43.0, -95.0));
+        let m = &f.state.viz_state.measurement;
+        assert_eq!(at(&m.start), Some((43.0, -95.0)));
         assert_eq!(
-            f.state.viz_state.distance_end, None,
+            at(&m.end),
+            None,
             "a finished measurement must restart, not extend"
+        );
+
+        // Switching the tool off drops it.
+        f.state.viz_state.distance_tool_active = true;
+        f.apply(Intent::ToggleMapTool(
+            crate::core::panels::MapTool::Distance,
+        ));
+        assert_eq!(
+            f.state.viz_state.measurement,
+            crate::core::measure::Measurement::default()
         );
     }
 
@@ -1995,8 +2069,11 @@ mod dispatch_tests {
             !f.state.layer_state.geo.alerts_other,
             "a warning must not switch on the watches/advisories layer"
         );
-        assert!((f.state.viz_state.center_lat - 42.0).abs() < 1e-9);
-        assert!((f.state.viz_state.center_lon + 93.0).abs() < 1e-9);
+        let (lat, lon) = f.state.viz_state.map_centre;
+        assert!((lat - 42.0).abs() < 1e-9);
+        assert!((lon + 93.0).abs() < 1e-9);
+        // The map moved; the radar did not.
+        assert!((f.sites.focus().lat - 41.7312).abs() < 1e-9);
         assert_eq!(f.diagnostics.alerts.selected_alert_id, None);
         assert!(!f.diagnostics.alerts.list_modal_open);
     }
@@ -2061,7 +2138,7 @@ mod dispatch_tests {
             .acquisition
             .coordinator
             .download_queue
-            .find_by_scan_start(1_000)
+            .find_by_scan_start(&crate::data::SiteId::new("KDMX"), 1_000)
             .expect("retry must re-enqueue");
         assert_eq!(
             item.elevation_filter, None,
@@ -2135,7 +2212,7 @@ mod dispatch_tests {
         use crate::core::phone_strip::StripZoom;
         let mut f = Fixture::new();
         f.state.frame_now = FrameNow(1_792_238_400.0);
-        f.state.viz_state.site_id = "KTLX".to_string();
+        f.sites.focus_mut().id = crate::data::SiteId::new("KTLX");
         f.playback.state.playing = true;
         f.apply(Intent::OpenGoToDay);
         let day = CalendarDay::of(
@@ -2164,7 +2241,7 @@ mod dispatch_tests {
         use crate::core::calendar::{CalendarDay, FixedZone};
         let mut f = Fixture::new();
         f.state.frame_now = FrameNow(1_792_238_400.0);
-        f.state.viz_state.site_id = "KTLX".to_string();
+        f.sites.focus_mut().id = crate::data::SiteId::new("KTLX");
         f.playback.state.timeline_width_px = 1200.0;
         f.apply(Intent::OpenGoToDay);
         let day = CalendarDay::of(
@@ -2185,7 +2262,7 @@ mod dispatch_tests {
     fn go_to_time_pauses_on_the_time_and_frames_the_overview() {
         let mut f = Fixture::new();
         f.state.frame_now = FrameNow(1_792_238_400.0);
-        f.state.viz_state.site_id = "KTLX".to_string();
+        f.sites.focus_mut().id = crate::data::SiteId::new("KTLX");
         f.playback.state.timeline_width_px = 1200.0;
         f.playback.state.playing = true;
         f.apply(Intent::OpenGoToDay);
@@ -2207,7 +2284,7 @@ mod dispatch_tests {
         use crate::core::calendar::{CalendarDay, FixedZone};
         let mut f = Fixture::new();
         f.state.frame_now = FrameNow(1_792_238_400.0);
-        f.state.viz_state.site_id = "KTLX".to_string();
+        f.sites.focus_mut().id = crate::data::SiteId::new("KTLX");
         f.live.mode_state.phase = LivePhase::Streaming;
         f.playback.state.enter_pinned_live(1_792_238_000.0);
         let day = CalendarDay::of(
@@ -2227,7 +2304,7 @@ mod dispatch_tests {
         use crate::core::calendar::{CalendarDay, FixedZone};
         let mut f = Fixture::new();
         f.state.frame_now = FrameNow(1_792_238_400.0);
-        f.state.viz_state.site_id = "KTLX".to_string();
+        f.sites.focus_mut().id = crate::data::SiteId::new("KTLX");
         let date = chrono::NaiveDate::from_ymd_opt(2024, 5, 6).unwrap();
         let day = CalendarDay::of(date, &FixedZone(0));
         f.timeline.activity.insert_many([crate::data::DayActivity {

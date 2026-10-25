@@ -45,6 +45,9 @@ pub(crate) struct TiltRow {
     /// Quiet words: the waveforms at this angle and any repeats
     /// ("CS · CD · SAILS ×2").
     pub note: Option<String>,
+    /// The repeats alone ("SAILS ×2"), printed on the row: every one of
+    /// them is a frame at this angle.
+    pub repeats: Option<String>,
     pub selected: bool,
     /// Whether the chosen product is recorded at this angle. A row is never
     /// disabled; one the product does not reach says so on hover.
@@ -56,22 +59,19 @@ pub(crate) struct TiltRow {
     pub hover: String,
 }
 
-/// The cuts that share one elevation angle, in volume order.
+/// The cuts that share one elevation angle (to the tenth of a degree, as
+/// [`crate::core::tilt`] matches a held angle), in volume order.
 struct AngleGroup<'a> {
     angle: f32,
     cuts: Vec<&'a ElevationListEntry>,
 }
-
-/// Angles closer than this are one row (the VCP's commanded angles differ by
-/// at least 0.3°; the encoder wobbles by hundredths).
-const SAME_ANGLE_DEG: f32 = 0.05;
 
 fn angle_groups(entries: &[ElevationListEntry]) -> Vec<AngleGroup<'_>> {
     let mut groups: Vec<AngleGroup<'_>> = Vec::new();
     for e in entries {
         match groups
             .iter_mut()
-            .find(|g| (g.angle - e.angle).abs() < SAME_ANGLE_DEG)
+            .find(|g| crate::core::tilt::same_angle(g.angle, e.angle))
         {
             Some(g) => g.cuts.push(e),
             None => groups.push(AngleGroup {
@@ -147,6 +147,14 @@ fn group_note(g: &AngleGroup<'_>) -> Option<String> {
             words.push(w.to_string());
         }
     }
+    words.extend(group_repeats(g));
+    (!words.is_empty()).then(|| words.join(" \u{00B7} "))
+}
+
+/// "SAILS ×2", "MRLE ×1": how many times the volume comes back to this
+/// angle.
+fn group_repeats(g: &AngleGroup<'_>) -> Vec<String> {
+    let mut words: Vec<String> = Vec::new();
     // A repeat is a whole split pair, so count the repeated surveillance
     // cuts when there are any.
     let count = |f: fn(&ElevationListEntry) -> bool| {
@@ -166,7 +174,7 @@ fn group_note(g: &AngleGroup<'_>) -> Option<String> {
     if mrle > 0 {
         words.push(format!("MRLE \u{00D7}{mrle}"));
     }
-    (!words.is_empty()).then(|| words.join(" \u{00B7} "))
+    words
 }
 
 /// The one tilt list: Latest, then one row per elevation angle of the
@@ -180,6 +188,7 @@ pub(crate) fn tilt_rows(
         label: "Latest".to_string(),
         angle: None,
         note: None,
+        repeats: None,
         selected: selection.is_auto(),
         reaches_product: true,
         pick: TiltPick::Latest,
@@ -192,6 +201,7 @@ pub(crate) fn tilt_rows(
             label: angle_label(0.5),
             angle: Some(0.5),
             note: None,
+            repeats: None,
             selected: selected_number == Some(1),
             reaches_product: true,
             pick: TiltPick::Fixed {
@@ -224,6 +234,7 @@ pub(crate) fn tilt_rows(
             label: angle_label(g.angle),
             angle: Some(g.angle),
             note: group_note(&g),
+            repeats: Some(group_repeats(&g).join(" \u{00B7} ")).filter(|r| !r.is_empty()),
             selected,
             reaches_product: reaches,
             pick: TiltPick::Fixed {
@@ -557,7 +568,7 @@ impl VolumeLadder {
                 .position(|r| {
                     r.tilt
                         .angle
-                        .is_some_and(|a| (a - angle).abs() < SAME_ANGLE_DEG)
+                        .is_some_and(|a| crate::core::tilt::same_angle(a, angle))
                 })
                 .unwrap_or(1)
         };

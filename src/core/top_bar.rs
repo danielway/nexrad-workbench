@@ -55,7 +55,10 @@ pub(crate) enum TopBarIntent {
 pub(crate) struct TopBarInputs<'a> {
     pub session: &'a SessionVm,
     pub now_secs: f64,
+    /// The focus site.
     pub site_id: &'a str,
+    /// How many other sites are on the map.
+    pub other_sites: usize,
     pub product: RadarProduct,
     pub elevation_selection: &'a ElevationSelection,
     /// The volume's cuts, as the panel's elevation list builds them.
@@ -74,12 +77,16 @@ pub(crate) struct TopBarInputs<'a> {
     pub version: &'a str,
 }
 
-/// The site picker: the ID always, the city first to fold.
+/// The site picker: the focus's ID always, the city first to fold. With
+/// other sites on the map it reads `KTBW · +2` and leaves the city out.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct SitePicker {
     pub id: String,
-    /// "Oklahoma City, OK". `None` for a site the registry doesn't know.
+    /// "Oklahoma City, OK". `None` for a site the registry doesn't know,
+    /// and with other sites on the map.
     pub city: Option<String>,
+    /// `· +2` with two other sites on the map; `None` with one site.
+    pub others: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -203,12 +210,16 @@ impl TopBarVm {
         let session = inputs.session;
         let frame = session.frame.as_ref();
 
+        let others = (inputs.other_sites > 0).then(|| format!("\u{00B7} +{}", inputs.other_sites));
         let site = SitePicker {
             id: inputs.site_id.to_string(),
-            city: crate::data::get_site(inputs.site_id).map(|s| match s.state {
-                Some(st) => format!("{}, {st}", title_case(s.name)),
-                None => title_case(s.name),
-            }),
+            city: crate::data::get_site(inputs.site_id)
+                .filter(|_| others.is_none())
+                .map(|s| match s.state {
+                    Some(st) => format!("{}, {st}", title_case(s.name)),
+                    None => title_case(s.name),
+                }),
+            others,
         };
 
         let product = ProductPicker {
@@ -563,6 +574,7 @@ mod tests {
         SessionVm::build(SessionInputs {
             now: FrameNow(now),
             live_status: &LiveStatus::default(),
+            any_site_streams: false,
             live_phase: LivePhase::Idle,
             last_exit: None,
             selection,
@@ -572,6 +584,7 @@ mod tests {
             caption_context: crate::core::canvas::CaptionContext::default(),
             loop_mode: crate::core::LoopMode::Loop,
             volume_3d_active: false,
+            others: Vec::new(),
         })
     }
 
@@ -583,6 +596,7 @@ mod tests {
         alerts: AlertsState,
         visible: Vec<VisibleAlert>,
         bounds: bool,
+        other_sites: usize,
     }
 
     impl Fixture {
@@ -598,6 +612,7 @@ mod tests {
                 },
                 visible: Vec::new(),
                 bounds: true,
+                other_sites: 0,
             }
         }
 
@@ -607,6 +622,7 @@ mod tests {
                     session: &self.session,
                     now_secs: self.now,
                     site_id: "KTLX",
+                    other_sites: self.other_sites,
                     product: RadarProduct::Reflectivity,
                     elevation_selection: &self.selection,
                     elevations: &self.elevations,
@@ -640,6 +656,22 @@ mod tests {
             is_mrle: false,
             cached_products: products.iter().map(|s| s.to_string()).collect(),
         }
+    }
+
+    #[wasm_bindgen_test]
+    fn the_site_control_counts_the_other_sites_on_the_map() {
+        let now = t(11, 24, 0);
+        let f = displayed(t(11, 22, 7), 0.5);
+        let mut fx = pinned(now, &f);
+        let one = fx.build().site;
+        assert_eq!(one.id, "KTLX");
+        assert_eq!(one.others, None);
+        assert_eq!(one.city.as_deref(), Some("Oklahoma City, OK"));
+        fx.other_sites = 2;
+        let three = fx.build().site;
+        assert_eq!(three.id, "KTLX");
+        assert_eq!(three.others.as_deref(), Some("\u{00B7} +2"));
+        assert_eq!(three.city, None);
     }
 
     // ── The readout in five states (§9) ────────────────────────────────

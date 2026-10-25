@@ -23,7 +23,6 @@ use eframe::egui;
 use super::api::{self, FetchParams};
 use super::channel::{MpingChannel, MpingEvent};
 use crate::core::MpingState;
-use crate::data::get_site;
 
 /// Half-window around the fetch anchor, in seconds. A fetch spans
 /// `[anchor - HALF_WINDOW, anchor + HALF_WINDOW]`.
@@ -57,30 +56,32 @@ const LIVE_LOOKAHEAD_SECS: i64 = 5 * 60;
 /// misconfigured key or a CORS failure doesn't hammer the server.
 const ERROR_RETRY_MS: f64 = 30_000.0;
 
-/// Radius around the active radar site, in meters.
+/// Radius around the map centre, in meters.
 const RADIUS_METERS: u32 = 300_000;
 
 /// Per-frame inputs computed by the caller. Lets the manager stay
 /// decoupled from `AppState`.
-pub(crate) struct MpingTickInputs<'a> {
+pub(crate) struct MpingTickInputs {
     /// Whether the mPING overlay layer is currently visible.
     pub layer_visible: bool,
     /// Whether the playhead is tracking the live edge (pinned to now or
     /// replaying the lookback loop). Selects the live-tailing regime.
     pub pinned_to_now: bool,
-    /// Active radar site id (any case; manager uppercases for lookup).
-    pub site_id: &'a str,
+    /// The map centre `(lat, lon)` the reports are fetched around
+    /// (`VizState::map_centre`).
+    pub centre: (f64, f64),
     /// Current playback position in Unix seconds.
     pub playback_secs: f64,
 }
 
 /// The time window we currently hold reports for, plus the identity it was
-/// fetched under. A change in site or key invalidates coverage.
+/// fetched under. A change in the map centre or the key invalidates
+/// coverage.
 #[derive(Clone, Debug, PartialEq)]
 struct Covered {
     lo_ms: f64,
     hi_ms: f64,
-    site_id: String,
+    centre: (f64, f64),
     key_fingerprint: u64,
 }
 
@@ -114,7 +115,7 @@ impl MpingManager {
         &mut self,
         ctx: &egui::Context,
         mping: &mut MpingState,
-        inputs: MpingTickInputs<'_>,
+        inputs: MpingTickInputs,
         errors: &mut crate::core::ErrorContext,
     ) {
         let events = self.channel.drain();
@@ -136,13 +137,6 @@ impl MpingManager {
             _ => return,
         };
 
-        // Resolve the active site center.
-        let site_id = inputs.site_id.to_uppercase();
-        let site = match get_site(&site_id) {
-            Some(s) => s,
-            None => return,
-        };
-
         if self.fetch_in_flight {
             return;
         }
@@ -153,7 +147,7 @@ impl MpingManager {
 
         let needs = refetch_needed(
             self.covered.as_ref(),
-            &site_id,
+            inputs.centre,
             key_fingerprint,
             playback_ms,
             inputs.pinned_to_now,
@@ -175,8 +169,8 @@ impl MpingManager {
         let (min_ms, max_ms) =
             fetch_window_ms(inputs.playback_secs, now_ms / 1000.0, inputs.pinned_to_now);
         let params = FetchParams {
-            center_lon: site.lon,
-            center_lat: site.lat,
+            center_lon: inputs.centre.1,
+            center_lat: inputs.centre.0,
             radius_m: RADIUS_METERS,
             min_obtime_ms: min_ms,
             max_obtime_ms: max_ms,
@@ -190,7 +184,7 @@ impl MpingManager {
         self.covered = Some(Covered {
             lo_ms: min_ms as f64,
             hi_ms: max_ms as f64,
-            site_id,
+            centre: inputs.centre,
             key_fingerprint,
         });
         api::spawn_fetch(ctx.clone(), self.channel.clone(), api_key, params);
@@ -289,7 +283,7 @@ fn fetch_window_ms(playback_secs: f64, now_secs: f64, pinned: bool) -> (i64, i64
 
 fn refetch_needed(
     covered: Option<&Covered>,
-    site_id: &str,
+    centre: (f64, f64),
     key_fingerprint: u64,
     playback_ms: f64,
     pinned: bool,
@@ -301,7 +295,7 @@ fn refetch_needed(
         return true;
     };
     // Identity change always forces a refetch.
-    if c.site_id != site_id || c.key_fingerprint != key_fingerprint {
+    if c.centre != centre || c.key_fingerprint != key_fingerprint {
         return true;
     }
     if pinned {
@@ -333,6 +327,9 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     const MIN_MS: f64 = 60_000.0;
+    /// Two map centres (Oklahoma City, Fort Worth).
+    const TLX: (f64, f64) = (35.33, -97.28);
+    const FWS: (f64, f64) = (32.57, -97.3);
 
     fn covered_at(center_min: f64) -> Covered {
         // A window centred `center_min` minutes past epoch, ±30 min.
@@ -340,7 +337,7 @@ mod tests {
         Covered {
             lo_ms: center - 30.0 * MIN_MS,
             hi_ms: center + 30.0 * MIN_MS,
-            site_id: "KTLX".to_string(),
+            centre: TLX,
             key_fingerprint: 7,
         }
     }
@@ -351,7 +348,7 @@ mod tests {
         let c = covered_at(100.0);
         // 5 min forward of centre — well inside [70, 130] minus 15-min margins.
         let p = 105.0 * MIN_MS;
-        assert!(!refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+        assert!(!refetch_needed(Some(&c), TLX, 7, p, false, 0.0, 0.0));
     }
 
     // Historical regime: nearing the low (early) edge refetches.
@@ -363,7 +360,7 @@ mod tests {
         // invert the test's meaning.
         let margin_min = REFETCH_MARGIN_SECS / 60.0;
         let p = (70.0 + margin_min - 1.0) * MIN_MS;
-        assert!(refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+        assert!(refetch_needed(Some(&c), TLX, 7, p, false, 0.0, 0.0));
     }
 
     // Historical regime: forward playback nearing the high edge refetches.
@@ -372,7 +369,7 @@ mod tests {
         let c = covered_at(100.0);
         let margin_min = REFETCH_MARGIN_SECS / 60.0;
         let p = (130.0 - margin_min + 1.0) * MIN_MS;
-        assert!(refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+        assert!(refetch_needed(Some(&c), TLX, 7, p, false, 0.0, 0.0));
     }
 
     // Identity change forces a refetch even when the playhead is centred.
@@ -380,14 +377,14 @@ mod tests {
     fn refetch_on_site_or_key_change() {
         let c = covered_at(100.0);
         let p = 100.0 * MIN_MS;
-        assert!(refetch_needed(Some(&c), "KFWS", 7, p, false, 0.0, 0.0));
-        assert!(refetch_needed(Some(&c), "KTLX", 9, p, false, 0.0, 0.0));
+        assert!(refetch_needed(Some(&c), FWS, 7, p, false, 0.0, 0.0));
+        assert!(refetch_needed(Some(&c), TLX, 9, p, false, 0.0, 0.0));
     }
 
     // Nothing held yet always refetches.
     #[wasm_bindgen_test]
     fn refetch_when_uncovered() {
-        assert!(refetch_needed(None, "KTLX", 7, 0.0, false, 0.0, 0.0));
+        assert!(refetch_needed(None, TLX, 7, 0.0, false, 0.0, 0.0));
     }
 
     // Live-tailing ignores coverage and refetches only on the interval.
@@ -398,7 +395,7 @@ mod tests {
         // Just polled — not yet due even though pinned.
         assert!(!refetch_needed(
             Some(&c),
-            "KTLX",
+            TLX,
             7,
             p,
             true,
@@ -408,7 +405,7 @@ mod tests {
         // Interval elapsed — due.
         assert!(refetch_needed(
             Some(&c),
-            "KTLX",
+            TLX,
             7,
             p,
             true,
@@ -424,16 +421,19 @@ mod coverage_tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     const MIN_MS: f64 = 60_000.0;
+    /// Two map centres (Oklahoma City, Fort Worth).
+    const TLX: (f64, f64) = (35.33, -97.28);
+    const FWS: (f64, f64) = (32.57, -97.3);
 
     // Local builder mirroring the sibling `mod tests` helper (those helpers
     // are private to that module). Window centred `center_min` minutes past
-    // epoch, ±30 min, fixed identity (site "KTLX", fingerprint 7).
+    // epoch, ±30 min, fixed identity (site TLX, fingerprint 7).
     fn covered_at(center_min: f64) -> Covered {
         let center = center_min * MIN_MS;
         Covered {
             lo_ms: center - 30.0 * MIN_MS,
             hi_ms: center + 30.0 * MIN_MS,
-            site_id: "KTLX".to_string(),
+            centre: TLX,
             key_fingerprint: 7,
         }
     }
@@ -485,7 +485,7 @@ mod coverage_tests {
         let c = covered_at(100.0);
         let p = 100.0 * MIN_MS;
         // now == last_poll → interval not elapsed, yet site differs.
-        assert!(refetch_needed(Some(&c), "KFWS", 7, p, true, 0.0, 0.0));
+        assert!(refetch_needed(Some(&c), FWS, 7, p, true, 0.0, 0.0));
     }
 
     // Pinned + key change: same — identity mismatch wins over the interval.
@@ -493,7 +493,7 @@ mod coverage_tests {
     fn pinned_key_change_forces_refetch_before_interval() {
         let c = covered_at(100.0);
         let p = 100.0 * MIN_MS;
-        assert!(refetch_needed(Some(&c), "KTLX", 9, p, true, 0.0, 0.0));
+        assert!(refetch_needed(Some(&c), TLX, 9, p, true, 0.0, 0.0));
     }
 
     // Pinned ignores the historical edge logic: a playhead far outside the
@@ -506,7 +506,7 @@ mod coverage_tests {
         let p = 200.0 * MIN_MS;
         assert!(!refetch_needed(
             Some(&c),
-            "KTLX",
+            TLX,
             7,
             p,
             true,
@@ -524,7 +524,7 @@ mod coverage_tests {
         let c = covered_at(100.0);
         // lo = 70 min, margin = 15 min → comfortable low edge = 85 min.
         let p = 85.0 * MIN_MS;
-        assert!(!refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+        assert!(!refetch_needed(Some(&c), TLX, 7, p, false, 0.0, 0.0));
     }
 
     // Exactly at the comfortable high edge (hi - margin = 115 min): strict
@@ -534,7 +534,7 @@ mod coverage_tests {
         let c = covered_at(100.0);
         // hi = 130 min, margin = 15 min → comfortable high edge = 115 min.
         let p = 115.0 * MIN_MS;
-        assert!(!refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+        assert!(!refetch_needed(Some(&c), TLX, 7, p, false, 0.0, 0.0));
     }
 
     // Just inside the low edge by 1 ms still holds (proves the boundary is
@@ -543,7 +543,7 @@ mod coverage_tests {
     fn historical_one_ms_inside_low_edge_holds() {
         let c = covered_at(100.0);
         let p = 85.0 * MIN_MS + 1.0;
-        assert!(!refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+        assert!(!refetch_needed(Some(&c), TLX, 7, p, false, 0.0, 0.0));
     }
 
     // Playhead far below the covered window (before lo entirely) refetches.
@@ -552,7 +552,7 @@ mod coverage_tests {
         let c = covered_at(100.0);
         // 10 min past epoch is far below the [70, 130] window.
         let p = 10.0 * MIN_MS;
-        assert!(refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+        assert!(refetch_needed(Some(&c), TLX, 7, p, false, 0.0, 0.0));
     }
 
     // ── fetch_window_ms: where the window is anchored ──
@@ -606,12 +606,12 @@ mod coverage_tests {
         let c = Covered {
             lo_ms: center_ms - (HALF_WINDOW_SECS as f64) * 1000.0,
             hi_ms: center_ms + (HALF_WINDOW_SECS as f64) * 1000.0,
-            site_id: "KTLX".to_string(),
+            centre: TLX,
             key_fingerprint: 7,
         };
         for offset_min in [-30.0, -15.0, 0.0, 15.0, 30.0] {
             let p = center_ms + offset_min * MIN_MS;
-            assert!(!refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+            assert!(!refetch_needed(Some(&c), TLX, 7, p, false, 0.0, 0.0));
         }
     }
 }

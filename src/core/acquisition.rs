@@ -44,6 +44,16 @@ pub(crate) fn reactive_prefetch_allowed(
     !playhead_attached && !queue_paused && autofetch_while_scrubbing && !scrub_in_progress
 }
 
+/// Whether a site's live stream owns its acquisition this frame, so the
+/// archive prefetch must leave it alone: the playhead is attached to the
+/// live edge AND that site's stream is running. A site whose stream never
+/// connected or gave up (a dead chunk feed on S3) reads the archive like a
+/// detached playhead, so it still shows its latest volume beside the sites
+/// that stream.
+pub(crate) fn stream_owns_acquisition(playhead_attached: bool, stream_active: bool) -> bool {
+    playhead_attached && stream_active
+}
+
 /// How a just-finalized timeline selection should be fetched.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum SelectionGate {
@@ -89,7 +99,41 @@ pub(crate) fn bulk_confirm_secs(layout: crate::core::phone::DeviceLayout) -> f64
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct RangeDownloadPrompt {
     pub range: (f64, f64),
+    /// The sum over the sites whose listing knows a volume inside the range.
     pub cost: crate::core::timeline_view::RangeCost,
+    /// How many sites the range is fetched for.
+    pub sites: u32,
+    /// How many of them know no volume inside it yet (priced by estimate).
+    pub unpriced_sites: u32,
+}
+
+impl RangeDownloadPrompt {
+    /// The prompt for `range` from each site's own cost: a range is fetched
+    /// for every site on the map, so the confirmation prices the sum.
+    pub(crate) fn priced(
+        range: (f64, f64),
+        costs: &[crate::core::timeline_view::RangeCost],
+    ) -> Self {
+        let mut cost = crate::core::timeline_view::RangeCost {
+            duration_secs: (range.1 - range.0).abs(),
+            ..Default::default()
+        };
+        let mut unpriced_sites = 0;
+        for c in costs {
+            if c.scans == 0 {
+                unpriced_sites += 1;
+            } else {
+                cost.scans += c.scans;
+                cost.fetch_bytes += c.fetch_bytes;
+            }
+        }
+        Self {
+            range,
+            cost,
+            sites: costs.len() as u32,
+            unpriced_sites,
+        }
+    }
 }
 
 /// The confirmation's words.
@@ -104,7 +148,9 @@ pub(crate) struct RangeDownloadText {
 }
 
 /// The confirmation's words for `prompt`. `fallback_scan_secs` is the volume
-/// cadence the estimate assumes when no volume inside the range is known.
+/// cadence the estimate assumes for a site that knows no volume inside the
+/// range. With several sites the size leads with their count:
+/// `3 sites · 90 scans, 1.3 GB to download`.
 pub(crate) fn range_download_text(
     prompt: &RangeDownloadPrompt,
     fallback_scan_secs: f64,
@@ -120,7 +166,12 @@ pub(crate) fn range_download_text(
             format!("{n} scans")
         }
     };
-    let size = if cost.scans > 0 {
+    let lead = if prompt.sites > 1 {
+        format!("{} sites \u{00B7} ", prompt.sites)
+    } else {
+        String::new()
+    };
+    let size = if prompt.unpriced_sites == 0 && cost.scans > 0 {
         if cost.fetch_bytes == 0 {
             format!("{}, all on this device", scans(cost.scans as u64))
         } else {
@@ -131,16 +182,20 @@ pub(crate) fn range_download_text(
             )
         }
     } else {
-        let count = (dur / fallback_scan_secs.max(1.0)).ceil().max(1.0) as u64;
+        let per_site = (dur / fallback_scan_secs.max(1.0)).ceil().max(1.0) as u64;
+        let estimated = per_site * u64::from(prompt.unpriced_sites.max(1));
         format!(
             "About {}, roughly {}",
-            scans(count),
+            scans(cost.scans as u64 + estimated),
             crate::core::timeline_view::format_bytes(
-                count.saturating_mul(crate::core::AVG_SCAN_BYTES)
+                cost.fetch_bytes + estimated.saturating_mul(crate::core::AVG_SCAN_BYTES)
             )
         )
     };
-    RangeDownloadText { subtitle, size }
+    RangeDownloadText {
+        subtitle,
+        size: format!("{lead}{size}"),
+    }
 }
 
 /// The distinct UTC dates a `[start, end]` second-range touches (one, or two
@@ -426,6 +481,17 @@ pub(crate) struct LedgerSummary {
     pub failed_backoff: u32,
 }
 
+impl LedgerSummary {
+    /// Two ledgers' counts together: the activity surface sums every site's.
+    pub(crate) fn merge(self, other: Self) -> Self {
+        Self {
+            awaiting_timeline: self.awaiting_timeline + other.awaiting_timeline,
+            unavailable: self.unavailable + other.unavailable,
+            failed_backoff: self.failed_backoff + other.failed_backoff,
+        }
+    }
+}
+
 /// In-memory ledger of recently requested scans, keyed by listing
 /// `scan_start`. Third dedup input to [`prefetch_already_satisfied`],
 /// alongside the queue snapshot and the timeline: it survives the queue's
@@ -609,6 +675,23 @@ impl RequestLedger {
             .collect()
     }
 
+    /// Scan starts requested and not yet on the timeline: enqueued,
+    /// downloading or ingesting, or ingested and awaiting the timeline,
+    /// TTL-filtered. A site's lane draws them as in flight unless the queue
+    /// still holds them.
+    pub(crate) fn in_progress_scan_starts(&self, now_ms: f64) -> Vec<i64> {
+        self.entries
+            .iter()
+            .filter(|(_, e)| match e.state {
+                LedgerState::Pending { since_ms } | LedgerState::AwaitingTimeline { since_ms } => {
+                    now_ms - since_ms <= LEDGER_PENDING_TTL_MS
+                }
+                _ => false,
+            })
+            .map(|(&k, _)| k)
+            .collect()
+    }
+
     fn entry_near_mut(&mut self, scan_start: i64, tolerance_secs: i64) -> Option<&mut LedgerEntry> {
         let key = self
             .entries
@@ -642,6 +725,10 @@ pub(crate) enum IngestFailureAction {
     RetryQuietly { scan_start: i64 },
     /// Report it: record the error and back off automatic requests.
     Report,
+    /// Not a failure: a render asked for a sweep the cache does not hold
+    /// (yet). Nothing is recorded and nothing backs off; the canvas just
+    /// shows that it has no data for the selection.
+    NoSweep,
 }
 
 /// Which scans have had their one quiet retry after a truncated download.
@@ -654,9 +741,17 @@ pub(crate) struct IngestRetries {
 impl IngestRetries {
     /// Decide a failed ingest of the scan listed at `scan_start` (`None` when
     /// the failure could not be tied to a scan). A truncated archive gets
-    /// one quiet retry per scan; anything else, or a second truncation, is
-    /// reported.
-    pub(crate) fn decide(&mut self, scan_start: Option<i64>, message: &str) -> IngestFailureAction {
+    /// one quiet retry per scan; a missing sweep is no failure at all;
+    /// anything else, or a second truncation, is reported.
+    pub(crate) fn decide(
+        &mut self,
+        scan_start: Option<i64>,
+        kind: crate::core::WorkerErrorKind,
+        message: &str,
+    ) -> IngestFailureAction {
+        if kind == crate::core::WorkerErrorKind::NotFound {
+            return IngestFailureAction::NoSweep;
+        }
         match scan_start {
             Some(s) if ingest_failure_is_truncated(message) && self.retried.insert(s) => {
                 IngestFailureAction::RetryQuietly { scan_start: s }
@@ -966,7 +1061,7 @@ pub(crate) struct ReactivePrefetchEnv<'a> {
     pub now_ms: f64,
     /// `crate::PREFETCH_DEBOUNCE_MS`.
     pub debounce_ms: f64,
-    /// `viz_state.site_id`.
+    /// The planning site's id (`SiteState::id`).
     pub site_id: &'a str,
     /// `viz_state.product.to_worker_string()`.
     pub product_worker_string: &'a str,
@@ -1441,14 +1536,14 @@ mod tests {
     #[wasm_bindgen_test]
     fn the_confirmation_says_the_real_size_when_the_listing_knows_it() {
         use crate::core::timeline_view::RangeCost;
-        let prompt = RangeDownloadPrompt {
-            range: (0.0, 2.5 * 3600.0),
-            cost: RangeCost {
+        let prompt = RangeDownloadPrompt::priced(
+            (0.0, 2.5 * 3600.0),
+            &[RangeCost {
                 duration_secs: 2.5 * 3600.0,
                 scans: 30,
                 fetch_bytes: 210_000_000,
-            },
-        };
+            }],
+        );
         let t = range_download_text(&prompt, 300.0);
         assert_eq!(t.subtitle, "2.5 hours selected");
         assert_eq!(t.size, "30 scans, 210 MB to download");
@@ -1464,12 +1559,43 @@ mod tests {
             "30 scans, all on this device"
         );
         // Nothing known inside it yet: the cadence estimate.
-        let unknown = RangeDownloadPrompt {
-            cost: RangeCost::default(),
-            ..prompt
-        };
+        let unknown = RangeDownloadPrompt::priced(prompt.range, &[RangeCost::default()]);
         let t = range_download_text(&unknown, 300.0);
         assert!(t.size.starts_with("About 30 scans, roughly "), "{}", t.size);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_confirmation_prices_the_sum_over_every_site() {
+        use crate::core::timeline_view::RangeCost;
+        let site = |scans, fetch_bytes| RangeCost {
+            duration_secs: 2.5 * 3600.0,
+            scans,
+            fetch_bytes,
+        };
+        let three = RangeDownloadPrompt::priced(
+            (0.0, 2.5 * 3600.0),
+            &[
+                site(30, 450_000_000),
+                site(30, 430_000_000),
+                site(30, 420_000_000),
+            ],
+        );
+        assert_eq!(three.sites, 3);
+        assert_eq!(
+            range_download_text(&three, 300.0).size,
+            "3 sites \u{00B7} 90 scans, 1.3 GB to download"
+        );
+        // One site's listing not in yet: its share is estimated.
+        let partial = RangeDownloadPrompt::priced(
+            (0.0, 2.5 * 3600.0),
+            &[site(30, 450_000_000), RangeCost::default()],
+        );
+        assert_eq!(partial.unpriced_sites, 1);
+        let t = range_download_text(&partial, 300.0).size;
+        assert!(
+            t.starts_with("2 sites \u{00B7} About 60 scans, roughly "),
+            "{t}"
+        );
     }
 
     // ── decide_selection_gate ──
@@ -1580,6 +1706,18 @@ mod coverage_tests {
         assert!(!reactive_prefetch_allowed(false, false, true, true));
         // …and releasing the drag re-allows it on the very next frame.
         assert!(reactive_prefetch_allowed(false, false, true, false));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_site_without_a_running_stream_reads_the_archive_while_live() {
+        // Attached and streaming: the stream owns the site.
+        assert!(stream_owns_acquisition(true, true));
+        // Attached, but this site's stream is not running (never connected
+        // or gave up): the archive pump runs for it.
+        assert!(!stream_owns_acquisition(true, false));
+        // Detached: the archive pump runs whatever the stream does.
+        assert!(!stream_owns_acquisition(false, true));
+        assert!(!stream_owns_acquisition(false, false));
     }
 
     // ── decide_selection_gate: edge spans ──
@@ -1873,6 +2011,8 @@ mod reducer_tests {
 
     // ── failed ingests ──────────────────────────────────────────────────────
 
+    const UNKNOWN: crate::core::WorkerErrorKind = crate::core::WorkerErrorKind::Unknown;
+
     const TRUNCATED: &str =
         "Failed to split archive: truncated record: expected 1723139 bytes, got 587040";
 
@@ -1881,14 +2021,39 @@ mod reducer_tests {
     fn truncated_ingest_retries_once_then_reports() {
         let mut r = IngestRetries::default();
         assert_eq!(
-            r.decide(Some(600), TRUNCATED),
+            r.decide(Some(600), UNKNOWN, TRUNCATED),
             IngestFailureAction::RetryQuietly { scan_start: 600 }
         );
-        assert_eq!(r.decide(Some(600), TRUNCATED), IngestFailureAction::Report);
+        assert_eq!(
+            r.decide(Some(600), UNKNOWN, TRUNCATED),
+            IngestFailureAction::Report
+        );
         // Another scan still gets its own retry.
         assert_eq!(
-            r.decide(Some(900), TRUNCATED),
+            r.decide(Some(900), UNKNOWN, TRUNCATED),
             IngestFailureAction::RetryQuietly { scan_start: 900 }
+        );
+    }
+
+    // A render that finds no stored sweep for the selection is not an
+    // error: nothing is reported and the scan is not backed off.
+    #[wasm_bindgen_test]
+    fn a_missing_sweep_is_not_a_failure() {
+        let mut r = IngestRetries::default();
+        let not_found = crate::core::WorkerErrorKind::NotFound;
+        assert_eq!(
+            r.decide(
+                Some(600),
+                not_found,
+                "No pre-computed sweep for elev=1 product=reflectivity"
+            ),
+            IngestFailureAction::NoSweep
+        );
+        assert_eq!(r.decide(None, not_found, ""), IngestFailureAction::NoSweep);
+        // It does not use up a truncated scan's quiet retry.
+        assert_eq!(
+            r.decide(Some(600), UNKNOWN, TRUNCATED),
+            IngestFailureAction::RetryQuietly { scan_start: 600 }
         );
     }
 
@@ -1897,13 +2062,16 @@ mod reducer_tests {
     fn other_ingest_failures_are_reported() {
         let mut r = IngestRetries::default();
         assert_eq!(
-            r.decide(Some(600), "No records found"),
+            r.decide(Some(600), UNKNOWN, "No records found"),
             IngestFailureAction::Report
         );
-        assert_eq!(r.decide(None, TRUNCATED), IngestFailureAction::Report);
+        assert_eq!(
+            r.decide(None, UNKNOWN, TRUNCATED),
+            IngestFailureAction::Report
+        );
         // A reported failure does not use up the scan's retry.
         assert_eq!(
-            r.decide(Some(600), TRUNCATED),
+            r.decide(Some(600), UNKNOWN, TRUNCATED),
             IngestFailureAction::RetryQuietly { scan_start: 600 }
         );
     }
@@ -2326,6 +2494,45 @@ mod reducer_tests {
         let mut led = RequestLedger::default();
         led.note_enqueued(1300, Some(1), 0.0);
         assert_eq!(led.summarize(1.0), LedgerSummary::default());
+    }
+
+    #[wasm_bindgen_test]
+    fn in_progress_runs_from_enqueue_until_the_timeline_sees_the_scan() {
+        let mut led = RequestLedger::default();
+        led.note_enqueued(1300, Some(1), 0.0);
+        led.note_enqueued(2300, Some(1), 0.0);
+        led.note_ingested(2300, TOL, 10.0);
+        led.note_failed(3300, TOL, 10.0);
+        let mut starts = led.in_progress_scan_starts(20.0);
+        starts.sort();
+        assert_eq!(starts, vec![1300, 2300]);
+        // Past the TTL nothing is in progress.
+        assert!(led
+            .in_progress_scan_starts(LEDGER_PENDING_TTL_MS + 20.0)
+            .is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn summaries_merge_by_adding_each_count() {
+        let a = LedgerSummary {
+            awaiting_timeline: 2,
+            unavailable: 1,
+            failed_backoff: 0,
+        };
+        let b = LedgerSummary {
+            awaiting_timeline: 1,
+            unavailable: 0,
+            failed_backoff: 3,
+        };
+        assert_eq!(
+            a.merge(b),
+            LedgerSummary {
+                awaiting_timeline: 3,
+                unavailable: 1,
+                failed_backoff: 3,
+            }
+        );
+        assert_eq!(a.merge(LedgerSummary::default()), a);
     }
 
     /// An entry past its TTL no longer suppresses anything, so it must not be

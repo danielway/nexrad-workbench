@@ -33,7 +33,13 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         // --- Phase 0: Split into LDM records ---
         let t_split = web_time::Instant::now();
-        let file = nexrad_data::volume::File::new(data);
+        // Archive files from before about 2016 are gzip-wrapped (`.gz` on
+        // S3); `decompress` inflates those and passes the rest through.
+        let file = nexrad_data::volume::File::new(data)
+            .decompress()
+            .map_err(|e| {
+                wasm_bindgen::JsValue::from_str(&format!("Failed to gunzip archive: {}", e))
+            })?;
         // Scan identity comes from the decoded volume-header collection time
         // (whole seconds), never the S3 filename. This matches the realtime
         // path's `volume_header_start_secs` and `decode_start_chunk`, so an
@@ -96,7 +102,8 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         );
 
         // --- Phase 2: Group + extract sweeps into uploads ---
-        // A filter-scoped fetch only keeps the requested elevation cuts. The
+        // A filter-scoped fetch only keeps the requested elevation cuts (and
+        // every other visit of their angles). The
         // whole file was still decoded above (records are interleaved, so the
         // VCP and timing depend on seeing them all), but dropping unwanted cuts
         // here skips the expensive sweep-blob extraction + IDB write for them.
@@ -104,7 +111,10 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let mut by_elevation =
             crate::nexrad::decode::ingest_phases::group_radials_by_elevation(&all_radials);
         if !wanted_elevations.is_empty() {
-            by_elevation.retain(|elev, _| wanted_elevations.contains(elev));
+            // A held tilt is an angle: keep its SAILS/MRLE repeats too.
+            let wanted =
+                crate::core::tilt::scope_with_repeats(&wanted_elevations, extracted_vcp.as_ref());
+            by_elevation.retain(|elev, _| wanted.contains(elev));
         }
         let elevations = crate::nexrad::decode::ingest_phases::build_elevation_uploads(
             &by_elevation,
@@ -203,7 +213,8 @@ pub(super) struct ChunkAccumulator {
 //
 // ## Safety invariant: no `.await` inside accumulator access
 //
-// `CHUNK_ACCUM` is a per-worker thread-local, mutated incrementally as
+// `CHUNK_ACCUM` is a per-worker thread-local map of one accumulator per
+// streaming site (keyed by site id), each mutated incrementally as its
 // chunks arrive. The streaming-loop and ingest paths share a single
 // worker, so accumulator state is single-threaded; the only concurrency
 // comes from `.await` points yielding back to the worker scheduler.
@@ -237,31 +248,56 @@ pub(super) struct ChunkAccumulator {
 // back into these helpers. The accessor contract is pinned by the unit tests
 // at the bottom of this file.
 thread_local! {
-    static CHUNK_ACCUM: std::cell::RefCell<Option<ChunkAccumulator>> =
-        const { std::cell::RefCell::new(None) };
+    static CHUNK_ACCUM: std::cell::RefCell<std::collections::HashMap<String, ChunkAccumulator>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-/// Run `f` with shared (read-only) access to the chunk accumulator.
+/// Run `f` with shared (read-only) access to `site`'s chunk accumulator.
 ///
-/// `f` receives `None` when no accumulator is active. The borrow guard
-/// is dropped before this helper returns, so awaiting on the return value
-/// is safe; awaiting *inside* `f` is impossible (it's a synchronous
-/// `FnOnce`).
-pub(super) fn with_chunk_accum<R>(f: impl FnOnce(Option<&ChunkAccumulator>) -> R) -> R {
-    CHUNK_ACCUM.with(|cell| f(cell.borrow().as_ref()))
+/// Each streaming site has its own accumulator, keyed by site id, so two
+/// sites' chunks never mix. `f` receives `None` when `site` has no
+/// accumulator. The borrow guard is dropped before this helper returns, so
+/// awaiting on the return value is safe; awaiting *inside* `f` is impossible
+/// (it's a synchronous `FnOnce`).
+pub(super) fn with_chunk_accum<R>(site: &str, f: impl FnOnce(Option<&ChunkAccumulator>) -> R) -> R {
+    CHUNK_ACCUM.with(|cell| f(cell.borrow().get(site)))
 }
 
 /// Like [`with_chunk_accum`] but gives `f` exclusive access.
-pub(super) fn with_chunk_accum_mut<R>(f: impl FnOnce(Option<&mut ChunkAccumulator>) -> R) -> R {
-    CHUNK_ACCUM.with(|cell| f(cell.borrow_mut().as_mut()))
+pub(super) fn with_chunk_accum_mut<R>(
+    site: &str,
+    f: impl FnOnce(Option<&mut ChunkAccumulator>) -> R,
+) -> R {
+    CHUNK_ACCUM.with(|cell| f(cell.borrow_mut().get_mut(site)))
 }
 
-/// Install or clear the accumulator. Used by the ingest path on Start
-/// chunks (install fresh) and end-of-volume (clear). Distinct from
-/// [`with_chunk_accum_mut`] because that helper hands out `&mut` to
-/// the inner value — it can't replace the `Option` itself.
-pub(super) fn set_chunk_accum(value: Option<ChunkAccumulator>) {
-    CHUNK_ACCUM.with(|cell| *cell.borrow_mut() = value);
+/// Install or clear `site`'s accumulator. Used by the ingest path on Start
+/// chunks (install fresh). Distinct from [`with_chunk_accum_mut`] because
+/// that helper hands out `&mut` to the inner value — it can't replace or
+/// remove the entry itself. Other sites' accumulators are left alone.
+pub(super) fn set_chunk_accum(site: &str, value: Option<ChunkAccumulator>) {
+    CHUNK_ACCUM.with(|cell| {
+        let mut map = cell.borrow_mut();
+        match value {
+            Some(accum) => {
+                map.insert(site.to_string(), accum);
+            }
+            None => {
+                map.remove(site);
+            }
+        }
+    });
+}
+
+/// Forget `site`'s accumulator: its site left the map, so its partial
+/// sweeps will never be read or flushed. Other sites' accumulators stay.
+///
+/// Called from the Web Worker via worker.js (`drop_site`), queued behind the
+/// chunk ingests already sent so none of them re-installs it.
+#[allow(unreachable_pub)] // wasm_bindgen export invoked from worker.js; must stay pub
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn worker_drop_site(site_id: String) {
+    set_chunk_accum(&site_id, None);
 }
 
 /// Ingest a single real-time chunk: decompress, decode, and store completed
@@ -341,22 +377,25 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             }
 
             // --- Reset accumulator ---
-            set_chunk_accum(Some(ChunkAccumulator {
-                scan_key,
-                current_radials: Vec::new(),
-                current_radial_metas: Vec::new(),
-                current_elevation: None,
-                completed_elevations: pre_completed,
-                completed_sweep_metas: Vec::new(),
-                coverage: crate::core::live_coverage::LiveCoverage::default(),
-                vcp: None,
-                has_vcp: false,
-                total_chunks: 0,
-                total_size_bytes: 0,
-                file_name: file_name.clone(),
-            }));
+            set_chunk_accum(
+                &site_id,
+                Some(ChunkAccumulator {
+                    scan_key,
+                    current_radials: Vec::new(),
+                    current_radial_metas: Vec::new(),
+                    current_elevation: None,
+                    completed_elevations: pre_completed,
+                    completed_sweep_metas: Vec::new(),
+                    coverage: crate::core::live_coverage::LiveCoverage::default(),
+                    vcp: None,
+                    has_vcp: false,
+                    total_chunks: 0,
+                    total_size_bytes: 0,
+                    file_name: file_name.clone(),
+                }),
+            );
         } else {
-            let accum_has_full_vcp = with_chunk_accum(|accum| {
+            let accum_has_full_vcp = with_chunk_accum(&site_id, |accum| {
                 accum
                     .and_then(|a| a.vcp.as_ref())
                     .map(|v| !v.elevations.is_empty())
@@ -397,8 +436,9 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         // Detailed chunk diagnostics
         {
             let radial_count = chunk_radials.len();
-            let accum_radials =
-                with_chunk_accum(|accum| accum.map(|a| a.current_radials.len()).unwrap_or(0));
+            let accum_radials = with_chunk_accum(&site_id, |accum| {
+                accum.map(|a| a.current_radials.len()).unwrap_or(0)
+            });
             log::debug!(
                 "Chunk#{} elev={:?} radials={} az_range=[{:.1}..{:.1}] accum_current={} is_start={} is_end={} size={}B",
                 chunk_index,
@@ -413,7 +453,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             );
         }
 
-        let accepted = with_chunk_accum_mut(|accum| {
+        let accepted = with_chunk_accum_mut(&site_id, |accum| {
             let accum = accum.ok_or_else(|| {
                 wasm_bindgen::JsValue::from_str("No accumulator — missing Start chunk?")
             })?;
@@ -481,7 +521,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             // Build elevation uploads from the current elevation's radials.
             // With flush-on-transition, only the just-completed elevation's
             // radials are in memory — no filtering needed.
-            let elevations = with_chunk_accum_mut(|accum| {
+            let elevations = with_chunk_accum_mut(&site_id, |accum| {
                 let accum = accum.unwrap();
                 crate::nexrad::decode::ingest_phases::build_elevation_uploads_for_flush(
                     &accum.current_radials,
@@ -493,7 +533,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             sweeps_stored = elevations.iter().map(|e| e.blobs.len() as u32).sum();
 
             // Snapshot the accumulator state for the upsert header.
-            let (scan_key, accum_vcp, accum_file_name) = with_chunk_accum(|accum| {
+            let (scan_key, accum_vcp, accum_file_name) = with_chunk_accum(&site_id, |accum| {
                 let accum = accum.unwrap();
                 (
                     accum.scan_key.clone(),
@@ -515,7 +555,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
             // Do not publish completion or discard retry data until the atomic
             // IDB transaction acknowledges the sweep blobs and manifest.
-            with_chunk_accum_mut(|accum| {
+            with_chunk_accum_mut(&site_id, |accum| {
                 let accum = accum.unwrap();
                 accum
                     .completed_sweep_metas
@@ -534,20 +574,22 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         }
 
         // --- Build the scan key for response ---
-        let scan_key_str = with_chunk_accum(|accum| {
+        let scan_key_str = with_chunk_accum(&site_id, |accum| {
             accum
                 .map(|a| a.scan_key.to_storage_key())
                 .unwrap_or_default()
         });
 
         // All completed sweep metadata, accumulated incrementally during flushes.
-        let all_sweeps = with_chunk_accum(|accum| accum.unwrap().completed_sweep_metas.clone());
+        let all_sweeps = with_chunk_accum(&site_id, |accum| {
+            accum.unwrap().completed_sweep_metas.clone()
+        });
 
-        let vcp = with_chunk_accum(|accum| accum.and_then(|a| a.vcp.clone()));
+        let vcp = with_chunk_accum(&site_id, |accum| accum.and_then(|a| a.vcp.clone()));
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
-        let accum_info = with_chunk_accum(|accum| {
+        let accum_info = with_chunk_accum(&site_id, |accum| {
             accum
                 .map(|a| {
                     (
@@ -559,7 +601,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 .unwrap_or((0, false, None))
         });
         // Summary: current elevation in memory + completed elevations count.
-        let chunk_detail = with_chunk_accum(|accum| {
+        let chunk_detail = with_chunk_accum(&site_id, |accum| {
             let Some(accum) = accum else {
                 return String::from("no accum");
             };
@@ -611,11 +653,12 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         );
 
         // Current in-progress elevation info
-        let current_elevation = with_chunk_accum(|accum| accum.and_then(|a| a.current_elevation));
+        let current_elevation =
+            with_chunk_accum(&site_id, |accum| accum.and_then(|a| a.current_elevation));
         // Count only the current elevation's radials: after its completing
         // chunk flushes them they are gone, and a backfilled earlier
         // elevation may share memory with a later partial one.
-        let current_elevation_radials = with_chunk_accum(|accum| {
+        let current_elevation_radials = with_chunk_accum(&site_id, |accum| {
             accum.and_then(|a| {
                 a.current_elevation.map(|elev| {
                     a.current_radials
@@ -666,6 +709,8 @@ mod accum_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
+    const SITE: &str = "KDMX";
+
     fn sample_accum() -> ChunkAccumulator {
         ChunkAccumulator {
             scan_key: ScanKey::new("KDMX", UnixMillis::from_secs_f64(1_000.0)),
@@ -685,33 +730,39 @@ mod accum_tests {
 
     #[wasm_bindgen_test]
     fn empty_accumulator_reads_none() {
-        set_chunk_accum(None);
-        assert!(with_chunk_accum(|a| a.is_none()));
-        assert_eq!(with_chunk_accum(|a| a.map(|x| x.total_chunks)), None);
+        set_chunk_accum(SITE, None);
+        assert!(with_chunk_accum(SITE, |a| a.is_none()));
+        assert_eq!(with_chunk_accum(SITE, |a| a.map(|x| x.total_chunks)), None);
     }
 
     #[wasm_bindgen_test]
     fn set_then_read_roundtrips() {
-        set_chunk_accum(None);
-        set_chunk_accum(Some(sample_accum()));
-        assert_eq!(with_chunk_accum(|a| a.map(|x| x.total_chunks)), Some(3));
+        set_chunk_accum(SITE, None);
+        set_chunk_accum(SITE, Some(sample_accum()));
         assert_eq!(
-            with_chunk_accum(|a| a.and_then(|x| x.current_elevation)),
+            with_chunk_accum(SITE, |a| a.map(|x| x.total_chunks)),
+            Some(3)
+        );
+        assert_eq!(
+            with_chunk_accum(SITE, |a| a.and_then(|x| x.current_elevation)),
             Some(2)
         );
     }
 
     #[wasm_bindgen_test]
     fn mutation_through_with_mut_persists() {
-        set_chunk_accum(None);
-        set_chunk_accum(Some(sample_accum()));
-        with_chunk_accum_mut(|a| {
+        set_chunk_accum(SITE, None);
+        set_chunk_accum(SITE, Some(sample_accum()));
+        with_chunk_accum_mut(SITE, |a| {
             let a = a.expect("accumulator was installed");
             a.total_chunks += 1;
             a.completed_elevations.insert(2);
         });
-        assert_eq!(with_chunk_accum(|a| a.map(|x| x.total_chunks)), Some(4));
-        assert!(with_chunk_accum(|a| a
+        assert_eq!(
+            with_chunk_accum(SITE, |a| a.map(|x| x.total_chunks)),
+            Some(4)
+        );
+        assert!(with_chunk_accum(SITE, |a| a
             .map(|x| x.completed_elevations.contains(&2))
             .unwrap_or(false)));
     }
@@ -722,24 +773,69 @@ mod accum_tests {
         // borrows mutably — back-to-back, never nested. Confirm that real
         // shape stays panic-free (a nested borrow would be the only re-entrance
         // hazard, and no accessor closure nests).
-        set_chunk_accum(None);
-        set_chunk_accum(Some(sample_accum()));
-        let read_a = with_chunk_accum(|a| a.map(|x| x.total_chunks));
-        with_chunk_accum_mut(|a| {
+        set_chunk_accum(SITE, None);
+        set_chunk_accum(SITE, Some(sample_accum()));
+        let read_a = with_chunk_accum(SITE, |a| a.map(|x| x.total_chunks));
+        with_chunk_accum_mut(SITE, |a| {
             if let Some(a) = a {
                 a.total_chunks += 10;
             }
         });
-        let read_b = with_chunk_accum(|a| a.map(|x| x.total_chunks));
+        let read_b = with_chunk_accum(SITE, |a| a.map(|x| x.total_chunks));
         assert_eq!(read_a, Some(3));
         assert_eq!(read_b, Some(13));
     }
 
     #[wasm_bindgen_test]
     fn clear_resets_to_none() {
-        set_chunk_accum(Some(sample_accum()));
-        set_chunk_accum(None);
-        assert!(with_chunk_accum(|a| a.is_none()));
+        set_chunk_accum(SITE, Some(sample_accum()));
+        set_chunk_accum(SITE, None);
+        assert!(with_chunk_accum(SITE, |a| a.is_none()));
+    }
+
+    // Each site streams into its own accumulator: installing, mutating or
+    // clearing one site's leaves another's untouched.
+    #[wasm_bindgen_test]
+    fn each_site_keeps_its_own_accumulator() {
+        const OTHER: &str = "KTLX";
+        set_chunk_accum(SITE, None);
+        set_chunk_accum(OTHER, None);
+        set_chunk_accum(SITE, Some(sample_accum()));
+        assert!(with_chunk_accum(OTHER, |a| a.is_none()));
+
+        let mut other = sample_accum();
+        other.total_chunks = 7;
+        set_chunk_accum(OTHER, Some(other));
+        with_chunk_accum_mut(SITE, |a| a.unwrap().total_chunks += 1);
+        assert_eq!(
+            with_chunk_accum(SITE, |a| a.map(|x| x.total_chunks)),
+            Some(4)
+        );
+        assert_eq!(
+            with_chunk_accum(OTHER, |a| a.map(|x| x.total_chunks)),
+            Some(7)
+        );
+
+        set_chunk_accum(SITE, None);
+        assert!(with_chunk_accum(SITE, |a| a.is_none()));
+        assert_eq!(
+            with_chunk_accum(OTHER, |a| a.map(|x| x.total_chunks)),
+            Some(7)
+        );
+        set_chunk_accum(OTHER, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn dropping_a_site_forgets_only_its_accumulator() {
+        const OTHER: &str = "KTLX";
+        set_chunk_accum(SITE, Some(sample_accum()));
+        set_chunk_accum(OTHER, Some(sample_accum()));
+        worker_drop_site(SITE.to_string());
+        assert!(with_chunk_accum(SITE, |a| a.is_none()));
+        assert!(with_chunk_accum(OTHER, |a| a.is_some()));
+        // Dropping a site with no accumulator is harmless.
+        worker_drop_site(SITE.to_string());
+        set_chunk_accum(OTHER, None);
     }
 }
 
@@ -753,6 +849,8 @@ mod coverage_tests {
     //! Single-threaded worker model: each test clears the thread-local first.
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    const SITE: &str = "KDMX";
 
     fn fresh_accum() -> ChunkAccumulator {
         ChunkAccumulator {
@@ -786,21 +884,24 @@ mod coverage_tests {
     // `accum_tests` only covers None->Some and Some->None; this covers Some->Some.
     #[wasm_bindgen_test]
     fn set_replaces_existing_accumulator() {
-        set_chunk_accum(None);
+        set_chunk_accum(SITE, None);
         let mut a = fresh_accum();
         a.total_chunks = 9;
         a.file_name = "first".to_string();
-        set_chunk_accum(Some(a));
+        set_chunk_accum(SITE, Some(a));
 
         let mut b = fresh_accum();
         b.total_chunks = 1;
         b.file_name = "second".to_string();
-        set_chunk_accum(Some(b));
+        set_chunk_accum(SITE, Some(b));
 
         // Only the second accumulator's state survives — no carry-over.
-        assert_eq!(with_chunk_accum(|x| x.map(|v| v.total_chunks)), Some(1));
         assert_eq!(
-            with_chunk_accum(|x| x.map(|v| v.file_name.clone())),
+            with_chunk_accum(SITE, |x| x.map(|v| v.total_chunks)),
+            Some(1)
+        );
+        assert_eq!(
+            with_chunk_accum(SITE, |x| x.map(|v| v.file_name.clone())),
             Some("second".to_string())
         );
     }
@@ -810,13 +911,13 @@ mod coverage_tests {
     // Option<u32>/bool from the closure.
     #[wasm_bindgen_test]
     fn with_chunk_accum_returns_computed_value() {
-        set_chunk_accum(None);
+        set_chunk_accum(SITE, None);
         let mut a = fresh_accum();
         a.total_size_bytes = 4_000;
         a.total_chunks = 4;
-        set_chunk_accum(Some(a));
+        set_chunk_accum(SITE, Some(a));
 
-        let avg = with_chunk_accum(|x| {
+        let avg = with_chunk_accum(SITE, |x| {
             x.map(|v| v.total_size_bytes / v.total_chunks as u64)
                 .unwrap_or(0)
         });
@@ -827,17 +928,20 @@ mod coverage_tests {
     // mutate and return a value. Existing mut tests return `()`.
     #[wasm_bindgen_test]
     fn with_chunk_accum_mut_returns_value_while_mutating() {
-        set_chunk_accum(None);
-        set_chunk_accum(Some(fresh_accum()));
+        set_chunk_accum(SITE, None);
+        set_chunk_accum(SITE, Some(fresh_accum()));
 
-        let new_count = with_chunk_accum_mut(|x| {
+        let new_count = with_chunk_accum_mut(SITE, |x| {
             let a = x.expect("installed");
             a.total_chunks += 5;
             a.total_chunks
         });
         assert_eq!(new_count, 5);
         // And the mutation persisted into the thread-local.
-        assert_eq!(with_chunk_accum(|x| x.map(|v| v.total_chunks)), Some(5));
+        assert_eq!(
+            with_chunk_accum(SITE, |x| x.map(|v| v.total_chunks)),
+            Some(5)
+        );
     }
 
     // Mutating the Vec field `completed_sweep_metas` (the response-log path
@@ -845,16 +949,16 @@ mod coverage_tests {
     // scalar/HashSet mutations in `accum_tests`.
     #[wasm_bindgen_test]
     fn completed_sweep_metas_vec_mutation_persists() {
-        set_chunk_accum(None);
-        set_chunk_accum(Some(fresh_accum()));
+        set_chunk_accum(SITE, None);
+        set_chunk_accum(SITE, Some(fresh_accum()));
 
-        with_chunk_accum_mut(|x| {
+        with_chunk_accum_mut(SITE, |x| {
             let a = x.expect("installed");
             a.completed_sweep_metas.push(sample_sweep(1));
             a.completed_sweep_metas.push(sample_sweep(2));
         });
 
-        let metas = with_chunk_accum(|x| {
+        let metas = with_chunk_accum(SITE, |x| {
             x.map(|v| v.completed_sweep_metas.clone())
                 .unwrap_or_default()
         });
@@ -869,16 +973,16 @@ mod coverage_tests {
     // value. Uses an empty-elevation ExtractedVcp per the codebase idiom.
     #[wasm_bindgen_test]
     fn vcp_option_upgrade_persists() {
-        set_chunk_accum(None);
-        set_chunk_accum(Some(fresh_accum()));
+        set_chunk_accum(SITE, None);
+        set_chunk_accum(SITE, Some(fresh_accum()));
 
         // Initially None.
         assert_eq!(
-            with_chunk_accum(|x| x.and_then(|v| v.vcp.as_ref().map(|p| p.number))),
+            with_chunk_accum(SITE, |x| x.and_then(|v| v.vcp.as_ref().map(|p| p.number))),
             None
         );
 
-        with_chunk_accum_mut(|x| {
+        with_chunk_accum_mut(SITE, |x| {
             let a = x.expect("installed");
             a.vcp = Some(ExtractedVcp {
                 number: 215,
@@ -888,19 +992,19 @@ mod coverage_tests {
         });
 
         assert_eq!(
-            with_chunk_accum(|x| x.and_then(|v| v.vcp.as_ref().map(|p| p.number))),
+            with_chunk_accum(SITE, |x| x.and_then(|v| v.vcp.as_ref().map(|p| p.number))),
             Some(215u16)
         );
-        assert_eq!(with_chunk_accum(|x| x.map(|v| v.has_vcp)), Some(true));
+        assert_eq!(with_chunk_accum(SITE, |x| x.map(|v| v.has_vcp)), Some(true));
     }
 
-    // Installing a fresh accumulator via `set_chunk_accum(Some(..))` wipes
+    // Installing a fresh accumulator via `set_chunk_accum(site, Some(..))` wipes
     // prior collection mutations entirely (reset-on-Start-chunk semantics).
     #[wasm_bindgen_test]
     fn fresh_set_wipes_prior_collections() {
-        set_chunk_accum(None);
-        set_chunk_accum(Some(fresh_accum()));
-        with_chunk_accum_mut(|x| {
+        set_chunk_accum(SITE, None);
+        set_chunk_accum(SITE, Some(fresh_accum()));
+        with_chunk_accum_mut(SITE, |x| {
             let a = x.expect("installed");
             a.completed_elevations.insert(7);
             a.completed_sweep_metas.push(sample_sweep(7));
@@ -908,13 +1012,16 @@ mod coverage_tests {
         });
 
         // Re-install a brand-new accumulator (e.g. a new Start chunk).
-        set_chunk_accum(Some(fresh_accum()));
+        set_chunk_accum(SITE, Some(fresh_accum()));
 
-        assert_eq!(with_chunk_accum(|x| x.map(|v| v.total_chunks)), Some(0));
-        assert!(with_chunk_accum(|x| x
+        assert_eq!(
+            with_chunk_accum(SITE, |x| x.map(|v| v.total_chunks)),
+            Some(0)
+        );
+        assert!(with_chunk_accum(SITE, |x| x
             .map(|v| v.completed_elevations.is_empty())
             .unwrap_or(false)));
-        assert!(with_chunk_accum(|x| x
+        assert!(with_chunk_accum(SITE, |x| x
             .map(|v| v.completed_sweep_metas.is_empty())
             .unwrap_or(false)));
     }

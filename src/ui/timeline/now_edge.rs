@@ -116,7 +116,7 @@ fn render_inline_now(
     // invisible, zoom-dependent band.
     // The cap's word is the session's; the countdown lives on the activity
     // line, so the cap stays a two-word pill.
-    let label = format!("{} {}", egui_phosphor::regular::BROADCAST, cap.label());
+    let label = format!("{} {}", crate::ui::icons::BROADCAST, cap.label());
     let cap_rect = cap_geometry(painter, overlay_rect, now_x, &label);
 
     let resp = ui
@@ -160,14 +160,14 @@ fn render_edge_chip(
     let label = if on_left {
         format!(
             "{} {} {word}",
-            egui_phosphor::regular::ARROW_LEFT,
-            egui_phosphor::regular::BROADCAST
+            crate::ui::icons::ARROW_LEFT,
+            crate::ui::icons::BROADCAST
         )
     } else {
         format!(
             "{} {word} {}",
-            egui_phosphor::regular::BROADCAST,
-            egui_phosphor::regular::ARROW_RIGHT
+            crate::ui::icons::BROADCAST,
+            crate::ui::icons::ARROW_RIGHT
         )
     };
 

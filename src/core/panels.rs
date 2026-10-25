@@ -8,7 +8,7 @@
 //! tool toggles. All pure; the egui layer (`ui::right_panel`, `ui::canvas`)
 //! draws them and emits the intents they name.
 
-use crate::core::recency::RECENCY_SECS;
+use crate::core::recency::{LiveOverlaysOff, RECENCY_SECS};
 use crate::geo::GeoLayerVisibility;
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -52,7 +52,7 @@ impl RailTab {
         match self {
             RailTab::View => Some((
                 "keys: P product, E tilt",
-                "P cycles the product; E steps down the tilt ladder and Shift+E up it",
+                "P steps through the products and Shift+P back; E steps down the tilt ladder and Shift+E up it",
             )),
             _ => None,
         }
@@ -124,17 +124,23 @@ pub(crate) fn layers_on(geo: &GeoLayerVisibility, storm_cells: bool) -> usize {
 // Layers
 // ───────────────────────────────────────────────────────────────────────────
 
-/// The Layers tab's one sentence over the live rows when the playhead is more
-/// than [`RECENCY_SECS`] behind now (§7: one recency rule, said in words with
-/// a Return to live link instead of greying a checked box). `None` while the
-/// live layers draw.
-pub(crate) fn live_layers_note(data_is_live: bool) -> Option<String> {
-    (!data_is_live).then(|| {
-        format!(
-            "Warnings and the mosaic show current conditions, so they draw only within {} min of now.",
-            (RECENCY_SECS / 60.0).round()
-        )
-    })
+/// The Layers tab's note over the live rows while the live layers are off
+/// (§7: one recency rule, said in words with a Return to live link instead
+/// of greying a checked box): the playhead is more than [`RECENCY_SECS`]
+/// behind now, all of a playing loop is, or a playing loop crosses that
+/// edge, which holds them off for the whole loop even while the playhead is
+/// recent. `None` while the live layers draw.
+pub(crate) fn live_layers_note(off: Option<LiveOverlaysOff>) -> Option<String> {
+    let rule = format!(
+        "Warnings and the mosaic show current conditions, so they draw only within {} min of now.",
+        (RECENCY_SECS / 60.0).round()
+    );
+    match off? {
+        LiveOverlaysOff::Behind => Some(rule),
+        LiveOverlaysOff::LoopReachesBack => Some(format!(
+            "{rule} A loop that reaches further back keeps them off while it plays."
+        )),
+    }
 }
 
 /// The mPING row's state: drawn, waiting for a key ("Add a key"), or held
@@ -255,14 +261,23 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn the_recency_sentence_appears_only_away_from_now() {
-        assert_eq!(live_layers_note(true), None);
-        let s = live_layers_note(false).unwrap();
+        assert_eq!(live_layers_note(None), None);
+        let s = live_layers_note(Some(LiveOverlaysOff::Behind)).unwrap();
         assert_eq!(
             s,
             "Warnings and the mosaic show current conditions, so they draw only within 15 min of now."
         );
         assert_eq!(mping_row(false), MpingRow::NeedsKey);
         assert_eq!(mping_row(true), MpingRow::Ready);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_loop_that_reaches_back_says_why_a_recent_playhead_has_no_live_layers() {
+        let s = live_layers_note(Some(LiveOverlaysOff::LoopReachesBack)).unwrap();
+        assert_eq!(
+            s,
+            "Warnings and the mosaic show current conditions, so they draw only within 15 min of now. A loop that reaches further back keeps them off while it plays."
+        );
     }
 
     #[wasm_bindgen_test]

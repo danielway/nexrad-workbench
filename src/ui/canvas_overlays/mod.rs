@@ -41,8 +41,9 @@ pub(crate) use globe::draw_globe;
 pub(crate) use gps_location::render_gps_location;
 pub(crate) use mping::{render_mping_detail, render_mping_reports};
 pub(crate) use national_mosaic::{draw_national_mosaic, RadarCutout};
+pub(crate) use scale_bar::compute_km_per_pixel;
 pub(crate) use sites::{render_nexrad_sites, SiteLabelRoom};
-pub(crate) use sweep::{render_radar_sweep, SiteScreen, SweepPaint};
+pub(crate) use sweep::{render_radar_sweep, render_site_sweep_marks, SiteScreen, SweepPaint};
 
 use crate::core::map_chrome::{
     layout_map_chrome, ChromeInputs, ChromeLayout, ChromeSize, TrayItem,
@@ -64,6 +65,9 @@ pub(crate) struct OverlayContext<'a> {
     pub rect: Rect,
     /// Read-only app state.
     pub state: &'a AppState,
+    /// The focus site: its id names the frame, its position anchors the
+    /// scale bar.
+    pub site: &'a crate::subsystem::SiteState,
     /// Live streaming subsystem (for the in-progress chunk indicator
     /// that the overlay info panel shows).
     pub live: &'a Live,
@@ -152,6 +156,14 @@ pub(crate) fn viewport_bounds(rect: Rect) -> ScreenBounds {
     }
 }
 
+/// Room the map's top-edge chrome keeps clear of the phone's top inset
+/// (status bar, and its blur in an iOS home-screen app) once the top bar
+/// has slid away ([`crate::core::map_chrome::top_clearance`]).
+pub(crate) fn map_top_clearance(rect: Rect) -> f32 {
+    let (inset_top, _, _, _) = crate::ui::mobile::safe_area_insets();
+    crate::core::map_chrome::top_clearance(rect.top(), inset_top)
+}
+
 /// Measure every visible corner-chrome overlay and lay them out
 /// ([`crate::core::map_chrome::layout_map_chrome`]). `toolbar` is the map
 /// toolbar's size (2D), so the tray keeps clear of it. Called before the
@@ -188,6 +200,7 @@ pub(crate) fn layout_chrome(
     let layout = layout_map_chrome(&ChromeInputs {
         width: ctx.rect.width(),
         height: ctx.rect.height(),
+        top: map_top_clearance(ctx.rect),
         toolbar: toolbar.map(|s| ChromeSize { w: s.x, h: s.y }),
         color_scale,
         tray: &tray,

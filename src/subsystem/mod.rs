@@ -19,14 +19,16 @@ pub(crate) mod live;
 pub(crate) mod network_monitor;
 pub(crate) mod playback;
 pub(crate) mod render;
+pub(crate) mod sites;
 pub(crate) mod timeline;
 
 pub(crate) use acquisition::Acquisition;
 pub(crate) use chrome::Chrome;
 pub(crate) use derived::Derived;
 pub(crate) use diagnostics::Diagnostics;
-pub(crate) use live::Live;
+pub(crate) use live::{Live, SiteLive};
 pub(crate) use network_monitor::NetworkMonitor;
 pub(crate) use playback::Playback;
 pub(crate) use render::Render;
+pub(crate) use sites::{SiteState, Sites};
 pub(crate) use timeline::Timeline;

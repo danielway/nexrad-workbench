@@ -1,5 +1,6 @@
 //! Radar data structures for timeline representation.
 
+use crate::core::tilt::TiltFilter;
 use crate::data::{ScanCompleteness, ScanKey};
 use serde::{Deserialize, Serialize};
 
@@ -92,21 +93,22 @@ pub(crate) struct LiveVolume<'a> {
 }
 
 /// `(elevation_number, end offset from the volume start)` for each cut in a
-/// VCP plan that is a frame at `tilt` (`None` = every cut), estimated from
-/// the plan's azimuth rates.
+/// VCP plan that is a frame at `tilt` (every cut for Latest; each visit of
+/// a held angle), estimated from the plan's azimuth rates.
 fn vcp_cut_ends(
     vcp: &crate::data::ExtractedVcp,
-    tilt: Option<u8>,
+    tilt: TiltFilter,
 ) -> impl Iterator<Item = (u8, f64)> {
     let durations = vcp
         .estimated_volume_duration()
         .map(|total| vcp.sweep_durations(total))
         .unwrap_or_default();
+    let cuts = tilt.cuts(Some(vcp));
     let mut elapsed = 0.0;
     durations.into_iter().enumerate().filter_map(move |(i, d)| {
         elapsed += d;
         let elevation_number = (i + 1) as u8;
-        tilt.is_none_or(|t| t == elevation_number)
+        cuts.contains(elevation_number)
             .then_some((elevation_number, elapsed))
     })
 }
@@ -325,8 +327,9 @@ impl RadarTimeline {
         }
     }
 
-    /// Collect all sweep end-times matching the given elevation number AND
-    /// holding a cached blob for `product` (the worker-string product name).
+    /// Collect all sweep end-times at the held tilt (every visit of its
+    /// angle, see [`crate::core::tilt`]) AND holding a cached blob for
+    /// `product` (the worker-string product name).
     ///
     /// A frame (spec §4) is a sweep matching the *selected product + tilt* —
     /// something the canvas can render. Filtering by product here keeps macro
@@ -337,9 +340,9 @@ impl RadarTimeline {
     ///
     /// Returns a sorted, deduplicated `Vec<f64>` of `end_time` values. If
     /// `bounds` is provided, only sweeps within that time range are included.
-    pub(crate) fn matching_sweep_end_times_by_number(
+    pub(crate) fn matching_sweep_end_times(
         &self,
-        elevation_number: u8,
+        tilt: TiltFilter,
         product: &str,
         bounds: Option<(f64, f64)>,
     ) -> Vec<f64> {
@@ -350,8 +353,9 @@ impl RadarTimeline {
                     continue;
                 }
             }
+            let cuts = tilt.cuts(scan.vcp_pattern.as_ref());
             for sweep in &scan.sweeps {
-                if sweep.elevation_number == elevation_number && sweep_has_product(sweep, product) {
+                if cuts.contains(sweep.elevation_number) && sweep_has_product(sweep, product) {
                     if let Some((start, end)) = bounds {
                         if sweep.end_time < start || sweep.end_time > end {
                             continue;
@@ -368,7 +372,7 @@ impl RadarTimeline {
 
     /// Collect all sweep end-times (regardless of elevation) holding a cached
     /// blob for `product`. Used by Latest/auto mode where every matching sweep
-    /// is a frame. See [`Self::matching_sweep_end_times_by_number`] for the
+    /// is a frame. See [`Self::matching_sweep_end_times`] for the
     /// product-filter contract.
     pub(crate) fn all_sweep_end_times(
         &self,
@@ -453,12 +457,7 @@ impl RadarTimeline {
         now: f64,
         n: usize,
     ) -> Option<(f64, f64)> {
-        let frames = self.known_frame_ends(
-            shadows,
-            live,
-            elevation_selection.elevation_number(),
-            product,
-        );
+        let frames = self.known_frame_ends(shadows, live, elevation_selection.into(), product);
         // `frames` is sorted ascending; keep those at/<= now (small slack so a
         // just-completed frame whose end_time rounds a hair past `now` counts).
         let cutoff = now + 0.5;
@@ -478,24 +477,25 @@ impl RadarTimeline {
     /// A listed volume's sweeps aren't known until it downloads, so its frames
     /// are placed by a template (see [`Self::frame_offsets_template`]). With
     /// no template, each listed volume counts as one frame at its end. `tilt`
-    /// is the selected elevation number; `None` (Latest/auto) counts every
-    /// sweep as a frame.
+    /// is the selected tilt: Latest counts every sweep as a frame, a held
+    /// angle every visit of it.
     pub(crate) fn known_frame_ends(
         &self,
         shadows: &[ScanBoundary],
         live: Option<LiveVolume<'_>>,
-        tilt: Option<u8>,
+        tilt: TiltFilter,
         product: &str,
     ) -> Vec<f64> {
-        let is_frame = |sweep: &Sweep| {
-            tilt.is_none_or(|t| t == sweep.elevation_number) && sweep_has_product(sweep, product)
+        let is_frame = |scan: &Scan, sweep: &Sweep| {
+            tilt.matches(scan.vcp_pattern.as_ref(), sweep.elevation_number)
+                && sweep_has_product(sweep, product)
         };
         let mut times: Vec<f64> = self
             .scans
             .iter()
-            .flat_map(|scan| scan.sweeps.iter())
-            .filter(|sw| is_frame(sw))
-            .map(|sw| sw.end_time)
+            .flat_map(|scan| scan.sweeps.iter().map(move |sw| (scan, sw)))
+            .filter(|(scan, sw)| is_frame(scan, sw))
+            .map(|(_, sw)| sw.end_time)
             .collect();
 
         let tolerance = crate::core::timeline_view::SCAN_JOIN_TOLERANCE_SECS as f64;
@@ -512,11 +512,12 @@ impl RadarTimeline {
                 .scans
                 .iter()
                 .find(|s| (s.key_timestamp - lv.key_secs).abs() <= tolerance);
+            let cuts = tilt.cuts(lv.projection.vcp_pattern.as_ref());
             times.extend(
                 lv.projection
                     .sweeps
                     .iter()
-                    .filter(|sp| tilt.is_none_or(|t| t == sp.elevation_number))
+                    .filter(|sp| cuts.contains(sp.elevation_number))
                     .filter(|sp| !has_cut(cached, sp.elevation_number))
                     .map(|sp| sp.collection_end_secs),
             );
@@ -572,13 +573,14 @@ impl RadarTimeline {
     /// the frames of the newest cached volume. Empty when nothing is cached.
     fn frame_offsets_template(
         &self,
-        tilt: Option<u8>,
-        is_frame: &dyn Fn(&Sweep) -> bool,
+        tilt: TiltFilter,
+        is_frame: &dyn Fn(&Scan, &Sweep) -> bool,
     ) -> Vec<f64> {
+        let any_frame = |scan: &&Scan| scan.sweeps.iter().any(|sw| is_frame(scan, sw));
         let cached_offsets = |scan: &Scan| -> Vec<f64> {
             scan.sweeps
                 .iter()
-                .filter(|sw| is_frame(sw))
+                .filter(|sw| is_frame(scan, sw))
                 .map(|sw| (sw.end_time - scan.key_timestamp).max(0.0))
                 .collect()
         };
@@ -586,7 +588,7 @@ impl RadarTimeline {
         if let Some(scan) = newest
             .clone()
             .filter(|s| s.completeness == Some(ScanCompleteness::Complete))
-            .find(|s| s.sweeps.iter().any(is_frame))
+            .find(any_frame)
         {
             return cached_offsets(scan);
         }
@@ -598,20 +600,17 @@ impl RadarTimeline {
         }
         newest
             .clone()
-            .find(|s| s.sweeps.iter().any(is_frame))
+            .find(any_frame)
             .map(cached_offsets)
             .unwrap_or_default()
     }
 
-    /// Find the end time of the next sweep matching `elevation_number` after `ts`.
-    pub(crate) fn next_matching_sweep_end_by_number(
-        &self,
-        ts: f64,
-        elevation_number: u8,
-    ) -> Option<f64> {
+    /// Find the end time of the next sweep at the held tilt after `ts`.
+    pub(crate) fn next_matching_sweep_end(&self, ts: f64, tilt: TiltFilter) -> Option<f64> {
         for scan in &self.scans {
+            let cuts = tilt.cuts(scan.vcp_pattern.as_ref());
             for sweep in &scan.sweeps {
-                if sweep.elevation_number == elevation_number && sweep.end_time > ts + 0.5 {
+                if cuts.contains(sweep.elevation_number) && sweep.end_time > ts + 0.5 {
                     return Some(sweep.end_time);
                 }
             }
@@ -619,16 +618,13 @@ impl RadarTimeline {
         None
     }
 
-    /// Find the end time of the previous sweep matching `elevation_number` before `ts`.
-    pub(crate) fn prev_matching_sweep_end_by_number(
-        &self,
-        ts: f64,
-        elevation_number: u8,
-    ) -> Option<f64> {
+    /// Find the end time of the previous sweep at the held tilt before `ts`.
+    pub(crate) fn prev_matching_sweep_end(&self, ts: f64, tilt: TiltFilter) -> Option<f64> {
         let mut best: Option<f64> = None;
         for scan in self.scans.iter().rev() {
+            let cuts = tilt.cuts(scan.vcp_pattern.as_ref());
             for sweep in scan.sweeps.iter().rev() {
-                if sweep.elevation_number == elevation_number && sweep.end_time < ts - 0.5 {
+                if cuts.contains(sweep.elevation_number) && sweep.end_time < ts - 0.5 {
                     match best {
                         None => best = Some(sweep.end_time),
                         Some(b) if sweep.end_time > b => best = Some(sweep.end_time),
@@ -690,15 +686,16 @@ impl RadarTimeline {
     }
 
     /// A renderable timestamp to land on inside `scan` when scan-stepping with a
-    /// `Fixed` tilt. Prefers the scan's earliest sweep matching
-    /// `elevation_number` (its first matching frame); if the scan lacks that
+    /// `Fixed` tilt. Prefers the scan's earliest sweep at the held tilt (its
+    /// first matching frame); if the scan lacks that
     /// tilt, falls back to the scan's earliest sweep end; with no sweeps at all,
     /// the scan's start. Keeps a scan step landing on the whole volume even when
     /// the selected tilt is absent.
-    fn scan_landing_by_number(scan: &Scan, elevation_number: u8) -> f64 {
+    fn scan_landing_at_tilt(scan: &Scan, tilt: TiltFilter) -> f64 {
+        let cuts = tilt.cuts(scan.vcp_pattern.as_ref());
         scan.sweeps
             .iter()
-            .filter(|s| s.elevation_number == elevation_number)
+            .filter(|s| cuts.contains(s.elevation_number))
             .map(|s| s.end_time)
             .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .or_else(|| {
@@ -722,37 +719,29 @@ impl RadarTimeline {
 
     /// Scan step forward (spec §12 Shift+→): a landing timestamp inside the
     /// *next whole volume scan* after the one `ts` resolves into, matching
-    /// `elevation_number`. When `ts` is before all scans, lands in the first
+    /// the held tilt. When `ts` is before all scans, lands in the first
     /// scan. `None` when there is no later scan.
-    pub(crate) fn next_scan_matching_sweep_end_by_number(
-        &self,
-        ts: f64,
-        elevation_number: u8,
-    ) -> Option<f64> {
+    pub(crate) fn next_scan_matching_sweep_end(&self, ts: f64, tilt: TiltFilter) -> Option<f64> {
         let next_idx = match self.scan_index_at(ts) {
             Some(i) => i + 1,
             None => 0,
         };
         let scan = self.scans.get(next_idx)?;
-        Some(Self::scan_landing_by_number(scan, elevation_number))
+        Some(Self::scan_landing_at_tilt(scan, tilt))
     }
 
     /// Scan step backward (spec §12 Shift+←): a landing timestamp inside the
     /// *previous whole volume scan* before the one `ts` resolves into, matching
-    /// `elevation_number`. `None` when there is no earlier scan.
-    pub(crate) fn prev_scan_matching_sweep_end_by_number(
-        &self,
-        ts: f64,
-        elevation_number: u8,
-    ) -> Option<f64> {
+    /// the held tilt. `None` when there is no earlier scan.
+    pub(crate) fn prev_scan_matching_sweep_end(&self, ts: f64, tilt: TiltFilter) -> Option<f64> {
         let cur = self.scan_index_at(ts)?;
         let prev = cur.checked_sub(1)?;
         let scan = self.scans.get(prev)?;
-        Some(Self::scan_landing_by_number(scan, elevation_number))
+        Some(Self::scan_landing_at_tilt(scan, tilt))
     }
 
     /// Scan step forward in `Latest` mode (any tilt). See
-    /// [`Self::next_scan_matching_sweep_end_by_number`].
+    /// [`Self::next_scan_matching_sweep_end`].
     pub(crate) fn next_scan_any_sweep_end(&self, ts: f64) -> Option<f64> {
         let next_idx = match self.scan_index_at(ts) {
             Some(i) => i + 1,
@@ -763,7 +752,7 @@ impl RadarTimeline {
     }
 
     /// Scan step backward in `Latest` mode (any tilt). See
-    /// [`Self::prev_scan_matching_sweep_end_by_number`].
+    /// [`Self::prev_scan_matching_sweep_end`].
     pub(crate) fn prev_scan_any_sweep_end(&self, ts: f64) -> Option<f64> {
         let cur = self.scan_index_at(ts)?;
         let prev = cur.checked_sub(1)?;
@@ -962,12 +951,12 @@ mod tests {
         // listing entry (covered, so not counted twice).
         let shadows = [shadow(400, 700), shadow(700, 1000), shadow(1000, 1300)];
         assert_eq!(
-            tl.known_frame_ends(&shadows, None, Some(1), "reflectivity"),
+            tl.known_frame_ends(&shadows, None, TiltFilter::number(1), "reflectivity"),
             vec![430.0, 730.0, 1030.0]
         );
         // Latest/auto counts every sweep, listed volumes included.
         assert_eq!(
-            tl.known_frame_ends(&shadows, None, None, "reflectivity"),
+            tl.known_frame_ends(&shadows, None, TiltFilter::Every, "reflectivity"),
             vec![430.0, 460.0, 730.0, 760.0, 1030.0, 1060.0]
         );
     }
@@ -995,11 +984,11 @@ mod tests {
         let tl = RadarTimeline { scans: vec![scan] };
         let shadows = [shadow(700, 1000)];
         assert_eq!(
-            tl.known_frame_ends(&shadows, None, None, "reflectivity"),
+            tl.known_frame_ends(&shadows, None, TiltFilter::Every, "reflectivity"),
             vec![730.0, 760.0, 790.0, 1030.0, 1060.0, 1090.0]
         );
         assert_eq!(
-            tl.known_frame_ends(&shadows, None, Some(1), "reflectivity"),
+            tl.known_frame_ends(&shadows, None, TiltFilter::number(1), "reflectivity"),
             vec![730.0, 1030.0]
         );
         // The last 3 frames are the live volume's own cuts, not a reach back
@@ -1068,7 +1057,7 @@ mod tests {
             projection: &projection,
         });
         assert_eq!(
-            tl.known_frame_ends(&[], live, None, "reflectivity"),
+            tl.known_frame_ends(&[], live, TiltFilter::Every, "reflectivity"),
             vec![1025.0, 1050.0, 1090.0, 1120.0]
         );
         // At 1100 the last 3 frames are this volume's first three cuts.
@@ -1090,7 +1079,7 @@ mod tests {
         let tl = RadarTimeline::default();
         let shadows = [shadow(400, 700), shadow(700, 1000)];
         assert_eq!(
-            tl.known_frame_ends(&shadows, None, Some(1), "reflectivity"),
+            tl.known_frame_ends(&shadows, None, TiltFilter::number(1), "reflectivity"),
             vec![700.0, 1000.0]
         );
     }
@@ -1341,17 +1330,17 @@ mod tests {
         // From ts=1005, next elev_num=1 sweep end is at 1010 (already past) — none
         // Actually 1010 > 1005 + 0.5 = 1005.5, so 1010 qualifies
         assert_eq!(
-            tl.next_matching_sweep_end_by_number(1005.0, 1),
+            tl.next_matching_sweep_end(1005.0, TiltFilter::number(1)),
             Some(1010.0)
         );
         // From ts=1005, next elev_num=3 sweep end is at 1030
         assert_eq!(
-            tl.next_matching_sweep_end_by_number(1005.0, 3),
+            tl.next_matching_sweep_end(1005.0, TiltFilter::number(3)),
             Some(1030.0)
         );
         // From ts=1005, next elev_num=2 sweep end is at 1020
         assert_eq!(
-            tl.next_matching_sweep_end_by_number(1005.0, 2),
+            tl.next_matching_sweep_end(1005.0, TiltFilter::number(2)),
             Some(1020.0)
         );
     }
@@ -1372,12 +1361,12 @@ mod tests {
         };
         // From ts=1035, prev elev_num=3 sweep end is at 1030
         assert_eq!(
-            tl.prev_matching_sweep_end_by_number(1035.0, 3),
+            tl.prev_matching_sweep_end(1035.0, TiltFilter::number(3)),
             Some(1030.0)
         );
         // From ts=1025, prev elev_num=2 sweep end is at 1020
         assert_eq!(
-            tl.prev_matching_sweep_end_by_number(1025.0, 2),
+            tl.prev_matching_sweep_end(1025.0, TiltFilter::number(2)),
             Some(1020.0)
         );
     }
@@ -1407,24 +1396,30 @@ mod tests {
 
         // Mid first scan → next scan's elev-1 landing (earliest matching sweep end).
         assert_eq!(
-            tl.next_scan_matching_sweep_end_by_number(1015.0, 1),
+            tl.next_scan_matching_sweep_end(1015.0, TiltFilter::number(1)),
             Some(1310.0)
         );
         // Mid middle scan → third scan's elev-1 landing.
         assert_eq!(
-            tl.next_scan_matching_sweep_end_by_number(1315.0, 1),
+            tl.next_scan_matching_sweep_end(1315.0, TiltFilter::number(1)),
             Some(1610.0)
         );
         // From the last scan there is no later scan.
-        assert_eq!(tl.next_scan_matching_sweep_end_by_number(1615.0, 1), None);
+        assert_eq!(
+            tl.next_scan_matching_sweep_end(1615.0, TiltFilter::number(1)),
+            None
+        );
 
         // Backward: mid middle scan → first scan's elev-2 landing.
         assert_eq!(
-            tl.prev_scan_matching_sweep_end_by_number(1315.0, 2),
+            tl.prev_scan_matching_sweep_end(1315.0, TiltFilter::number(2)),
             Some(1020.0)
         );
         // From the first scan there is no earlier scan.
-        assert_eq!(tl.prev_scan_matching_sweep_end_by_number(1015.0, 1), None);
+        assert_eq!(
+            tl.prev_scan_matching_sweep_end(1015.0, TiltFilter::number(1)),
+            None
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1437,11 +1432,14 @@ mod tests {
         };
         // A position before every scan steps forward into the first scan.
         assert_eq!(
-            tl.next_scan_matching_sweep_end_by_number(500.0, 1),
+            tl.next_scan_matching_sweep_end(500.0, TiltFilter::number(1)),
             Some(1010.0)
         );
         // ...and there is nothing earlier than it to step back to.
-        assert_eq!(tl.prev_scan_matching_sweep_end_by_number(500.0, 1), None);
+        assert_eq!(
+            tl.prev_scan_matching_sweep_end(500.0, TiltFilter::number(1)),
+            None
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1455,7 +1453,7 @@ mod tests {
             ],
         };
         assert_eq!(
-            tl.next_scan_matching_sweep_end_by_number(1005.0, 2),
+            tl.next_scan_matching_sweep_end(1005.0, TiltFilter::number(2)),
             Some(1312.0)
         );
     }
@@ -1504,11 +1502,11 @@ mod tests {
             ],
         };
         // All elev_num=1 sweeps, no bounds
-        let times = tl.matching_sweep_end_times_by_number(1, "reflectivity", None);
+        let times = tl.matching_sweep_end_times(TiltFilter::number(1), "reflectivity", None);
         assert_eq!(times, vec![1010.0, 1310.0]);
 
         // All elev_num=2 sweeps, no bounds
-        let times = tl.matching_sweep_end_times_by_number(2, "reflectivity", None);
+        let times = tl.matching_sweep_end_times(TiltFilter::number(2), "reflectivity", None);
         assert_eq!(times, vec![1020.0, 1320.0]);
     }
 
@@ -1527,8 +1525,11 @@ mod tests {
             )],
         };
         // elev_num=1 sweeps within bounds [1005, 1025]
-        let times =
-            tl.matching_sweep_end_times_by_number(1, "reflectivity", Some((1005.0, 1025.0)));
+        let times = tl.matching_sweep_end_times(
+            TiltFilter::number(1),
+            "reflectivity",
+            Some((1005.0, 1025.0)),
+        );
         assert_eq!(times, vec![1010.0]);
     }
 
@@ -1580,17 +1581,17 @@ mod tests {
 
         // Reflectivity: the two cuts that cached it.
         assert_eq!(
-            tl.matching_sweep_end_times_by_number(1, "reflectivity", None),
+            tl.matching_sweep_end_times(TiltFilter::number(1), "reflectivity", None),
             vec![1010.0, 1020.0]
         );
         // Velocity: only the second cut cached it.
         assert_eq!(
-            tl.matching_sweep_end_times_by_number(1, "velocity", None),
+            tl.matching_sweep_end_times(TiltFilter::number(1), "velocity", None),
             vec![1020.0]
         );
         // A product nobody cached: no frames.
         assert!(tl
-            .matching_sweep_end_times_by_number(1, "spectrum_width", None)
+            .matching_sweep_end_times(TiltFilter::number(1), "spectrum_width", None)
             .is_empty());
 
         // Latest mode honours the same filter.
@@ -1605,7 +1606,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn matching_sweep_end_times_empty() {
         let tl = RadarTimeline { scans: vec![] };
-        let times = tl.matching_sweep_end_times_by_number(1, "reflectivity", None);
+        let times = tl.matching_sweep_end_times(TiltFilter::number(1), "reflectivity", None);
         assert!(times.is_empty());
     }
 
@@ -2010,9 +2011,15 @@ mod coverage_tests {
             )],
         };
         // No elevation_number 2 exists at all.
-        assert_eq!(tl.next_matching_sweep_end_by_number(1000.0, 2), None);
+        assert_eq!(
+            tl.next_matching_sweep_end(1000.0, TiltFilter::number(2)),
+            None
+        );
         // elevation_number 1 exists but its only sweep ends at/<= ts+0.5.
-        assert_eq!(tl.next_matching_sweep_end_by_number(1010.0, 1), None);
+        assert_eq!(
+            tl.next_matching_sweep_end(1010.0, TiltFilter::number(1)),
+            None
+        );
     }
 
     // --- matching_sweep_end_times: dedup near-equal end times ---
@@ -2026,7 +2033,7 @@ mod coverage_tests {
                 scan_with_sweeps(1010.0, 1020.0, vec![sweep(1010.0, 1010.005, 0.5, 1)]),
             ],
         };
-        let times = tl.matching_sweep_end_times_by_number(1, "reflectivity", None);
+        let times = tl.matching_sweep_end_times(TiltFilter::number(1), "reflectivity", None);
         assert_eq!(times.len(), 1);
         assert!((times[0] - 1010.0).abs() < 0.01);
     }
@@ -2042,7 +2049,11 @@ mod coverage_tests {
             ],
         };
         // Bounds only cover the first scan; the second scan's start_time > end.
-        let times = tl.matching_sweep_end_times_by_number(1, "reflectivity", Some((900.0, 1100.0)));
+        let times = tl.matching_sweep_end_times(
+            TiltFilter::number(1),
+            "reflectivity",
+            Some((900.0, 1100.0)),
+        );
         assert_eq!(times, vec![1010.0]);
     }
 

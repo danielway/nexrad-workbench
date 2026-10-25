@@ -14,15 +14,17 @@
 //! - **Red means failure, only.** The one red element is the failure tick.
 //! - **Motion means data is moving.** Under reduced motion the pulse becomes a
 //!   static tint and we stop requesting repaints.
+//! - **One chip for every site.** With more than one site the words are the
+//!   sum ([`ActivityHeadline::words`](crate::core::activity::ActivityHeadline::words)).
 //! - **L0 restraint.** A casual viewer with nothing happening sees the glyph
 //!   alone; the words appear on hover or once Advanced is on.
 
 use crate::core::activity::{ActivityGlyph, ActivityState, ActivityVm};
 use crate::core::Intent;
 use crate::state::AppState;
+use crate::ui::icons;
 use crate::ui::theme;
 use eframe::egui::{self, Color32, RichText};
-use egui_phosphor::regular as icons;
 
 /// Sine period for the activity pulse, in radians per second.
 const PULSE_RATE: f64 = 3.0;
@@ -34,17 +36,6 @@ fn glyph_icon(glyph: ActivityGlyph) -> &'static str {
         ActivityGlyph::Gear => icons::GEAR,
         ActivityGlyph::Wave => icons::BROADCAST,
         ActivityGlyph::Pause => icons::PAUSE,
-    }
-}
-
-/// Hover text explaining the current state in plain language.
-fn hover_text(state: ActivityState) -> &'static str {
-    match state {
-        ActivityState::UpToDate => "Everything you're viewing is downloaded",
-        ActivityState::Downloading { .. } => "Downloading scans — click for details",
-        ActivityState::Processing => "Decoding downloaded data — click for details",
-        ActivityState::Streaming => "Live stream running — click for details",
-        ActivityState::Paused { .. } => "Downloads paused — click to resume",
     }
 }
 
@@ -77,7 +68,7 @@ pub(super) fn render_activity_chip(
         // it is folded into the hover.
         if !folded {
             text.push(' ');
-            text.push_str(vm.headline.label);
+            text.push_str(&vm.headline.words());
         }
 
         let resp = ui.add(
@@ -88,9 +79,9 @@ pub(super) fn render_activity_chip(
             clicked = true;
         }
         if folded {
-            resp.on_hover_text(format!("{} — {}", vm.headline.label, hover_text(vm.state)));
+            resp.on_hover_text(format!("{} — {}", vm.headline.words(), vm.hover()));
         } else {
-            resp.on_hover_text(hover_text(vm.state));
+            resp.on_hover_text(vm.hover());
         }
 
         // The ⚠ tick — independent of the activity state, because a failed
@@ -166,21 +157,6 @@ mod coverage_tests {
             for b in icons.iter().skip(i + 1) {
                 assert_ne!(a, b, "glyphs must not share an icon");
             }
-        }
-    }
-
-    /// Every state has non-empty hover text — the chip is the only always-on
-    /// acquisition affordance, so it must always explain itself.
-    #[wasm_bindgen_test]
-    fn every_state_has_hover_text() {
-        for state in [
-            ActivityState::UpToDate,
-            ActivityState::Downloading { scans: 1 },
-            ActivityState::Processing,
-            ActivityState::Streaming,
-            ActivityState::Paused { queued: 1 },
-        ] {
-            assert!(!hover_text(state).is_empty());
         }
     }
 }

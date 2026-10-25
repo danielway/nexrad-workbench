@@ -1,8 +1,9 @@
 //! WASM exports for the Web Worker.
 //!
 //! These functions are called from worker.js to perform heavy data operations
-//! (ingest, render) in a background thread, keeping the main UI responsive.
+//! (ingest, render, storm cell detection) in a background thread, keeping the main UI responsive.
 
+mod detect;
 mod ingest;
 mod render;
 mod render_live;
@@ -250,7 +251,7 @@ thread_local! {
 pub(super) fn init_logger() {
     WORKER_LOGGER_INIT.with(|init| {
         if !init.get() {
-            eframe::WebLogger::init(log::LevelFilter::Debug).ok();
+            crate::init_logger();
             init.set(true);
         }
     });

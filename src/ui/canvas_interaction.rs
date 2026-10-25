@@ -117,28 +117,58 @@ pub(crate) fn handle_canvas_interaction(
     response: &egui::Response,
     rect: &Rect,
     state: &mut AppState,
+    site: &crate::subsystem::SiteState,
+    on_map: &[&str],
     playback: &crate::subsystem::Playback,
     diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
     projection: &MapProjection,
+    storm_cells: &crate::core::storm_cell_view::StormCellsVm,
+    site_click: crate::core::canvas::SiteClick,
 ) {
-    // Distance tool: click to place points. Which endpoint the click lands on
-    // is the core's call (`decide_distance_click`), applied by the shell.
+    // Distance tool: a click places an endpoint and a drag that starts on
+    // one moves it (instead of panning). Which endpoint, and what it snaps
+    // to, is the core's call (`core::measure`); the shell sends where.
+    let measure_drag = distance_tool_input(response, rect, state, projection);
     if state.viz_state.distance_tool_active && response.clicked() {
         if let Some(click_pos) = response.interact_pointer_pos() {
             let geo = projection.screen_to_geo(click_pos);
-            state.push_command(crate::core::Intent::PlaceDistancePoint {
-                lat: geo.y,
-                lon: geo.x,
-            });
+            state.push_command(crate::core::Intent::Measure(
+                crate::core::measure::MeasureIntent::Place {
+                    lat: geo.y,
+                    lon: geo.x,
+                    km_per_px: super::canvas_overlays::compute_km_per_pixel(projection, rect)
+                        .unwrap_or(0.0),
+                },
+            ));
         }
     } else if response.clicked() {
         if let Some(click_pos) = response.interact_pointer_pos() {
             // What the click picks is the core's call (`decide_map_pick`):
             // marks over polygons, and only marks whose layer is drawn.
-            match pick_at(click_pos, projection, state, playback, diagnostics, derived) {
-                // On the phone a tap near a site asks before switching.
-                Some(pick) => state.push_command(pick.intent_for(state.is_mobile)),
+            let pick = pick_at(
+                click_pos,
+                projection,
+                state,
+                site,
+                on_map,
+                playback,
+                diagnostics,
+                derived,
+                storm_cells,
+            );
+            // A tap anywhere but on a cell closes an open cell card.
+            let on_cell = matches!(pick, Some(crate::core::canvas::MapPick::StormCell { .. }));
+            if let Some(dismiss) = crate::core::storm_cell_view::tap_dismisses_card(
+                on_cell,
+                &state.viz_state.storm_cell_pointer,
+            ) {
+                state.push_command(crate::core::Intent::StormCells(dismiss));
+            }
+            match pick {
+                // On the phone a tap near a site asks before switching; Cmd
+                // adds the site instead.
+                Some(pick) => state.push_command(pick.intent_for(site_click)),
                 // Missed every interactive overlay — dismiss any open mPING
                 // popover.
                 None => state.push_command(crate::core::Intent::Diagnostics(
@@ -171,7 +201,7 @@ pub(crate) fn handle_canvas_interaction(
             .viz_state
             .set_pan_offset(state.viz_state.pan_offset() + t.pan);
     } else {
-        if response.dragged() {
+        if response.dragged() && !measure_drag {
             state
                 .viz_state
                 .set_pan_offset(state.viz_state.pan_offset() + response.drag_delta());
@@ -206,16 +236,74 @@ pub(crate) fn handle_canvas_interaction(
     }
 }
 
+/// The distance tool's drags: a drag that starts on an endpoint (the core's
+/// [`crate::core::measure::grab`]) moves it, and the drop snaps it. Returns
+/// whether this frame's drag belongs to an endpoint, so the map does not
+/// pan under it.
+fn distance_tool_input(
+    response: &egui::Response,
+    rect: &Rect,
+    state: &mut AppState,
+    projection: &MapProjection,
+) -> bool {
+    use crate::core::measure::{grab, snap_radius_km, MeasureIntent};
+    use crate::core::Intent;
+    if !state.viz_state.distance_tool_active {
+        return false;
+    }
+    let km_per_px = super::canvas_overlays::compute_km_per_pixel(projection, rect).unwrap_or(0.0);
+    let geo = |p: egui::Pos2| {
+        let g = projection.screen_to_geo(p);
+        (g.y, g.x)
+    };
+    let mut ours = state.viz_state.measurement.dragging.is_some();
+    if response.drag_started() {
+        let origin = response.ctx.input(|i| i.pointer.press_origin());
+        if let Some((lat, lon)) = origin.map(geo) {
+            let radius = snap_radius_km(state.is_mobile, km_per_px);
+            ours = grab(&state.viz_state.measurement, lat, lon, radius).is_some();
+            state.push_command(Intent::Measure(MeasureIntent::DragStart {
+                lat,
+                lon,
+                km_per_px,
+            }));
+        }
+    }
+    if !ours {
+        return false;
+    }
+    let pointer = response
+        .interact_pointer_pos()
+        .or_else(|| response.ctx.input(|i| i.pointer.latest_pos()))
+        .map(geo);
+    if response.drag_stopped() {
+        // Sent even without a position: it ends the drag.
+        let (lat, lon) = pointer.unwrap_or((f64::NAN, f64::NAN));
+        state.push_command(Intent::Measure(MeasureIntent::DragEnd {
+            lat,
+            lon,
+            km_per_px,
+        }));
+    } else if let Some((lat, lon)) = pointer.filter(|_| response.dragged()) {
+        state.push_command(Intent::Measure(MeasureIntent::DragTo { lat, lon }));
+    }
+    true
+}
+
 /// The map object under `pos`: hit-test every pickable mark against the
 /// projection (pixel radii, the shell's part), then let the core decide.
 /// Shared by clicks and hover so a hover state always previews the click.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn pick_at(
     pos: egui::Pos2,
     projection: &MapProjection,
     state: &AppState,
+    site: &crate::subsystem::SiteState,
+    on_map: &[&str],
     playback: &crate::subsystem::Playback,
     diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
+    storm_cells: &crate::core::storm_cell_view::StormCellsVm,
 ) -> Option<crate::core::canvas::MapPick> {
     let geo_layers = &state.layer_state.geo;
     let radii = crate::core::canvas::pick_radii(state.is_mobile);
@@ -224,12 +312,14 @@ pub(crate) fn pick_at(
     let layers = crate::core::canvas::PickLayers {
         sites: geo_layers.nexrad_sites,
         mping: geo_layers.mping,
-        alerts: (show_warnings || show_other) && derived.data_is_live,
+        alerts: (show_warnings || show_other) && derived.data_is_live(),
+        // The phone taps a cell for its card; the desktop hovers.
+        storm_cells: state.is_mobile && !storm_cells.shown.is_empty(),
     };
     let candidates = crate::core::canvas::PickCandidates {
         site: layers
             .sites
-            .then(|| pick_site_at(pos, projection, state, radii.site))
+            .then(|| pick_site_at(pos, projection, on_map, radii.site))
             .flatten(),
         mping: layers
             .mping
@@ -265,28 +355,42 @@ pub(crate) fn pick_at(
                     .find(|a| a.id == id)
                     .map(|a| (id.clone(), a.event.clone()))
             }),
+        storm_cell: layers
+            .storm_cells
+            .then(|| {
+                let geo = projection.screen_to_geo(pos);
+                // A tap picks a cell on the phone only, which shows one
+                // site: its own cells.
+                crate::core::storm_cell_view::cell_at(
+                    &site.cells.result,
+                    &storm_cells.shown,
+                    geo.y,
+                    geo.x,
+                )
+                .map(|_| (geo.y, geo.x))
+            })
+            .flatten(),
     };
     crate::core::canvas::decide_map_pick(candidates, layers)
 }
 
 /// Return `(site_id, lat, lon)` for the NEXRAD site closest to `click_pos`
-/// within `radius_px` ([`crate::core::canvas::pick_radii`]), or `None` if no site was hit. The currently
-/// active site is excluded so re-selecting it is a no-op rather than a spurious
-/// camera recenter.
+/// within `radius_px` ([`crate::core::canvas::pick_radii`]), or `None` if no site was hit. The
+/// sites on the map (`on_map`) are excluded: re-selecting one is not a switch, and hovering one
+/// reads its frame instead (`core::site_canvas::radar_hover_label`).
 fn pick_site_at(
     click_pos: egui::Pos2,
     projection: &MapProjection,
-    state: &AppState,
+    on_map: &[&str],
     radius_px: f32,
 ) -> Option<(&'static str, f64, f64)> {
     let (min_lon, min_lat, max_lon, max_lat) = projection.visible_bounds();
     let padding = 2.0;
-    let current_upper = state.viz_state.site_id.to_uppercase();
     let hit_radius_sq = radius_px * radius_px;
 
     let mut best: Option<(&'static str, f64, f64, f32)> = None;
     for site in NEXRAD_SITES.iter() {
-        if site.id == current_upper {
+        if on_map.iter().any(|id| id.eq_ignore_ascii_case(site.id)) {
             continue;
         }
         if site.lat < min_lat - padding
@@ -352,7 +456,7 @@ mod coverage_tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     // KABR is a real NEXRAD site; centering the projection on its coords makes
-    // KABR project to the exact screen center. AppState::default()'s site_id is
+    // KABR project to the exact screen center. The tests pass a focus site of
     // "KDMX" (not KABR), so KABR is a live click candidate unless we exclude it.
     const KABR_LAT: f64 = 45.45583;
     const KABR_LON: f64 = -98.41306;
@@ -394,9 +498,9 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn site_click_at_center_hits_centered_site() {
         let p = proj_on_kabr();
-        let state = AppState::default(); // site_id = "KDMX", so KABR is a candidate
-                                         // KABR projects to screen center (400,300); clicking there is a direct hit.
-        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &state, DESKTOP.site);
+        // The focus site is KDMX, so KABR is a candidate. KABR projects to
+        // screen center (400,300); clicking there is a direct hit.
+        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &["KDMX"], DESKTOP.site);
         match hit {
             Some((id, lat, lon)) => {
                 assert!(id == "KABR");
@@ -410,49 +514,54 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn site_click_within_radius_still_hits() {
         let p = proj_on_kabr();
-        let state = AppState::default();
         // 7px from center: dist_sq = 49 <= 100 (the desktop site radius squared).
-        let hit = pick_site_at(egui::Pos2::new(407.0, 300.0), &p, &state, DESKTOP.site);
+        let hit = pick_site_at(egui::Pos2::new(407.0, 300.0), &p, &["KDMX"], DESKTOP.site);
         assert!(matches!(hit, Some((id, _, _)) if id == "KABR"));
     }
 
     #[wasm_bindgen_test]
     fn site_click_just_outside_radius_misses() {
         let p = proj_on_kabr();
-        let state = AppState::default();
         // 11px from center: dist_sq = 121 > 100, and the next-nearest site (KFSD)
         // is ~80px away, so nothing is within the hit radius.
-        let hit = pick_site_at(egui::Pos2::new(411.0, 300.0), &p, &state, DESKTOP.site);
+        let hit = pick_site_at(egui::Pos2::new(411.0, 300.0), &p, &["KDMX"], DESKTOP.site);
         assert!(hit.is_none());
     }
 
     #[wasm_bindgen_test]
     fn site_click_far_corner_misses() {
         let p = proj_on_kabr();
-        let state = AppState::default();
-        let hit = pick_site_at(egui::Pos2::new(5.0, 5.0), &p, &state, DESKTOP.site);
+        let hit = pick_site_at(egui::Pos2::new(5.0, 5.0), &p, &["KDMX"], DESKTOP.site);
         assert!(hit.is_none());
     }
 
     #[wasm_bindgen_test]
     fn active_site_is_excluded_from_hit() {
         let p = proj_on_kabr();
-        let mut state = AppState::default();
-        // Make KABR the active site: it must be excluded, and no other site is
+        // Make KABR the focus site: it must be excluded, and no other site is
         // within 10px of center, so the center click now misses.
-        state.viz_state.site_id = "KABR".to_string();
-        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &state, DESKTOP.site);
+        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &["KABR"], DESKTOP.site);
+        assert!(hit.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn every_site_on_the_map_is_excluded_from_hit() {
+        let p = proj_on_kabr();
+        let hit = pick_site_at(
+            egui::Pos2::new(400.0, 300.0),
+            &p,
+            &["KDMX", "KABR"],
+            DESKTOP.site,
+        );
         assert!(hit.is_none());
     }
 
     #[wasm_bindgen_test]
     fn active_site_match_is_case_insensitive() {
         let p = proj_on_kabr();
-        let mut state = AppState::default();
         // Lower-case site_id is upper-cased before comparison, so KABR is still
         // excluded and the center click misses.
-        state.viz_state.site_id = "kabr".to_string();
-        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &state, DESKTOP.site);
+        let hit = pick_site_at(egui::Pos2::new(400.0, 300.0), &p, &["kabr"], DESKTOP.site);
         assert!(hit.is_none());
     }
 

@@ -87,7 +87,7 @@ fn render_list_modal(
                     if ui
                         .small_button(RichText::new(format!(
                             "{} Refresh",
-                            egui_phosphor::regular::ARROWS_CLOCKWISE
+                            crate::ui::icons::ARROWS_CLOCKWISE
                         )))
                         .on_hover_text("Re-fetch the NWS alerts feed")
                         .clicked()
@@ -157,11 +157,8 @@ fn render_detail_modal(
                 && ui
                     .add(
                         egui::Button::new(
-                            RichText::new(format!(
-                                "{} All alerts",
-                                egui_phosphor::regular::ARROW_LEFT
-                            ))
-                            .color(theme::TEXT_DIM),
+                            RichText::new(format!("{} All alerts", crate::ui::icons::ARROW_LEFT))
+                                .color(theme::TEXT_DIM),
                         )
                         .frame(false),
                     )
@@ -239,7 +236,7 @@ fn render_detail_modal(
                 dialog::footer(ui, |ui| {
                     if dialog::primary(
                         ui,
-                        &format!("{} Show on map", egui_phosphor::regular::MAP_PIN_LINE),
+                        &format!("{} Show on map", crate::ui::icons::MAP_PIN_LINE),
                     )
                     .on_hover_text("Center the map on the alert and turn on the alerts overlay")
                     .clicked()

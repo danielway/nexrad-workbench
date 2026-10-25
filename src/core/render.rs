@@ -8,7 +8,128 @@
 //! ([`crate::core::playback_manager::PrevSweepAction`]); this module covers the
 //! main-sweep prefetch + dedup gates.
 
-use crate::core::Scan;
+use crate::core::{Scan, SweepIdentity};
+use crate::data::ScanKey;
+
+/// Parameters for a volume (all-elevations) render request. Single-elevation
+/// requests are identified by [`SweepIdentity`] so the dedup cache shares one
+/// type with the on-GPU `displayed` slot; volume requests span elevations.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct VolumeRenderRequest {
+    pub scan_key: ScanKey,
+    pub product: String,
+}
+
+/// One site's render tracking: the scan it is rendering, the elevations that
+/// scan can render, and the last requests sent for it (the dedup inputs).
+///
+/// The worker pool is shared between sites
+/// ([`crate::nexrad::RenderCoordinator`]); this is the part that is per site,
+/// held on [`crate::subsystem::sites::SiteState::render`].
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RenderTrack {
+    /// The scan being rendered. Typed rather than its storage-key string so
+    /// callers compare by value; the string is built at the worker boundary.
+    scan_key: Option<ScanKey>,
+    /// Elevations the GPU can render right now for that scan, from worker
+    /// ingest results in either the live or archive flow. Distinct from
+    /// [`crate::core::VolumeElevationRoster::received`], which is the
+    /// in-progress live volume's observation roster.
+    available_elevations: Vec<u8>,
+    /// The last single-elevation request, for dedup. Equal identities mean
+    /// the same on-disk sweep and the request is suppressed.
+    last_render: Option<SweepIdentity>,
+    /// The last volume request, for dedup.
+    last_volume_render: Option<VolumeRenderRequest>,
+}
+
+impl RenderTrack {
+    /// The scan being rendered, if any.
+    pub(crate) fn scan_key(&self) -> Option<&ScanKey> {
+        self.scan_key.as_ref()
+    }
+
+    /// Elevation numbers the current scan can render.
+    pub(crate) fn available_elevations(&self) -> &[u8] {
+        &self.available_elevations
+    }
+
+    /// Set the scan and its elevations (after ingest).
+    pub(crate) fn set_scan(&mut self, key: ScanKey, elevations: Vec<u8>) {
+        self.scan_key = Some(key);
+        self.available_elevations = elevations;
+    }
+
+    /// Set just the scan (during a scrub or a chunk ingest).
+    pub(crate) fn set_scan_key(&mut self, key: ScanKey) {
+        self.scan_key = Some(key);
+    }
+
+    /// Add newly completed elevations (chunk ingest), kept sorted and unique.
+    pub(crate) fn add_elevations(&mut self, new: &[u8]) {
+        for &elev in new {
+            if !self.available_elevations.contains(&elev) {
+                self.available_elevations.push(elev);
+                self.available_elevations.sort_unstable();
+            }
+        }
+    }
+
+    /// Forget everything: the site changed.
+    pub(crate) fn clear_for_site_change(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Let the next requests through (clears the dedup cache).
+    pub(crate) fn force_fresh_render(&mut self) {
+        self.last_render = None;
+        self.last_volume_render = None;
+    }
+
+    /// Forget the last volume request, so the same volume can be asked for
+    /// again (its texture was given back).
+    pub(crate) fn forget_volume_render(&mut self) {
+        self.last_volume_render = None;
+    }
+
+    /// Clear the scan (no scan in range); the elevations stay.
+    pub(crate) fn clear_scan_key(&mut self) {
+        self.scan_key = None;
+        self.last_render = None;
+    }
+
+    /// The last single-elevation request.
+    pub(crate) fn last_render(&self) -> Option<&SweepIdentity> {
+        self.last_render.as_ref()
+    }
+
+    /// Record a single-elevation request as sent (also used by the prefetch,
+    /// so the same request is not sent again).
+    pub(crate) fn set_last_render(&mut self, identity: SweepIdentity) {
+        self.last_render = Some(identity);
+    }
+
+    /// The last volume request.
+    pub(crate) fn last_volume_render(&self) -> Option<&VolumeRenderRequest> {
+        self.last_volume_render.as_ref()
+    }
+
+    /// Record a volume request as sent.
+    pub(crate) fn set_last_volume_render(&mut self, request: VolumeRenderRequest) {
+        self.last_volume_render = Some(request);
+    }
+
+    /// The dedup gate for a single-elevation request: whether `identity`
+    /// differs from the last one sent for this site.
+    pub(crate) fn admits_sweep(&self, identity: &SweepIdentity) -> bool {
+        should_dispatch(identity, self.last_render())
+    }
+
+    /// The dedup gate for a volume request.
+    pub(crate) fn admits_volume(&self, request: &VolumeRenderRequest) -> bool {
+        should_dispatch(request, self.last_volume_render())
+    }
+}
 
 /// Decide which elevation number (if any) to prefetch as the playhead nears the
 /// end of the current sweep, or `None` to prefetch nothing.
@@ -350,5 +471,151 @@ mod coverage_tests {
         assert!(should_dispatch(&42i32, None)); // no prior → dispatch
         assert!(!should_dispatch(&42i32, Some(&42i32))); // equal → suppress
         assert!(should_dispatch(&42i32, Some(&7i32))); // changed → dispatch
+    }
+}
+
+#[cfg(test)]
+mod track_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn key(site: &str, ms: i64) -> ScanKey {
+        ScanKey::new(site, crate::data::keys::UnixMillis(ms))
+    }
+
+    fn identity(site: &str, ms: i64, elev: u8, product: &str) -> SweepIdentity {
+        SweepIdentity::new(key(site, ms), elev, product)
+    }
+
+    fn volume(site: &str, ms: i64, product: &str) -> VolumeRenderRequest {
+        VolumeRenderRequest {
+            scan_key: key(site, ms),
+            product: product.to_string(),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn default_is_empty() {
+        let t = RenderTrack::default();
+        assert!(t.scan_key().is_none());
+        assert!(t.available_elevations().is_empty());
+        assert!(t.last_render().is_none());
+        assert!(t.last_volume_render().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn set_scan_sets_key_and_elevations() {
+        let mut t = RenderTrack::default();
+        t.set_scan(key("KDMX", 1_700_000_000_000), vec![1, 2, 3]);
+        assert_eq!(t.scan_key(), Some(&key("KDMX", 1_700_000_000_000)));
+        assert_eq!(t.available_elevations(), &[1, 2, 3]);
+    }
+
+    #[wasm_bindgen_test]
+    fn set_scan_key_only_leaves_elevations_untouched() {
+        let mut t = RenderTrack::default();
+        t.set_scan(key("KDMX", 100), vec![4, 5]);
+        t.set_scan_key(key("KFTG", 200));
+        assert_eq!(t.scan_key(), Some(&key("KFTG", 200)));
+        assert_eq!(t.available_elevations(), &[4, 5]);
+    }
+
+    #[wasm_bindgen_test]
+    fn set_scan_overwrites_prior_elevations() {
+        let mut t = RenderTrack::default();
+        t.set_scan(key("KDMX", 1), vec![1, 2, 3]);
+        t.set_scan(key("KDMX", 2), vec![9]);
+        assert_eq!(t.scan_key(), Some(&key("KDMX", 2)));
+        assert_eq!(t.available_elevations(), &[9]);
+    }
+
+    #[wasm_bindgen_test]
+    fn add_elevations_keeps_sorted_unique() {
+        let mut t = RenderTrack::default();
+        t.add_elevations(&[5, 3, 9]);
+        assert_eq!(t.available_elevations(), &[3, 5, 9]);
+        t.add_elevations(&[9, 1, 5]);
+        assert_eq!(t.available_elevations(), &[1, 3, 5, 9]);
+        t.add_elevations(&[1]);
+        assert_eq!(t.available_elevations(), &[1, 3, 5, 9]);
+    }
+
+    #[wasm_bindgen_test]
+    fn add_elevations_merges_into_existing_sorted() {
+        let mut t = RenderTrack::default();
+        t.set_scan(key("KABC", 1), vec![2, 6]);
+        t.add_elevations(&[4]);
+        assert_eq!(t.available_elevations(), &[2, 4, 6]);
+    }
+
+    #[wasm_bindgen_test]
+    fn clear_for_site_change_resets_everything() {
+        let mut t = RenderTrack::default();
+        t.set_scan(key("KDMX", 5), vec![1, 2]);
+        t.set_last_render(identity("KDMX", 5, 1, "ref"));
+        t.set_last_volume_render(volume("KDMX", 5, "ref"));
+        t.clear_for_site_change();
+        assert!(t.scan_key().is_none());
+        assert!(t.available_elevations().is_empty());
+        assert!(t.last_render().is_none());
+        assert!(t.last_volume_render().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn clear_scan_key_clears_key_and_last_render_but_keeps_elevations() {
+        let mut t = RenderTrack::default();
+        t.set_scan(key("KDMX", 5), vec![1, 2]);
+        t.set_last_render(identity("KDMX", 5, 1, "ref"));
+        t.set_last_volume_render(volume("KDMX", 5, "ref"));
+        t.clear_scan_key();
+        assert!(t.scan_key().is_none());
+        assert_eq!(t.available_elevations(), &[1, 2]);
+        assert!(t.last_render().is_none());
+        // The volume dedup survives: only a forced render clears it.
+        assert!(t.last_volume_render().is_some());
+    }
+
+    #[wasm_bindgen_test]
+    fn force_fresh_render_clears_dedup_but_keeps_the_scan() {
+        let mut t = RenderTrack::default();
+        t.set_scan(key("KDMX", 1), vec![3]);
+        t.set_last_render(identity("KDMX", 1, 3, "ref"));
+        t.set_last_volume_render(volume("KDMX", 1, "ref"));
+        t.force_fresh_render();
+        assert_eq!(t.scan_key(), Some(&key("KDMX", 1)));
+        assert_eq!(t.available_elevations(), &[3]);
+        assert!(t.admits_sweep(&identity("KDMX", 1, 3, "ref")));
+        assert!(t.admits_volume(&volume("KDMX", 1, "ref")));
+    }
+
+    #[wasm_bindgen_test]
+    fn admits_sweep_suppresses_the_last_identity_only() {
+        let mut t = RenderTrack::default();
+        assert!(t.admits_sweep(&identity("KDMX", 1, 1, "ref")));
+        t.set_last_render(identity("KDMX", 1, 1, "ref"));
+        assert!(!t.admits_sweep(&identity("KDMX", 1, 1, "ref")));
+        assert!(t.admits_sweep(&identity("KDMX", 1, 2, "ref")));
+        assert!(t.admits_sweep(&identity("KDMX", 1, 1, "vel")));
+        assert!(t.admits_sweep(&identity("KTLX", 1, 1, "ref")));
+    }
+
+    #[wasm_bindgen_test]
+    fn admits_volume_suppresses_the_last_request_only() {
+        let mut t = RenderTrack::default();
+        assert!(t.admits_volume(&volume("KDMX", 1, "ref")));
+        t.set_last_volume_render(volume("KDMX", 1, "ref"));
+        assert!(!t.admits_volume(&volume("KDMX", 1, "ref")));
+        assert!(t.admits_volume(&volume("KDMX", 2, "ref")));
+        assert!(t.admits_volume(&volume("KDMX", 1, "vel")));
+    }
+
+    #[wasm_bindgen_test]
+    fn two_tracks_dedup_independently() {
+        // One per site: a request recorded on one never suppresses the other.
+        let mut a = RenderTrack::default();
+        let b = RenderTrack::default();
+        a.set_last_render(identity("KDMX", 1, 1, "ref"));
+        assert!(!a.admits_sweep(&identity("KDMX", 1, 1, "ref")));
+        assert!(b.admits_sweep(&identity("KDMX", 1, 1, "ref")));
     }
 }

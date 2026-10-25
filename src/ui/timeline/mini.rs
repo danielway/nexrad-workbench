@@ -34,7 +34,6 @@ use crate::core::phone_strip::{
 };
 use crate::core::transport::SeekGesture;
 use crate::core::{FrameJoinInputs, Intent};
-use crate::data::SiteId;
 use crate::state::AppState;
 use crate::ui::theme;
 use crate::ui::theme::phone as colors;
@@ -60,12 +59,15 @@ fn lookback_secs(stop: StripZoom) -> f64 {
     }
 }
 
-/// Draw the row at the available width and apply its gestures.
+/// Draw the row at the available width and apply its gestures. The row
+/// shows the focus site; a scrub seeks over every site's stream once the row
+/// is drawn.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::ui) fn render_mini_timeline(
     ui: &mut egui::Ui,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
+    sites: &mut crate::subsystem::Sites,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
@@ -83,15 +85,35 @@ pub(in crate::ui) fn render_mini_timeline(
         Pos2::new(panel_clip.left(), panel_clip.top() - STRIP_REACH_PX),
         panel_clip.max,
     );
-    egui::Area::new(ui.id().with("mini_strip"))
+    let scrub_to = egui::Area::new(ui.id().with("mini_strip"))
         .order(egui::Order::Middle)
         .fixed_pos(reach.min)
         .constrain(false)
         .interactable(true)
         .show(ui.ctx(), |ui| {
             ui.set_clip_rect(clip);
-            draw_strip(ui, strip, state, timeline, live, playback, chrome);
-        });
+            draw_strip(
+                ui,
+                strip,
+                state,
+                timeline,
+                sites.focus(),
+                live,
+                playback,
+                chrome,
+            )
+        })
+        .inner;
+    if let Some(ts) = scrub_to {
+        live.seek(
+            sites,
+            &mut playback.state,
+            state.frame_now.secs(),
+            state.pause_stream_while_reviewing,
+            ts,
+            SeekGesture::Scrub,
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -100,10 +122,11 @@ fn draw_strip(
     strip: Rect,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
+    site: &crate::subsystem::SiteState,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
-) {
+) -> Option<f64> {
     let stop = chrome.phone_strip_zoom;
     let top = strip.top();
     let lane = Rect::from_min_max(
@@ -120,18 +143,13 @@ fn draw_strip(
     );
 
     let now = state.frame_now.secs();
-    let view = crate::core::TimelineView::build(
-        &timeline.scans,
-        &timeline.shadow_scan_boundaries,
-        Some(&live.mode_state),
-        live.radar_model.position.as_ref(),
-    );
+    let view = site.timeline_view(live.mode_state.is_active());
     // The same join the desktop strip makes: queued, in flight, the
     // selected product and tilt, and the frame on screen.
     let failed: Vec<i64> = Vec::new();
     let mut in_flight = state.download_progress.in_flight_scans.clone();
     in_flight.extend_from_slice(&state.download_progress.active_scans);
-    let active = state.viz_state.displayed.as_ref().map(|d| {
+    let active = site.displayed.as_ref().map(|d| {
         (
             d.identity.scan_timestamp_secs(),
             d.identity.elevation_number,
@@ -142,7 +160,7 @@ fn draw_strip(
         in_flight: &in_flight,
         failed: &failed,
         product: state.viz_state.product.to_worker_string(),
-        tilt: state.viz_state.elevation_selection.elevation_number(),
+        tilt: (&state.viz_state.elevation_selection).into(),
         active,
         prev_active: None,
     };
@@ -170,9 +188,8 @@ fn draw_strip(
         .filter(|c| c.end_secs >= window.start && c.start_secs <= window.end)
         .collect();
 
-    let site = SiteId::new(state.viz_state.site_id.clone());
     let (sizes_from, sizes_to) = sizes_span(stop, window);
-    let sizes = timeline.activity.scans(&site, sizes_from, sizes_to);
+    let sizes = timeline.activity.scans(&site.id, sizes_from, sizes_to);
     let units = StripUnits::from_containers(&containers).with_listed(&sizes.scans);
     let secs_per_px = window.span() / lane.width().max(1.0) as f64;
     let x_to_ts = |x: f32| window.start + (x - lane.left()) as f64 * secs_per_px;
@@ -267,11 +284,11 @@ fn draw_strip(
             view.scan_start_at(ts),
             &RangeFacts::of(&playback.state, now),
         )));
-        return;
+        return None;
     }
     state.pointer_scrub_active = response.dragged() && out.may_seek;
     if !out.may_seek {
-        return;
+        return None;
     }
     if let Some(p) = pos {
         // A still finger does not seek again (the playhead holds while the
@@ -279,15 +296,10 @@ fn draw_strip(
         let moved = response.dragged() && touch.scrub_moved(p.x);
         ui.ctx().memory_mut(|m| m.data.insert_temp(key, touch));
         if moved {
-            // A scrub runs the seek reducer synchronously so the playhead
-            // keeps up with the finger.
-            live.seek(
-                &mut playback.state,
-                now,
-                state.pause_stream_while_reviewing,
-                snap_scrub(stop, x_to_ts(p.x), &units, now),
-                SeekGesture::Scrub,
-            );
+            // A scrub runs the seek reducer in this frame so the playhead
+            // keeps up with the finger: the caller seeks once the strip's
+            // view of the focus site is done.
+            return Some(snap_scrub(stop, x_to_ts(p.x), &units, now));
         } else if response.clicked() && !response.dragged() {
             // A tap goes to the volume: its first cut.
             state.push_command(Intent::Seek {
@@ -296,6 +308,7 @@ fn draw_strip(
             });
         }
     }
+    None
 }
 
 /// Paint the row's view-model: marks, labels, the bracket and the now line.

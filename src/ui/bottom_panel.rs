@@ -28,6 +28,7 @@ impl Layer for BottomPanelLayer {
             ctx.root_ui,
             ctx.state,
             ctx.timeline,
+            ctx.sites,
             ctx.live,
             ctx.playback,
             ctx.acquisition,
@@ -43,6 +44,7 @@ fn draw_bottom_panel(
     root_ui: &mut egui::Ui,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
+    sites: &mut crate::subsystem::Sites,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     acquisition: &mut Acquisition,
@@ -68,8 +70,11 @@ fn draw_bottom_panel(
 
     // Sized to the content layout (timeline + spacing + controls ~24 +
     // frame margins). Stays constant across macro/micro because the
-    // timeline locks its own height in render_timeline.
-    let controls_height = super::timeline::style::TIMELINE_TOTAL_H + 35.0;
+    // timeline locks its own height in render_timeline; each site but the
+    // focus adds its lane.
+    let lanes = sites.list.len().saturating_sub(1);
+    let controls_height =
+        super::timeline::style::TIMELINE_TOTAL_H + super::timeline::style::lanes_h(lanes) + 35.0;
     let top_bar_height = 36.0;
     let min_central_height = 100.0;
     let max_panel_height =
@@ -94,17 +99,29 @@ fn draw_bottom_panel(
 
                 ui.add_space(2.0);
 
-                // Timeline strip row
-                render_timeline(
+                // Timeline strip row. A scrub seeks once the strip is
+                // drawn, over every site's stream.
+                let scrub_to = render_timeline(
                     ui,
                     state,
                     timeline,
+                    sites,
                     live,
                     playback,
                     acquisition,
                     derived,
                     chrome,
                 );
+                if let Some(ts) = scrub_to {
+                    live.seek(
+                        sites,
+                        &mut playback.state,
+                        state.frame_now.secs(),
+                        state.pause_stream_while_reviewing,
+                        ts,
+                        crate::core::transport::SeekGesture::Scrub,
+                    );
+                }
             });
         });
 

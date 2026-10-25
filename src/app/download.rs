@@ -44,55 +44,63 @@ impl WorkbenchApp {
 
             // Move this scan's boundary to in-flight tracking (ghost stays
             // visible until processing completes in the Decoded handler).
+            // The timeline shows the focus site's track, so only its scans
+            // ghost there.
             let scan_ts = scan.key.scan_start.as_secs();
             let scan_end = self
                 .acquisition
                 .coordinator
                 .download_queue
-                .find_by_scan_start(scan_ts)
+                .find_by_scan_start(&scan.key.site, scan_ts)
                 .map(|item| item.scan_end)
                 .unwrap_or(scan_ts + FALLBACK_SCAN_DURATION_SECS);
-            self.state
-                .download_progress
-                .in_flight_scans
-                .push((scan_ts, scan_end));
+            if scan.key.site == self.sites.focus().id {
+                self.state
+                    .download_progress
+                    .in_flight_scans
+                    .push((scan_ts, scan_end));
+            }
 
             if is_cache_hit {
                 // Records are already in IDB — hold the ledger entry in
                 // AwaitingTimeline until a refresh actually shows them, so
                 // the per-frame anchor pump can't re-request into the gap.
-                self.acquisition.request_ledger.note_ingested(
-                    scan_ts,
-                    crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
-                    js_sys::Date::now(),
-                );
+                if let Some(site) = crate::core::sites::route(&scan.key, &self.sites.ids()) {
+                    self.sites.list[site].ledger.note_ingested(
+                        scan_ts,
+                        crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+                        js_sys::Date::now(),
+                    );
+                }
 
                 // Cache hit: skip ingest, go straight to decode.
                 // Ghost stays until timeline refresh shows the real scan.
                 self.state.download_progress.phase = crate::state::DownloadPhase::Decoding;
 
                 // Cache hit: records already in IDB. Resolve elevation list
-                // from timeline metadata (when available) and route both the
-                // scan key and elevation list through the single-owner
-                // helper.
-                let elev_nums: Vec<u8> = self
-                    .timeline
-                    .scans
-                    .find_recent_scan(scan_ts as f64, 1.0)
-                    .map(|tl_scan| {
-                        let mut nums: Vec<u8> =
-                            tl_scan.sweeps.iter().map(|s| s.elevation_number).collect();
-                        nums.sort_unstable();
-                        nums.dedup();
-                        nums
-                    })
-                    .unwrap_or_default();
-                self.set_active_scan(scan.key.clone(), elev_nums, scan_ts as f64);
+                // from the site's timeline metadata (when available) and
+                // route both the scan key and elevation list through the
+                // single-owner helper. A scan for a site no longer in the
+                // list is not rendered.
+                if let Some(site) = crate::core::sites::route(&scan.key, &self.sites.ids()) {
+                    let elev_nums: Vec<u8> = self.sites.list[site]
+                        .scans
+                        .find_recent_scan(scan_ts as f64, 1.0)
+                        .map(|tl_scan| {
+                            let mut nums: Vec<u8> =
+                                tl_scan.sweeps.iter().map(|s| s.elevation_number).collect();
+                            nums.sort_unstable();
+                            nums.dedup();
+                            nums
+                        })
+                        .unwrap_or_default();
+                    self.set_active_scan(site, scan.key.clone(), elev_nums);
 
-                self.render.coordinator.force_fresh_render();
-                self.request_worker_render();
-                if self.volume_3d_active() {
-                    self.request_worker_render_volume();
+                    self.sites.list[site].render.force_fresh_render();
+                    self.request_worker_render(site);
+                    if self.volume_3d_active() {
+                        self.request_worker_render_volume(site);
+                    }
                 }
             } else {
                 // Count fresh-download bytes toward the reactive auto-fetch
@@ -110,13 +118,15 @@ impl WorkbenchApp {
                 // then returns metadata. We render on the Ingested callback.
                 //
                 // Scope the ingest to the elevation this download was queued
-                // for (if any), so a filter-scoped fetch only stores the cut we
-                // care about. The queue item is still present (Active) here.
+                // for (if any), so a filter-scoped fetch only stores the tilt we
+                // care about (the worker adds that angle's SAILS/MRLE repeats
+                // from the volume's VCP). The queue item is still present
+                // (Active) here.
                 let wanted_elevations: Vec<u8> = self
                     .acquisition
                     .coordinator
                     .download_queue
-                    .find_by_scan_start(scan_ts)
+                    .find_by_scan_start(&scan.key.site, scan_ts)
                     .and_then(|item| item.elevation_filter)
                     .map(|elev| vec![elev])
                     .unwrap_or_default();
@@ -145,7 +155,7 @@ impl WorkbenchApp {
                 .acquisition
                 .coordinator
                 .download_queue
-                .take_operation_id(scan_ts)
+                .take_operation_id(&scan.key.site, scan_ts)
             {
                 self.acquisition
                     .state
@@ -155,9 +165,11 @@ impl WorkbenchApp {
 
         if let nexrad::DownloadResult::Error {
             message,
+            site_id,
             scan_start,
         } = &result
         {
+            let site_key = crate::data::SiteId::new(site_id.clone());
             log::error!("Download failed: {}", message);
             self.state.errors.push(crate::core::AppError::Download {
                 message: message.clone(),
@@ -166,19 +178,22 @@ impl WorkbenchApp {
 
             // Short-backoff suppression so the reactive pumps don't hammer a
             // failing endpoint; evicts on its own so automatic retry stays
-            // possible (explicit retries bypass the reducers entirely).
-            self.acquisition.request_ledger.note_failed(
-                *scan_start,
-                crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
-                js_sys::Date::now(),
-            );
+            // possible (explicit retries bypass the reducers entirely). A
+            // site no longer on the map has no ledger to note it in.
+            if let Some(site) = crate::core::sites::route_site(&site_key, &self.sites.ids()) {
+                self.sites.list[site].ledger.note_failed(
+                    *scan_start,
+                    crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+                    js_sys::Date::now(),
+                );
+            }
 
             // Mark this scan's acquisition operation as failed
             if let Some(op_id) = self
                 .acquisition
                 .coordinator
                 .download_queue
-                .take_operation_id(*scan_start)
+                .take_operation_id(&site_key, *scan_start)
             {
                 self.acquisition.state.mark_failed(op_id, message.clone());
             }
@@ -188,11 +203,13 @@ impl WorkbenchApp {
             self.acquisition
                 .coordinator
                 .download_queue
-                .mark_active_done(*scan_start);
-            self.state
-                .download_progress
-                .active_scans
-                .retain(|&(s, _)| s != *scan_start);
+                .mark_active_done(&site_key, *scan_start);
+            if site_key == self.sites.focus().id {
+                self.state
+                    .download_progress
+                    .active_scans
+                    .retain(|&(s, _)| s != *scan_start);
+            }
 
             // Clear download progress on error if no more work remains
             if !self.acquisition.coordinator.download_queue.has_work() {
@@ -226,8 +243,9 @@ impl WorkbenchApp {
                 // Rebuild shadow scan boundaries for the timeline. Reactive
                 // prefetch re-evaluates on the next settle and will pick up the
                 // scans this listing exposes — no explicit resume needed.
-                if site_id == self.state.viz_state.site_id {
-                    self.timeline.shadow_scan_boundaries = self
+                let id = crate::data::SiteId::new(site_id.clone());
+                if let Some(site) = crate::core::sites::route_site(&id, &self.sites.ids()) {
+                    self.sites.list[site].shadows = self
                         .acquisition
                         .coordinator
                         .archive_index
@@ -268,30 +286,36 @@ impl WorkbenchApp {
         }
     }
 
-    /// Drain the realtime channel and manage live-mode lifecycle.
+    /// Drain every site's realtime channel and manage live-mode lifecycle.
     pub(crate) fn handle_streaming_results(&mut self, ctx: &egui::Context) {
-        // Push the user's elevation selection down to the realtime channel
-        // each frame. The manager diffs internally so this is a no-op when
-        // the selection hasn't changed; on a real change it bumps the
-        // channel's filter epoch so any in-flight sleep wakes within ~250ms.
-        self.live
-            .channel
-            .sync_filter(&self.state.viz_state.elevation_selection);
+        for site in 0..self.sites.list.len() {
+            // Push the user's elevation selection down to the site's realtime
+            // channel each frame. The manager diffs internally so this is a
+            // no-op when the selection hasn't changed; on a real change it
+            // bumps the channel's filter epoch so any in-flight sleep wakes
+            // within ~250ms.
+            let live = &self.sites.list[site].live;
+            live.channel.sync_filter(
+                &self.state.viz_state.elevation_selection,
+                live.radar_model.vcp_pattern(),
+            );
 
-        for result in self.live.channel.poll() {
-            self.handle_realtime_result(result, ctx);
-        }
+            for result in live.channel.poll() {
+                self.handle_realtime_result(site, result, ctx);
+            }
 
-        // Stop realtime channel if live mode was stopped by UI
-        if !self.live.mode_state.is_active() && self.live.channel.is_active() {
-            log::debug!("Stopping realtime channel (live mode ended)");
-            self.live.channel.stop();
+            // Stop the site's channel if live mode was stopped by UI
+            let live = &self.sites.list[site].live;
+            if !self.live.mode_state.is_active() && live.channel.is_active() {
+                log::debug!("Stopping realtime channel (live mode ended)");
+                live.channel.stop();
+            }
         }
 
         // The plan's per-chunk `projected_available_at_secs` is an absolute
         // timestamp, so the countdown advances frame-by-frame off `now`
         // without needing a separate heartbeat to mirror the loop's sleep.
         // Phase flips happen at ChunkReceived time in
-        // `LiveModeState::handle_realtime_chunk` based on plan.next_target.
+        // `LiveModeState::apply_site_event` based on plan.next_target.
     }
 }

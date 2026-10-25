@@ -62,9 +62,9 @@ pub(crate) struct ActivityInputs<'a> {
     pub operations: &'a VecDeque<AcquisitionOperation>,
     pub queue_paused: bool,
     pub ledger: LedgerSummary,
-    /// Scan starts in the ingest→timeline blackout, used to subtract entries a
-    /// live operation already accounts for.
-    pub awaiting_scan_starts: &'a [i64],
+    /// Every site's scans in the ingest→timeline blackout, used to subtract
+    /// entries a live operation for the same site already accounts for.
+    pub awaiting: &'a [AwaitingScan],
     pub worker: WorkerLoad,
     pub last_worker_outcome_ms: f64,
     pub gpu_render_in_flight: bool,
@@ -78,9 +78,12 @@ pub(crate) struct ActivityInputs<'a> {
     pub fps: Option<f64>,
     pub recent_requests: &'a VecDeque<NetworkRequest>,
     pub cache_size_bytes: u64,
-    /// The session's stream fact — the activity chip projects its healthy
-    /// states ([`Stream::headline_word`]) when no archive work is outstanding.
-    pub stream: Stream,
+    /// Every site's stream, in list order. The chip projects the healthiest
+    /// one's word ([`headline_stream`]) when no archive work is outstanding
+    /// and, with more than one site, sums them ([`SiteSum`]).
+    pub sites: &'a [SiteStream],
+    /// Index into `sites` of the focus, whose section the sheet lists first.
+    pub focus: usize,
     /// Whether the activity sheet is open. Rows and network entries are only
     /// materialized when something is actually looking at them.
     pub sheet_open: bool,
@@ -93,9 +96,8 @@ pub(crate) struct ActivityInputs<'a> {
 }
 
 /// Dev-only inputs, surfaced under the sheet's Details disclosure.
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 pub(crate) struct ActivityDevInputs {
-    pub cross_origin_isolated: bool,
     pub avg_fetch_ms: Option<f64>,
     pub avg_processing_ms: Option<f64>,
     pub avg_render_ms: Option<f64>,
@@ -111,6 +113,51 @@ pub(crate) struct ActivityDevInputs {
     /// Live chunk latency: `(avg fetch ms, p95 fetch ms, avg end-to-end ms)`.
     /// `None` until the live stream has produced samples.
     pub chunk_latency: Option<(f64, f64, Option<f64>)>,
+    /// The shown storm cell result: counts, cut and worker timing. `None`
+    /// while no cells are shown.
+    pub storm_cells: Option<crate::core::storm_cells::StormCellStats>,
+    /// Every site's volume texture, in list order.
+    pub volume_textures: Vec<crate::core::volume_plan::VolumeTexture>,
+}
+
+/// A scan in one site's ingest→timeline blackout (its ledger's
+/// `awaiting_scan_starts`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AwaitingScan {
+    pub site: String,
+    pub scan_start: i64,
+}
+
+/// One site's stream, as the chip and the sheet read it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SiteStream {
+    pub id: String,
+    pub stream: Stream,
+    /// Chunks received in the site's volume in progress.
+    pub chunks_received: u32,
+    /// Seconds since the newest radial the site's stream received; `None`
+    /// before the first one or while not streaming.
+    pub last_chunk_age_secs: Option<f64>,
+    /// Seconds until a failed stream starts again, while retrying.
+    pub retry_in_secs: Option<f64>,
+}
+
+/// The stream the chip speaks for: the site's own with one site; with more,
+/// the healthiest of them, so one quiet site never hides another receiving.
+pub(crate) fn headline_stream(sites: &[SiteStream]) -> Stream {
+    const ORDER: [Stream; 7] = [
+        Stream::Receiving,
+        Stream::Connecting,
+        Stream::Waiting,
+        Stream::Stalled,
+        Stream::Retrying,
+        Stream::Failed,
+        Stream::Off,
+    ];
+    ORDER
+        .into_iter()
+        .find(|s| sites.iter().any(|site| site.stream == *s))
+        .unwrap_or(Stream::Off)
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -156,6 +203,38 @@ pub(crate) struct ActivityHeadline {
     /// Whether motion is appropriate. Motion means "data is moving" and
     /// nothing else; the shell still ANDs this with the reduced-motion check.
     pub animate: bool,
+    /// How many sites the chip speaks for, and how many of their streams
+    /// stalled.
+    pub sites: SiteSum,
+}
+
+/// The chip's sum over the sites.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SiteSum {
+    pub sites: u32,
+    pub stalled: u32,
+}
+
+impl SiteSum {
+    pub(crate) fn of(sites: &[SiteStream]) -> Self {
+        Self {
+            sites: sites.len() as u32,
+            stalled: sites.iter().filter(|s| s.stream == Stream::Stalled).count() as u32,
+        }
+    }
+}
+
+impl ActivityHeadline {
+    /// The chip's words. With one site, the label alone; with more, the
+    /// sum: `Receiving · 3 sites`, `Receiving 3 sites · 1 stalled`.
+    pub(crate) fn words(&self) -> String {
+        let SiteSum { sites, stalled } = self.sites;
+        match (sites, stalled) {
+            (0 | 1, _) => self.label.to_string(),
+            (n, 0) => format!("{} \u{00b7} {n} sites", self.label),
+            (n, k) => format!("{} {n} sites \u{00b7} {k} stalled", self.label),
+        }
+    }
 }
 
 /// One stage of the acquisition pipeline, as shown in the sheet's stage strip.
@@ -238,8 +317,15 @@ pub(crate) struct ErrorSummary {
 pub(crate) const SHEET_ERRORS: usize = 10;
 
 /// Summarize the errors for the chip and the sheet. `acked` is the pushed
-/// count when the sheet last showed them.
-pub(crate) fn error_summary(errors: &ErrorContext, acked: u64, sheet_open: bool) -> ErrorSummary {
+/// count when the sheet last showed them. With `name_sites` (more than one
+/// site on the map) an error that knows its site leads with it
+/// ([`sheet_error_text`]).
+pub(crate) fn error_summary(
+    errors: &ErrorContext,
+    acked: u64,
+    sheet_open: bool,
+    name_sites: bool,
+) -> ErrorSummary {
     let fresh = (errors.pushed_count().saturating_sub(acked) as usize).min(errors.len());
     let unseen = errors
         .iter()
@@ -250,13 +336,25 @@ pub(crate) fn error_summary(errors: &ErrorContext, acked: u64, sheet_open: bool)
         errors
             .iter()
             .rev()
-            .filter_map(|e| crate::core::toast::error_text(&e.error))
+            .filter_map(|e| sheet_error_text(&e.error, name_sites))
             .take(SHEET_ERRORS)
             .collect()
     } else {
         Vec::new()
     };
     ErrorSummary { unseen, recent }
+}
+
+/// An error's line in the sheet: the toast's words, led by the error's site
+/// (`KMLB · Decode worker: …`) when `name_sites` and the error knows it.
+pub(crate) fn sheet_error_text(error: &crate::core::AppError, name_sites: bool) -> Option<String> {
+    let text = crate::core::toast::error_text(error)?;
+    match error {
+        crate::core::AppError::Worker {
+            site: Some(site), ..
+        } if name_sites => Some(format!("{site} \u{00B7} {text}")),
+        _ => Some(text),
+    }
 }
 
 /// The acknowledged count after this frame: an open sheet has shown every
@@ -298,7 +396,7 @@ pub(crate) struct NetworkRow {
 }
 
 /// Dev-only detail rows.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ActivityDetailVm {
     /// HTTP requests this session (the service worker's count when it has
     /// seen traffic, else the download channel's).
@@ -306,7 +404,6 @@ pub(crate) struct ActivityDetailVm {
     pub failed_requests: u32,
     pub worker: WorkerLoad,
     pub http_in_flight: u32,
-    pub cross_origin_isolated: bool,
     pub avg_fetch_ms: Option<f64>,
     pub avg_processing_ms: Option<f64>,
     pub avg_render_ms: Option<f64>,
@@ -317,9 +414,15 @@ pub(crate) struct ActivityDetailVm {
     pub render_phases: Option<[(&'static str, f64); 4]>,
     /// Live chunk latency: `(avg fetch ms, p95 fetch ms, avg end-to-end ms)`.
     pub chunk_latency: Option<(f64, f64, Option<f64>)>,
+    /// Storm cell detection readout; its
+    /// [`label`](crate::core::storm_cells::StormCellStats::label) is the row.
+    pub storm_cells: Option<crate::core::storm_cells::StormCellStats>,
     /// Scans the ledger has given up on: the volume genuinely lacks the
     /// requested cut, so no amount of retrying will produce it.
     pub unavailable: u32,
+    /// `(label, value)` per site holding a volume texture
+    /// ([`crate::core::volume_plan::volume_texture_rows`]).
+    pub volume_rows: Vec<(String, String)>,
 }
 
 /// The small always-on readout beside the activity chip: how smoothly the app
@@ -354,6 +457,95 @@ fn session_requests(inputs: &ActivityInputs<'_>) -> u32 {
     }
 }
 
+/// One site's section in the sheet.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SiteSection {
+    pub id: String,
+    /// The focus site, listed first.
+    pub focus: bool,
+    /// `Receiving · 12 chunks · last 4 s ago`, or `Not streaming`.
+    pub stream_line: String,
+    /// Whether the stream is past its cadence or failed (drawn as a
+    /// warning).
+    pub unhealthy: bool,
+    /// This site's failed downloads.
+    pub failed: u32,
+    /// The first failed download's error.
+    pub first_error: Option<String>,
+}
+
+/// The sheet's per-site sections: focus first, then the rest in list order.
+/// Empty with one site, so the one-site sheet is unchanged.
+pub(crate) fn site_sections(
+    sites: &[SiteStream],
+    focus: usize,
+    operations: &VecDeque<AcquisitionOperation>,
+) -> Vec<SiteSection> {
+    if sites.len() < 2 {
+        return Vec::new();
+    }
+    let order = std::iter::once(focus).chain((0..sites.len()).filter(|&i| i != focus));
+    order
+        .filter_map(|i| sites.get(i).map(|s| (i, s)))
+        .map(|(i, s)| {
+            let failures: Vec<&str> = operations
+                .iter()
+                .filter_map(|op| match (&op.status, &op.kind) {
+                    (
+                        OperationStatus::Failed { error },
+                        OperationKind::ArchiveDownload { site_id, .. },
+                    ) if site_id.eq_ignore_ascii_case(&s.id) => Some(error.as_str()),
+                    _ => None,
+                })
+                .collect();
+            SiteSection {
+                id: s.id.clone(),
+                focus: i == focus,
+                stream_line: site_stream_line(s),
+                unhealthy: matches!(
+                    s.stream,
+                    Stream::Stalled | Stream::Retrying | Stream::Failed
+                ),
+                failed: failures.len() as u32,
+                first_error: failures.first().map(|e| e.to_string()),
+            }
+        })
+        .collect()
+}
+
+/// A site's stream in the sheet: its state, chunk count and last chunk age.
+fn site_stream_line(s: &SiteStream) -> String {
+    let word = match s.stream {
+        Stream::Off => return "Not streaming".to_string(),
+        Stream::Failed => return "Stream failed".to_string(),
+        Stream::Retrying => {
+            return match s.retry_in_secs {
+                Some(secs) if secs >= 1.0 => format!(
+                    "Stream failed \u{00b7} retrying in {}",
+                    crate::core::format_lag(secs.ceil())
+                ),
+                _ => "Stream failed \u{00b7} retrying".to_string(),
+            }
+        }
+        Stream::Connecting => "Connecting",
+        Stream::Receiving => "Receiving",
+        Stream::Waiting => "Waiting",
+        Stream::Stalled => "Stalled",
+    };
+    let mut line = format!(
+        "{word} \u{00b7} {} chunk{}",
+        s.chunks_received,
+        if s.chunks_received == 1 { "" } else { "s" }
+    );
+    if let Some(age) = s.last_chunk_age_secs {
+        line.push_str(&format!(
+            " \u{00b7} last {} ago",
+            crate::core::format_lag(age.max(0.0).round())
+        ));
+    }
+    line
+}
+
 /// The complete activity projection, rebuilt once per frame.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ActivityVm {
@@ -369,6 +561,9 @@ pub(crate) struct ActivityVm {
     pub rows: Vec<ActivityRow>,
     /// Empty unless the sheet is open.
     pub network: Vec<NetworkRow>,
+    /// One section per site; empty unless the sheet is open and more than
+    /// one site is listed ([`site_sections`]).
+    pub sites: Vec<SiteSection>,
     pub detail: Option<ActivityDetailVm>,
 }
 
@@ -377,6 +572,44 @@ pub(crate) struct ActivityVm {
 // ───────────────────────────────────────────────────────────────────────────
 
 impl ActivityVm {
+    /// The chip's hover sentence. With more than one site it names how many
+    /// the chip speaks for and how many of their streams stalled.
+    pub(crate) fn hover(&self) -> String {
+        let SiteSum { sites, stalled } = self.headline.sites;
+        if sites < 2 {
+            return match self.state {
+                ActivityState::UpToDate => "Everything you're viewing is downloaded",
+                ActivityState::Downloading { .. } => "Downloading scans — click for details",
+                ActivityState::Processing => "Decoding downloaded data — click for details",
+                ActivityState::Streaming => "Live stream running — click for details",
+                ActivityState::Paused { .. } => "Downloads paused — click to resume",
+            }
+            .to_string();
+        }
+        let stalled = match stalled {
+            0 => String::new(),
+            1 => ", 1 stream stalled".to_string(),
+            k => format!(", {k} streams stalled"),
+        };
+        match self.state {
+            ActivityState::UpToDate => {
+                format!("Everything you're viewing on {sites} sites is downloaded{stalled}")
+            }
+            ActivityState::Downloading { .. } => {
+                format!("Downloading scans for {sites} sites{stalled} — click for details")
+            }
+            ActivityState::Processing => {
+                format!("Decoding downloaded data for {sites} sites{stalled} — click for details")
+            }
+            ActivityState::Streaming => {
+                format!("Live streams running on {sites} sites{stalled} — click for details")
+            }
+            ActivityState::Paused { .. } => {
+                format!("Downloads paused for {sites} sites{stalled} — click to resume")
+            }
+        }
+    }
+
     /// The chip's ⚠ tick: failed downloads plus errors the sheet has not
     /// shown, with its hover. `None` when there is nothing to flag.
     pub(crate) fn warning(&self) -> Option<(u32, String)> {
@@ -408,7 +641,8 @@ impl ActivityVm {
     /// sheet shows what is happening this frame.
     pub(crate) fn build_settled(inputs: ActivityInputs<'_>, settle: &mut HeadlineSettle) -> Self {
         let now_ms = inputs.now_ms;
-        let stream = inputs.stream;
+        let stream = headline_stream(inputs.sites);
+        let sum = SiteSum::of(inputs.sites);
         let counts = stage_counts(&inputs);
         let mut vm = Self::build(inputs);
         let quiet = if stream.headline_word().is_some() {
@@ -419,7 +653,7 @@ impl ActivityVm {
         let shown = settle.step(vm.state, quiet, now_ms);
         if shown != vm.state {
             vm.state = shown;
-            vm.headline = headline_for(shown, &counts, stream);
+            vm.headline = headline_for(shown, &counts, stream, sum);
         }
         vm
     }
@@ -427,7 +661,8 @@ impl ActivityVm {
     pub(crate) fn build(inputs: ActivityInputs<'_>) -> Self {
         let counts = stage_counts(&inputs);
         let failed = failure_summary(inputs.operations);
-        let state = derive_state(&counts, &inputs);
+        let stream = headline_stream(inputs.sites);
+        let state = derive_state(&counts, &inputs, stream);
 
         let rows = if inputs.sheet_open {
             build_rows(inputs.operations)
@@ -440,9 +675,15 @@ impl ActivityVm {
             Vec::new()
         };
 
+        let sites = if inputs.sheet_open {
+            site_sections(inputs.sites, inputs.focus, inputs.operations)
+        } else {
+            Vec::new()
+        };
+
         Self {
             state,
-            headline: headline_for(state, &counts, inputs.stream),
+            headline: headline_for(state, &counts, stream, SiteSum::of(inputs.sites)),
             stages: [
                 ActivityStage {
                     kind: ActivityStageKind::Queued,
@@ -466,7 +707,12 @@ impl ActivityVm {
                 },
             ],
             failed,
-            errors: error_summary(inputs.errors, inputs.errors_acked, inputs.sheet_open),
+            errors: error_summary(
+                inputs.errors,
+                inputs.errors_acked,
+                inputs.sheet_open,
+                inputs.sites.len() > 1,
+            ),
             throughput: inputs
                 .throughput
                 .rate_bytes_per_sec(inputs.now_ms)
@@ -491,12 +737,12 @@ impl ActivityVm {
             },
             rows,
             network,
-            detail: inputs.dev.map(|dev| ActivityDetailVm {
+            sites,
+            detail: inputs.dev.as_ref().map(|dev| ActivityDetailVm {
                 requests: session_requests(&inputs),
                 failed_requests: inputs.sw_aggregate.failed_requests,
                 worker: inputs.worker,
                 http_in_flight: inputs.http_in_flight,
-                cross_origin_isolated: dev.cross_origin_isolated,
                 avg_fetch_ms: dev.avg_fetch_ms,
                 avg_processing_ms: dev.avg_processing_ms,
                 avg_render_ms: dev.avg_render_ms,
@@ -504,7 +750,9 @@ impl ActivityVm {
                 ingest_phases: dev.ingest_phases,
                 render_phases: dev.render_phases,
                 chunk_latency: dev.chunk_latency,
+                storm_cells: dev.storm_cells,
                 unavailable: inputs.ledger.unavailable,
+                volume_rows: crate::core::volume_plan::volume_texture_rows(&dev.volume_textures),
             }),
         }
     }
@@ -663,28 +911,37 @@ fn stage_counts(inputs: &ActivityInputs<'_>) -> StageCounts {
 /// freshly ingested would appear in both Downloading and Finishing, which is
 /// exactly the double-counting this module exists to prevent.
 fn settling_count(inputs: &ActivityInputs<'_>) -> u32 {
-    let live_scan_starts: Vec<i64> = inputs
+    let live_scans: Vec<(&str, i64)> = inputs
         .operations
         .iter()
         .filter(|op| matches!(op.status, OperationStatus::Queued | OperationStatus::Active))
         .filter_map(|op| match &op.kind {
-            OperationKind::ArchiveDownload { scan_start, .. } => Some(*scan_start),
+            OperationKind::ArchiveDownload {
+                site_id,
+                scan_start,
+                ..
+            } => Some((site_id.as_str(), *scan_start)),
             _ => None,
         })
         .collect();
 
     inputs
-        .awaiting_scan_starts
+        .awaiting
         .iter()
-        .filter(|&&awaiting| {
-            !live_scan_starts
-                .iter()
-                .any(|&live| (live - awaiting).abs() <= SCAN_JOIN_TOLERANCE_SECS)
+        .filter(|awaiting| {
+            !live_scans.iter().any(|&(site, start)| {
+                site == awaiting.site
+                    && (start - awaiting.scan_start).abs() <= SCAN_JOIN_TOLERANCE_SECS
+            })
         })
         .count() as u32
 }
 
-fn derive_state(counts: &StageCounts, inputs: &ActivityInputs<'_>) -> ActivityState {
+fn derive_state(
+    counts: &StageCounts,
+    inputs: &ActivityInputs<'_>,
+    stream: Stream,
+) -> ActivityState {
     let outstanding = counts.outstanding();
     if inputs.queue_paused && outstanding > 0 {
         return ActivityState::Paused {
@@ -697,45 +954,55 @@ fn derive_state(counts: &StageCounts, inputs: &ActivityInputs<'_>) -> ActivitySt
     if counts.processing > 0 || counts.settling > 0 || inputs.gpu_render_in_flight {
         return ActivityState::Processing;
     }
-    if inputs.stream.headline_word().is_some() {
+    if stream.headline_word().is_some() {
         return ActivityState::Streaming;
     }
     ActivityState::UpToDate
 }
 
-fn headline_for(state: ActivityState, counts: &StageCounts, stream: Stream) -> ActivityHeadline {
+fn headline_for(
+    state: ActivityState,
+    counts: &StageCounts,
+    stream: Stream,
+    sites: SiteSum,
+) -> ActivityHeadline {
     match state {
         ActivityState::UpToDate => ActivityHeadline {
             count: None,
             label: "Up to date",
             glyph: ActivityGlyph::Check,
             animate: false,
+            sites,
         },
         ActivityState::Downloading { scans } => ActivityHeadline {
             count: Some(scans),
             label: "Downloading",
             glyph: ActivityGlyph::ArrowDown,
             animate: counts.downloading > 0,
+            sites,
         },
         ActivityState::Processing => ActivityHeadline {
             count: None,
             label: "Processing",
             glyph: ActivityGlyph::Gear,
             animate: true,
+            sites,
         },
-        // The session's stream word, so the chip never says "Receiving"
-        // while the stream line says it is waiting.
+        // The stream's own word, so the chip never says "Receiving" while
+        // the stream line says it is waiting.
         ActivityState::Streaming => ActivityHeadline {
             count: None,
             label: stream.headline_word().unwrap_or("Receiving"),
             glyph: ActivityGlyph::Wave,
             animate: stream.is_animated(),
+            sites,
         },
         ActivityState::Paused { queued } => ActivityHeadline {
             count: Some(queued),
             label: "Paused",
             glyph: ActivityGlyph::Pause,
             animate: false,
+            sites,
         },
     }
 }
@@ -873,7 +1140,7 @@ mod coverage_tests {
     /// Fixture owning the borrowed inputs, so tests can build a VM in one line.
     struct Fixture {
         operations: VecDeque<AcquisitionOperation>,
-        awaiting: Vec<i64>,
+        awaiting: Vec<AwaitingScan>,
         throughput: ThroughputWindow,
         aggregate: NetworkAggregate,
         requests: VecDeque<NetworkRequest>,
@@ -882,7 +1149,7 @@ mod coverage_tests {
         last_worker_outcome_ms: f64,
         gpu_render_in_flight: bool,
         http_in_flight: u32,
-        stream: Stream,
+        sites: Vec<SiteStream>,
         sheet_open: bool,
         dev: Option<ActivityDevInputs>,
         fps: Option<f64>,
@@ -905,7 +1172,7 @@ mod coverage_tests {
                 last_worker_outcome_ms: 1_000.0,
                 gpu_render_in_flight: false,
                 http_in_flight: 0,
-                stream: Stream::Off,
+                sites: vec![site("KDMX", Stream::Off)],
                 sheet_open: false,
                 dev: None,
                 fps: None,
@@ -925,7 +1192,7 @@ mod coverage_tests {
                 operations: &self.operations,
                 queue_paused: self.queue_paused,
                 ledger: LedgerSummary::default(),
-                awaiting_scan_starts: &self.awaiting,
+                awaiting: &self.awaiting,
                 worker: self.worker,
                 last_worker_outcome_ms: self.last_worker_outcome_ms,
                 gpu_render_in_flight: self.gpu_render_in_flight,
@@ -937,12 +1204,23 @@ mod coverage_tests {
                 fps: self.fps,
                 recent_requests: &self.requests,
                 cache_size_bytes: 0,
-                stream: self.stream,
+                sites: &self.sites,
+                focus: 0,
                 sheet_open: self.sheet_open,
-                dev: self.dev,
+                dev: self.dev.clone(),
                 errors: &self.errors,
                 errors_acked: self.errors_acked,
             }
+        }
+    }
+
+    fn site(id: &str, stream: Stream) -> SiteStream {
+        SiteStream {
+            id: id.to_string(),
+            stream,
+            chunks_received: 0,
+            last_chunk_age_secs: None,
+            retry_in_secs: None,
         }
     }
 
@@ -1039,7 +1317,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn streaming_state_only_when_no_archive_work() {
         let mut f = Fixture::new();
-        f.stream = Stream::Receiving;
+        f.sites[0].stream = Stream::Receiving;
         assert_eq!(f.vm().state, ActivityState::Streaming);
         assert_eq!(f.vm().headline.label, "Receiving");
         assert!(f.vm().headline.animate);
@@ -1054,9 +1332,9 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn stalled_stream_is_not_streaming_state() {
         let mut f = Fixture::new();
-        f.stream = Stream::Stalled;
+        f.sites[0].stream = Stream::Stalled;
         assert_eq!(f.vm().state, ActivityState::UpToDate);
-        f.stream = Stream::Failed;
+        f.sites[0].stream = Stream::Failed;
         assert_eq!(f.vm().state, ActivityState::UpToDate);
     }
 
@@ -1065,13 +1343,13 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn streaming_headline_projects_the_session_stream_word() {
         let mut f = Fixture::new();
-        f.stream = Stream::Waiting;
+        f.sites[0].stream = Stream::Waiting;
         let vm = f.vm();
         assert_eq!(vm.state, ActivityState::Streaming);
         assert_eq!(vm.headline.label, "Waiting");
         assert!(!vm.headline.animate);
 
-        f.stream = Stream::Connecting;
+        f.sites[0].stream = Stream::Connecting;
         let vm = f.vm();
         assert_eq!(vm.headline.label, "Connecting");
         assert!(vm.headline.animate);
@@ -1145,12 +1423,35 @@ mod coverage_tests {
         f.operations
             .push_back(download(1, 1000, OperationStatus::Active));
         // Within the join tolerance of the live op's scan_start.
-        f.awaiting = vec![1000 + SCAN_JOIN_TOLERANCE_SECS - 1];
+        f.awaiting = vec![awaiting("KDMX", 1000 + SCAN_JOIN_TOLERANCE_SECS - 1)];
         assert_eq!(f.vm().stages[3].count, 0);
 
         // A different scan, well outside the tolerance, does count.
-        f.awaiting = vec![9_000];
+        f.awaiting = vec![awaiting("KDMX", 9_000)];
         assert_eq!(f.vm().stages[3].count, 1);
+    }
+
+    fn awaiting(site: &str, scan_start: i64) -> AwaitingScan {
+        AwaitingScan {
+            site: site.into(),
+            scan_start,
+        }
+    }
+
+    /// Finishing sums every site's ledger, and another site's download at the
+    /// same time does not cover a scan of this one.
+    #[wasm_bindgen_test]
+    fn settling_counts_every_site_and_matches_operations_by_site() {
+        let mut f = Fixture::new();
+        f.operations
+            .push_back(download(1, 1000, OperationStatus::Active));
+        f.awaiting = vec![
+            awaiting("KDMX", 1000),
+            awaiting("KTLX", 1000),
+            awaiting("KFWS", 4000),
+        ];
+        // KDMX's scan is still downloading; KTLX's and KFWS's are finishing.
+        assert_eq!(f.vm().stages[3].count, 2);
     }
 
     /// With downloads drained, a settling scan keeps the app in Processing so
@@ -1158,7 +1459,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn settling_alone_reads_as_processing() {
         let mut f = Fixture::new();
-        f.awaiting = vec![1000];
+        f.awaiting = vec![awaiting("KDMX", 1000)];
         let vm = f.vm();
         assert_eq!(vm.state, ActivityState::Processing);
         assert_eq!(vm.stages[3].count, 1);
@@ -1200,7 +1501,7 @@ mod coverage_tests {
         let before = f.vm().headline.count;
 
         f.worker = ingesting(4);
-        f.awaiting = vec![50_000];
+        f.awaiting = vec![awaiting("KDMX", 50_000)];
         let after = f.vm();
         assert_eq!(after.headline.count, before);
         assert_eq!(after.headline.count, Some(1));
@@ -1423,7 +1724,7 @@ mod coverage_tests {
                 operations: &f.operations,
                 queue_paused: false,
                 ledger: LedgerSummary::default(),
-                awaiting_scan_starts: &f.awaiting,
+                awaiting: &f.awaiting,
                 worker: f.worker,
                 last_worker_outcome_ms: f.last_worker_outcome_ms,
                 gpu_render_in_flight: false,
@@ -1435,7 +1736,8 @@ mod coverage_tests {
                 fps: None,
                 recent_requests: &f.requests,
                 cache_size_bytes: 0,
-                stream: Stream::Off,
+                sites: &f.sites,
+                focus: 0,
                 sheet_open: false,
                 dev: Some(ActivityDevInputs::default()),
                 errors: &f.errors,
@@ -1539,14 +1841,38 @@ mod coverage_tests {
         let mut f = Fixture::new();
         f.http_in_flight = 4;
         f.worker = ingesting(2);
-        f.dev = Some(ActivityDevInputs {
-            cross_origin_isolated: true,
-            ..ActivityDevInputs::default()
-        });
+        f.dev = Some(ActivityDevInputs::default());
         let detail = f.vm().detail.expect("detail");
         assert_eq!(detail.http_in_flight, 4);
         assert_eq!(detail.worker.ingest, 2);
-        assert!(detail.cross_origin_isolated);
+    }
+
+    #[wasm_bindgen_test]
+    fn dev_rows_list_each_sites_volume_texture() {
+        use crate::core::volume_plan::VolumeTexture;
+        let mut f = Fixture::new();
+        f.dev = Some(ActivityDevInputs::default());
+        assert!(f.vm().detail.expect("detail").volume_rows.is_empty());
+        f.dev = Some(ActivityDevInputs {
+            volume_textures: vec![
+                VolumeTexture {
+                    site: "KTBW".into(),
+                    bytes: 6_000_000,
+                },
+                VolumeTexture {
+                    site: "KMLB".into(),
+                    bytes: 12_500_000,
+                },
+            ],
+            ..ActivityDevInputs::default()
+        });
+        assert_eq!(
+            f.vm().detail.expect("detail").volume_rows,
+            vec![
+                ("Volume KTBW".to_string(), "6.0 MB".to_string()),
+                ("Volume KMLB".to_string(), "12 MB".to_string()),
+            ]
+        );
     }
 
     // ── Errors other than downloads ─────────────────────────────────────
@@ -1562,6 +1888,40 @@ mod coverage_tests {
             message: "404".into(),
             scan_start_secs: None,
         }
+    }
+
+    fn worker_error(site: Option<&str>) -> crate::core::AppError {
+        crate::core::AppError::Worker {
+            kind: crate::core::WorkerErrorKind::IdbFailure,
+            message: "IDB write failed".into(),
+            site: site.map(Into::into),
+            scan_timestamp_secs: None,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn the_sheet_names_an_errors_site_only_with_several_sites() {
+        let mut f = Fixture::new();
+        f.sheet_open = true;
+        f.errors.push(worker_error(Some("KMLB")));
+        f.errors.push(worker_error(None));
+        // One site: the words are the toast's.
+        assert_eq!(
+            f.vm().errors.recent,
+            vec![
+                "Decode worker: IDB write failed".to_string(),
+                "Decode worker: IDB write failed".to_string(),
+            ]
+        );
+        // Several: an error that knows its site leads with it.
+        f.sites.push(site("KMLB", Stream::Off));
+        assert_eq!(
+            f.vm().errors.recent,
+            vec![
+                "Decode worker: IDB write failed".to_string(),
+                "KMLB \u{00B7} Decode worker: IDB write failed".to_string(),
+            ]
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1726,7 +2086,7 @@ mod coverage_tests {
     fn build_settled_rewrites_the_headline() {
         let mut f = Fixture::new();
         f.worker = ingesting(1);
-        f.stream = Stream::Receiving;
+        f.sites[0].stream = Stream::Receiving;
         let mut settle = HeadlineSettle::default();
         let vm = ActivityVm::build_settled(f.inputs(), &mut settle);
         assert_eq!(vm.state, ActivityState::Streaming);
@@ -1781,5 +2141,227 @@ mod coverage_tests {
         let mut f = Fixture::new();
         f.fps = Some(f64::INFINITY);
         assert_eq!(f.vm().readout.fps, None);
+    }
+
+    // ── Sites: the chip's sum and the sheet's sections ──────────────────
+
+    fn three_sites(f: &mut Fixture, streams: [Stream; 3]) {
+        f.sites = ["KTBW", "KMLB", "KJAX"]
+            .into_iter()
+            .zip(streams)
+            .map(|(id, s)| site(id, s))
+            .collect();
+    }
+
+    #[wasm_bindgen_test]
+    fn one_site_keeps_the_chip_words() {
+        let mut f = Fixture::new();
+        assert_eq!(f.vm().headline.words(), "Up to date");
+        assert_eq!(f.vm().hover(), "Everything you're viewing is downloaded");
+        f.sites[0].stream = Stream::Receiving;
+        assert_eq!(f.vm().headline.words(), "Receiving");
+        assert_eq!(f.vm().hover(), "Live stream running — click for details");
+        // A stalled single site still reads as today: no sum, no count.
+        f.sites[0].stream = Stream::Stalled;
+        assert_eq!(f.vm().headline.words(), "Up to date");
+    }
+
+    #[wasm_bindgen_test]
+    fn the_chip_sums_three_receiving_sites() {
+        let mut f = Fixture::new();
+        three_sites(&mut f, [Stream::Receiving; 3]);
+        let vm = f.vm();
+        assert_eq!(vm.headline.words(), "Receiving \u{00b7} 3 sites");
+        assert_eq!(
+            vm.hover(),
+            "Live streams running on 3 sites — click for details"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn the_chip_counts_a_stalled_site() {
+        let mut f = Fixture::new();
+        three_sites(
+            &mut f,
+            [Stream::Receiving, Stream::Waiting, Stream::Stalled],
+        );
+        let vm = f.vm();
+        assert_eq!(vm.headline.words(), "Receiving 3 sites \u{00b7} 1 stalled");
+        assert_eq!(
+            vm.hover(),
+            "Live streams running on 3 sites, 1 stream stalled — click for details"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn the_chip_reads_up_to_date_over_three_quiet_sites() {
+        let mut f = Fixture::new();
+        three_sites(&mut f, [Stream::Off; 3]);
+        let vm = f.vm();
+        assert_eq!(vm.headline.words(), "Up to date \u{00b7} 3 sites");
+        assert_eq!(
+            vm.hover(),
+            "Everything you're viewing on 3 sites is downloaded"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn the_sum_rides_on_downloads_too() {
+        let mut f = Fixture::new();
+        three_sites(&mut f, [Stream::Off; 3]);
+        f.operations
+            .push_back(download(1, 1000, OperationStatus::Active));
+        let vm = f.vm();
+        assert_eq!(vm.headline.count, Some(1));
+        assert_eq!(vm.headline.words(), "Downloading \u{00b7} 3 sites");
+    }
+
+    /// One quiet site never hides another that is receiving: the chip
+    /// speaks for the healthiest stream.
+    #[wasm_bindgen_test]
+    fn the_headline_stream_is_the_healthiest_site() {
+        let pick = |streams: &[Stream]| {
+            let sites: Vec<SiteStream> = streams.iter().map(|s| site("K", *s)).collect();
+            headline_stream(&sites)
+        };
+        assert_eq!(
+            pick(&[Stream::Stalled, Stream::Receiving]),
+            Stream::Receiving
+        );
+        assert_eq!(
+            pick(&[Stream::Waiting, Stream::Connecting]),
+            Stream::Connecting
+        );
+        assert_eq!(pick(&[Stream::Off, Stream::Waiting]), Stream::Waiting);
+        assert_eq!(pick(&[Stream::Off, Stream::Stalled]), Stream::Stalled);
+        assert_eq!(pick(&[Stream::Failed]), Stream::Failed);
+        assert_eq!(pick(&[]), Stream::Off);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_sheet_has_no_site_sections_with_one_site() {
+        let mut f = Fixture::new();
+        f.sheet_open = true;
+        assert!(f.vm().sites.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn the_sheet_lists_the_focus_first_then_list_order() {
+        let mut f = Fixture::new();
+        three_sites(
+            &mut f,
+            [Stream::Receiving, Stream::Waiting, Stream::Stalled],
+        );
+        f.sheet_open = true;
+        let mut inputs = f.inputs();
+        inputs.focus = 1;
+        let vm = ActivityVm::build(inputs);
+        let ids: Vec<_> = vm.sites.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["KMLB", "KTBW", "KJAX"]);
+        assert!(vm.sites[0].focus);
+        assert!(!vm.sites[1].focus && !vm.sites[2].focus);
+        assert!(vm.sites[2].unhealthy);
+        assert!(!vm.sites[0].unhealthy);
+    }
+
+    #[wasm_bindgen_test]
+    fn the_sheet_sections_are_built_only_while_it_is_open() {
+        let mut f = Fixture::new();
+        three_sites(&mut f, [Stream::Off; 3]);
+        assert!(f.vm().sites.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn a_site_section_reads_its_stream_chunks_and_last_chunk_age() {
+        let mut s = site("KMLB", Stream::Receiving);
+        s.chunks_received = 12;
+        s.last_chunk_age_secs = Some(4.2);
+        assert_eq!(
+            site_stream_line(&s),
+            "Receiving \u{00b7} 12 chunks \u{00b7} last 0:04 ago"
+        );
+        s.chunks_received = 1;
+        s.last_chunk_age_secs = None;
+        s.stream = Stream::Stalled;
+        assert_eq!(site_stream_line(&s), "Stalled \u{00b7} 1 chunk");
+        assert_eq!(
+            site_stream_line(&site("KJAX", Stream::Off)),
+            "Not streaming"
+        );
+        assert_eq!(
+            site_stream_line(&site("KJAX", Stream::Failed)),
+            "Stream failed"
+        );
+        let mut retrying = site("KJAX", Stream::Retrying);
+        retrying.retry_in_secs = Some(11.2);
+        assert_eq!(
+            site_stream_line(&retrying),
+            "Stream failed \u{00b7} retrying in 0:12"
+        );
+        retrying.retry_in_secs = Some(0.0);
+        assert_eq!(
+            site_stream_line(&retrying),
+            "Stream failed \u{00b7} retrying"
+        );
+    }
+
+    /// A failed stream that will start again says so on the chip, and holds
+    /// still: nothing is arriving.
+    #[wasm_bindgen_test]
+    fn a_retrying_stream_reads_reconnecting() {
+        let mut f = Fixture::new();
+        f.sites[0].stream = Stream::Retrying;
+        let vm = f.vm();
+        assert_eq!(vm.state, ActivityState::Streaming);
+        assert_eq!(vm.headline.label, "Reconnecting");
+        assert!(!vm.headline.animate);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_site_section_counts_only_its_own_failed_downloads() {
+        let mut f = Fixture::new();
+        three_sites(&mut f, [Stream::Off; 3]);
+        let mut failed = download(
+            1,
+            1000,
+            OperationStatus::Failed {
+                error: "HTTP 503".into(),
+            },
+        );
+        if let OperationKind::ArchiveDownload { site_id, .. } = &mut failed.kind {
+            *site_id = "KJAX".into();
+        }
+        f.operations.push_back(failed);
+        let sections = site_sections(&f.sites, 0, &f.operations);
+        assert_eq!(sections[0].failed, 0);
+        assert_eq!(sections[2].id, "KJAX");
+        assert_eq!(sections[2].failed, 1);
+        assert_eq!(sections[2].first_error.as_deref(), Some("HTTP 503"));
+    }
+
+    /// Every state explains itself on hover, with one site and with three.
+    #[wasm_bindgen_test]
+    fn every_state_has_hover_text_for_one_site_and_many() {
+        for many in [false, true] {
+            let mut f = Fixture::new();
+            if many {
+                three_sites(&mut f, [Stream::Off; 3]);
+            }
+            let mut hovers = vec![f.vm().hover()];
+            f.gpu_render_in_flight = true;
+            hovers.push(f.vm().hover());
+            f.gpu_render_in_flight = false;
+            f.sites[0].stream = Stream::Receiving;
+            hovers.push(f.vm().hover());
+            f.operations
+                .push_back(download(1, 1000, OperationStatus::Queued));
+            hovers.push(f.vm().hover());
+            f.queue_paused = true;
+            hovers.push(f.vm().hover());
+            assert!(hovers.iter().all(|h| !h.is_empty()));
+            let distinct: std::collections::BTreeSet<_> = hovers.iter().collect();
+            assert_eq!(distinct.len(), 5, "{hovers:?}");
+            assert_eq!(hovers.iter().all(|h| h.contains("3 sites")), many);
+        }
     }
 }

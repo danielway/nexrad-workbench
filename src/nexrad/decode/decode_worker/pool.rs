@@ -6,7 +6,13 @@
 //! - `render`, `render_volume` — round-robin; render requests just read from
 //!   IDB and every worker has its own connection.
 //! - `ingest_chunk` and `render_live` — pinned to worker 0 because the live
-//!   accumulator (`CHUNK_ACCUM`) is a per-worker thread-local.
+//!   accumulators (`CHUNK_ACCUM`, one per streaming site, keyed by site id)
+//!   are a per-worker thread-local. Both carry the site, so the pool only
+//!   passes them through.
+//! - `detect` — pinned to worker 0 for a live cut (it reads the
+//!   accumulator), round-robined like `render` for a stored one.
+//! - `drop_site` — pinned to worker 0: it forgets a site's accumulator when
+//!   the site leaves the map.
 //!
 //! Each worker in the pool owns its own JS `Worker` handle and its own
 //! `pending_*` maps, so message correlation remains per-worker. `try_recv`
@@ -132,8 +138,19 @@ impl WorkerPool {
 
     /// Submit a live (partial) render — pinned to the live worker because it
     /// reads the in-memory accumulator populated by `ingest_chunk`.
-    pub(crate) fn render_live(&mut self, elevation_number: u8, product: String) {
-        self.workers[LIVE_WORKER_INDEX].render_live(elevation_number, product);
+    pub(crate) fn render_live(
+        &mut self,
+        site: crate::data::SiteId,
+        elevation_number: u8,
+        product: String,
+    ) {
+        self.workers[LIVE_WORKER_INDEX].render_live(site, elevation_number, product);
+    }
+
+    /// Forget `site`'s live accumulator — pinned to the live worker, which
+    /// holds the accumulators.
+    pub(crate) fn drop_site(&mut self, site: crate::data::SiteId) {
+        self.workers[LIVE_WORKER_INDEX].drop_site(site);
     }
 
     /// Submit a volume render — round-robined across workers.
@@ -145,6 +162,31 @@ impl WorkerPool {
     ) {
         let idx = self.next_render_index();
         self.workers[idx].render_volume(scan_key, product, elevation_numbers);
+    }
+
+    /// Submit a storm cell detection. A live cut reads the accumulator, so it
+    /// goes to the live worker; a stored cut is round-robined like a render.
+    pub(crate) fn detect(&mut self, request: crate::core::storm_cells::DetectRequest) {
+        let idx = match request.key.input {
+            crate::core::storm_cells::CutInput::Live { .. } => LIVE_WORKER_INDEX,
+            crate::core::storm_cells::CutInput::Stored => self.next_render_index(),
+        };
+        self.workers[idx].detect(request);
+    }
+
+    /// Submit a composite storm cell detection: to the live worker when any
+    /// of its cuts reads an accumulator, else round-robined.
+    pub(crate) fn detect_composite(
+        &mut self,
+        request: crate::core::storm_cells::SceneDetectRequest,
+    ) {
+        use crate::core::storm_cells::CellKey;
+        let idx = if request.key.is_live() {
+            LIVE_WORKER_INDEX
+        } else {
+            self.next_render_index()
+        };
+        self.workers[idx].detect_composite(request);
     }
 
     /// Drain pending outcomes from every worker.

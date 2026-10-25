@@ -138,10 +138,10 @@ pub(super) async fn streaming_loop(
         // Filter-aware backfill. With `StreamingFilter::All` we backfill the
         // current sweep's preceding chunks (the historical default — keeps
         // the sweep coherent for the renderer). With
-        // `StreamingFilter::Elevation(n)` we backfill every already-published
-        // chunk of elevation `n` in this volume, which may be earlier sweeps
-        // that already finished — that's by design so the user sees their
-        // selected elevation immediately on connect.
+        // `StreamingFilter::Cuts(set)` we backfill every already-published
+        // chunk of those cuts (each visit of the held angle) in this volume,
+        // which may be earlier sweeps that already finished — that's by
+        // design so the user sees their selected tilt immediately on connect.
         let initial_filter = loop_state.active_filter;
         let latest_seq = init_result.latest_chunk.identifier.sequence();
         let volume = *init_result.latest_chunk.identifier.volume();
@@ -154,7 +154,7 @@ pub(super) async fn streaming_loop(
 
         let backfill_filter = match initial_filter {
             StreamingFilter::All => latest_elev
-                .map(|n| StreamingFilter::Elevation(n as u8))
+                .map(|n| StreamingFilter::elevation(n as u8))
                 .unwrap_or(StreamingFilter::All),
             other => other,
         };

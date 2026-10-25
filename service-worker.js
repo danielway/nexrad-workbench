@@ -1,9 +1,7 @@
-// Service Worker — three responsibilities:
-//   1. Inject COOP/COEP response headers to enable cross-origin isolation
-//      (required for SharedArrayBuffer in the worker / WASM).
-//   2. Cache the app shell so an installed PWA (Add to Home Screen on iOS)
+// Service Worker — two responsibilities:
+//   1. Cache the app shell so an installed PWA (Add to Home Screen on iOS)
 //      can launch without a network connection.
-//   3. Report per-request network metrics back to the UI.
+//   2. Report per-request network metrics back to the UI.
 //
 // Protocol:
 //   SW → Client:  { type: 'network-metric', url, status, bytes, duration, ok, error? }
@@ -52,24 +50,6 @@ self.addEventListener('activate', (event) => {
     await self.clients.claim();
   })());
 });
-
-// Clone a response with COOP/COEP headers injected. 'credentialless' is used
-// for COEP instead of 'require-corp' so cross-origin resources (AWS S3, NOAA)
-// don't need to send Cross-Origin-Resource-Policy headers of their own.
-function withIsolationHeaders(response) {
-  // Opaque no-CORS responses (such as analytics beacons) have status 0 and
-  // cannot be reconstructed. COEP: credentialless allows them as-is.
-  if (response.type === 'opaque') return response;
-
-  const headers = new Headers(response.headers);
-  headers.set('Cross-Origin-Opener-Policy', 'same-origin');
-  headers.set('Cross-Origin-Embedder-Policy', 'credentialless');
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
 
 async function reportMetric(metric) {
   const clients = await self.clients.matchAll();
@@ -121,13 +101,13 @@ async function handleFetch(request) {
         const cache = await caches.open(CACHE_NAME);
         cache.put(request, response.clone()).catch(() => {});
       }
-      return withIsolationHeaders(response);
+      return response;
     } catch (err) {
       const cached =
         (await caches.match(request)) ||
         (await caches.match('./index.html')) ||
         (await caches.match('./'));
-      if (cached) return withIsolationHeaders(cached);
+      if (cached) return cached;
       throw err;
     }
   }
@@ -142,10 +122,10 @@ async function handleFetch(request) {
         const cache = await caches.open(CACHE_NAME);
         cache.put(request, response.clone()).catch(() => {});
       }
-      return withIsolationHeaders(response);
+      return response;
     } catch (err) {
       const cached = await caches.match(request);
-      if (cached) return withIsolationHeaders(cached);
+      if (cached) return cached;
       throw err;
     }
   }
@@ -163,20 +143,18 @@ async function handleFetch(request) {
   // new build produces new filenames, so the cache never serves stale code.
   if (isSameOrigin(request) && request.method === 'GET') {
     const cached = await caches.match(request);
-    if (cached) return withIsolationHeaders(cached);
+    if (cached) return cached;
     const response = await fetchAndReport(request);
     if (response.ok) {
       const cache = await caches.open(CACHE_NAME);
       cache.put(request, response.clone()).catch(() => {});
     }
-    return withIsolationHeaders(response);
+    return response;
   }
 
   // Cross-origin (AWS S3 radar archives, NOAA): never cache — these are
-  // large and already stored in IndexedDB. Just pass through with headers
-  // and metrics.
-  const response = await fetchAndReport(request);
-  return withIsolationHeaders(response);
+  // large and already stored in IndexedDB. Just pass through with metrics.
+  return fetchAndReport(request);
 }
 
 self.addEventListener('fetch', (event) => {

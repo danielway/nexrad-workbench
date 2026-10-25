@@ -8,6 +8,11 @@ once per pixel, every frame.
 
 Module: [src/nexrad/render/gpu_renderer/](../src/nexrad/render/gpu_renderer/).
 
+Each site on the map has its own renderer (`SiteGpu::radar` on
+`SiteState`) with its own textures. The 2D canvas draws every site's disc
+in `core::sites::draw_order`, older frame first, so the newer frame is on
+top where two discs overlap.
+
 ## What the GPU does (and why)
 
 For each on-screen pixel, the fragment shader:
@@ -42,9 +47,12 @@ preserves two properties the renderer relies on:
   space produce the same answer. The shader interpolates first and
   converts last.
 
-The same trick lets `value_at_polar()` and `detect_storm_cells()` —
-both CPU consumers — share the GPU's `gate_values` buffer without
-maintaining a parallel "physical units" copy.
+The same trick lets `value_at_polar()`, a CPU consumer, share the GPU's
+`gate_values` buffer without maintaining a parallel "physical units"
+copy. Storm cell detection reads raw codes too, but not from the
+renderer: it runs in a decode worker on the volume's lowest reflectivity
+cut (see `core::storm_cells` and the worker's `detect` message), so the
+cells do not depend on the tilt on screen.
 
 ## File layout
 
@@ -53,7 +61,7 @@ maintaining a parallel "physical units" copy.
 | [`mod.rs`](../src/nexrad/render/gpu_renderer/mod.rs) | `RadarGpuRenderer` struct, GL setup, uniform table, `paint()` |
 | [`shaders.rs`](../src/nexrad/render/gpu_renderer/shaders.rs) | All GLSL — vertex shader, fragment-shader builder, shared snippets |
 | [`textures.rs`](../src/nexrad/render/gpu_renderer/textures.rs) | Texture upload entry points: data, previous data, LUT |
-| [`inspect.rs`](../src/nexrad/render/gpu_renderer/inspect.rs) | CPU-side polar lookups (inspector hover, storm-cell detection) — thin binders over the pure lookup math in [`core::canvas`](../src/core/canvas.rs) |
+| [`inspect.rs`](../src/nexrad/render/gpu_renderer/inspect.rs) | CPU-side polar lookups (inspector hover, collection time) — thin binders over the pure lookup math in [`core::canvas`](../src/core/canvas.rs) |
 
 Everything else under [src/nexrad/](../src/nexrad/) feeds this module
 or composes its output:
@@ -111,8 +119,8 @@ disc. Each holds:
   a re-render is needed).
 
 CPU shadow copies of `azimuths`, `gate_values`, and `radial_times`
-also exist for both sweeps. They power inspector hovers and storm-cell
-detection without round-tripping the GPU.
+also exist for both sweeps. They power inspector hovers without
+round-tripping the GPU.
 
 The fragment shader picks current vs. previous per-pixel based on
 `u_sweep_enabled` and the swept-arc test, then funnels both branches
@@ -220,9 +228,6 @@ so the renderer doesn't need to. It does explicitly:
   line in a partial sweep.
 - `collection_time_at_polar(azimuth_deg, sweep_params)` — Unix seconds
   for the radial that produced this azimuth.
-- `detect_storm_cells(radar_lat, radar_lon, threshold_dbz)` — adapter
-  over [`detection`](../src/nexrad/detection/) that wraps the CPU
-  shadow data into a `DetectionInput`.
 
 The inspector path uses `find_nearest_azimuth_index` (the CPU twin of
 `FIND_NEAREST_AZ_P`, in [`core::canvas`](../src/core/canvas.rs) — the
@@ -250,16 +255,49 @@ renderers that compose with the flat one:
 | `VolumeRayRenderer` | [`volume_ray_renderer.rs`](../src/nexrad/render/volume_ray_renderer.rs) | Full volumetric ray-march of all elevations |
 
 In globe mode the paint callback in [`ui/canvas_overlays/globe.rs`](../src/ui/canvas_overlays/globe.rs)
-draws the sphere and geo lines first, then picks one of the two radar
-paths based on `volume_3d_enabled`: volumetric if enabled and a volume
-is loaded, otherwise the surface patch. Both reuse the flat renderer's
+draws the sphere and geo lines once, then every site on the map. Each
+site has its own three renderers (`SiteGpu` on `SiteState`), so each
+draws its own patch or volume from its own textures. A site draws its
+volume when `volume_3d_enabled` is on and its volume is loaded,
+otherwise its surface patch. Both reuse that site's flat renderer's
 already-uploaded GPU textures and metadata — there's only one source of
 truth for sweep data.
+
+The order is decided in the core, by
+`core::volume_plan::globe_draw_plan`:
+
+- **Surface patches first, older frame first.** The patches go down in
+  `core::sites::draw_order`, the same rule as the 2D discs: a site with
+  no frame first, then by the frame's midpoint time, so the newer frame
+  is on top where two discs overlap.
+- **Volumes after, back to front.** `volume_draw_order` sorts the sites
+  drawing a volume by their distance from the camera, farthest first.
+  Each volume's half-resolution result is blended over what is already
+  on screen with premultiplied alpha, so a nearer volume composites over
+  a farther one and two overlapping shells read as two translucent
+  bodies. Ties keep list order.
+
+The camera, the tilt ladder and readout, the compass, the colour scale
+and the caption still describe the focus site.
+
+**Memory rule.** `core::volume_plan::resident_volumes` decides which
+sites may hold a volume texture: the focus first, then the rest in list
+order, up to `volume_budget` (three on a desktop, the site cap; one on a
+phone). A site past the budget sends no volume request, gives its volume
+texture back (`VolumeRayRenderer::clear_volume`) and draws its surface
+patch in volume mode, with no caption of its own. The focus is always
+inside the budget, so its caption keeps the usual volume words
+("waiting for the volume to complete", "drawing N of M cuts"). In
+developer mode the activity sheet's Details list each site's volume
+texture size (`Volume KTBW · 8.2 MB`), from
+`VolumeRayRenderer::texture_bytes`: width × height × 1 byte for `R8UI`
+or 2 for `R16UI`.
 
 ### Surface patch — `GlobeRadarRenderer`
 
 This is the natural extension of the flat renderer to a curved surface.
-A spherical-cap mesh is generated once per site change in
+Each site's renderer holds its own spherical-cap mesh, generated once per
+site change in
 [`generate_radar_patch`](../src/nexrad/render/globe_radar_renderer.rs):
 `PATCH_AZ_STEPS = 180` × `PATCH_RANGE_STEPS = 60` great-circle samples
 plus a center vertex. Each vertex carries five floats:
@@ -285,7 +323,7 @@ Z-fighting against the unit sphere is avoided by lifting the patch to
 `PATCH_RADIUS = 1.003`. Depth test is on but depth-write is off so
 later transparent layers composite correctly. The mesh is rebuilt
 only when `(lat, lon, max_range_km)` changes — all per-frame work is
-uniforms + a single `draw_elements`.
+uniforms + a single `draw_elements` per site.
 
 The surface patch shows a single elevation. Sweep animation, partial
 live sweeps, and the previous-sweep slot are 2D-only: the fragment
@@ -384,7 +422,8 @@ the cost of computing a 1D→2D index in the shader.
 **Why two 3D renderers.** The surface patch is much cheaper than the
 volume march and is what the user sees most of the time on the globe;
 the volume renderer only kicks in when explicitly enabled. They share
-no GL resources beyond the flat renderer's data and LUT textures.
+no GL resources beyond the flat renderer's data and LUT textures, and
+no site shares any of its three renderers with another.
 
 ## Constraints inherited from the WASM target
 

@@ -43,6 +43,7 @@ pub(crate) mod live_mode;
 pub(crate) mod live_radar_model;
 pub(crate) mod live_status;
 pub(crate) mod map_chrome;
+pub(crate) mod measure;
 pub(crate) mod overview;
 pub(crate) mod panels;
 pub(crate) mod persist;
@@ -60,11 +61,16 @@ pub(crate) mod render_loop;
 pub(crate) mod selection_chip;
 pub(crate) mod selection_strip;
 pub(crate) mod session;
+pub(crate) mod site_canvas;
 pub(crate) mod site_picker;
+pub(crate) mod sites;
 pub(crate) mod storm_activity;
+pub(crate) mod storm_cell_view;
 pub(crate) mod storm_cells;
+pub(crate) mod storm_tracks;
 pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;
+pub(crate) mod tilt;
 pub(crate) mod time_field;
 pub(crate) mod timeline_geometry;
 pub(crate) mod timeline_interaction;
@@ -111,7 +117,8 @@ pub(crate) use domain::time::FrameNow;
 pub(crate) use domain::view::ViewState;
 pub(crate) use domain::viz::{
     build_elevation_list_from_vcp, DisplayedSweep, ElevationListEntry, ElevationSelection,
-    InterpolationMode, RadarProduct, RenderProcessing, RosterSource, StormCellInfo, SweepIdentity,
+    InterpolationMode, RadarProduct, RenderProcessing, RosterSource, StormCell, StormCellsResult,
+    SweepIdentity,
 };
 pub(crate) use domain::volume::VolumeElevationRoster;
 pub(crate) use domain::worker::{
@@ -121,8 +128,8 @@ pub(crate) use domain::worker::{
 pub(crate) use effect::{Effect, LocationResult, LocationSource};
 pub(crate) use geo_layers::GeoLayer;
 pub(crate) use live_mode::{
-    should_stop_for_detached_idle, ExpectedSweep, LiveExitReason, LiveModeState, LivePhase,
-    StreamActivity,
+    due_restarts, should_stop_for_detached_idle, ExpectedSweep, LiveExitReason, LiveModeState,
+    LivePhase, LiveVolumeState, SiteStreamEvent, SiteStreamSlice, StreamActivity, StreamRetry,
 };
 pub(crate) use live_radar_model::LiveRadarModel;
 pub(crate) use live_status::{derive_live_status, LiveStatus, LiveStatusInputs};
@@ -131,7 +138,8 @@ pub(crate) use prefs::Preferences;
 pub(crate) use streaming_filter::StreamingFilter;
 pub(crate) use streaming_plan::{ChunkProjectedTimes, ChunkProjectionInfo, StreamingPlan};
 pub(crate) use timeline_geometry::{
-    block_extent, cell_gap_px, layout_block, should_draw_sweep_texture, MIN_BLOCK_W,
+    block_extent, cell_gap_px, layout_block, should_divide_listed_volumes,
+    should_draw_sweep_texture, MIN_BLOCK_W,
 };
 pub(crate) use timeline_interaction::{
     clamp_view_start, resolve_gesture, zoom_about, StripGesture, StripInput,

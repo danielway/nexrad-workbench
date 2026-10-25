@@ -57,8 +57,7 @@ impl Layer for ToastLayer {
                         ui.horizontal_wrapped(|ui| {
                             if toast.kind == ToastKind::Failure {
                                 ui.label(
-                                    RichText::new(egui_phosphor::regular::WARNING)
-                                        .color(theme::TEXT),
+                                    RichText::new(crate::ui::icons::WARNING).color(theme::TEXT),
                                 );
                             }
                             ui.label(RichText::new(&toast.text).color(theme::TEXT));

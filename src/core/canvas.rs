@@ -501,6 +501,8 @@ pub(crate) enum CaptionReason {
     Downloading,
     /// A running stream will bring it; the antenna is elsewhere.
     Waiting { antenna_deg: Option<f32> },
+    /// The live stream failed and will start again on its own.
+    Reconnecting,
     /// Nothing is coming. `fetch` is the listed scan the user can fetch.
     NoData { fetch: Option<i64> },
 }
@@ -545,11 +547,13 @@ pub(crate) enum CanvasCaption {
 /// - `now`: this frame's wall clock (the playhead's time when pinned).
 /// - `stream_running` / `antenna_deg`: whether a stream will bring the next
 ///   frame, and the tilt the antenna is on.
+/// - `reconnecting`: the focus site's stream failed and waits to start again.
 pub(crate) fn decide_canvas_caption(
     frame: Option<&crate::core::session::FrameFact>,
     playhead: crate::core::session::Playhead,
     now: f64,
     stream_running: bool,
+    reconnecting: bool,
     antenna_deg: Option<f32>,
     ctx: &CaptionContext,
 ) -> CanvasCaption {
@@ -573,6 +577,8 @@ pub(crate) fn decide_canvas_caption(
     };
     let reason = if ctx.fetch_covers_playhead {
         CaptionReason::Downloading
+    } else if pinned && reconnecting {
+        CaptionReason::Reconnecting
     } else if pinned && stream_running {
         CaptionReason::Waiting { antenna_deg }
     } else {
@@ -587,9 +593,7 @@ pub(crate) fn decide_canvas_caption(
             reason,
         };
     };
-    let start = 2.0 * f.time_secs - f.end_secs;
-    let gap = (target - f.end_secs).max(start - target).max(0.0);
-    if gap > ctx.frame_step_secs.max(MIN_FRAME_STEP_SECS) {
+    if frame_disagrees(f.time_secs, f.end_secs, target, ctx.frame_step_secs) {
         CanvasCaption::Discrepancy {
             showing: f.time_secs,
             playhead: target,
@@ -599,6 +603,15 @@ pub(crate) fn decide_canvas_caption(
     } else {
         CanvasCaption::None
     }
+}
+
+/// Whether a frame (its midpoint and end, Unix seconds) sits more than one
+/// frame (`frame_step_secs`, floored at [`MIN_FRAME_STEP_SECS`]) away from
+/// `target`. The caption rule asks it of the focus and of every other site.
+pub(crate) fn frame_disagrees(mid: f64, end: f64, target: f64, frame_step_secs: f64) -> bool {
+    let start = 2.0 * mid - end;
+    let gap = (target - end).max(start - target).max(0.0);
+    gap > frame_step_secs.max(MIN_FRAME_STEP_SECS)
 }
 
 /// "One frame" for the caption rule: the expected seconds between
@@ -646,14 +659,24 @@ pub(crate) fn frame_step_secs(
             None => own,
         },
     };
-    // The fixed-tilt resolver shows one elevation number, so its frames are
-    // that number's cuts in the volume.
-    let visits = scan
+    // A held tilt's frames are its angle's visits in the volume (the base
+    // cut and each SAILS/MRLE repeat): as many as the plan makes, or as are
+    // cached when that is more (or the plan is unknown).
+    let shown = displayed.identity.elevation_number;
+    let tilt = crate::core::tilt::TiltFilter::Angle {
+        anchor: shown,
+        angle: scan
+            .target_elevation_angle(shown)
+            .unwrap_or(displayed.elevation_deg),
+    };
+    let cuts = tilt.cuts(scan.vcp_pattern.as_ref());
+    let cached = scan
         .sweeps
         .iter()
-        .filter(|s| s.elevation_number == displayed.identity.elevation_number)
-        .count()
-        .max(1);
+        .filter(|s| cuts.contains(s.elevation_number))
+        .count();
+    let planned = scan.vcp_pattern.as_ref().map_or(0, |_| cuts.len());
+    let visits = cached.max(planned).max(1);
     (volume_secs / visits as f64)
         .max(sweep_secs)
         .max(MIN_FRAME_STEP_SECS)
@@ -688,6 +711,9 @@ impl CaptionLine {
         self.segments.iter().map(|(s, _)| s.as_str()).collect()
     }
 }
+
+/// The caption's words while the live stream waits to start again.
+const RECONNECTING: &str = "live stream failed, retrying";
 
 fn tilt_word(tilt_deg: Option<f32>) -> Option<String> {
     tilt_deg.map(|t| format!("{t:.1}°"))
@@ -754,6 +780,9 @@ pub(crate) fn caption_line(
                     waiting(tilt_deg, antenna_deg)
                 )));
             }
+            CaptionReason::Reconnecting => {
+                segs.push(words(format!("no frame yet · {RECONNECTING}")));
+            }
             CaptionReason::NoData { fetch } => {
                 segs.push(words(match tilt_word(tilt_deg) {
                     Some(t) => format!("no {t} data at "),
@@ -786,6 +815,7 @@ pub(crate) fn caption_line(
                 CaptionReason::Waiting { antenna_deg } => {
                     segs.push(words(waiting(tilt_deg, antenna_deg)))
                 }
+                CaptionReason::Reconnecting => segs.push(words(RECONNECTING.to_string())),
                 CaptionReason::NoData { fetch } => {
                     segs.push(words(match tilt_word(tilt_deg) {
                         Some(t) => format!("no {t} at {}", clock.hm(playhead)),
@@ -1060,6 +1090,18 @@ impl CanvasOverlayVm {
             sweep,
             edge_label,
         }
+    }
+}
+
+/// How strongly a disc's range rings, radials and Rays marks draw: the
+/// focus at full strength, every other site at half, so each disc has its
+/// rings and the strong ones say which disc the single-valued surfaces
+/// describe.
+pub(crate) fn disc_overlay_opacity(is_focus: bool) -> f32 {
+    if is_focus {
+        1.0
+    } else {
+        0.5
     }
 }
 
@@ -1383,6 +1425,9 @@ pub(crate) struct PickCandidates {
     /// The alert polygon under the cursor (severity tie-break already
     /// applied): `(id, event)`.
     pub alert: Option<(String, String)>,
+    /// The tapped point, when it falls inside a storm cell's footprint
+    /// ([`crate::core::storm_cell_view::cell_at`]): `(lat, lon)`.
+    pub storm_cell: Option<(f64, f64)>,
 }
 
 /// Which pickable layers are drawn.
@@ -1390,8 +1435,13 @@ pub(crate) struct PickCandidates {
 pub(crate) struct PickLayers {
     pub sites: bool,
     pub mping: bool,
-    /// Either alert class is on and live overlays apply at the playhead.
+    /// Either alert class is on and live overlays apply
+    /// ([`crate::core::recency::live_overlays_off`] finds no reason to hide
+    /// them).
     pub alerts: bool,
+    /// Storm cells draw and a tap selects one (the phone; the desktop
+    /// hovers instead).
+    pub storm_cells: bool,
 }
 
 /// How far from a mark's center a click or tap still picks it, in screen
@@ -1432,6 +1482,11 @@ pub(crate) enum MapPick {
         id: String,
         event: String,
     },
+    /// A storm cell's footprint, at the tapped point.
+    StormCell {
+        lat: f64,
+        lon: f64,
+    },
 }
 
 impl MapPick {
@@ -1450,41 +1505,90 @@ impl MapPick {
             MapPick::Alert { id, .. } => {
                 crate::core::Intent::Diagnostics(DiagnosticsIntent::SelectAlert(id.clone()))
             }
+            MapPick::StormCell { lat, lon } => crate::core::Intent::StormCells(
+                crate::core::storm_cell_view::StormCellIntent::Select(Some((*lat, *lon))),
+            ),
         }
     }
 
-    /// What a click or tap on it does, for the layout: on the phone a tap
-    /// near a site asks before switching ([`Confirm::SwitchSite`]); every
-    /// other pick does what [`Self::intent`] says.
-    ///
-    /// [`Confirm::SwitchSite`]: crate::core::dialogs::Confirm::SwitchSite
-    pub(crate) fn intent_for(&self, phone: bool) -> crate::core::Intent {
+    /// What a click or tap on it does: a site does what `site_click` says
+    /// ([`site_click`]); every other pick does what [`Self::intent`] says.
+    pub(crate) fn intent_for(&self, site_click: SiteClick) -> crate::core::Intent {
         use crate::core::dialogs::{Confirm, DialogIntent};
-        match self {
-            MapPick::Site { id, lat, lon } if phone => {
+        match (self, site_click) {
+            (MapPick::Site { id, lat, lon }, SiteClick::AskSwitch) => {
                 crate::core::Intent::Dialog(DialogIntent::RequestConfirm(Confirm::SwitchSite {
                     id,
                     lat: *lat,
                     lon: *lon,
                 }))
             }
+            // A full set refuses the add where the set is changed
+            // (`sites::add`); the hover label already said so.
+            (MapPick::Site { id, lat, lon }, SiteClick::Add | SiteClick::Full { .. }) => {
+                crate::core::Intent::AddSite {
+                    site_id: id.to_string(),
+                    lat: *lat,
+                    lon: *lon,
+                }
+            }
             _ => self.intent(),
         }
     }
 
-    /// The hover label beside the cursor: the site's ID, or the alert's
-    /// event. A report's marker needs none (its popover is one click away).
-    pub(crate) fn hover_label(&self) -> Option<String> {
+    /// The hover label beside the cursor: the site's ID and what a click on
+    /// it does, or the alert's event. A report's marker needs none (its
+    /// popover is one click away).
+    pub(crate) fn hover_label(&self, site_click: SiteClick) -> Option<String> {
         match self {
-            MapPick::Site { id, .. } => Some(format!("{id} · switch site")),
-            MapPick::Mping(_) => None,
+            MapPick::Site { id, .. } => Some(match site_click {
+                SiteClick::Switch | SiteClick::AskSwitch => format!("{id} · switch site"),
+                SiteClick::Add => format!("{id} · add site"),
+                SiteClick::Full { cap } => format!(
+                    "{id} · {}",
+                    crate::core::sites::Refusal::AtCap { cap }.words()
+                ),
+            }),
+            MapPick::Mping(_) | MapPick::StormCell { .. } => None,
             MapPick::Alert { event, .. } => Some(event.clone()),
         }
     }
 }
 
+/// What a click on a site marker does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SiteClick {
+    /// Show that site alone (`SelectSite`).
+    Switch,
+    /// The phone: ask before switching ([`Confirm::SwitchSite`]).
+    ///
+    /// [`Confirm::SwitchSite`]: crate::core::dialogs::Confirm::SwitchSite
+    AskSwitch,
+    /// Cmd (Ctrl off a Mac) is held: show the site beside the others
+    /// (`AddSite`).
+    Add,
+    /// Cmd is held but the map already shows `cap` sites.
+    Full { cap: usize },
+}
+
+/// What a click on a site marker does: on the phone a tap asks before
+/// switching; on the desktop a click switches, and a click with Cmd held
+/// (`add_held`) adds the site while fewer than `cap` of them are shown.
+pub(crate) fn site_click(phone: bool, add_held: bool, shown: usize, cap: usize) -> SiteClick {
+    if phone {
+        SiteClick::AskSwitch
+    } else if !add_held {
+        SiteClick::Switch
+    } else if shown < cap {
+        SiteClick::Add
+    } else {
+        SiteClick::Full { cap }
+    }
+}
+
 /// Decide the pick. Point marks sit on top of alert polygons, so sites and
-/// reports win over alerts; a mark only picks while its layer is drawn — a
+/// reports win over storm cells, and storm cells (drawn over the radar,
+/// smaller than warnings) win over alerts; a mark only picks while its layer is drawn — a
 /// click near an invisible site does nothing, as it looks like it should.
 pub(crate) fn decide_map_pick(c: PickCandidates, layers: PickLayers) -> Option<MapPick> {
     if layers.sites {
@@ -1495,6 +1599,11 @@ pub(crate) fn decide_map_pick(c: PickCandidates, layers: PickLayers) -> Option<M
     if layers.mping {
         if let Some(id) = c.mping {
             return Some(MapPick::Mping(id));
+        }
+    }
+    if layers.storm_cells {
+        if let Some((lat, lon)) = c.storm_cell {
+            return Some(MapPick::StormCell { lat, lon });
         }
     }
     if layers.alerts {
@@ -2901,6 +3010,12 @@ mod overlay_tests {
         assert!(faded_wedge_hint(false, sweep, 200.0, 50.0, 460.0).is_none());
         assert!(faded_wedge_hint(true, sweep, 200.0, 470.0, 460.0).is_none());
     }
+
+    #[wasm_bindgen_test]
+    fn the_focus_rings_and_marks_draw_full_and_the_others_at_half() {
+        assert_eq!(disc_overlay_opacity(true), 1.0);
+        assert_eq!(disc_overlay_opacity(false), 0.5);
+    }
 }
 
 #[cfg(test)]
@@ -2915,6 +3030,7 @@ mod pick_tests {
             site: Some(("KFDR", 34.3, -98.9)),
             mping: Some(7),
             alert: Some(("a1".to_string(), "Tornado Warning".to_string())),
+            storm_cell: None,
         }
     }
 
@@ -2922,7 +3038,49 @@ mod pick_tests {
         sites: true,
         mping: true,
         alerts: true,
+        storm_cells: true,
     };
+
+    #[wasm_bindgen_test]
+    fn a_tap_in_a_storm_cell_selects_it_over_an_alert() {
+        let c = PickCandidates {
+            site: None,
+            mping: None,
+            storm_cell: Some((42.0, -93.0)),
+            ..all()
+        };
+        let pick = decide_map_pick(c.clone(), ON);
+        assert_eq!(
+            pick,
+            Some(MapPick::StormCell {
+                lat: 42.0,
+                lon: -93.0
+            })
+        );
+        assert_eq!(
+            pick.unwrap().intent_for(SiteClick::AskSwitch),
+            Intent::StormCells(crate::core::storm_cell_view::StormCellIntent::Select(Some(
+                (42.0, -93.0)
+            )))
+        );
+        // Points still win; with the layer off the alert picks.
+        let with_site = PickCandidates {
+            site: all().site,
+            ..c.clone()
+        };
+        assert!(matches!(
+            decide_map_pick(with_site, ON),
+            Some(MapPick::Site { .. })
+        ));
+        let off = PickLayers {
+            storm_cells: false,
+            ..ON
+        };
+        assert!(matches!(
+            decide_map_pick(c, off),
+            Some(MapPick::Alert { .. })
+        ));
+    }
 
     #[wasm_bindgen_test]
     fn a_phone_tap_on_a_site_asks_first_and_a_click_switches() {
@@ -2933,17 +3091,17 @@ mod pick_tests {
             lon: -98.9,
         };
         assert_eq!(
-            site.intent_for(true),
+            site.intent_for(SiteClick::AskSwitch),
             Intent::Dialog(DialogIntent::RequestConfirm(Confirm::SwitchSite {
                 id: "KFDR",
                 lat: 34.3,
                 lon: -98.9,
             }))
         );
-        assert_eq!(site.intent_for(false), site.intent());
+        assert_eq!(site.intent_for(SiteClick::Switch), site.intent());
         // Reports and alerts open the same on both.
         assert_eq!(
-            MapPick::Mping(7).intent_for(true),
+            MapPick::Mping(7).intent_for(SiteClick::AskSwitch),
             MapPick::Mping(7).intent()
         );
     }
@@ -2998,6 +3156,45 @@ mod pick_tests {
     }
 
     #[wasm_bindgen_test]
+    fn a_cmd_click_on_a_site_adds_it_while_there_is_room() {
+        assert_eq!(site_click(false, false, 1, 3), SiteClick::Switch);
+        assert_eq!(site_click(false, true, 1, 3), SiteClick::Add);
+        assert_eq!(site_click(false, true, 2, 3), SiteClick::Add);
+        assert_eq!(site_click(false, true, 3, 3), SiteClick::Full { cap: 3 });
+        // A full map still switches on a plain click.
+        assert_eq!(site_click(false, false, 3, 3), SiteClick::Switch);
+        // The phone shows one site: a tap asks before switching, Cmd or not.
+        assert_eq!(site_click(true, true, 1, 1), SiteClick::AskSwitch);
+
+        let site = MapPick::Site {
+            id: "KFDR",
+            lat: 34.3,
+            lon: -98.9,
+        };
+        let add = Intent::AddSite {
+            site_id: "KFDR".to_string(),
+            lat: 34.3,
+            lon: -98.9,
+        };
+        assert_eq!(site.intent_for(SiteClick::Add), add);
+        // The set refuses a full map's add itself (`sites::add`).
+        assert_eq!(site.intent_for(SiteClick::Full { cap: 3 }), add);
+        assert_eq!(
+            site.hover_label(SiteClick::Add).as_deref(),
+            Some("KFDR · add site")
+        );
+        assert_eq!(
+            site.hover_label(SiteClick::Full { cap: 3 }).as_deref(),
+            Some("KFDR · 3 sites max")
+        );
+        // Other picks ignore the modifier.
+        assert_eq!(
+            MapPick::Mping(7).intent_for(SiteClick::Add),
+            MapPick::Mping(7).intent()
+        );
+    }
+
+    #[wasm_bindgen_test]
     fn a_pick_carries_its_click_and_its_hover() {
         let site = decide_map_pick(all(), ON).unwrap();
         assert_eq!(
@@ -3008,17 +3205,23 @@ mod pick_tests {
                 lon: -98.9,
             }
         );
-        assert_eq!(site.hover_label().as_deref(), Some("KFDR · switch site"));
+        assert_eq!(
+            site.hover_label(SiteClick::Switch).as_deref(),
+            Some("KFDR · switch site")
+        );
         assert_eq!(
             MapPick::Mping(7).intent(),
             Intent::Diagnostics(DiagnosticsIntent::SelectMpingReport(7))
         );
-        assert_eq!(MapPick::Mping(7).hover_label(), None);
+        assert_eq!(MapPick::Mping(7).hover_label(SiteClick::Add), None);
         let alert = MapPick::Alert {
             id: "a1".to_string(),
             event: "Tornado Warning".to_string(),
         };
-        assert_eq!(alert.hover_label().as_deref(), Some("Tornado Warning"));
+        assert_eq!(
+            alert.hover_label(SiteClick::Switch).as_deref(),
+            Some("Tornado Warning")
+        );
     }
 }
 

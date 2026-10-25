@@ -1,0 +1,926 @@
+//! Corpus tests (#164): the detector on decimated real sweeps from the
+//! storm cell study's four volumes, with reviewed expectations.
+//!
+//! Fixtures live in `tests/fixtures/storm_cells/` (format and how to
+//! regenerate them: README there, generator in `tools/corpus/`). Each is the
+//! lowest reflectivity surveillance cut (elevation 1, 0.5°) of a NOAA
+//! archive volume, decimated 2× in azimuth (1° radials) and 2× in range
+//! (0.5 km gates), cropped to 300 km. Peaks after the median filter run a
+//! few dB below the full-resolution labels quoted in the study. One volume
+//! fixture (`_vol.bin`) holds the Greenfield volume's upper tilts, cropped
+//! to the line's sector, for the cells' columns.
+//!
+//! Boxes are (min_lat, max_lat, min_lon, max_lon).
+
+use std::io::Read;
+
+use super::composite::{detect_composite, CompositeCut};
+use super::{detect_cells, DetectionInput, DetectionParams, StormCell, StormCellsResult};
+
+struct Fixture {
+    radar_lat: f64,
+    radar_lon: f64,
+    first_gate_km: f64,
+    gate_km: f64,
+    scale: f32,
+    offset: f32,
+    azimuths: Vec<f32>,
+    gates: Vec<f32>,
+    gate_count: usize,
+}
+
+fn load(bytes: &[u8]) -> Fixture {
+    let mut p = Vec::new();
+    flate2::read::ZlibDecoder::new(bytes)
+        .read_to_end(&mut p)
+        .expect("fixture inflates");
+    assert_eq!(&p[0..4], b"NXSC");
+    assert_eq!(p[4], 1, "fixture version");
+    let f64_at = |o: usize| f64::from_le_bytes(p[o..o + 8].try_into().unwrap());
+    let f32_at = |o: usize| f32::from_le_bytes(p[o..o + 4].try_into().unwrap());
+    let u16_at = |o: usize| u16::from_le_bytes([p[o], p[o + 1]]) as usize;
+    // magic 4, version 1, site 4
+    let mut o = 9;
+    let (radar_lat, radar_lon) = (f64_at(o), f64_at(o + 8));
+    o += 16;
+    let _elevation = f32_at(o);
+    let first_gate_km = f32_at(o + 4) as f64;
+    let gate_km = f32_at(o + 8) as f64;
+    let (scale, offset) = (f32_at(o + 12), f32_at(o + 16));
+    o += 20;
+    let (az_count, gate_count) = (u16_at(o), u16_at(o + 2));
+    o += 4;
+    let azimuths = (0..az_count).map(|i| f32_at(o + 4 * i)).collect();
+    o += 4 * az_count;
+    let gates = p[o..o + az_count * gate_count]
+        .iter()
+        .map(|&b| b as f32)
+        .collect();
+    Fixture {
+        radar_lat,
+        radar_lon,
+        first_gate_km,
+        gate_km,
+        scale,
+        offset,
+        azimuths,
+        gates,
+        gate_count,
+    }
+}
+
+/// A fixture as the detector's input.
+fn input(f: &Fixture) -> DetectionInput<'_> {
+    DetectionInput {
+        azimuths: &f.azimuths,
+        gate_values: &f.gates,
+        azimuth_count: f.azimuths.len(),
+        gate_count: f.gate_count,
+        first_gate_km: f.first_gate_km,
+        gate_interval_km: f.gate_km,
+        data_scale: f.scale,
+        data_offset: f.offset,
+        radar_lat: f.radar_lat,
+        radar_lon: f.radar_lon,
+        azimuth_spacing_deg: None,
+    }
+}
+
+/// Detect on a fixture; also returns the radar position.
+fn detect(bytes: &[u8], threshold_dbz: f32) -> (StormCellsResult, (f64, f64)) {
+    let f = load(bytes);
+    let r = detect_cells(
+        &input(&f),
+        &DetectionParams {
+            threshold_dbz,
+            ..DetectionParams::default()
+        },
+    );
+    (r, (f.radar_lat, f.radar_lon))
+}
+
+const GREENFIELD: &[u8] =
+    include_bytes!("../../tests/fixtures/storm_cells/KDMX20240521_201727_V06_el1.bin");
+const MCS: &[u8] =
+    include_bytes!("../../tests/fixtures/storm_cells/KFWS20240528_102649_V06_el1.bin");
+const MILTON: &[u8] =
+    include_bytes!("../../tests/fixtures/storm_cells/KTBW20241009_195926_V06_el1.bin");
+const CLEAR_AIR: &[u8] =
+    include_bytes!("../../tests/fixtures/storm_cells/KDMX20240715_115714_V06_el1.bin");
+
+fn inside(c: &StormCell, (lat0, lat1, lon0, lon1): (f64, f64, f64, f64)) -> bool {
+    (lat0..=lat1).contains(&c.lat) && (lon0..=lon1).contains(&c.lon)
+}
+
+/// Rough ground distance in km (flat, fine at these scales).
+fn km(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let dy = (a.0 - b.0) * 111.0;
+    let dx = (a.1 - b.1) * 111.0 * a.0.to_radians().cos();
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// Longest edge of a closed (lat, lon) ring, in km.
+fn longest_edge_km(ring: &[(f64, f64)]) -> f64 {
+    ring.windows(2).map(|w| km(w[0], w[1])).fold(0.0, f64::max)
+}
+
+/// Share of its group's envelope that a grouped cell's footprint covers.
+fn group_share(r: &StormCellsResult, c: &StormCell) -> f32 {
+    c.group_id
+        .map_or(1.0, |g| c.area_km2 / r.groups[g as usize].area_km2)
+}
+
+/// Structural invariants every result must hold.
+fn check_invariants(r: &StormCellsResult) {
+    for (i, c) in r.cells.iter().enumerate() {
+        assert_eq!(c.id as usize, i);
+        if i > 0 {
+            assert!(r.cells[i - 1].peak_dbz >= c.peak_dbz, "sorted by peak");
+        }
+        assert!(c.outline.len() >= 5, "cell {i} outline {:?}", c.outline);
+        assert!(c.outline.len() <= super::model::MAX_OUTLINE_VERTICES + 1);
+        assert_eq!(c.outline.first(), c.outline.last());
+        // Simplification never cuts a long chord across the footprint
+        // (10 km in the outline's projection; this one differs slightly).
+        assert!(longest_edge_km(&c.outline) < 10.5, "cell {i}");
+        // Every cell, lone or grouped, carries the core ring it is drawn as.
+        assert!(c.core_outline.len() >= 5, "cell {i}");
+        assert_eq!(c.core_outline.first(), c.core_outline.last());
+        assert!(longest_edge_km(&c.core_outline) < 10.5, "cell {i}");
+        assert!(c.peak_dbz >= c.level_dbz);
+        if let Some(g) = c.group_id {
+            assert!(r.groups[g as usize].cell_ids.contains(&c.id));
+        }
+    }
+    for (i, g) in r.groups.iter().enumerate() {
+        assert_eq!(g.id as usize, i);
+        assert!(g.cell_ids.len() >= 2);
+        assert!(g.outline.len() >= 5 && g.outline.len() <= super::model::MAX_OUTLINE_VERTICES + 1);
+        assert!(longest_edge_km(&g.outline) < 10.5, "group {i}");
+        for &c in &g.cell_ids {
+            assert_eq!(r.cells[c as usize].group_id, Some(g.id));
+        }
+        // The cells' footprints tile their envelope.
+        let sum: f32 = g
+            .cell_ids
+            .iter()
+            .map(|&c| r.cells[c as usize].area_km2)
+            .sum();
+        assert!((sum - g.area_km2).abs() <= 1e-3 * g.area_km2, "group {i}");
+    }
+}
+
+// --- KDMX 2024-05-21 20:17Z, Greenfield supercell line ------------------
+
+/// The line from Adams to Calhoun County, 70-110 km west of KDMX.
+const LINE: (f64, f64, f64, f64) = (40.75, 42.45, -95.1, -94.4);
+
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn greenfield_line_resolves_into_its_storms_inside_one_group() {
+    let (r, _) = detect(GREENFIELD, 35.0);
+    check_invariants(&r);
+    let line: Vec<&StormCell> = r
+        .cells
+        .iter()
+        .filter(|c| inside(c, LINE) && c.peak_dbz >= 50.0)
+        .collect();
+
+    // At one 35 dBZ threshold this line was a single 270 km cell. Now it is
+    // its storms: 5-8 cells (with a small extra core between Audubon and
+    // Cass), four of them reaching 55 dBZ after the median filter. Each
+    // holds its own stretch of the line's envelope, none the whole line:
+    // the largest (Cass/Adair) about a fifth of it.
+    assert!((5..=8).contains(&line.len()), "{line:#?}");
+    assert!(line.iter().filter(|c| c.peak_dbz >= 55.0).count() >= 4);
+    assert!(
+        line.iter()
+            .all(|c| c.area_km2 < 1500.0 && group_share(&r, c) < 0.25),
+        "no line-sized cell"
+    );
+
+    // One cell per named storm (study, case 2), within 12 km.
+    for (name, pos) in [
+        ("Calhoun", (42.32, -94.67)),
+        ("Carroll", (42.01, -94.82)),
+        ("Audubon", (41.64, -94.89)),
+        ("Cass/Adair (Greenfield)", (41.28, -94.73)),
+        ("Adams", (40.87, -94.71)),
+    ] {
+        let near = line
+            .iter()
+            .filter(|c| km((c.lat, c.lon), pos) < 12.0)
+            .count();
+        assert_eq!(near, 1, "{name}: {near} cells");
+    }
+
+    // All of them inside exactly one group.
+    let group = line[0].group_id.expect("line cells are grouped");
+    assert!(line.iter().all(|c| c.group_id == Some(group)));
+}
+
+/// Snapshot of the full Greenfield result, so any change to segmentation is
+/// visible in review. Regenerate deliberately when the algorithm changes.
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn greenfield_snapshot() {
+    let (r, _) = detect(GREENFIELD, 35.0);
+    let got: Vec<String> = r
+        .cells
+        .iter()
+        .map(|c| {
+            format!(
+                "{} g{} L{:.0} peak {:.1} area {:.0} at {:.2},{:.2}",
+                c.id,
+                c.group_id.map_or("-".to_string(), |g| g.to_string()),
+                c.level_dbz,
+                c.peak_dbz,
+                c.area_km2,
+                c.lat,
+                c.lon
+            )
+        })
+        .chain(r.groups.iter().map(|g| {
+            format!(
+                "group {} peak {:.1} area {:.0} cells {:?}",
+                g.id, g.peak_dbz, g.area_km2, g.cell_ids
+            )
+        }))
+        .collect();
+    let expected: Vec<&str> = GREENFIELD_SNAPSHOT
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert_eq!(got, expected, "\n{}", got.join("\n"));
+}
+
+const GREENFIELD_SNAPSHOT: &str = "
+    0 g1 L45 peak 58.5 area 845 at 39.35,-94.70
+    1 g0 L55 peak 58.5 area 629 at 42.34,-94.65
+    2 g0 L50 peak 58.0 area 1297 at 41.27,-94.72
+    3 g0 L55 peak 58.0 area 1235 at 41.98,-94.80
+    4 g2 L45 peak 58.0 area 123 at 40.50,-94.67
+    5 g- L35 peak 57.5 area 376 at 42.42,-91.01
+    6 g- L35 peak 56.0 area 491 at 43.60,-94.75
+    7 g0 L50 peak 55.5 area 583 at 41.61,-94.90
+    8 g- L35 peak 55.5 area 208 at 43.02,-94.26
+    9 g0 L50 peak 55.0 area 394 at 43.21,-94.39
+    10 g0 L40 peak 54.0 area 351 at 42.96,-94.67
+    11 g0 L45 peak 53.5 area 474 at 42.65,-94.70
+    12 g0 L45 peak 53.5 area 278 at 43.38,-94.88
+    13 g3 L50 peak 53.0 area 739 at 39.88,-94.63
+    14 g3 L50 peak 53.0 area 367 at 40.06,-94.61
+    15 g0 L40 peak 53.0 area 282 at 43.12,-94.67
+    16 g0 L50 peak 53.0 area 242 at 41.55,-94.77
+    17 g0 L50 peak 53.0 area 241 at 43.28,-94.58
+    18 g0 L45 peak 53.0 area 193 at 40.87,-94.72
+    19 g- L35 peak 50.5 area 228 at 43.92,-92.91
+    20 g- L35 peak 50.5 area 119 at 42.85,-94.12
+    21 g3 L40 peak 50.0 area 302 at 39.66,-94.68
+    22 g2 L45 peak 49.5 area 67 at 40.55,-94.63
+    23 g- L35 peak 49.5 area 24 at 42.64,-94.40
+    24 g1 L45 peak 48.8 area 105 at 39.19,-94.80
+    25 g0 L45 peak 48.5 area 126 at 43.33,-94.75
+    26 g4 L40 peak 48.0 area 687 at 43.85,-94.31
+    27 g- L35 peak 48.0 area 112 at 43.36,-94.11
+    28 g- L35 peak 47.0 area 248 at 43.19,-95.18
+    29 g- L35 peak 46.5 area 120 at 43.73,-92.96
+    30 g- L35 peak 46.0 area 73 at 43.49,-94.28
+    31 g4 L40 peak 45.0 area 287 at 44.02,-93.80
+    32 g4 L40 peak 45.0 area 193 at 44.16,-93.39
+    group 0 peak 58.5 area 6325 cells [1, 2, 3, 7, 9, 10, 11, 12, 15, 16, 17, 18, 25]
+    group 1 peak 58.5 area 949 cells [0, 24]
+    group 2 peak 58.0 area 190 cells [4, 22]
+    group 3 peak 53.0 area 1407 cells [13, 14, 21]
+    group 4 peak 48.0 area 1168 cells [26, 31, 32]
+";
+
+// --- KFWS 2024-05-28 10:27Z, MCS north of the Metroplex -----------------
+
+/// Trailing stratiform rain (Marshall, Bryan, Grayson): the old detector
+/// found about ten 45-47 dBZ "cells" here at 45 dBZ.
+const STRATIFORM: (f64, f64, f64, f64) = (33.6, 34.3, -97.4, -96.35);
+/// Convective leading edge over Wise, Denton and Collin.
+const LEADING_EDGE: (f64, f64, f64, f64) = (33.0, 33.45, -97.7, -96.4);
+
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn mcs_stratiform_maxima_are_not_cells() {
+    for threshold in [35.0, 45.0] {
+        let (r, _) = detect(MCS, threshold);
+        check_invariants(&r);
+        let weak: Vec<&StormCell> = r
+            .cells
+            .iter()
+            .filter(|c| inside(c, STRATIFORM) && c.peak_dbz < 50.0)
+            .collect();
+        assert!(weak.is_empty(), "at {threshold}: {weak:#?}");
+    }
+}
+
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn mcs_leading_edge_is_a_group_of_cores() {
+    let (r, _) = detect(MCS, 35.0);
+    let edge: Vec<&StormCell> = r.cells.iter().filter(|c| inside(c, LEADING_EDGE)).collect();
+    // Not one 250 km ellipse over Fort Worth: several cores, one group,
+    // none holding most of it. The strongest core's footprint includes the
+    // stratiform rain behind it (no cell of its own), so it is big, but
+    // still under half the group.
+    assert!(
+        edge.iter().filter(|c| c.peak_dbz >= 55.0).count() >= 3,
+        "{edge:#?}"
+    );
+    assert!(
+        edge.iter()
+            .all(|c| c.area_km2 < 4000.0 && group_share(&r, c) < 0.5),
+        "{edge:#?}"
+    );
+    let group = edge[0].group_id.expect("edge cells are grouped");
+    assert!(edge.iter().all(|c| c.group_id == Some(group)));
+}
+
+// --- KTBW 2024-10-09 19:59Z, Hurricane Milton -----------------------------
+
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn milton_shield_is_groups_of_bands_not_one_cell() {
+    let (r, radar) = detect(MILTON, 35.0);
+    check_invariants(&r);
+    // The shield around Tampa Bay is carried by groups with many cells each,
+    // and no cell near the radar is shield-sized (the study's 330 km cell):
+    // each band holds its share of a 13-15 000 km² envelope, at most about
+    // a third of it.
+    let near: Vec<&StormCell> = r
+        .cells
+        .iter()
+        .filter(|c| km((c.lat, c.lon), radar) < 120.0)
+        .collect();
+    assert!(near.len() >= 10, "{}", near.len());
+    assert!(near.iter().all(|c| c.area_km2 < 5000.0), "{near:#?}");
+    assert!(
+        near.iter()
+            .filter(|c| c
+                .group_id
+                .is_some_and(|g| r.groups[g as usize].area_km2 > 5000.0))
+            .all(|c| group_share(&r, c) < 0.4),
+        "{near:#?}"
+    );
+    assert!(near.iter().filter(|c| c.group_id.is_some()).count() >= near.len() - 1);
+    let big_groups = r
+        .groups
+        .iter()
+        .filter(|g| g.area_km2 > 5000.0 && g.cell_ids.len() >= 5)
+        .count();
+    assert!(big_groups >= 1, "{:#?}", r.groups);
+    // The 73 dBZ label came from one gate; the filtered peak is far lower.
+    assert!(r.cells.iter().all(|c| c.peak_dbz <= 70.0));
+}
+
+// --- KDMX 2024-07-15 11:57Z, clear-air control -------------------------
+
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn clear_air_control_finds_only_minnesota_storms_and_known_clutter() {
+    let (r, radar) = detect(CLEAR_AIR, 35.0);
+    check_invariants(&r);
+    let (near, far): (Vec<&StormCell>, Vec<&StormCell>) = r
+        .cells
+        .iter()
+        .partition(|c| km((c.lat, c.lon), radar) < 150.0);
+    // Real convection: the southern edge of the Minnesota complex, at the
+    // 300 km crop.
+    assert!(!far.is_empty());
+    assert!(far.iter().all(|c| c.lat > 43.8), "{far:#?}");
+    // Clutter: the Greene County wind-farm cluster (318°, 55 km) survives
+    // the median filter; the Adair/Guthrie clusters do not. A CC filter
+    // (later PR) should bring this to zero.
+    assert_eq!(near.len(), 1, "{near:#?}");
+    assert!(km((near[0].lat, near[0].lon), (42.11, -94.16)) < 10.0);
+}
+
+// --- Tracking: KDMX 20:17Z → 20:24Z ---------------------------------------
+
+const GREENFIELD_NEXT: &[u8] =
+    include_bytes!("../../tests/fixtures/storm_cells/KDMX20240521_202422_V06_el1.bin");
+
+/// Volume start times of the two fixtures.
+const T_2017: i64 = 1_716_322_647_000;
+const T_2024: i64 = 1_716_323_062_000;
+
+/// The Greenfield line seven minutes later: the strong storms keep their
+/// tracks and move north-east, as they did that afternoon, and no match
+/// jumps farther than the search radius.
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn greenfield_storms_keep_their_tracks_into_the_next_volume() {
+    use super::track::{bearing_distance, distance_km, TrackParams, Tracker};
+    let (a, _) = detect(GREENFIELD, 35.0);
+    let (b, _) = detect(GREENFIELD_NEXT, 35.0);
+    check_invariants(&b);
+    let run = || {
+        let mut tr = Tracker::default();
+        let f0 = tr.observe(T_2017, &a, false).unwrap();
+        let f1 = tr.observe(T_2024, &b, false).unwrap();
+        (f0, f1)
+    };
+    let (f0, f1) = run();
+    assert_eq!((f0.clone(), f1.clone()), run(), "deterministic");
+    assert!(f0.cell_tracks.iter().all(Option::is_some));
+    assert!(f1.cell_tracks.iter().all(Option::is_some));
+
+    let params = TrackParams::default();
+    let radius = params.base_radius_km + params.max_speed_kmh * (T_2024 - T_2017) as f64 / 3.6e6;
+    for cell in &b.cells {
+        let track = f1.track_of_cell(cell.id).unwrap();
+        if track.age_volumes == 2 {
+            let (lat, lon) = track.trail[0];
+            assert!(distance_km((lat, lon), (cell.lat, cell.lon)) <= radius);
+        }
+    }
+
+    for (name, pos) in [
+        ("Calhoun", (42.32, -94.67)),
+        ("Carroll", (42.01, -94.82)),
+        ("Cass/Adair (Greenfield)", (41.28, -94.73)),
+        ("Adams", (40.87, -94.71)),
+    ] {
+        let before = a
+            .cells
+            .iter()
+            .find(|c| km((c.lat, c.lon), pos) < 12.0 && c.peak_dbz >= 50.0)
+            .unwrap_or_else(|| panic!("{name} at 20:17"));
+        let id = f0.cell_tracks[before.id as usize].unwrap();
+        let track = f1.track(id).unwrap_or_else(|| panic!("{name} track"));
+        let now = track
+            .cell_id
+            .unwrap_or_else(|| panic!("{name} matched at 20:24"));
+        let now = &b.cells[now as usize];
+        let (bearing, dist) = bearing_distance((before.lat, before.lon), (now.lat, now.lon));
+        assert!(dist <= radius, "{name}: {dist} km");
+        assert!(
+            (0.0..=120.0).contains(&bearing),
+            "{name}: moved toward {bearing}"
+        );
+        assert!(now.peak_dbz >= 50.0, "{name}: {now:?}");
+        assert_eq!(track.age_volumes, 2);
+    }
+}
+
+const GREENFIELD_2003: &[u8] =
+    include_bytes!("../../tests/fixtures/storm_cells/KDMX20240521_200338_V06_el1.bin");
+const GREENFIELD_2010: &[u8] =
+    include_bytes!("../../tests/fixtures/storm_cells/KDMX20240521_201032_V06_el1.bin");
+const T_2003: i64 = 1_716_321_818_000;
+const T_2010: i64 = 1_716_322_232_000;
+
+/// With 20:03 and 20:10 as history (so the tracks have a motion), each of
+/// the five
+/// named storms keeps its letter from 20:17 to 20:24, matched to the piece
+/// that holds most of it. Audubon is the hard one: at 20:24 the
+/// segmentation leaves a small fragment 3 km from its old centroid while
+/// the storm itself has moved 16 km north-east; nearest-centroid matching
+/// alone takes the fragment.
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn greenfield_named_storms_keep_their_letters_through_fragmenting() {
+    use super::track::{bearing_distance, Tracker};
+    let mut tr = Tracker::default();
+    for (bytes, t) in [(GREENFIELD_2003, T_2003), (GREENFIELD_2010, T_2010)] {
+        tr.observe(t, &detect(bytes, 35.0).0, false).unwrap();
+    }
+    let (a, _) = detect(GREENFIELD, 35.0);
+    let (b, _) = detect(GREENFIELD_NEXT, 35.0);
+    let f0 = tr.observe(T_2017, &a, false).unwrap();
+    let f1 = tr.observe(T_2024, &b, false).unwrap();
+    for (name, pos) in [
+        ("Calhoun", (42.32, -94.67)),
+        ("Carroll", (42.01, -94.82)),
+        ("Audubon", (41.64, -94.89)),
+        ("Cass/Adair (Greenfield)", (41.28, -94.73)),
+        ("Adams", (40.87, -94.71)),
+    ] {
+        let before = a
+            .cells
+            .iter()
+            .find(|c| km((c.lat, c.lon), pos) < 12.0 && c.peak_dbz >= 50.0)
+            .unwrap_or_else(|| panic!("{name} at 20:17"));
+        let id = f0.cell_tracks[before.id as usize].unwrap();
+        let now = f1
+            .track(id)
+            .and_then(|t| t.cell_id)
+            .unwrap_or_else(|| panic!("{name} keeps its letter"));
+        let now = &b.cells[now as usize];
+        let (bearing, dist) = bearing_distance((before.lat, before.lon), (now.lat, now.lon));
+        assert!(
+            (0.0..=120.0).contains(&bearing) && dist <= 20.0,
+            "{name}: {dist:.1} km toward {bearing:.0}"
+        );
+        assert!(now.area_km2 >= 0.5 * before.area_km2, "{name}: {now:?}");
+    }
+}
+
+// --- Volume: Greenfield's columns over its upper tilts (#178) -----------
+
+/// The upper reflectivity tilts of the Greenfield volume, cropped to the
+/// line's sector (`_vol.bin`, see the README).
+const GREENFIELD_VOLUME: &[u8] =
+    include_bytes!("../../tests/fixtures/storm_cells/KDMX20240521_201727_V06_vol.bin");
+
+struct Tilt {
+    number: u8,
+    elevation: f32,
+    first_gate_km: f64,
+    gate_km: f64,
+    scale: f32,
+    offset: f32,
+    azimuths: Vec<f32>,
+    codes: Vec<u8>,
+    gate_count: usize,
+}
+
+fn load_tilts(bytes: &[u8]) -> Vec<Tilt> {
+    let mut p = Vec::new();
+    flate2::read::ZlibDecoder::new(bytes)
+        .read_to_end(&mut p)
+        .expect("fixture inflates");
+    assert_eq!(&p[0..4], b"NXSV");
+    assert_eq!(p[4], 1, "fixture version");
+    let f32_at = |o: usize| f32::from_le_bytes(p[o..o + 4].try_into().unwrap());
+    let u16_at = |o: usize| u16::from_le_bytes([p[o], p[o + 1]]) as usize;
+    // magic 4, version 1, site 4
+    let count = p[9] as usize;
+    let mut o = 10;
+    (0..count)
+        .map(|_| {
+            let number = p[o];
+            let elevation = f32_at(o + 1);
+            let first_gate_km = f32_at(o + 5) as f64;
+            let gate_km = f32_at(o + 9) as f64;
+            let (scale, offset) = (f32_at(o + 13), f32_at(o + 17));
+            let (az, gc) = (u16_at(o + 21), u16_at(o + 23));
+            o += 25;
+            let azimuths = (0..az).map(|i| f32_at(o + 4 * i)).collect();
+            o += 4 * az;
+            let codes = p[o..o + az * gc].to_vec();
+            o += az * gc;
+            Tilt {
+                number,
+                elevation,
+                first_gate_km,
+                gate_km,
+                scale,
+                offset,
+                azimuths,
+                codes,
+                gate_count: gc,
+            }
+        })
+        .collect()
+}
+
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn greenfield_columns_reach_supercell_heights() {
+    use super::volume::{TiltInput, TiltValues};
+    use super::{detect_cells_for_volume, VolumeStructure};
+
+    let f = load(GREENFIELD);
+    let input = DetectionInput {
+        azimuths: &f.azimuths,
+        gate_values: &f.gates,
+        azimuth_count: f.azimuths.len(),
+        gate_count: f.gate_count,
+        first_gate_km: f.first_gate_km,
+        gate_interval_km: f.gate_km,
+        data_scale: f.scale,
+        data_offset: f.offset,
+        radar_lat: f.radar_lat,
+        radar_lon: f.radar_lon,
+        azimuth_spacing_deg: None,
+    };
+    let tilts = load_tilts(GREENFIELD_VOLUME);
+    let run = || -> (StormCellsResult, VolumeStructure) {
+        let (r, mut sampler) = detect_cells_for_volume(&input, &DetectionParams::default(), 1, 0.5);
+        for t in &tilts {
+            sampler.add_tilt(&TiltInput {
+                elevation_number: t.number,
+                elevation_deg: t.elevation,
+                azimuths: &t.azimuths,
+                values: TiltValues::U8(&t.codes),
+                azimuth_count: t.azimuths.len(),
+                gate_count: t.gate_count,
+                first_gate_km: t.first_gate_km,
+                gate_interval_km: t.gate_km,
+                data_scale: t.scale,
+                data_offset: t.offset,
+            });
+        }
+        (r, sampler.finish(true))
+    };
+    let (r, v) = run();
+    assert_eq!(run().1, v, "deterministic");
+    // The cells are those of the lowest cut alone.
+    assert_eq!(r, detect(GREENFIELD, 35.0).0);
+    assert_eq!(v.cells.len(), r.cells.len());
+    assert_eq!(v.tilts.len(), tilts.len() + 1);
+    assert!(v
+        .tilts
+        .windows(2)
+        .all(|w| w[0].elevation_deg < w[1].elevation_deg));
+    assert!(v.cells.iter().all(|c| c.profile.len() == v.tilts.len()));
+
+    let mut report = Vec::new();
+    for (name, pos) in [
+        ("Calhoun", (42.32, -94.67)),
+        ("Carroll", (42.01, -94.82)),
+        ("Audubon", (41.64, -94.89)),
+        ("Cass/Adair (Greenfield)", (41.28, -94.73)),
+        ("Adams", (40.87, -94.71)),
+    ] {
+        let cell = r
+            .cells
+            .iter()
+            .find(|c| km((c.lat, c.lon), pos) < 12.0 && c.peak_dbz >= 50.0)
+            .unwrap_or_else(|| panic!("{name}"));
+        let col = &v.cells[cell.id as usize];
+        report.push(format!(
+            "{name}: top {:?} capped {} max {:?} at {:?} profile {:?}",
+            col.echo_top_km, col.echo_top_capped, col.max_dbz, col.max_dbz_height_km, col.profile
+        ));
+        let top = col.echo_top_km.unwrap_or(0.0);
+        let max = col.max_dbz.unwrap_or(0.0);
+        let at = col.max_dbz_height_km.unwrap_or(0.0);
+        // Supercells: tops well into the upper troposphere, the strongest
+        // echo aloft and at least the lowest cut's peak.
+        assert!((12.0..=15.5).contains(&top), "{}", report.join("\n"));
+        assert!(max >= cell.peak_dbz, "{}", report.join("\n"));
+        assert!((1.0..=9.0).contains(&at), "{}", report.join("\n"));
+        // Echo on most tilts.
+        let with_echo = col.profile.iter().filter(|p| p.is_some()).count();
+        assert!(with_echo * 2 > col.profile.len(), "{}", report.join("\n"));
+    }
+    // Reviewed values (decimated fixture): tops 12.6-14.5 km; the
+    // Greenfield storm has the strongest column, 63 dBZ about 3 km up,
+    // above its 60 dBZ at the lowest cut.
+    let greenfield = r
+        .cells
+        .iter()
+        .find(|c| km((c.lat, c.lon), (41.28, -94.73)) < 12.0 && c.peak_dbz >= 50.0)
+        .unwrap();
+    let col = &v.cells[greenfield.id as usize];
+    assert_eq!(col.max_dbz, Some(63.0), "{}", report.join("\n"));
+    assert!((2.5..=3.5).contains(&col.max_dbz_height_km.unwrap()));
+    assert!((13.5..=15.0).contains(&col.echo_top_km.unwrap()));
+}
+
+// --- Three radars, 2026-10-23 16:01-16:13Z (the composite) --------------
+
+/// The radars the composite case is built from, as the app lists a scene's
+/// sites (by id), and each one's cuts with their volume starts. Positions
+/// come from the fixtures' headers.
+/// A cut's volume start (Unix ms) and its fixture.
+type TimedCut = (i64, &'static [u8]);
+
+const THREE_SITES: [(&str, [TimedCut; 3]); 3] = [
+    (
+        "KABR",
+        [
+            (
+                1_792_771_410_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KABR20261023_160330_V06_el1.bin"),
+            ),
+            (
+                1_792_771_681_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KABR20261023_160801_V06_el1.bin"),
+            ),
+            (
+                1_792_771_953_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KABR20261023_161233_V06_el1.bin"),
+            ),
+        ],
+    ),
+    (
+        "KDMX",
+        [
+            (
+                1_792_771_488_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KDMX20261023_160448_V06_el1.bin"),
+            ),
+            (
+                1_792_771_752_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KDMX20261023_160912_V06_el1.bin"),
+            ),
+            (
+                1_792_772_012_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KDMX20261023_161332_V06_el1.bin"),
+            ),
+        ],
+    ),
+    (
+        "KFSD",
+        [
+            (
+                1_792_771_287_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KFSD20261023_160127_V06_el1.bin"),
+            ),
+            (
+                1_792_771_556_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KFSD20261023_160556_V06_el1.bin"),
+            ),
+            (
+                1_792_771_826_000,
+                include_bytes!("../../tests/fixtures/storm_cells/KFSD20261023_161026_V06_el1.bin"),
+            ),
+        ],
+    ),
+];
+
+/// KDMX's 16:04:48Z volume start: the first scene with all three radars.
+const KDMX_1604: i64 = 1_792_771_488_000;
+
+/// One scene: at a volume start, each radar's newest cut by then, detected
+/// once on the composite at 22 dBZ (the threshold of the recording).
+struct Scene {
+    time_ms: i64,
+    /// The radar whose new cut made this scene.
+    site: &'static str,
+    /// Each radar's cut start in this scene, in `THREE_SITES` order.
+    cut_ms: Vec<i64>,
+    result: StormCellsResult,
+}
+
+/// The seven scenes from 16:04:48Z to 16:13:32Z: one KDMX cycle across
+/// the recording's SE merge and split, with KABR and KFSD frames between.
+/// Detected once and shared by the tests below.
+fn three_site_scenes() -> &'static [Scene] {
+    static SCENES: std::sync::OnceLock<Vec<Scene>> = std::sync::OnceLock::new();
+    SCENES.get_or_init(|| {
+        let fixtures: Vec<Vec<(i64, Fixture)>> = THREE_SITES
+            .iter()
+            .map(|(_, cuts)| cuts.iter().map(|&(t, b)| (t, load(b))).collect())
+            .collect();
+        let mut starts: Vec<(i64, &'static str)> = THREE_SITES
+            .iter()
+            .flat_map(|(site, cuts)| cuts.iter().map(move |&(t, _)| (t, *site)))
+            .filter(|&(t, _)| t >= KDMX_1604)
+            .collect();
+        starts.sort();
+        let params = DetectionParams {
+            threshold_dbz: 22.0,
+            ..DetectionParams::default()
+        };
+        starts
+            .into_iter()
+            .map(|(time_ms, site)| {
+                let newest: Vec<&(i64, Fixture)> = fixtures
+                    .iter()
+                    .map(|cuts| cuts.iter().rev().find(|(t, _)| *t <= time_ms).unwrap())
+                    .collect();
+                let cuts: Vec<CompositeCut> = THREE_SITES
+                    .iter()
+                    .zip(&newest)
+                    .map(|((id, _), (t, f))| CompositeCut {
+                        site: id,
+                        time_ms: *t,
+                        sweep: input(f),
+                    })
+                    .collect();
+                let (result, _) = detect_composite(&cuts, &params);
+                Scene {
+                    time_ms,
+                    site,
+                    cut_ms: newest.iter().map(|(t, _)| *t).collect(),
+                    result,
+                }
+            })
+            .collect()
+    })
+}
+
+/// The cells of `c`'s group (or `c` alone).
+fn group_of<'a>(r: &'a StormCellsResult, c: &'a StormCell) -> Vec<&'a StormCell> {
+    match c.group_id {
+        Some(g) => r.groups[g as usize]
+            .cell_ids
+            .iter()
+            .map(|&id| &r.cells[id as usize])
+            .collect(),
+        None => vec![c],
+    }
+}
+
+/// The same cell on two grids: equal but for the rounding of positions
+/// counted from two lattice origins.
+fn same_cell(a: &StormCell, b: &StormCell) -> bool {
+    let near = |p: (f64, f64), q: (f64, f64)| (p.0 - q.0).abs() < 1e-9 && (p.1 - q.1).abs() < 1e-9;
+    near((a.lat, a.lon), (b.lat, b.lon))
+        && a.area_km2 == b.area_km2
+        && a.peak_dbz == b.peak_dbz
+        && a.gate_count == b.gate_count
+        && a.outline.len() == b.outline.len()
+        && a.outline.iter().zip(&b.outline).all(|(&p, &q)| near(p, q))
+}
+
+/// A KABR cut changes the composite only where KABR has gates: every group
+/// it does not reach comes out of the scene identical to the scene before,
+/// because the grid sits on a fixed lattice instead of re-anchoring to the
+/// echo's new bounding box.
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn a_far_radars_cut_leaves_the_storms_it_does_not_reach_unchanged() {
+    let scenes = three_site_scenes();
+    assert_eq!(scenes.len(), 7);
+    let mut checked = 0;
+    for w in scenes.windows(2) {
+        let (before, now) = (&w[0].result, &w[1].result);
+        check_invariants(now);
+        if w[1].site != "KABR" {
+            continue;
+        }
+        for c in &now.cells {
+            if group_of(now, c)
+                .iter()
+                .any(|m| m.sites.iter().any(|s| s == "KABR"))
+            {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                before.cells.iter().any(|b| same_cell(b, c)),
+                "{} at {}: {c:?}",
+                w[1].site,
+                w[1].time_ms
+            );
+        }
+    }
+    assert!(checked >= 5, "{checked} cells checked");
+}
+
+/// Each cell carries the start of the cut that shaped it: one of its
+/// scene's cuts, and for what KDMX shapes, KDMX's 16:04:48Z through the
+/// KFSD and KABR frames until KDMX cuts again (the SE core among them).
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn composite_cells_carry_the_time_of_their_cut() {
+    let scenes = three_site_scenes();
+    for s in scenes {
+        for c in &s.result.cells {
+            let at = c.observed_ms.expect("a composite cell has a cut time");
+            assert!(s.cut_ms.contains(&at), "{at} not in {:?}", s.cut_ms);
+        }
+    }
+    let se_core = (43.4, -94.7);
+    for s in &scenes[..3] {
+        let core = s
+            .result
+            .cells
+            .iter()
+            .find(|c| km((c.lat, c.lon), se_core) < 30.0 && c.peak_dbz >= 50.0)
+            .unwrap_or_else(|| panic!("the SE core at {}", s.time_ms));
+        assert_eq!(core.observed_ms, Some(KDMX_1604), "{} {core:?}", s.site);
+    }
+}
+
+/// Tracked over the scenes as the app's scene store tracks them (13 min
+/// coasting floor): a storm only KDMX shapes gains no point from the KFSD
+/// and KABR frames between KDMX's cuts, and no track ends in this one KDMX
+/// cycle. Counting frames alone, some do.
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn composite_tracks_count_cuts_and_coast_between_a_radars_cuts() {
+    use super::track::{TrackParams, Tracker, COMPOSITE_COAST_MS};
+    let scenes = three_site_scenes();
+    let run = |params: TrackParams| {
+        let mut tr = Tracker::default();
+        tr.params = params;
+        scenes
+            .iter()
+            .map(|s| tr.observe(s.time_ms, &s.result, false).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let frames = run(TrackParams {
+        coast_ms: COMPOSITE_COAST_MS,
+        ..TrackParams::default()
+    });
+    assert!(frames.iter().all(|f| f.ended.is_empty()), "no track ends");
+
+    // Tracks matched in every scene to cells KDMX's 16:04:48 cut shaped,
+    // up to KDMX's next cut: one point each.
+    let kdmx_next = scenes
+        .iter()
+        .position(|s| s.time_ms > KDMX_1604 && s.site == "KDMX")
+        .unwrap();
+    assert_eq!(kdmx_next, 3);
+    let mut held = 0;
+    for (ci, cell) in scenes[0].result.cells.iter().enumerate() {
+        let Some(id) = frames[0].cell_tracks[ci] else {
+            continue;
+        };
+        let same_cut = (1..kdmx_next).all(|f| {
+            frames[f]
+                .track(id)
+                .and_then(|t| t.cell_id)
+                .is_some_and(|c| scenes[f].result.cells[c as usize].observed_ms == Some(KDMX_1604))
+        });
+        if cell.observed_ms != Some(KDMX_1604) || !same_cut {
+            continue;
+        }
+        let t = frames[kdmx_next - 1].track(id).unwrap();
+        assert_eq!((t.age_volumes, t.last_seen_ms), (1, KDMX_1604), "{t:?}");
+        held += 1;
+    }
+    assert!(held > 0);
+
+    let by_frames = run(TrackParams::default());
+    assert!(by_frames.iter().any(|f| !f.ended.is_empty()));
+}

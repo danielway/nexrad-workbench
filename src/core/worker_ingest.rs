@@ -17,7 +17,7 @@
 use crate::core::projection::{Projection, ProjectionEngine};
 use crate::core::{
     build_elevation_list_from_vcp, ChunkIngestResult, ElevationSelection, Intent, LiveModeState,
-    PlaybackState, RosterSource,
+    LiveVolumeState, PlaybackState, RosterSource, SiteStreamEvent,
 };
 
 /// Read-only frame context for one chunk-ingest outcome, shell-assembled.
@@ -26,6 +26,9 @@ use crate::core::{
 pub(crate) struct ChunkIngestEnv<'a> {
     pub is_live: bool,
     pub site_id: &'a str,
+    /// The chunk's site is the focus, whose volume ends move the session
+    /// phase ([`crate::core::live_mode::session_phase_after`]).
+    pub is_focus: bool,
     /// `viz_state.product.to_worker_string()`.
     pub product_worker_string: &'a str,
     /// `state.frame_now.secs()`.
@@ -35,14 +38,17 @@ pub(crate) struct ChunkIngestEnv<'a> {
     /// Coordinator elevations AFTER `advance_active_scan_chunk` — status
     /// strings and log lines print the list and its length.
     pub available_elevations: &'a [u8],
-    /// `live.frame_projection` (for the enriched chunk-position log).
+    /// The site's `live.frame_projection` (for the enriched chunk-position log).
     pub frame_projection: Option<&'a Projection>,
     pub volume_3d_active: bool,
 }
 
 /// Mutable borrows of the core state the reducer updates directly.
 pub(crate) struct ChunkIngestSlices<'a> {
+    /// The session: its phase moves when the volume ends.
     pub live_mode: &'a mut LiveModeState,
+    /// The chunk's site: its volume in progress and its projection engine.
+    pub volume: &'a mut LiveVolumeState,
     pub engine: &'a mut ProjectionEngine,
     pub elevation_selection: &'a mut ElevationSelection,
     pub playback: &'a mut PlaybackState,
@@ -51,12 +57,13 @@ pub(crate) struct ChunkIngestSlices<'a> {
 /// Described effects the shell executes, in this field order.
 #[derive(Default, Debug, PartialEq)]
 pub(crate) struct ChunkIngestActions {
-    /// `live.channel.record_chunk_collection_end_secs(x)`.
+    /// The site's `live.channel.record_chunk_collection_end_secs(x)`.
     pub record_chunk_collection_end_secs: Option<f64>,
-    /// `live.channel.record_availability_lag_secs(x)`.
+    /// The site's `live.channel.record_availability_lag_secs(x)`.
     pub record_availability_lag_secs: Option<f64>,
-    /// `render.coordinator.render_live(elevation, product)`, posted once per
-    /// drain after [`LiveRenderCoalescer`] folds the drain's acks.
+    /// `render.coordinator.render_live(site, elevation, product)`, posted
+    /// once per site per drain after [`SiteLiveRenderCoalescer`] folds the
+    /// drain's acks.
     pub render_live: Option<(u8, String)>,
     /// GPU `promote_current_to_previous` under the renderer lock.
     pub promote_prev_texture: bool,
@@ -64,7 +71,7 @@ pub(crate) struct ChunkIngestActions {
     pub intents: Vec<Intent>,
     /// `state.session_stats.pipeline.mark_processing_done()`.
     pub mark_processing_done: bool,
-    /// `render.coordinator.force_fresh_render()`.
+    /// `render.force_fresh_render()` on the site's track.
     pub force_fresh_render: bool,
     /// Shell calls `request_worker_render()` (the unified display resolver,
     /// which reads the stored sweep blob for a completed cut). Archive sets
@@ -176,6 +183,49 @@ impl LiveRenderCoalescer {
     }
 }
 
+/// [`LiveRenderCoalescer`] per streaming site: each site's worker
+/// accumulator is its own, so one site's acknowledgements never replace or
+/// drop another's live render. Sites keep the order of their first
+/// acknowledgement in the drain.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct SiteLiveRenderCoalescer {
+    by_site: Vec<(crate::data::SiteId, LiveRenderCoalescer)>,
+}
+
+impl SiteLiveRenderCoalescer {
+    /// Observe one acknowledgement from `site`'s stream, in drain order.
+    pub(crate) fn observe(
+        &mut self,
+        site: &crate::data::SiteId,
+        render_live: Option<(u8, String)>,
+        elevations_completed: &[u8],
+    ) {
+        let index = match self.by_site.iter().position(|(id, _)| id == site) {
+            Some(index) => index,
+            None => {
+                self.by_site
+                    .push((site.clone(), LiveRenderCoalescer::default()));
+                self.by_site.len() - 1
+            }
+        };
+        self.by_site[index]
+            .1
+            .observe(render_live, elevations_completed);
+    }
+
+    /// The live renders to post for the drain: at most one per site.
+    pub(crate) fn finish(self) -> Vec<(crate::data::SiteId, u8, String)> {
+        self.by_site
+            .into_iter()
+            .filter_map(|(site, coalescer)| {
+                coalescer
+                    .finish()
+                    .map(|(elevation, product)| (site, elevation, product))
+            })
+            .collect()
+    }
+}
+
 /// Apply one worker chunk-ingest outcome to the core state and describe the
 /// effects. Pure: in-memory mutation of the slices only (plus `log::debug!`).
 pub(crate) fn reduce_chunk_ingested(
@@ -185,6 +235,7 @@ pub(crate) fn reduce_chunk_ingested(
 ) -> ChunkIngestActions {
     let ChunkIngestSlices {
         live_mode,
+        volume,
         engine,
         elevation_selection,
         playback,
@@ -251,7 +302,7 @@ pub(crate) fn reduce_chunk_ingested(
         result.total_ms,
     );
 
-    // Only update live_mode_state when actually in live mode
+    // Only update the site's live volume when actually in live mode
     if is_live {
         // Adopt the live volume anchor — provisional from the streaming
         // loop's IDB key, confirmed (when present) from the radial-parsed
@@ -261,7 +312,7 @@ pub(crate) fn reduce_chunk_ingested(
         // known.
         let scan_key =
             crate::data::ScanKey::from_secs_f64(env.site_id, result.context.timestamp_secs);
-        live_mode.set_or_confirm_volume(
+        volume.set_or_confirm_volume(
             scan_key,
             result.context.timestamp_secs,
             result.volume_header_time_secs,
@@ -282,7 +333,7 @@ pub(crate) fn reduce_chunk_ingested(
             .unwrap_or(result.context.timestamp_secs);
         // Completed-volume duration so the engine can size the expected
         // in-progress duration (it falls back to the VCP estimate / default).
-        let last_dur = live_mode
+        let last_dur = volume
             .last_completed_volume
             .as_ref()
             .map(|r| r.volume_end_secs - r.volume_start_secs);
@@ -316,7 +367,7 @@ pub(crate) fn reduce_chunk_ingested(
             // Lag requires both a parsed collection time AND the chunk's
             // S3 Last-Modified header. Stamp collection time unconditionally
             // and lag only when both are finite.
-            let s3_at = live_mode
+            let s3_at = volume
                 .chunk_arrivals
                 .last()
                 .and_then(|a| a.s3_last_modified_at);
@@ -329,7 +380,7 @@ pub(crate) fn reduce_chunk_ingested(
             // Back-fill onto the most recent arrival so the diagnostics
             // modal can compute per-chunk collection-space intervals
             // and (when available) per-chunk availability lag.
-            live_mode.attach_collection_data_to_last_arrival(
+            volume.attach_collection_data_to_last_arrival(
                 chunk_max_secs,
                 lag_secs.map(|lag| (lag * 1000.0) as i64),
             );
@@ -365,7 +416,7 @@ pub(crate) fn reduce_chunk_ingested(
         if elev_changed {
             // The per-chunk az list (engine) and the decoder-side sweep
             // start azimuth (live) reset together on an elevation change.
-            live_mode.on_in_progress_elevation_changed();
+            volume.on_in_progress_elevation_changed();
         }
 
         // Record per-chunk azimuth ranges for the current elevation
@@ -391,7 +442,7 @@ pub(crate) fn reduce_chunk_ingested(
                 .update_sweep_metas(result.sweeps.clone());
         }
 
-        live_mode.record_last_radial(result.last_radial_azimuth, result.last_radial_time_secs);
+        volume.record_last_radial(result.last_radial_azimuth, result.last_radial_time_secs);
 
         // ── Log: sweep storage ────────────────────────────────────
         if !result.elevations_completed.is_empty() {
@@ -508,8 +559,9 @@ pub(crate) fn reduce_chunk_ingested(
             let now = env.now_secs;
             // Seal the diagnostics record from the engine's observations,
             // then reset them for the next volume (seal-before-reset).
-            live_mode.handle_volume_complete(now, engine.observations());
+            volume.handle_volume_complete(now, engine.observations());
             engine.reset_volume_observations();
+            live_mode.apply_site_event(SiteStreamEvent::VolumeComplete, env.is_focus, now);
         } else {
             // Archive volume-end: jump the playhead to now. Applied directly
             // to the playback slice — the shell has nothing to execute.
@@ -614,6 +666,7 @@ mod tests {
         ChunkIngestEnv {
             is_live,
             site_id: "KDMX",
+            is_focus: true,
             product_worker_string: "reflectivity",
             now_secs: NOW,
             had_elevations,
@@ -625,7 +678,8 @@ mod tests {
 
     /// Default core state bundle the reducer mutates.
     struct Fx {
-        live: LiveModeState,
+        session: LiveModeState,
+        live: LiveVolumeState,
         engine: ProjectionEngine,
         sel: ElevationSelection,
         playback: PlaybackState,
@@ -634,7 +688,8 @@ mod tests {
     impl Fx {
         fn new() -> Self {
             Self {
-                live: LiveModeState::default(),
+                session: LiveModeState::default(),
+                live: LiveVolumeState::default(),
                 engine: ProjectionEngine::new(),
                 sel: ElevationSelection::default(),
                 playback: PlaybackState::default(),
@@ -649,7 +704,8 @@ mod tests {
             reduce_chunk_ingested(
                 env,
                 ChunkIngestSlices {
-                    live_mode: &mut self.live,
+                    live_mode: &mut self.session,
+                    volume: &mut self.live,
                     engine: &mut self.engine,
                     elevation_selection: &mut self.sel,
                     playback: &mut self.playback,
@@ -1002,6 +1058,34 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    fn each_site_coalesces_its_own_live_renders() {
+        let ktlx = crate::data::SiteId::new("KTLX");
+        let kinx = crate::data::SiteId::new("KINX");
+        let mut coalescer = SiteLiveRenderCoalescer::default();
+        coalescer.observe(&ktlx, refl(1), &[]);
+        coalescer.observe(&kinx, refl(3), &[]);
+        // KINX completing elevation 1 leaves KTLX's pending render alone.
+        coalescer.observe(&kinx, None, &[1]);
+        coalescer.observe(&ktlx, refl(2), &[]);
+        assert_eq!(
+            coalescer.finish(),
+            vec![
+                (ktlx, 2, "reflectivity".to_string()),
+                (kinx, 3, "reflectivity".to_string()),
+            ]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_site_whose_render_was_stored_posts_none() {
+        let ktlx = crate::data::SiteId::new("KTLX");
+        let mut coalescer = SiteLiveRenderCoalescer::default();
+        coalescer.observe(&ktlx, refl(1), &[]);
+        coalescer.observe(&ktlx, None, &[1]);
+        assert!(coalescer.finish().is_empty());
+    }
+
+    #[wasm_bindgen_test]
     fn live_render_target_needs_an_elevation_with_radials_in_memory() {
         assert_eq!(live_render_target(Some(3), Some(240)), Some(3));
         assert_eq!(live_render_target(Some(3), Some(1)), Some(3));
@@ -1057,6 +1141,9 @@ mod tests {
         assert_eq!(rec.volume_end_secs, NOW);
         assert_eq!(rec.volume_start_secs, 1_000.0);
         assert!(fx.live.current_volume.is_none());
+        // The focus site's volume end moves the session phase.
+        assert_eq!(fx.session.phase, crate::core::LivePhase::Streaming);
+        assert_eq!(fx.session.phase_started_at, Some(NOW));
         // ...and the engine observations were reset for the next volume.
         assert!(fx.engine.observations().current_vcp_pattern.is_none());
         assert!(fx.engine.observations().elevations_received.is_empty());

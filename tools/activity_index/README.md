@@ -128,6 +128,15 @@ site is about 58,000 site-days.
    `month_files.missing_site_days` say how many are left; `0` (and
    `month_files.complete: true`) means done. Otherwise run it again.
 
+### If the nightly run stops
+
+GitHub disables a public repository's scheduled workflows after 60 days
+without activity. The workflow's `keepalive` job enables it again every
+night, which should keep that from happening. If it lapses anyway, the
+Actions tab shows *Build activity index* as disabled: *Enable workflow*,
+then *Run workflow* once to catch up. Nothing in the app breaks meanwhile;
+days past `status.json`'s `through` are listed live, as before the index.
+
 ## Running it
 
 ```bash

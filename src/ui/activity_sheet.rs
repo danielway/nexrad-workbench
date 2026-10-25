@@ -24,9 +24,9 @@ use crate::core::activity::{
 use crate::core::dialogs::DialogId;
 use crate::core::Intent;
 use crate::state::{format_bytes, AppState};
+use crate::ui::icons;
 use crate::ui::theme;
 use eframe::egui::{self, RichText, ScrollArea};
-use egui_phosphor::regular as icons;
 
 pub(super) struct ActivitySheetLayer;
 
@@ -80,6 +80,7 @@ fn draw_activity_sheet(
                 render_header(ui, state, vm);
                 ui.add_space(4.0);
                 render_stage_strip(ui, vm);
+                render_site_sections(ui, vm);
 
                 ui.separator();
                 render_operation_list(ui, state, vm);
@@ -100,7 +101,7 @@ fn draw_activity_sheet(
 /// Headline + throughput + queue controls.
 fn render_header(ui: &mut egui::Ui, state: &mut AppState, vm: &ActivityVm) {
     ui.horizontal(|ui| {
-        let mut headline = vm.headline.label.to_string();
+        let mut headline = vm.headline.words();
         if let Some(count) = vm.headline.count {
             headline = format!(
                 "{headline} \u{00b7} {count} scan{}",
@@ -196,6 +197,53 @@ fn stage_hint(stage: &ActivityStage) -> &'static str {
         K::Downloading => "Scans being fetched from the archive now",
         K::Processing => "Jobs sent to the decode workers, awaiting a result",
         K::Finishing => "Decoded and stored — waiting for the timeline to pick them up",
+    }
+}
+
+/// One section per site (focus first, then list order): its stream state,
+/// chunk count, last chunk age and failed downloads. Absent with one site.
+fn render_site_sections(ui: &mut egui::Ui, vm: &ActivityVm) {
+    if vm.sites.is_empty() {
+        return;
+    }
+    ui.add_space(4.0);
+    ui.separator();
+    for section in &vm.sites {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(
+                RichText::new(&section.id)
+                    .size(12.0)
+                    .monospace()
+                    .strong()
+                    .color(theme::TEXT_DIM),
+            );
+            if section.focus {
+                ui.label(RichText::new("focus").size(10.0).color(theme::TEXT_FAINT));
+            }
+            let color = if section.unhealthy {
+                theme::acquisition::FAILED
+            } else {
+                theme::TEXT_FAINT
+            };
+            ui.label(RichText::new(&section.stream_line).size(11.0).color(color));
+        });
+        if section.failed > 0 {
+            let mut line = format!(
+                "{} {} download{} failed",
+                icons::WARNING,
+                section.failed,
+                if section.failed == 1 { "" } else { "s" }
+            );
+            if let Some(err) = &section.first_error {
+                line.push_str(&format!(" ({err})"));
+            }
+            ui.label(
+                RichText::new(line)
+                    .size(11.0)
+                    .color(theme::acquisition::FAILED),
+            );
+        }
     }
 }
 
@@ -489,13 +537,14 @@ fn render_dev_rows(
     ui.label(RichText::new("Worker jobs").size(10.0).color(label_color));
     ui.label(
         RichText::new(format!(
-            "{} (ingest {} \u{00b7} chunk {} \u{00b7} render {} \u{00b7} live {} \u{00b7} vol {})",
+            "{} (ingest {} \u{00b7} chunk {} \u{00b7} render {} \u{00b7} live {} \u{00b7} vol {} \u{00b7} cells {})",
             w.total(),
             w.ingest,
             w.chunk_ingest,
             w.render,
             w.render_live,
-            w.volume
+            w.volume,
+            w.detect
         ))
         .size(10.0)
         .color(value_color),
@@ -545,6 +594,12 @@ fn render_dev_rows(
     for (label, ms) in detail.render_phases.iter().flatten() {
         detail_row(ui, label, format!("{ms:.1} ms"), label_color, value_color);
     }
+    for (label, bytes) in &detail.volume_rows {
+        detail_row(ui, label, bytes.clone(), label_color, value_color);
+    }
+    if let Some(stats) = detail.storm_cells {
+        detail_row(ui, "Storm cells", stats.label(), label_color, value_color);
+    }
     if let Some((avg, p95, e2e)) = detail.chunk_latency {
         detail_row(
             ui,
@@ -559,17 +614,6 @@ fn render_dev_rows(
             value_color,
         );
     }
-    detail_row(
-        ui,
-        "Cross-origin isolated",
-        if detail.cross_origin_isolated {
-            "active".into()
-        } else {
-            "inactive".into()
-        },
-        label_color,
-        value_color,
-    );
 }
 
 /// The recent-request log, absorbed from the old dev-only network modal.

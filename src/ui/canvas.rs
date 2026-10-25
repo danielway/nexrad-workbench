@@ -1,8 +1,6 @@
 //! Central canvas UI: radar visualization area.
 
-use super::canvas_data_probe::{
-    render_data_probe, render_distance_measurement, render_storm_cells,
-};
+use super::canvas_data_probe::{render_data_probe, render_distance_measurement};
 use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interaction};
 use super::canvas_overlays::{
     draw_globe, draw_national_mosaic, layout_chrome, render_alerts, render_chrome_overlays,
@@ -25,7 +23,7 @@ use std::sync::{Arc, Mutex};
 pub(crate) fn render_canvas_with_geo(
     root_ui: &mut egui::Ui,
     state: &mut AppState,
-    timeline: &crate::subsystem::Timeline,
+    sites: &crate::subsystem::Sites,
     live: &crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
@@ -34,12 +32,23 @@ pub(crate) fn render_canvas_with_geo(
     geo_layers: Option<&GeoLayerSet>,
     gpu: &crate::GpuResources,
 ) {
-    let gpu_renderer = gpu.gpu.as_ref();
     let globe_renderer = gpu.globe.as_ref();
     let geo_line_renderer = gpu.geo_line.as_ref();
-    let globe_radar_renderer = gpu.globe_radar.as_ref();
-    let volume_ray_renderer = gpu.volume_ray.as_ref();
     let ctx = root_ui.ctx().clone();
+    // The single-valued overlays (rings, probe, cells, captions) describe the
+    // focus; the radar discs are drawn for every site in `Sites::drawn`.
+    let site = sites.focus();
+    let gpu_renderer = site.gpu.radar.as_ref();
+    // Every site on the map, in list order: each is drawn highlighted with
+    // its id, and none is a pick target.
+    let on_map: Vec<&str> = sites.iter().map(|s| s.id.0.as_str()).collect();
+    // What a click on a site marker does: Cmd (Ctrl off a Mac) adds it.
+    let site_click = crate::core::canvas::site_click(
+        state.is_mobile,
+        ctx.input(|i| i.modifiers.command),
+        on_map.len(),
+        crate::core::sites::cap(chrome.device_layout),
+    );
     egui::CentralPanel::default().show(root_ui, |ui| {
         let available_size = ui.available_size();
 
@@ -68,16 +77,16 @@ pub(crate) fn render_canvas_with_geo(
                     ctx.request_repaint();
                 }
 
-                // Draw the 3D globe via PaintCallback
+                // Draw the 3D globe via PaintCallback: every site on the
+                // sphere, the camera and chrome on the focus.
                 draw_globe(
                     ui,
                     &rect,
                     state,
+                    sites,
                     globe_renderer,
                     geo_line_renderer,
-                    gpu_renderer,
-                    globe_radar_renderer,
-                    volume_ray_renderer,
+                    chrome.device_layout,
                 );
 
                 // Corner-chrome overlays (color scale + info + compass)
@@ -87,6 +96,7 @@ pub(crate) fn render_canvas_with_geo(
                     let overlay_ctx = OverlayContext {
                         rect,
                         state,
+                        site,
                         live,
                         derived,
                         mping_reports: &diagnostics.mping.reports,
@@ -124,8 +134,8 @@ pub(crate) fn render_canvas_with_geo(
                         state.viz_state.set_pan_offset(pan + egui::vec2(dx, dy));
                     }
                 }
-                let mut projection =
-                    MapProjection::new(state.viz_state.center_lat, state.viz_state.center_lon);
+                let (centre_lat, centre_lon) = state.viz_state.map_centre;
+                let mut projection = MapProjection::new(centre_lat, centre_lon);
                 projection.update(state.viz_state.zoom(), state.viz_state.pan_offset(), rect);
 
                 // Cache current visible bounds so non-canvas UI (top bar chip,
@@ -161,29 +171,37 @@ pub(crate) fn render_canvas_with_geo(
                 // data's real range — the same range the GPU disc and the 3D
                 // drape use — and the coverage ring and mosaic cutout at the
                 // product's maximum range.
-                let data_range_km = gpu_renderer.and_then(|renderer| {
-                    let r = renderer.lock().expect("renderer mutex poisoned");
-                    r.has_data().then(|| r.max_range_km())
-                });
-                let site_screen = super::canvas_overlays::SiteScreen::new(
-                    &projection,
-                    state.viz_state.center_lat,
-                    state.viz_state.center_lon,
-                );
+                let data_range_km = data_range_km(gpu_renderer);
+                let site_screen =
+                    super::canvas_overlays::SiteScreen::new(&projection, site.lat, site.lon);
                 let coverage_km =
                     crate::core::canvas::product_max_range_km(state.viz_state.product);
                 let radar_cutout = data_range_km.map(|_| RadarCutout {
                     center: site_screen.center,
                     radius: coverage_km as f32 * site_screen.px_per_km,
                 });
+                // The mosaic gives way under every site showing data, not
+                // just the focus.
+                let mosaic_cutouts: Vec<RadarCutout> = sites
+                    .iter()
+                    .filter(|s| data_range_km_of(s).is_some())
+                    .map(|s| {
+                        let screen =
+                            super::canvas_overlays::SiteScreen::new(&projection, s.lat, s.lon);
+                        RadarCutout {
+                            center: screen.center,
+                            radius: coverage_km as f32 * screen.px_per_km,
+                        }
+                    })
+                    .collect();
 
-                if state.layer_state.geo.national_mosaic && derived.data_is_live {
+                if state.layer_state.geo.national_mosaic && derived.data_is_live() {
                     draw_national_mosaic(
                         &painter,
                         &projection,
                         &state.national_mosaic,
                         state.viz_state.zoom(),
-                        radar_cutout,
+                        &mosaic_cutouts,
                     );
                 }
 
@@ -200,7 +218,7 @@ pub(crate) fn render_canvas_with_geo(
                 render_nexrad_sites(
                     &painter,
                     &projection,
-                    &state.viz_state.site_id,
+                    &on_map,
                     &state.layer_state.geo,
                     crate::geo::GeoPass::Lines,
                     None,
@@ -211,7 +229,7 @@ pub(crate) fn render_canvas_with_geo(
                 // over the radar below.
                 let show_warnings = state.layer_state.geo.alerts_warnings;
                 let show_other = state.layer_state.geo.alerts_other;
-                let alerts_active = derived.data_is_live && !diagnostics.alerts.alerts.is_empty();
+                let alerts_active = derived.data_is_live() && !diagnostics.alerts.alerts.is_empty();
                 if show_warnings && alerts_active {
                     render_alerts(
                         &painter,
@@ -223,40 +241,82 @@ pub(crate) fn render_canvas_with_geo(
                     );
                 }
 
-                let sweep_info = compute_sweep_line_azimuth(state, timeline, playback);
-                let (gpu_sweep, between_sweeps) =
-                    compute_gpu_sweep_state(state, timeline, live, playback, derived, sweep_info);
+                let sweep_info = compute_sweep_line_azimuth(site, playback);
+                let (gpu_sweep, between_sweeps, live_partial) =
+                    compute_gpu_sweep_state(state, site, playback, derived, sweep_info);
 
                 // Age desaturation needs the estimated antenna azimuth; only
                 // supply it while the view's sweep animation is active so a
                 // fixed elevation filter doesn't keep fading between visits.
                 let chunk_boundary = (derived.effective_sweep_animation
                     && derived.canvas_follows_live)
-                    .then_some(live.radar_model.estimated_azimuth)
+                    .then_some(site.live.radar_model.estimated_azimuth)
                     .flatten();
 
-                if let Some(renderer) = gpu_renderer {
-                    // Live compositing keeps `gpu_sweep` set even when animation
-                    // is off; force desaturation off in that case so age fades
-                    // only accompany an active sweep animation (#134).
-                    let mut processing = state.render_processing.clone();
-                    processing.data_age_desaturation =
-                        crate::core::canvas::data_age_desaturation_effective(
-                            processing.data_age_desaturation,
-                            derived.effective_sweep_animation,
-                        );
-                    draw_radar_gpu(
-                        ui,
-                        &projection,
-                        renderer,
-                        &rect,
-                        state.viz_state.center_lat,
-                        state.viz_state.center_lon,
-                        &processing,
-                        gpu_sweep,
-                        chunk_boundary,
+                // Live compositing keeps `gpu_sweep` set even when animation
+                // is off; force desaturation off in that case so age fades
+                // only accompany an active sweep animation (#134).
+                let mut processing = state.render_processing.clone();
+                processing.data_age_desaturation =
+                    crate::core::canvas::data_age_desaturation_effective(
+                        processing.data_age_desaturation,
+                        derived.effective_sweep_animation,
                     );
+                // Every other site's own reveal, so its disc and its Rays
+                // marks follow its own antenna. The between-sweeps hold is
+                // the focus's alone.
+                let others: Vec<OtherReveal<'_>> = sites
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, _)| i != sites.focus)
+                    .map(|(_, s)| {
+                        let follows_live = live.canvas_follows_live(&s.live, &playback.state);
+                        let (sweep, _) = site_gpu_sweep(
+                            state,
+                            s,
+                            playback,
+                            follows_live,
+                            derived.effective_sweep_animation,
+                            compute_sweep_line_azimuth(s, playback),
+                        );
+                        OtherReveal {
+                            site: s,
+                            follows_live,
+                            sweep,
+                            chunk_boundary: (derived.effective_sweep_animation && follows_live)
+                                .then_some(s.live.radar_model.estimated_azimuth)
+                                .flatten(),
+                        }
+                    })
+                    .collect();
 
+                // Every site's disc, older frame first so the newer one is
+                // on top (core::sites::draw_order), each with its own reveal.
+                for drawn in sites.drawn() {
+                    let (sweep, boundary) = if std::ptr::eq(drawn, site) {
+                        (gpu_sweep, chunk_boundary)
+                    } else {
+                        others
+                            .iter()
+                            .find(|o| std::ptr::eq(o.site, drawn))
+                            .map_or((None, None), |o| (o.sweep, o.chunk_boundary))
+                    };
+                    if let Some(renderer) = drawn.gpu.radar.as_ref() {
+                        draw_radar_gpu(
+                            ui,
+                            &projection,
+                            renderer,
+                            &rect,
+                            drawn.lat,
+                            drawn.lon,
+                            &processing,
+                            sweep,
+                            boundary,
+                        );
+                    }
+                }
+
+                if gpu_renderer.is_some() {
                     // Boundary ring at the edge of the active site's data range,
                     // matching the mosaic cutout so the seam reads as a single circle.
                     if let Some(c) = radar_cutout {
@@ -275,18 +335,19 @@ pub(crate) fn render_canvas_with_geo(
                     // need enough updates to advance the estimated-azimuth line
                     // (~10 fps is visually indistinguishable). Fully idle falls
                     // through to the 1 Hz global tick in `apply_frame_setup`.
-                    let live_has_active_sweep = live
+                    let live_has_active_sweep = site
+                        .live
                         .radar_model
                         .active_sweep
                         .as_ref()
                         .is_some_and(|s| s.data_azimuth_range.is_some());
-                    let live_has_moving_line =
-                        live.radar_model.active && live.radar_model.estimated_azimuth.is_some();
+                    let live_has_moving_line = site.live.radar_model.active
+                        && site.live.radar_model.estimated_azimuth.is_some();
 
                     // A paused archive reveal is a still image; only a moving
                     // playhead or the live stream needs the smooth cadence.
                     let reveal_moving = (gpu_sweep.is_some() || between_sweeps)
-                        && (playback.state.playing || live.radar_model.active);
+                        && (playback.state.playing || site.live.radar_model.active);
                     if reveal_moving || live_has_active_sweep {
                         ui.ctx()
                             .request_repaint_after(std::time::Duration::from_millis(33));
@@ -327,6 +388,7 @@ pub(crate) fn render_canvas_with_geo(
                     &OverlayContext {
                         rect,
                         state,
+                        site,
                         live,
                         derived,
                         mping_reports: &diagnostics.mping.reports,
@@ -388,7 +450,7 @@ pub(crate) fn render_canvas_with_geo(
                 render_nexrad_sites(
                     &painter,
                     &projection,
-                    &state.viz_state.site_id,
+                    &on_map,
                     &state.layer_state.geo,
                     crate::geo::GeoPass::Labels,
                     Some(&SiteLabelRoom {
@@ -398,16 +460,91 @@ pub(crate) fn render_canvas_with_geo(
                     }),
                 );
 
-                if state.viz_state.storm_cells_visible
-                    && !state.viz_state.storm_cells.cells.is_empty()
-                {
-                    render_storm_cells(
-                        &painter,
-                        &projection,
-                        &state.viz_state.storm_cells.cells,
-                        dark,
-                    );
+                // Storm cells: what draws is the core's view-model (on, 2D,
+                // behind the Rays sweep line; provisional on a live partial).
+                // The desktop pointer reaches it as an intent, in lat/lon.
+                if !state.is_mobile {
+                    let hover = response
+                        .hover_pos()
+                        .filter(|_| state.viz_state.storm_cells_visible)
+                        .map(|p| {
+                            let g = projection.screen_to_geo(p);
+                            (g.y, g.x)
+                        });
+                    if hover != state.viz_state.storm_cell_pointer.hover {
+                        state.push_command(crate::core::Intent::StormCells(
+                            crate::core::storm_cell_view::StormCellIntent::Hover(hover),
+                        ));
+                        ui.ctx().request_repaint();
+                    }
                 }
+                // Tracks on these cells, with closest approach to "My
+                // location" when that layer has a fix.
+                let my_location = state
+                    .layer_state
+                    .geo
+                    .gps_location
+                    .then_some(diagnostics.gps.coords)
+                    .flatten();
+                // With more than one site the cells are the scene's: one
+                // set over every disc, each cell waiting for the sweep line
+                // of every site that sees it.
+                let scene_cells = crate::core::storm_cells::uses_scene(sites.list.len());
+                let storm_tracks_view = state
+                    .viz_state
+                    .storm_tracks_visible
+                    .then(|| {
+                        if scene_cells {
+                            sites.scene.tracks.view(my_location)
+                        } else {
+                            state.viz_state.storm_tracks.view(my_location)
+                        }
+                    })
+                    .flatten();
+                let scene_radars: Vec<crate::core::storm_cell_view::SceneRadar<'_>> = if scene_cells
+                {
+                    sites
+                        .iter()
+                        .map(|s| crate::core::storm_cell_view::SceneRadar {
+                            id: &s.id.0,
+                            radar: (s.lat, s.lon),
+                            sweep: if std::ptr::eq(s, site) {
+                                gpu_sweep
+                            } else {
+                                others
+                                    .iter()
+                                    .find(|o| std::ptr::eq(o.site, s))
+                                    .and_then(|o| o.sweep)
+                            },
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let storm_cell_inputs = crate::core::storm_cell_view::StormCellViewInputs {
+                    result: sites.shown_cells(),
+                    visible: state.viz_state.storm_cells_visible,
+                    view_mode: ViewMode::Flat2D,
+                    radar: (site.lat, site.lon),
+                    site_id: &site.id.0,
+                    sweep: gpu_sweep,
+                    provisional: if scene_cells {
+                        sites.scene.cells.is_provisional()
+                    } else {
+                        live_partial
+                    },
+                    phone: state.is_mobile,
+                    pointer: &state.viz_state.storm_cell_pointer,
+                    probe_on: state.viz_state.data_probe_enabled,
+                    tracks: storm_tracks_view.as_ref(),
+                    scene: &scene_radars,
+                };
+                let storm_cells_vm =
+                    crate::core::storm_cell_view::build(&storm_cell_inputs, |lat, lon| {
+                        let p = projection.geo_to_screen(Coord { x: lon, y: lat });
+                        [p.x, p.y]
+                    });
+                super::canvas_storm_cells::paint_storm_cells(&painter, &storm_cells_vm);
 
                 if state.layer_state.geo.gps_location {
                     if let Some(coords) = diagnostics.gps.coords {
@@ -430,31 +567,37 @@ pub(crate) fn render_canvas_with_geo(
                         _ => (None, false),
                     }
                 };
-                let active_sweep = live.radar_model.active_sweep.as_ref();
-                let chunk_last_az: Vec<f32> = active_sweep
-                    .map(|s| s.chunks.iter().map(|c| c.last_az).collect())
-                    .unwrap_or_default();
-                let overlay_vm = crate::core::canvas::CanvasOverlayVm::build(
-                    &crate::core::canvas::CanvasOverlayInputs {
-                        product: state.viz_state.product,
-                        data_range_km,
-                        sweep: sweep_line_info,
-                        stale: sweep_stale,
-                        show_lines: derived.effective_sweep_animation,
-                        live: derived.canvas_follows_live,
-                        antenna_az: live.radar_model.estimated_azimuth,
-                        chunk_last_az: &chunk_last_az,
-                        live_edge_time: active_sweep
-                            .and_then(|s| s.chunk_time_spans.last().map(|&(_, end, _)| end)),
-                        offscreen_cut: crate::core::canvas::offscreen_live_cut(
-                            playback.state.playback_mode() == crate::core::PlaybackMode::Macro,
-                            state.viz_state.elevation_selection.elevation_number(),
-                            live.radar_model.collecting_elevation(),
-                            active_sweep.and_then(|s| s.data_azimuth_range),
+                // The other discs' rings and marks first, fainter, so the
+                // focus's stay on top where discs overlap.
+                for other in &others {
+                    let vm = site_overlay_vm(
+                        state,
+                        playback,
+                        derived,
+                        other.site,
+                        other.follows_live,
+                        data_range_km_of(other.site),
+                        (other.sweep, false),
+                    );
+                    super::canvas_overlays::render_site_sweep_marks(
+                        &painter,
+                        &vm,
+                        &super::canvas_overlays::SiteScreen::new(
+                            &projection,
+                            other.site.lat,
+                            other.site.lon,
                         ),
-                        playhead_secs: playback.state.playback_position(),
-                        fallbacks: crate::core::canvas::CANVAS_FALLBACKS,
-                    },
+                        crate::core::canvas::disc_overlay_opacity(false),
+                    );
+                }
+                let overlay_vm = site_overlay_vm(
+                    state,
+                    playback,
+                    derived,
+                    site,
+                    derived.canvas_follows_live,
+                    data_range_km,
+                    (sweep_line_info, sweep_stale),
                 );
                 let clock = crate::ui::time_format::ZoneClock {
                     use_local: state.use_local_time,
@@ -477,46 +620,112 @@ pub(crate) fn render_canvas_with_geo(
                     },
                 );
 
-                if state.viz_state.distance_tool_active || state.viz_state.distance_start.is_some()
-                {
-                    render_distance_measurement(
-                        &painter,
-                        &projection,
-                        state.viz_state.distance_start,
-                        state.viz_state.distance_end,
-                    );
-                }
+                // The distance tool: what draws (snap hint, ends, letters,
+                // readout) is the core's view-model.
+                let snap_km = crate::core::measure::snap_radius_km(
+                    state.is_mobile,
+                    super::canvas_overlays::compute_km_per_pixel(&projection, &rect).unwrap_or(0.0),
+                );
+                let measure_hover = response.hover_pos().map(|p| {
+                    let g = projection.screen_to_geo(p);
+                    (g.y, g.x)
+                });
+                let measure_vm =
+                    crate::core::measure::view(&crate::core::measure::MeasureViewInputs {
+                        measurement: &state.viz_state.measurement,
+                        tool_active: state.viz_state.distance_tool_active,
+                        targets: crate::core::measure::SnapTargets {
+                            tracks: storm_tracks_view
+                                .as_ref()
+                                .filter(|_| state.viz_state.storm_cells_visible),
+                            my_location,
+                        },
+                        hover: measure_hover,
+                        snap_km,
+                    });
+                render_distance_measurement(&painter, &projection, &measure_vm, &|r| {
+                    crate::core::map_chrome::label_clear_of_chrome(
+                        super::canvas_overlays::viewport_bounds(r),
+                        &keep_out,
+                        viewport,
+                    )
+                });
 
                 if state.viz_state.data_probe_enabled {
                     if let Some(hover_pos) = response.hover_pos() {
+                        let geo = projection.screen_to_geo(hover_pos);
+                        let cell_line = crate::core::storm_cell_view::probe_line(
+                            &storm_cell_inputs,
+                            geo.y,
+                            geo.x,
+                        );
+                        let site_lines = (on_map.len() > 1)
+                            .then(|| probe_site_lines(sites, geo.y, geo.x, state, gpu_sweep));
                         render_data_probe(
                             &painter,
                             &projection,
                             hover_pos,
-                            state.viz_state.center_lat,
-                            state.viz_state.center_lon,
+                            site.lat,
+                            site.lon,
                             gpu_renderer,
                             &state.viz_state.product,
                             state.use_local_time,
                             gpu_sweep,
+                            cell_line,
+                            site_lines,
                         );
                     }
                 }
 
                 // Hover states (§7): every clickable mark gets a highlight and
                 // a pointing cursor, previewing exactly what a click picks.
+                if let Some((lat, lon)) = measure_hover {
+                    if crate::core::measure::can_grab(
+                        &state.viz_state.measurement,
+                        state.viz_state.distance_tool_active,
+                        lat,
+                        lon,
+                        snap_km,
+                    ) {
+                        ui.ctx().set_cursor_icon(
+                            if state.viz_state.measurement.dragging.is_some() {
+                                egui::CursorIcon::Grabbing
+                            } else {
+                                egui::CursorIcon::Grab
+                            },
+                        );
+                    }
+                }
                 if let Some(pos) = response.hover_pos() {
                     if !state.viz_state.distance_tool_active && !response.dragged() {
                         if let Some(pick) = super::canvas_interaction::pick_at(
                             pos,
                             &projection,
                             state,
+                            site,
+                            &on_map,
                             playback,
                             diagnostics,
                             derived,
+                            &storm_cells_vm,
                         ) {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                            paint_pick_hover(&painter, &projection, &pick, pos, rect, diagnostics);
+                            paint_pick_hover(
+                                &painter,
+                                &projection,
+                                &pick,
+                                site_click,
+                                pos,
+                                rect,
+                                diagnostics,
+                            );
+                        } else if on_map.len() > 1 && !state.viz_state.data_probe_enabled {
+                            // A radar on the map reads its frame's time and age.
+                            if let Some(label) =
+                                radar_hover_label(sites, &projection, pos, state, &clock)
+                            {
+                                paint_hover_label(&painter, label, pos, rect);
+                            }
                         }
                     }
                 }
@@ -528,8 +737,8 @@ pub(crate) fn render_canvas_with_geo(
                         &projection,
                         &diagnostics.mping.reports,
                         diagnostics.mping.selected_report_id,
-                        state.viz_state.center_lat,
-                        state.viz_state.center_lon,
+                        site.lat,
+                        site.lon,
                         playback.state.playback_position(),
                         state.use_local_time,
                     );
@@ -544,6 +753,7 @@ pub(crate) fn render_canvas_with_geo(
                     &OverlayContext {
                         rect,
                         state,
+                        site,
                         live,
                         derived,
                         mping_reports: &diagnostics.mping.reports,
@@ -556,6 +766,15 @@ pub(crate) fn render_canvas_with_geo(
                     render_phone_loading(ui, &rect, chrome.phone_loading.as_ref());
                 } else {
                     render_canvas_caption(ui, &rect, state, live, &bottom_scrims);
+                }
+                if let Some(card) = storm_cells_vm.card.as_ref() {
+                    super::canvas_storm_cells::paint_card(
+                        ui.ctx(),
+                        rect,
+                        card,
+                        state.is_mobile,
+                        &bottom_scrims,
+                    );
                 }
                 render_map_toolbar(ui, &rect, state);
 
@@ -571,10 +790,14 @@ pub(crate) fn render_canvas_with_geo(
                         &response,
                         &rect,
                         state,
+                        site,
+                        &on_map,
                         playback,
                         diagnostics,
                         derived,
                         &projection,
+                        &storm_cells_vm,
+                        site_click,
                     );
                 }
             }
@@ -591,7 +814,7 @@ const MAP_TOOLBAR_ID: &str = "map_toolbar";
 /// color.
 fn render_map_toolbar(ui: &egui::Ui, rect: &egui::Rect, state: &mut AppState) {
     use crate::core::panels::MapTool;
-    use egui_phosphor::regular as icons;
+    use crate::ui::icons;
     let tools = [
         (
             MapTool::Probe,
@@ -603,13 +826,18 @@ fn render_map_toolbar(ui: &egui::Ui, rect: &egui::Rect, state: &mut AppState) {
             MapTool::Distance,
             icons::RULER,
             state.viz_state.distance_tool_active,
-            "Measure: click two points for the distance between them",
+            "Measure: click two points for the distance between them. A point on a \
+             lettered storm follows it; drag an end to move it",
         ),
     ];
     let inset = crate::core::map_chrome::TOOLBAR_INSET;
+    let top = super::canvas_overlays::map_top_clearance(*rect);
     egui::Area::new(egui::Id::new(MAP_TOOLBAR_ID))
-        .fixed_pos(rect.left_top() + egui::vec2(inset, inset))
-        .order(egui::Order::Foreground)
+        .fixed_pos(rect.left_top() + egui::vec2(inset, top + inset))
+        // Middle, like the caption: dialogs live in Foreground and only
+        // restack when their stack changes, so a Foreground area first shown
+        // after that (the toolbar under the first-run site picker) drew on top.
+        .order(egui::Order::Middle)
         .show(ui.ctx(), |ui| {
             egui::Frame::new()
                 .fill(theme::map::scrim())
@@ -715,13 +943,108 @@ fn draw_radar_gpu(
     ui.painter().add(callback);
 }
 
-#[allow(clippy::too_many_arguments)]
-fn compute_gpu_sweep_state(
-    state: &mut AppState,
-    timeline: &crate::subsystem::Timeline,
-    live: &crate::subsystem::Live,
+/// Another site's reveal this frame: what its disc and its Rays marks draw.
+struct OtherReveal<'a> {
+    site: &'a crate::subsystem::SiteState,
+    follows_live: bool,
+    sweep: Option<(f32, f32)>,
+    chunk_boundary: Option<f32>,
+}
+
+/// The range a site's disc holds data to, when it holds any.
+fn data_range_km(renderer: Option<&Arc<Mutex<RadarGpuRenderer>>>) -> Option<f64> {
+    renderer.and_then(|renderer| {
+        let r = renderer.lock().expect("renderer mutex poisoned");
+        r.has_data().then(|| r.max_range_km())
+    })
+}
+
+fn data_range_km_of(site: &crate::subsystem::SiteState) -> Option<f64> {
+    data_range_km(site.gpu.radar.as_ref())
+}
+
+/// The overlay view-model for one site's disc. `sweep` is the reveal and
+/// whether it is the held position between sweeps.
+fn site_overlay_vm(
+    state: &AppState,
     playback: &crate::subsystem::Playback,
     derived: &crate::subsystem::Derived,
+    site: &crate::subsystem::SiteState,
+    follows_live: bool,
+    data_range_km: Option<f64>,
+    sweep: (Option<(f32, f32)>, bool),
+) -> crate::core::canvas::CanvasOverlayVm {
+    let active_sweep = site.live.radar_model.active_sweep.as_ref();
+    let chunk_last_az: Vec<f32> = active_sweep
+        .map(|s| s.chunks.iter().map(|c| c.last_az).collect())
+        .unwrap_or_default();
+    crate::core::canvas::CanvasOverlayVm::build(&crate::core::canvas::CanvasOverlayInputs {
+        product: state.viz_state.product,
+        data_range_km,
+        sweep: sweep.0,
+        stale: sweep.1,
+        show_lines: derived.effective_sweep_animation,
+        live: follows_live,
+        antenna_az: site.live.radar_model.estimated_azimuth,
+        chunk_last_az: &chunk_last_az,
+        live_edge_time: active_sweep
+            .and_then(|s| s.chunk_time_spans.last().map(|&(_, end, _)| end)),
+        offscreen_cut: crate::core::canvas::offscreen_live_cut(
+            playback.state.playback_mode() == crate::core::PlaybackMode::Macro,
+            site.live
+                .radar_model
+                .selected_cut(&state.viz_state.elevation_selection),
+            site.live.radar_model.collecting_elevation(),
+            active_sweep.and_then(|s| s.data_azimuth_range),
+        ),
+        playhead_secs: playback.state.playback_position(),
+        fallbacks: crate::core::canvas::CANVAS_FALLBACKS,
+    })
+}
+
+/// The focus's reveal: [`site_gpu_sweep`], plus the between-sweeps hold
+/// that keeps the last position on screen. Returns the reveal, whether it is
+/// held between sweeps, and whether a live partial composites.
+fn compute_gpu_sweep_state(
+    state: &mut AppState,
+    site: &crate::subsystem::SiteState,
+    playback: &crate::subsystem::Playback,
+    derived: &crate::subsystem::Derived,
+    sweep_info: Option<(f32, f32)>,
+) -> (Option<(f32, f32)>, bool, bool) {
+    let (gpu_sweep, live_partial) = site_gpu_sweep(
+        state,
+        site,
+        playback,
+        derived.canvas_follows_live,
+        derived.effective_sweep_animation,
+        sweep_info,
+    );
+
+    // Cache the sweep position for between-sweep display (pure rule).
+    let new_cache = crate::core::canvas::next_sweep_cache(
+        state.viz_state.last_sweep_line_cache,
+        gpu_sweep,
+        derived.effective_sweep_animation,
+    );
+    state.viz_state.last_sweep_line_cache = new_cache;
+    let between_sweeps = crate::core::canvas::between_sweeps(
+        derived.effective_sweep_animation,
+        gpu_sweep,
+        new_cache,
+    );
+    (gpu_sweep, between_sweeps, live_partial)
+}
+
+/// One site's sweep reveal this frame, and whether it is a live partial
+/// still arriving. `follows_live` is whether the site's canvas follows its
+/// stream; `animate` is whether Rays animates.
+fn site_gpu_sweep(
+    state: &AppState,
+    site: &crate::subsystem::SiteState,
+    playback: &crate::subsystem::Playback,
+    follows_live: bool,
+    animate: bool,
     sweep_info: Option<(f32, f32)>,
 ) -> (Option<(f32, f32)>, bool) {
     // Live partial compositing only when the in-progress elevation matches
@@ -729,28 +1052,27 @@ fn compute_gpu_sweep_state(
     // keep driving the GPU sweep boundary and age desaturation between visits
     // of a fixed elevation. Frames mode never composites the partial.
     // Archive animation still uses effective_sweep_animation.
-    let selected_elev = state.viz_state.elevation_selection.elevation_number();
+    let selected_elev = site
+        .live
+        .radar_model
+        .selected_cut(&state.viz_state.elevation_selection);
     let live_range = crate::core::canvas::live_compositing_azimuth_range(
-        derived.canvas_follows_live,
+        follows_live,
         playback.state.playback_mode() == crate::core::PlaybackMode::Macro,
         selected_elev,
-        live.radar_model.collecting_elevation(),
-        live.radar_model
+        site.live.radar_model.collecting_elevation(),
+        site.live
+            .radar_model
             .active_sweep
             .as_ref()
             .and_then(|s| s.data_azimuth_range),
     );
     let playback_ts = playback.state.playback_position();
-    let sweep_bounds = if live_range.is_none() && derived.effective_sweep_animation {
-        timeline
-            .scans
+    let sweep_bounds = if live_range.is_none() && animate {
+        site.scans
             .find_recent_scan(playback_ts, crate::core::recency::RECENCY_SECS)
             .and_then(|scan| {
-                let displayed_elev = state
-                    .viz_state
-                    .displayed
-                    .as_ref()
-                    .map(|d| d.identity.elevation_number);
+                let displayed_elev = site.displayed.as_ref().map(|d| d.identity.elevation_number);
                 scan.sweeps
                     .iter()
                     .filter(|s| Some(s.elevation_number) == displayed_elev)
@@ -768,31 +1090,19 @@ fn compute_gpu_sweep_state(
 
     let gpu_sweep = crate::core::canvas::select_gpu_sweep(
         live_range,
-        derived.effective_sweep_animation,
+        animate,
         sweep_bounds,
         playback_ts,
         sweep_info,
     );
 
-    // Cache the sweep position for between-sweep display (pure rule).
-    let new_cache = crate::core::canvas::next_sweep_cache(
-        state.viz_state.last_sweep_line_cache,
-        gpu_sweep,
-        derived.effective_sweep_animation,
-    );
-    state.viz_state.last_sweep_line_cache = new_cache;
-    let between_sweeps = crate::core::canvas::between_sweeps(
-        derived.effective_sweep_animation,
-        gpu_sweep,
-        new_cache,
-    );
-
-    (gpu_sweep, between_sweeps)
+    // A live partial composites only while `live_range` is set: the sweep on
+    // the GPU is still arriving.
+    (gpu_sweep, live_range.is_some())
 }
 
 fn compute_sweep_line_azimuth(
-    _state: &AppState,
-    timeline: &crate::subsystem::Timeline,
+    site: &crate::subsystem::SiteState,
     playback: &crate::subsystem::Playback,
 ) -> Option<(f32, f32)> {
     if playback.state.speed.timeline_seconds_per_real_second() > 30.0 {
@@ -802,8 +1112,7 @@ fn compute_sweep_line_azimuth(
     let ts = playback.state.playback_position();
 
     // Find the sweep the playhead is in, then interpolate its azimuth (pure).
-    timeline
-        .scans
+    site.scans
         .find_scan_at_timestamp(ts)
         .and_then(|scan| scan.find_sweep_at_timestamp(ts))
         .and_then(|(_, sweep)| crate::core::canvas::sweep_line_azimuth(sweep, ts))
@@ -945,6 +1254,7 @@ fn paint_pick_hover(
     painter: &egui::Painter,
     projection: &MapProjection,
     pick: &crate::core::canvas::MapPick,
+    site_click: crate::core::canvas::SiteClick,
     cursor: egui::Pos2,
     rect: Rect,
     diagnostics: &crate::subsystem::Diagnostics,
@@ -958,15 +1268,20 @@ fn paint_pick_hover(
             .iter()
             .find(|r| r.id == *id)
             .map(|r| (r.lat, r.lon)),
-        MapPick::Alert { .. } => None,
+        MapPick::Alert { .. } | MapPick::StormCell { .. } => None,
     };
     if let Some((lat, lon)) = mark {
         let at = projection.geo_to_screen(Coord { x: lon, y: lat });
         painter.circle_stroke(at, 9.0, Stroke::new(1.5_f32, theme::SEEN));
     }
-    let Some(label) = pick.hover_label() else {
+    let Some(label) = pick.hover_label(site_click) else {
         return;
     };
+    paint_hover_label(painter, label, cursor, rect);
+}
+
+/// A hover label on a scrim beside the cursor, kept inside the canvas.
+fn paint_hover_label(painter: &egui::Painter, label: String, cursor: egui::Pos2, rect: Rect) {
     let galley = painter.layout_no_wrap(label, theme::readout_font(), theme::TEXT);
     let size = galley.size() + egui::vec2(10.0, 6.0);
     let mut min = cursor + egui::vec2(12.0, 12.0);
@@ -981,4 +1296,78 @@ fn paint_pick_hover(
         egui::StrokeKind::Inside,
     );
     painter.galley(r.min + egui::vec2(5.0, 3.0), galley, theme::TEXT);
+}
+
+/// The label of the radar on the map nearest the cursor, within the site
+/// pick radius ([`crate::core::site_canvas::radar_hover_label`]).
+fn radar_hover_label(
+    sites: &crate::subsystem::Sites,
+    projection: &MapProjection,
+    cursor: egui::Pos2,
+    state: &AppState,
+    clock: &dyn crate::core::session::Clock,
+) -> Option<String> {
+    let radius = crate::core::canvas::pick_radii(state.is_mobile).site;
+    sites
+        .iter()
+        .map(|s| {
+            let at = projection.geo_to_screen(Coord { x: s.lon, y: s.lat });
+            (s, (at - cursor).length())
+        })
+        .filter(|&(_, d)| d <= radius)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(s, _)| {
+            let frame_time = s
+                .displayed
+                .as_ref()
+                .map(|d| (d.start_time + d.end_time) / 2.0);
+            crate::core::site_canvas::radar_hover_label(
+                &s.id.0,
+                frame_time,
+                s.data_staleness_secs,
+                clock,
+            )
+        })
+}
+
+/// One probe line per site whose disc is under the cursor, focus first
+/// ([`crate::core::site_canvas::probe_order`]).
+fn probe_site_lines(
+    sites: &crate::subsystem::Sites,
+    lat: f64,
+    lon: f64,
+    state: &AppState,
+    sweep: Option<(f32, f32)>,
+) -> Vec<String> {
+    use crate::core::site_canvas::{probe_order, probe_site_line, ProbeReading};
+    let readings: Vec<ProbeReading> = sites
+        .iter()
+        .map(|s| {
+            let (azimuth_deg, range_km) = crate::core::canvas::geo_to_polar(lat, lon, s.lat, s.lon);
+            let (max_range_km, value) = s
+                .gpu
+                .radar
+                .as_ref()
+                .map(|r| {
+                    let r = r.lock().expect("renderer mutex poisoned");
+                    (
+                        r.has_data().then(|| r.max_range_km()),
+                        r.value_at_polar(azimuth_deg as f32, range_km, sweep),
+                    )
+                })
+                .unwrap_or((None, None));
+            ProbeReading {
+                id: s.id.0.clone(),
+                azimuth_deg,
+                range_km,
+                max_range_km,
+                value,
+            }
+        })
+        .collect();
+    let product = &state.viz_state.product;
+    probe_order(&readings, sites.focus)
+        .into_iter()
+        .map(|i| probe_site_line(&readings[i], product.short_code(), product.unit()))
+        .collect()
 }

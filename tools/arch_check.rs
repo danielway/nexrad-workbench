@@ -11,6 +11,7 @@
 //!
 //! ```text
 //!   net, data, geo            leaves — import nothing
+//!   storm_cells               leaf — std only (extractable to the nexrad crates)
 //!   core                      pure domain + decisions — data, geo, alerts(types)
 //!   alerts, mping             feed modules — net, core (+each other's shared bits)
 //!   nexrad                    pipeline — core, data, geo, net
@@ -35,6 +36,9 @@ const ALLOWED: &[(&str, &str)] = &[
     ("core", "geo"),
     ("core", "alerts"),
     ("core", "mping"), // StormReport is pure feed vocabulary, like alerts types
+    // storm_cells is a std-only leaf (kept extractable for upstreaming into the
+    // nexrad crates); core holds its cell types for the view-model and tracking.
+    ("core", "storm_cells"),
     // feed modules — may use net + the pure core vocabulary (their own
     // feed-state containers live in core::domain::feeds)
     ("alerts", "net"),
@@ -48,6 +52,7 @@ const ALLOWED: &[(&str, &str)] = &[
     ("nexrad", "data"),
     ("nexrad", "geo"),
     ("nexrad", "net"),
+    ("nexrad", "storm_cells"), // the decode worker's `detect` runs the leaf detector on a sweep
     // app state sits above the domain modules
     ("state", "core"),
     ("state", "data"),
@@ -55,6 +60,7 @@ const ALLOWED: &[(&str, &str)] = &[
     ("state", "nexrad"),
     ("state", "alerts"),
     ("state", "mping"),
+    ("state", "storm_cells"), // state holds the detector's result types
     // bounded state owners
     ("subsystem", "state"),
     ("subsystem", "core"),
@@ -85,6 +91,7 @@ const ALLOWED: &[(&str, &str)] = &[
     ("ui", "net"),
     ("ui", "alerts"),
     ("ui", "mping"),
+    ("ui", "storm_cells"), // the overlay reads the leaf's cell types
 ];
 
 /// Known violations of the intended layering, kept only until burned down.

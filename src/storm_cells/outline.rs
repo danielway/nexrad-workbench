@@ -1,0 +1,553 @@
+//! Footprint outlines: trace a component's outer boundary in index space,
+//! place it on the ground, and simplify it.
+//!
+//! The boundary is traced along pixel edges (a "crack-following" walk over
+//! the corners of the row × column grid), keeping the component on the
+//! left and joining pixels that touch only at a corner, to match the
+//! 8-connected labeling. Holes are ignored: the outline is the outer ring.
+//!
+//! On a polar sweep, before tracing, the component's radials are unrolled
+//! so the azimuth axis is contiguous: the walk starts after the widest run
+//! of radials the component does not touch, so a cell straddling 0°/360° is
+//! one ring. A component that touches every radial (a rain shield around
+//! the radar) is cut at radial 0, which gives a ring with a zero-width slit
+//! along that radial; drawn filled or stroked it still covers the right
+//! area. A Cartesian grid does not wrap, so its walk starts at the
+//! component's southmost row and corners map to the ground linearly.
+
+use super::components::Pixel;
+use super::geometry::{Frame, Grid};
+use super::model::MAX_OUTLINE_VERTICES;
+
+/// Simplification tolerance for cell outlines, in km.
+pub(super) const TOLERANCE_KM: f64 = 1.0;
+
+/// Simplification tolerance for group (envelope) rings, in km. The ring is
+/// drawn faint around its cells, so it reads better smooth than ragged
+/// (a hurricane rainband's envelope is hundreds of km of jagged edge).
+pub(super) const GROUP_TOLERANCE_KM: f64 = 2.5;
+
+/// Longest edge simplification may create, in km. Tolerance alone would
+/// let a long, gently curving or ragged side collapse into one chord far
+/// longer than the storm features beside it.
+pub(super) const MAX_EDGE_KM: f64 = 10.0;
+
+/// Outline of `pixels` as a closed (lat, lon) ring: first point repeated at
+/// the end, simplified to `tolerance_km` with no edge longer than
+/// [`MAX_EDGE_KM`] and at most `MAX_OUTLINE_VERTICES` distinct vertices.
+///
+/// `half_spacing_deg` is half a radial's angular width (polar only).
+pub(super) fn outline<'a>(
+    pixels: &[Pixel],
+    input: impl Into<Grid<'a>>,
+    half_spacing_deg: f64,
+    tolerance_km: f64,
+) -> Vec<(f64, f64)> {
+    if pixels.is_empty() {
+        return Vec::new();
+    }
+    let geometry: Grid<'a> = input.into();
+    let n = geometry.shape().0;
+
+    // Unroll the row axis.
+    let mut occupied = vec![false; n];
+    let (mut gmin, mut gmax) = (u16::MAX, 0u16);
+    for &(a, g) in pixels {
+        occupied[a as usize] = true;
+        gmin = gmin.min(g);
+        gmax = gmax.max(g);
+    }
+    let start = match geometry {
+        Grid::Polar(_) => unroll_start(&occupied),
+        Grid::Cartesian(_) => occupied.iter().position(|o| *o).unwrap_or(0),
+    };
+    let width = occupied.iter().filter(|o| **o).count();
+    let height = (gmax - gmin) as usize + 1;
+    let mut mask = vec![false; width * height];
+    for &(a, g) in pixels {
+        let x = (a as usize + n - start) % n;
+        mask[x * height + (g - gmin) as usize] = true;
+    }
+    let fg = |x: i32, y: i32| {
+        x >= 0
+            && y >= 0
+            && (x as usize) < width
+            && (y as usize) < height
+            && mask[x as usize * height + y as usize]
+    };
+
+    // Start at the lowest gate of the first unrolled radial.
+    let y0 = (0..height as i32).find(|&y| fg(0, y)).unwrap_or(0);
+    let ring = trace(&fg, (0, y0), width, height);
+
+    // Corners → local km (x = east, y = north).
+    let km: Vec<(f64, f64)> = match geometry {
+        Grid::Polar(input) => {
+            let az_edge = |x: i32| -> f64 {
+                let x = x as usize;
+                if x < width {
+                    input.azimuths[(start + x) % n] as f64 - half_spacing_deg
+                } else {
+                    input.azimuths[(start + width - 1) % n] as f64 + half_spacing_deg
+                }
+            };
+            ring.iter()
+                .map(|&(x, y)| {
+                    let az = az_edge(x).to_radians();
+                    let r = input.first_gate_km + (gmin as f64 + y as f64) * input.gate_interval_km;
+                    (r * az.sin(), r * az.cos())
+                })
+                .collect()
+        }
+        // Rows run north, columns east, from the grid's south-west corner.
+        Grid::Cartesian(input) => ring
+            .iter()
+            .map(|&(x, y)| {
+                (
+                    (gmin as f64 + y as f64) * input.cell_km,
+                    ((start + x as usize) as f64) * input.cell_km,
+                )
+            })
+            .collect(),
+    };
+
+    let simplified = simplify_ring(&km, tolerance_km, MAX_EDGE_KM, MAX_OUTLINE_VERTICES);
+    let frame = Frame::new(geometry);
+    let mut out: Vec<(f64, f64)> = simplified
+        .iter()
+        .map(|&(x, y)| frame.lat_lon(x, y))
+        .collect();
+    if let Some(&first) = out.first() {
+        out.push(first);
+    }
+    out
+}
+
+/// First radial of the unrolled axis: the one after the longest circular
+/// run of unoccupied radials (0 when every radial is occupied).
+fn unroll_start(occupied: &[bool]) -> usize {
+    let n = occupied.len();
+    if occupied.iter().all(|o| *o) {
+        return 0;
+    }
+    let Some(first_occupied) = occupied.iter().position(|o| *o) else {
+        return 0;
+    };
+    // Walk one full turn starting just after an occupied radial, so no run
+    // of empty radials is split by the starting point.
+    let (mut best_len, mut best_end) = (0, first_occupied);
+    let mut run = 0;
+    for k in 1..=n {
+        let i = (first_occupied + k) % n;
+        if occupied[i] {
+            run = 0;
+        } else {
+            run += 1;
+            if run > best_len {
+                best_len = run;
+                best_end = i;
+            }
+        }
+    }
+    (best_end + 1) % n
+}
+
+/// Walk the outer boundary of the 8-connected pixel set containing pixel
+/// `start` (which must be its lowest-y pixel in the lowest-x column, so its
+/// left and bottom edges are boundary). Returns every grid corner the walk
+/// visits, in order, so arcs keep their curvature once placed on the
+/// ground (simplification removes the excess). Pixel `(x, y)` covers
+/// `[x, x+1] × [y, y+1]`.
+pub(super) fn trace(
+    fg: &dyn Fn(i32, i32) -> bool,
+    start: (i32, i32),
+    width: usize,
+    height: usize,
+) -> Vec<(i32, i32)> {
+    let left = |(dx, dy): (i32, i32)| (-dy, dx);
+    let right = |(dx, dy): (i32, i32)| (dy, -dx);
+    // Pixel ahead of vertex `v` on side `side` (left or right) of `d`.
+    let ahead = |v: (i32, i32), d: (i32, i32), side: (i32, i32)| {
+        let o = (d.0 + side.0, d.1 + side.1);
+        (v.0 + (o.0 - 1).div_euclid(2), v.1 + (o.1 - 1).div_euclid(2))
+    };
+
+    let origin = start;
+    let mut verts = vec![origin];
+    let mut v = origin;
+    let mut d = (1, 0); // along the bottom edge, component on the left
+    let limit = 4 * (width + 2) * (height + 2);
+    for _ in 0..limit {
+        v = (v.0 + d.0, v.1 + d.1);
+        if v == origin {
+            break;
+        }
+        let ra = ahead(v, d, right(d));
+        let la = ahead(v, d, left(d));
+        let nd = if fg(ra.0, ra.1) {
+            right(d) // 8-connectivity: follow the diagonal neighbour
+        } else if fg(la.0, la.1) {
+            d
+        } else {
+            left(d)
+        };
+        verts.push(v);
+        d = nd;
+    }
+    verts
+}
+
+/// Douglas-Peucker on a closed ring (no repeated closing point), with every
+/// kept edge at most `max_edge` long: a span that is within tolerance but
+/// longer than that is split at its middle point. The tolerance is loosened
+/// until at most `max_vertices` remain (the edge bound still holds, so a
+/// ring too long for both keeps more) and tightened until at least four do.
+pub(super) fn simplify_ring(
+    ring: &[(f64, f64)],
+    tolerance: f64,
+    max_edge: f64,
+    max_vertices: usize,
+) -> Vec<(f64, f64)> {
+    if ring.len() <= 3 {
+        return ring.to_vec();
+    }
+    // Split the ring at its first point and the point farthest from it.
+    let far = (1..ring.len())
+        .max_by(|&a, &b| dist2(ring[0], ring[a]).total_cmp(&dist2(ring[0], ring[b])))
+        .unwrap_or(1);
+    // Second half wraps back to index 0, appended as index `len`.
+    let mut closed: Vec<(f64, f64)> = ring.to_vec();
+    closed.push(ring[0]);
+    let max_edge2 = max_edge * max_edge;
+    let run = |tol: f64| {
+        let mut keep = vec![false; ring.len() + 1];
+        keep[0] = true;
+        keep[far] = true;
+        keep[ring.len()] = true;
+        dp(&closed, 0, far, tol, max_edge2, &mut keep);
+        dp(&closed, far, ring.len(), tol, max_edge2, &mut keep);
+        ring.iter()
+            .zip(&keep)
+            .filter(|(_, k)| **k)
+            .map(|(p, _)| *p)
+            .collect::<Vec<_>>()
+    };
+    // A footprint narrower than the tolerance would collapse to a line:
+    // tighten until it keeps at least four vertices.
+    let mut tol = tolerance.max(1e-9);
+    let mut out = run(tol);
+    while out.len() < 4 && tol > 1e-6 {
+        tol *= 0.5;
+        out = run(tol);
+    }
+    // Past a tolerance of `max_edge` only the edge bound keeps vertices, so
+    // loosening further changes nothing.
+    while out.len() > max_vertices.max(4) && tol < max_edge {
+        tol *= 1.5;
+        out = run(tol);
+    }
+    out
+}
+
+fn dp(
+    points: &[(f64, f64)],
+    first: usize,
+    last: usize,
+    tol: f64,
+    max_edge2: f64,
+    keep: &mut [bool],
+) {
+    if last <= first + 1 {
+        return;
+    }
+    let (a, b) = (points[first], points[last]);
+    let (mut worst, mut worst_d) = (first, -1.0);
+    for (i, &p) in points.iter().enumerate().take(last).skip(first + 1) {
+        let d = seg_dist(p, a, b);
+        if d > worst_d {
+            worst = i;
+            worst_d = d;
+        }
+    }
+    let split = if worst_d > tol {
+        worst
+    } else if dist2(a, b) > max_edge2 {
+        // Within tolerance but too long: halve by index, which keeps the
+        // recursion shallow on long straight runs.
+        (first + last) / 2
+    } else {
+        return;
+    };
+    keep[split] = true;
+    dp(points, first, split, tol, max_edge2, keep);
+    dp(points, split, last, tol, max_edge2, keep);
+}
+
+fn dist2(a: (f64, f64), b: (f64, f64)) -> f64 {
+    (a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)
+}
+
+/// Distance from `p` to segment `ab`.
+fn seg_dist(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 > 0.0 {
+        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    dist2(p, (a.0 + t * dx, a.1 + t * dy)).sqrt()
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::super::{DetectionInput, KM_PER_DEG};
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn trace_set(pixels: &[(i32, i32)]) -> Vec<(i32, i32)> {
+        let w = pixels.iter().map(|p| p.0).max().unwrap() as usize + 1;
+        let h = pixels.iter().map(|p| p.1).max().unwrap() as usize + 1;
+        let fg = |x: i32, y: i32| pixels.contains(&(x, y));
+        let x0 = pixels.iter().map(|p| p.0).min().unwrap();
+        let y0 = pixels
+            .iter()
+            .filter(|p| p.0 == x0)
+            .map(|p| p.1)
+            .min()
+            .unwrap();
+        corners(&trace(&fg, (x0, y0), w, h))
+    }
+
+    /// Keep only the vertices where the walk turns.
+    fn corners(ring: &[(i32, i32)]) -> Vec<(i32, i32)> {
+        let n = ring.len();
+        (0..n)
+            .filter(|&i| {
+                let (p, c, q) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
+                (c.0 - p.0, c.1 - p.1) != (q.0 - c.0, q.1 - c.1)
+            })
+            .map(|i| ring[i])
+            .collect()
+    }
+
+    #[wasm_bindgen_test]
+    fn single_pixel_traces_its_four_corners() {
+        assert_eq!(trace_set(&[(0, 0)]), vec![(0, 0), (1, 0), (1, 1), (0, 1)]);
+    }
+
+    #[wasm_bindgen_test]
+    fn l_shape_has_six_corners() {
+        let ring = trace_set(&[(0, 0), (1, 0), (0, 1)]);
+        assert_eq!(ring, vec![(0, 0), (2, 0), (2, 1), (1, 1), (1, 2), (0, 2)]);
+    }
+
+    #[wasm_bindgen_test]
+    fn diagonal_neighbours_are_one_outline() {
+        // (0,0) and (1,1) touch at a corner: 8-connected → one ring that
+        // goes around both, passing the shared corner twice.
+        let ring = trace_set(&[(0, 0), (1, 1)]);
+        assert!(ring.contains(&(2, 2)), "{ring:?}");
+        assert_eq!(ring.iter().filter(|v| **v == (1, 1)).count(), 2, "{ring:?}");
+    }
+
+    #[wasm_bindgen_test]
+    fn holes_are_ignored() {
+        // A 3×3 ring of pixels with the centre missing → the outer square.
+        let mut px = Vec::new();
+        for x in 0..3 {
+            for y in 0..3 {
+                if (x, y) != (1, 1) {
+                    px.push((x, y));
+                }
+            }
+        }
+        assert_eq!(trace_set(&px), vec![(0, 0), (3, 0), (3, 3), (0, 3)]);
+    }
+
+    #[wasm_bindgen_test]
+    fn unroll_starts_after_the_widest_gap() {
+        // Occupied radials 6,7,0,1 of 8: the gap is 2..=5 → start at 6.
+        let occ = [true, true, false, false, false, false, true, true];
+        assert_eq!(unroll_start(&occ), 6);
+        assert_eq!(unroll_start(&[true; 4]), 0);
+        assert_eq!(unroll_start(&[false, true, true, false]), 1);
+        // The widest gap wraps through index 0 (radials 2, 3, 0).
+        assert_eq!(unroll_start(&[false, true, false, false]), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn simplify_keeps_corners_and_drops_collinear_points() {
+        let square = vec![
+            (0.0, 0.0),
+            (5.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 5.0),
+            (10.0, 10.0),
+            (5.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 5.0),
+        ];
+        let s = simplify_ring(&square, 0.5, 100.0, 64);
+        assert_eq!(s, vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
+    }
+
+    #[wasm_bindgen_test]
+    fn simplify_keeps_thin_footprints_as_polygons() {
+        // 0.2 km wide, 3 km long: under a 1 km tolerance it would become a
+        // line; the floor keeps a quadrilateral.
+        let thin = vec![
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (3.0, 0.2),
+            (0.0, 0.2),
+        ];
+        assert_eq!(simplify_ring(&thin, 1.0, 100.0, 64).len(), 4);
+    }
+
+    #[wasm_bindgen_test]
+    fn simplify_caps_the_vertex_count() {
+        // A 400-point circle of radius 50 km.
+        let circle: Vec<(f64, f64)> = (0..400)
+            .map(|i| {
+                let t = i as f64 / 400.0 * std::f64::consts::TAU;
+                (50.0 * t.cos(), 50.0 * t.sin())
+            })
+            .collect();
+        let s = simplify_ring(&circle, 0.01, 100.0, 64);
+        assert!(s.len() <= 64 && s.len() >= 16, "{}", s.len());
+    }
+
+    fn longest_edge(ring: &[(f64, f64)]) -> f64 {
+        (0..ring.len())
+            .map(|i| dist2(ring[i], ring[(i + 1) % ring.len()]).sqrt())
+            .fold(0.0, f64::max)
+    }
+
+    #[wasm_bindgen_test]
+    fn simplify_never_leaves_a_long_edge() {
+        // A 300 km × 40 km band with a ragged long side (±0.4 km, under the
+        // tolerance) sampled every 0.25 km, like a traced squall line.
+        let mut ring: Vec<(f64, f64)> = (0..1200)
+            .map(|i| {
+                let x = i as f64 * 0.25;
+                (x, if i % 2 == 0 { 0.4 } else { -0.4 })
+            })
+            .collect();
+        ring.extend((0..160).map(|i| (300.0, i as f64 * 0.25)));
+        ring.extend((0..1200).map(|i| (300.0 - i as f64 * 0.25, 40.0)));
+        ring.extend((0..160).map(|i| (0.0, 40.0 - i as f64 * 0.25)));
+        let s = simplify_ring(&ring, TOLERANCE_KM, MAX_EDGE_KM, MAX_OUTLINE_VERTICES);
+        assert!(
+            longest_edge(&s) <= MAX_EDGE_KM + 1e-9,
+            "{}",
+            longest_edge(&s)
+        );
+        assert!(s.len() <= MAX_OUTLINE_VERTICES, "{}", s.len());
+        // About 680 km of perimeter at ≤ 10 km per edge, not hundreds more.
+        assert!((68..=140).contains(&s.len()), "{}", s.len());
+        // The old rule (tolerance alone) left 300 km edges here.
+        let loose = simplify_ring(&ring, TOLERANCE_KM, f64::INFINITY, 64);
+        assert!(longest_edge(&loose) > 250.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn simplify_keeps_the_edge_bound_over_the_vertex_cap() {
+        // A 2000 km circle needs over 600 edges of 10 km: the vertex cap
+        // gives way rather than the edge bound.
+        let circle: Vec<(f64, f64)> = (0..4000)
+            .map(|i| {
+                let t = i as f64 / 4000.0 * std::f64::consts::TAU;
+                (1000.0 * t.cos(), 1000.0 * t.sin())
+            })
+            .collect();
+        let s = simplify_ring(&circle, TOLERANCE_KM, MAX_EDGE_KM, 64);
+        assert!(longest_edge(&s) <= MAX_EDGE_KM + 1e-9);
+    }
+
+    fn input<'a>(az: &'a [f32]) -> DetectionInput<'a> {
+        DetectionInput {
+            azimuths: az,
+            gate_values: &[],
+            azimuth_count: az.len(),
+            gate_count: 100,
+            first_gate_km: 0.0,
+            gate_interval_km: 1.0,
+            data_scale: 0.0,
+            data_offset: 0.0,
+            radar_lat: 35.0,
+            radar_lon: -97.0,
+            azimuth_spacing_deg: None,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn trace_visits_every_boundary_corner() {
+        let fg = |x: i32, y: i32| (0..3).contains(&x) && y == 0;
+        assert_eq!(trace(&fg, (0, 0), 3, 1).len(), 8); // perimeter of 3×1
+    }
+
+    #[wasm_bindgen_test]
+    fn wide_arcs_keep_their_curvature() {
+        // 90° of radials at 100 km: the outer edge is an arc, which must not
+        // collapse to a chord (the chord would sit 29 km inside the arc).
+        let az: Vec<f32> = (0..360).map(|i| i as f32).collect();
+        let px: Vec<Pixel> = (0..90u16)
+            .flat_map(|a| (95..100u16).map(move |g| (a, g)))
+            .collect();
+        let ring = outline(&px, &input(&az), 0.5, TOLERANCE_KM);
+        // Shoelace area in km² against the annular sector's 765.8 km²
+        // (a chord in place of the 100 km arc would lose most of it).
+        let cos_lat = 35f64.to_radians().cos();
+        let km: Vec<(f64, f64)> = ring
+            .iter()
+            .map(|p| {
+                (
+                    (p.1 + 97.0) * KM_PER_DEG * cos_lat,
+                    (p.0 - 35.0) * KM_PER_DEG,
+                )
+            })
+            .collect();
+        let area: f64 = km
+            .windows(2)
+            .map(|w| w[0].0 * w[1].1 - w[1].0 * w[0].1)
+            .sum::<f64>()
+            .abs()
+            / 2.0;
+        assert!((area - 765.8).abs() < 77.0, "area {area}");
+    }
+
+    #[wasm_bindgen_test]
+    fn outline_is_a_closed_ring_around_the_gates() {
+        // 360 one-degree radials; a block on radials 359, 0, 1 at 50-57 km.
+        let az: Vec<f32> = (0..360).map(|i| i as f32).collect();
+        let mut px = Vec::new();
+        for a in [359u16, 0, 1] {
+            for g in 50..58u16 {
+                px.push((a, g));
+            }
+        }
+        let ring = outline(&px, &input(&az), 0.5, TOLERANCE_KM);
+        assert_eq!(ring.first(), ring.last());
+        // Four corners of the annular sector (straight in 1 km tolerance).
+        assert_eq!(ring.len(), 5, "{ring:?}");
+        // All north of the radar, straddling its longitude.
+        assert!(ring.iter().all(|p| p.0 > 35.4 && p.0 < 35.6));
+        assert!(ring.iter().any(|p| p.1 < -97.0) && ring.iter().any(|p| p.1 > -97.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn full_circle_component_is_traced_without_panicking() {
+        let az: Vec<f32> = (0..36).map(|i| i as f32 * 10.0).collect();
+        let px: Vec<Pixel> = (0..36u16)
+            .flat_map(|a| (0..20u16).map(move |g| (a, g)))
+            .collect();
+        let ring = outline(&px, &input(&az), 5.0, TOLERANCE_KM);
+        assert!(ring.len() >= 4 && ring.len() <= MAX_OUTLINE_VERTICES + 1);
+        // Reaches out to about 20 km in every direction.
+        let max_lat = ring.iter().map(|p| p.0).fold(f64::MIN, f64::max);
+        assert!((max_lat - (35.0 + 20.0 / KM_PER_DEG)).abs() < 0.05);
+    }
+}

@@ -68,8 +68,18 @@ pub(crate) enum Stream {
     Waiting,
     /// Past the normal cadence with nothing arriving.
     Stalled,
+    /// The stream failed and starts again after a wait.
+    Retrying,
     /// The stream ended on a connection error.
     Failed,
+}
+
+/// The session's one aggregate stream fact: a stream runs while any listed
+/// site's stream runs. Each site's [`Stream`] is classified from its own
+/// activity; the session phase and last exit are shared. With one site this
+/// is that site's `is_running`.
+pub(crate) fn any_site_streams(streams: impl IntoIterator<Item = Stream>) -> bool {
+    streams.into_iter().any(Stream::is_running)
 }
 
 impl Stream {
@@ -92,6 +102,7 @@ impl Stream {
             StreamActivity::Receiving => Stream::Receiving,
             StreamActivity::Waiting => Stream::Waiting,
             StreamActivity::Stalled => Stream::Stalled,
+            StreamActivity::Retrying => Stream::Retrying,
         }
     }
 
@@ -99,7 +110,11 @@ impl Stream {
     pub(crate) fn is_running(self) -> bool {
         matches!(
             self,
-            Stream::Connecting | Stream::Receiving | Stream::Waiting | Stream::Stalled
+            Stream::Connecting
+                | Stream::Receiving
+                | Stream::Waiting
+                | Stream::Stalled
+                | Stream::Retrying
         )
     }
 
@@ -116,6 +131,7 @@ impl Stream {
             Stream::Connecting => Some("Connecting"),
             Stream::Receiving => Some("Receiving"),
             Stream::Waiting => Some("Waiting"),
+            Stream::Retrying => Some("Reconnecting"),
             Stream::Off | Stream::Stalled | Stream::Failed => None,
         }
     }
@@ -275,8 +291,12 @@ impl TiltRole {
 /// Everything [`SessionVm::build`] reads: plain data from existing state.
 pub(crate) struct SessionInputs<'a> {
     pub now: FrameNow,
-    /// This frame's stream measurements (activity, countdown, expected cut).
+    /// This frame's stream measurements for the focus site (activity,
+    /// countdown, expected cut).
     pub live_status: &'a LiveStatus,
+    /// Whether any listed site streams ([`any_site_streams`]): what the now
+    /// cap, the caption and `live_now` ask of the session.
+    pub any_site_streams: bool,
     pub live_phase: LivePhase,
     pub last_exit: Option<LiveExitReason>,
     pub selection: Selection,
@@ -294,6 +314,9 @@ pub(crate) struct SessionInputs<'a> {
     /// Volume rendering is on and the camera is in 3D
     /// (`VizState::volume_3d_active`).
     pub volume_3d_active: bool,
+    /// Every drawn site but the focus, for the caption's sites behind;
+    /// empty with one site and in 3D, which draws the focus only.
+    pub others: Vec<crate::core::site_canvas::SiteFrame>,
 }
 
 /// One session, four facts, five surfaces. Rebuilt once per frame.
@@ -322,6 +345,9 @@ pub(crate) struct SessionVm {
     /// ([`decide_canvas_caption`]). Words via
     /// [`SessionVm::canvas_caption_line`].
     pub canvas_caption: CanvasCaption,
+    /// The other sites whose frame disagrees with the playhead
+    /// ([`crate::core::site_canvas::sites_behind`]).
+    pub sites_behind: Option<crate::core::site_canvas::SitesBehind>,
 
     /// A stream runs and the selection is pinned to now: what the favicon,
     /// the tab title and the link's pinned selection read.
@@ -352,6 +378,7 @@ impl Default for SessionVm {
             activity_chip: None,
             activity_hover: None,
             canvas_caption: CanvasCaption::None,
+            sites_behind: None,
             live_now: false,
             tilt_role: TiltRole::Picks,
         }
@@ -407,7 +434,7 @@ impl SessionVm {
             .then_some(inputs.loop_mode);
         let now_cap = if selection_pinned {
             NowCap::Live
-        } else if stream.is_running() {
+        } else if inputs.any_site_streams {
             NowCap::Rejoin
         } else {
             NowCap::GoLive
@@ -427,13 +454,19 @@ impl SessionVm {
             frame.as_ref(),
             playhead,
             now,
-            stream.is_running(),
+            inputs.any_site_streams,
+            stream == Stream::Retrying,
             inputs.live_cut.as_ref().and_then(|c| c.elevation_angle),
             &inputs.caption_context,
         );
+        let target = match playhead {
+            Playhead::PinnedToNow => now,
+            Playhead::AtTime { ts, .. } => ts,
+        };
+        let sites_behind = crate::core::site_canvas::sites_behind(&inputs.others, target);
         let activity_chip = stream_line(stream, status, inputs.live_cut.as_ref(), now);
         let activity_hover = stream_hover(stream, status);
-        let live_now = stream.is_running() && selection_pinned;
+        let live_now = inputs.any_site_streams && selection_pinned;
 
         Self {
             stream,
@@ -447,6 +480,7 @@ impl SessionVm {
             activity_chip,
             activity_hover,
             canvas_caption,
+            sites_behind,
             live_now,
             tilt_role: TiltRole::from_volume_3d(inputs.volume_3d_active),
         }
@@ -532,13 +566,18 @@ impl SessionVm {
     }
 
     /// The canvas caption, segment by segment (§7 forms), or `None` when
-    /// the frame and the playhead agree.
+    /// the frame and the playhead agree. With other sites behind the
+    /// playhead the caption names them instead of the focus's own lag (the
+    /// age pill and the frame readout already speak for the focus); a
+    /// blank or waiting focus still says why first.
     pub(crate) fn canvas_caption_line(&self, clock: &dyn Clock) -> Option<CaptionLine> {
-        caption_line(
-            &self.canvas_caption,
-            self.playhead == Playhead::PinnedToNow,
-            clock,
-        )
+        let pinned = self.playhead == Playhead::PinnedToNow;
+        match (&self.canvas_caption, &self.sites_behind) {
+            (CanvasCaption::None | CanvasCaption::Discrepancy { .. }, Some(behind)) => Some(
+                crate::core::site_canvas::sites_behind_line(behind, pinned, clock),
+            ),
+            (caption, _) => caption_line(caption, pinned, clock),
+        }
     }
 
     /// The canvas caption's words as one string.
@@ -688,6 +727,13 @@ fn stream_line(
                 format_lag(status.phase_elapsed_secs)
             ),
         }),
+        Stream::Retrying => Some(match status.retry_in_secs {
+            Some(secs) if secs >= 1.0 => format!(
+                "stream failed \u{00b7} retrying in {}",
+                format_lag(secs.ceil())
+            ),
+            _ => "stream failed \u{00b7} retrying".to_string(),
+        }),
         Stream::Failed => Some("stream failed".to_string()),
     }
 }
@@ -703,6 +749,7 @@ fn stream_hover(stream: Stream, status: &LiveStatus) -> Option<&'static str> {
         } else {
             "No data has arrived for a while"
         }),
+        Stream::Retrying => Some("The live stream failed and will start again on its own"),
         Stream::Failed => Some("The live stream lost its connection — GO LIVE to try again"),
     }
 }
@@ -823,6 +870,10 @@ mod tests {
         live_cut: Option<LiveCut>,
         caption: CaptionContext,
         volume_3d_active: bool,
+        /// The other listed sites' streams, beside the focus one.
+        other_sites: Vec<Stream>,
+        /// The other drawn sites' frames.
+        others: Vec<crate::core::site_canvas::SiteFrame>,
     }
 
     impl<'a> S<'a> {
@@ -839,6 +890,8 @@ mod tests {
                 live_cut: None,
                 caption: CaptionContext::default(),
                 volume_3d_active: false,
+                other_sites: Vec::new(),
+                others: Vec::new(),
             }
         }
 
@@ -847,16 +900,22 @@ mod tests {
                 StreamActivity::Off => LivePhase::Idle,
                 StreamActivity::Connecting => LivePhase::AcquiringLock,
                 StreamActivity::Receiving => LivePhase::Streaming,
-                StreamActivity::Waiting | StreamActivity::Stalled => LivePhase::WaitingForChunk,
+                StreamActivity::Waiting | StreamActivity::Stalled | StreamActivity::Retrying => {
+                    LivePhase::WaitingForChunk
+                }
             };
             self.status = status;
             self
         }
 
         fn vm(&self) -> SessionVm {
+            let focus = Stream::classify(self.status.activity, self.phase, self.last_exit);
             SessionVm::build(SessionInputs {
                 now: FrameNow(self.now),
                 live_status: &self.status,
+                any_site_streams: any_site_streams(
+                    std::iter::once(focus).chain(self.other_sites.iter().copied()),
+                ),
                 live_phase: self.phase,
                 last_exit: self.last_exit,
                 selection: self.selection,
@@ -866,6 +925,7 @@ mod tests {
                 live_cut: self.live_cut.clone(),
                 caption_context: self.caption,
                 volume_3d_active: self.volume_3d_active,
+                others: self.others.clone(),
             })
         }
     }
@@ -1132,6 +1192,43 @@ mod tests {
         assert_eq!(
             vm.canvas_caption_text(&Utc).as_deref(),
             Some("showing 11:28:51 · playhead 11:30:49 · 0.5° at 11:30 is downloading")
+        );
+    }
+
+    /// Other sites behind the playhead: the caption names them in place of
+    /// the focus's own lag, and gives way to a blank focus.
+    #[wasm_bindgen_test]
+    fn other_sites_behind_the_playhead_take_the_caption() {
+        use crate::core::site_canvas::SiteFrame;
+        let f = frame(t(11, 29, 1), 1, 0.5);
+        let mut s = S::at(t(11, 36, 22));
+        s.playhead = t(11, 30, 49);
+        s.displayed = Some(&f);
+        s.caption = CaptionContext {
+            frame_step_secs: 90.0,
+            ..CaptionContext::default()
+        };
+        s.others = vec![SiteFrame {
+            id: "KMLB".to_string(),
+            frame: Some((t(11, 20, 0), t(11, 20, 15))),
+            frame_step_secs: 90.0,
+        }];
+        assert_eq!(
+            s.vm().canvas_caption_text(&Utc).as_deref(),
+            Some("KMLB showing 11:20:00 · playhead 11:30:49")
+        );
+        // Every other site with the playhead: the focus's own caption.
+        s.others[0].frame = Some((t(11, 30, 40), t(11, 30, 55)));
+        assert_eq!(
+            s.vm().canvas_caption_text(&Utc).as_deref(),
+            Some("showing 11:28:51 · playhead 11:30:49 · no data at 11:30")
+        );
+        // A blank focus always says why first.
+        s.others[0].frame = Some((t(11, 20, 0), t(11, 20, 15)));
+        s.displayed = None;
+        assert_eq!(
+            s.vm().canvas_caption_text(&Utc).as_deref(),
+            Some("no data at 11:30")
         );
     }
 
@@ -1414,6 +1511,20 @@ mod tests {
             s.vm().canvas_caption_text(&Utc).as_deref(),
             Some("no frame yet · waiting for 0.5° (antenna on 4.0°)")
         );
+
+        // Pinned while the stream waits to start again: say it failed.
+        let mut s = S::at(t(12, 0, 0)).streaming(waiting(30.0, None).retrying(11.5));
+        s.selection = PINNED;
+        s.caption = tilt(300.0);
+        let vm = s.vm();
+        assert_eq!(
+            vm.canvas_caption_text(&Utc).as_deref(),
+            Some("no frame yet · live stream failed, retrying")
+        );
+        assert_eq!(
+            vm.activity_chip.as_deref(),
+            Some("stream failed \u{00b7} retrying in 0:12")
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1602,6 +1713,7 @@ mod tests {
         assert_eq!(Stream::Connecting.headline_word(), Some("Connecting"));
         assert_eq!(Stream::Receiving.headline_word(), Some("Receiving"));
         assert_eq!(Stream::Waiting.headline_word(), Some("Waiting"));
+        assert_eq!(Stream::Retrying.headline_word(), Some("Reconnecting"));
         for s in [Stream::Off, Stream::Stalled, Stream::Failed] {
             assert_eq!(s.headline_word(), None);
         }
@@ -1634,5 +1746,57 @@ mod tests {
         // A point has no loop to style.
         s.selection = POINT;
         assert_eq!(s.vm().loop_style, None);
+    }
+
+    // ── The aggregate stream fact ──────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn a_session_streams_while_any_site_streams() {
+        assert!(!any_site_streams(std::iter::empty()));
+        assert!(!any_site_streams([Stream::Off]));
+        assert!(!any_site_streams([Stream::Off, Stream::Failed]));
+        assert!(any_site_streams([Stream::Off, Stream::Waiting]));
+        assert!(any_site_streams([Stream::Stalled, Stream::Off]));
+        for stream in [
+            Stream::Connecting,
+            Stream::Receiving,
+            Stream::Waiting,
+            Stream::Stalled,
+        ] {
+            assert!(any_site_streams([stream]), "{stream:?}");
+        }
+    }
+
+    /// With one site the aggregate is that site's own `is_running`, so every
+    /// surface reads as it did before the sites were listed.
+    #[wasm_bindgen_test]
+    fn one_site_aggregate_is_that_sites_stream() {
+        for stream in [
+            Stream::Off,
+            Stream::Connecting,
+            Stream::Receiving,
+            Stream::Waiting,
+            Stream::Stalled,
+            Stream::Failed,
+        ] {
+            assert_eq!(
+                any_site_streams([stream]),
+                stream.is_running(),
+                "{stream:?}"
+            );
+        }
+    }
+
+    /// Another site's stream keeps the session's now cap and caption on the
+    /// stream even when the focus site's line reads off.
+    #[wasm_bindgen_test]
+    fn another_sites_stream_offers_rejoin() {
+        let mut s = S::at(t(12, 0, 0));
+        s.playhead = t(11, 30, 0);
+        assert_eq!(s.vm().now_cap, NowCap::GoLive);
+        s.other_sites = vec![Stream::Waiting];
+        let vm = s.vm();
+        assert_eq!(vm.now_cap, NowCap::Rejoin);
+        assert_eq!(vm.stream, Stream::Off);
     }
 }

@@ -18,7 +18,6 @@
 use crate::core::dialogs::{DialogId, DialogIntent, OwnedShortcut};
 use crate::core::keymap::{keymap_rows, KeyScope};
 use crate::core::transport::{LoopEdge, StepDir, StepUnit};
-use crate::core::RadarProduct;
 use crate::geo::ViewMode;
 use crate::state::AppState;
 use crate::ui::theme;
@@ -55,7 +54,7 @@ type PressedFn = fn(&egui::InputState) -> bool;
 type HandlerFn = fn(
     &mut AppState,
     &mut crate::subsystem::Live,
-    &crate::subsystem::Timeline,
+    &crate::subsystem::Sites,
     &mut crate::subsystem::Playback,
     &mut crate::subsystem::Chrome,
     &egui::Context,
@@ -181,10 +180,19 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         section: SECTION_PLAYBACK,
         owned: None,
         key_label: "P",
-        description: "Cycle product",
+        description: "Next product",
         pressed: |i| no_mods(i, egui::Key::P),
         scope: KeyScope::Always,
-        handler: handle_cycle_product,
+        handler: |state, _live, _sites, _playback, _chrome, _| step_product(state, true),
+    },
+    OneShotShortcut {
+        section: SECTION_PLAYBACK,
+        owned: None,
+        key_label: "Shift+P",
+        description: "Previous product",
+        pressed: |i| i.modifiers.shift_only() && i.key_pressed(egui::Key::P),
+        scope: KeyScope::Always,
+        handler: |state, _live, _sites, _playback, _chrome, _| step_product(state, false),
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
@@ -194,8 +202,8 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         pressed: |i| no_mods(i, egui::Key::E),
         // In 3D, E is reserved for heading rotation.
         scope: KeyScope::Only2D,
-        handler: |state, live, timeline, playback, _chrome, _| {
-            step_tilt(state, live, timeline, playback, true)
+        handler: |state, live, sites, playback, _chrome, _| {
+            step_tilt(state, live, sites, playback, true)
         },
     },
     OneShotShortcut {
@@ -205,8 +213,8 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Next tilt up the ladder (2D)",
         pressed: |i| i.modifiers.shift_only() && i.key_pressed(egui::Key::E),
         scope: KeyScope::Only2D,
-        handler: |state, live, timeline, playback, _chrome, _| {
-            step_tilt(state, live, timeline, playback, false)
+        handler: |state, live, sites, playback, _chrome, _| {
+            step_tilt(state, live, sites, playback, false)
         },
     },
     OneShotShortcut {
@@ -216,7 +224,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Go to a day",
         pressed: |i| no_mods(i, egui::Key::G),
         scope: KeyScope::Always,
-        handler: |state, _live, _timeline, _playback, _chrome, _| {
+        handler: |state, _live, _sites, _playback, _chrome, _| {
             state.push_command(crate::core::Intent::OpenGoToDay)
         },
     },
@@ -238,7 +246,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "2D top-down mode",
         pressed: |i| no_mods(i, egui::Key::Num1),
         scope: KeyScope::Always,
-        handler: |state, _live, _timeline, _playback, _chrome, _| {
+        handler: |state, _live, _sites, _playback, _chrome, _| {
             state.viz_state.switch_to_2d();
         },
     },
@@ -249,7 +257,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "3D globe mode",
         pressed: |i| no_mods(i, egui::Key::Num2),
         scope: KeyScope::Always,
-        handler: |state, _live, _timeline, _playback, _chrome, _| {
+        handler: |state, _live, _sites, _playback, _chrome, _| {
             state.viz_state.switch_to_3d_view();
         },
     },
@@ -260,7 +268,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Toggle 2D / 3D view",
         pressed: |i| no_mods(i, egui::Key::T),
         scope: KeyScope::Always,
-        handler: |state, _live, _timeline, _playback, _chrome, _| {
+        handler: |state, _live, _sites, _playback, _chrome, _| {
             state.viz_state.toggle_2d_3d();
         },
     },
@@ -290,9 +298,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Align North up (3D)",
         pressed: |i| no_mods(i, egui::Key::N),
         scope: KeyScope::Only3D,
-        handler: |state, _live, _timeline, _playback, _chrome, _| {
-            state.viz_state.camera.align_north()
-        },
+        handler: |state, _live, _sites, _playback, _chrome, _| state.viz_state.camera.align_north(),
     },
     // ---- General ----------------------------------------------------
     OneShotShortcut {
@@ -306,7 +312,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
                 || (i.key_pressed(egui::Key::Slash) && i.modifiers.shift)
         },
         scope: KeyScope::Always,
-        handler: |_state, _live, _timeline, _playback, chrome, _| {
+        handler: |_state, _live, _sites, _playback, chrome, _| {
             chrome.shortcuts_help_visible = !chrome.shortcuts_help_visible
         },
     },
@@ -361,7 +367,7 @@ pub(crate) fn handle_shortcuts(
     ctx: &egui::Context,
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
-    timeline: &crate::subsystem::Timeline,
+    sites: &crate::subsystem::Sites,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
 ) {
@@ -384,7 +390,7 @@ pub(crate) fn handle_shortcuts(
             continue;
         }
         if ctx.input(sc.pressed) {
-            (sc.handler)(state, live, timeline, playback, chrome, ctx);
+            (sc.handler)(state, live, sites, playback, chrome, ctx);
         }
     }
 
@@ -416,7 +422,7 @@ fn step_dir(ctx: &egui::Context) -> StepDir {
 fn handle_frame_step(
     state: &mut AppState,
     _live: &mut crate::subsystem::Live,
-    _timeline: &crate::subsystem::Timeline,
+    _sites: &crate::subsystem::Sites,
     _playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     ctx: &egui::Context,
@@ -431,7 +437,7 @@ fn handle_frame_step(
 fn handle_scan_step(
     state: &mut AppState,
     _live: &mut crate::subsystem::Live,
-    _timeline: &crate::subsystem::Timeline,
+    _sites: &crate::subsystem::Sites,
     _playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     ctx: &egui::Context,
@@ -447,7 +453,7 @@ fn handle_scan_step(
 fn handle_speed_step(
     state: &mut AppState,
     _live: &mut crate::subsystem::Live,
-    _timeline: &crate::subsystem::Timeline,
+    _sites: &crate::subsystem::Sites,
     _playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     ctx: &egui::Context,
@@ -479,7 +485,7 @@ fn view_start_anchored_at(view_start: f64, old_zoom: f64, new_zoom: f64, anchor_
 fn handle_zoom_step(
     _state: &mut AppState,
     _live: &mut crate::subsystem::Live,
-    _timeline: &crate::subsystem::Timeline,
+    _sites: &crate::subsystem::Sites,
     playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     ctx: &egui::Context,
@@ -516,7 +522,7 @@ fn handle_zoom_step(
 fn handle_loop_in(
     state: &mut AppState,
     _live: &mut crate::subsystem::Live,
-    _timeline: &crate::subsystem::Timeline,
+    _sites: &crate::subsystem::Sites,
     _playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
@@ -528,7 +534,7 @@ fn handle_loop_in(
 fn handle_loop_out(
     state: &mut AppState,
     _live: &mut crate::subsystem::Live,
-    _timeline: &crate::subsystem::Timeline,
+    _sites: &crate::subsystem::Sites,
     _playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
@@ -543,7 +549,7 @@ fn handle_loop_out(
 fn handle_go_live(
     state: &mut AppState,
     _live: &mut crate::subsystem::Live,
-    _timeline: &crate::subsystem::Timeline,
+    _sites: &crate::subsystem::Sites,
     _playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
@@ -559,7 +565,7 @@ fn handle_go_live(
 fn handle_stop_live(
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
-    _timeline: &crate::subsystem::Timeline,
+    _sites: &crate::subsystem::Sites,
     _playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
@@ -571,35 +577,29 @@ fn handle_stop_live(
     }
 }
 
-fn handle_cycle_product(
-    state: &mut AppState,
-    _live: &mut crate::subsystem::Live,
-    _timeline: &crate::subsystem::Timeline,
-    _playback: &mut crate::subsystem::Playback,
-    _chrome: &mut crate::subsystem::Chrome,
-    _: &egui::Context,
-) {
-    let products = RadarProduct::all();
-    if let Some(idx) = products.iter().position(|p| *p == state.viz_state.product) {
-        state.push_command(crate::core::Intent::TopBar(
-            crate::core::top_bar::TopBarIntent::SetProduct(products[(idx + 1) % products.len()]),
-        ));
-    }
+/// P / Shift+P: the next or previous product ([`crate::core::RadarProduct::step`]).
+fn step_product(state: &mut AppState, forward: bool) {
+    state.push_command(crate::core::Intent::TopBar(
+        crate::core::top_bar::TopBarIntent::SetProduct(state.viz_state.product.step(forward)),
+    ));
 }
 
 /// E / Shift+E: the next row of the one tilt list ([`crate::core::ladder`]),
 /// Latest included, as the same pick a ladder row click makes.
 fn step_tilt(
     state: &mut AppState,
-    live: &mut crate::subsystem::Live,
-    timeline: &crate::subsystem::Timeline,
+    _live: &mut crate::subsystem::Live,
+    sites: &crate::subsystem::Sites,
     playback: &mut crate::subsystem::Playback,
     down: bool,
 ) {
     let entries = state.current_elevation_list(
         &playback.state,
-        &timeline.scans,
-        live.radar_model
+        &sites.focus().scans,
+        sites
+            .focus()
+            .live
+            .radar_model
             .volume
             .as_ref()
             .and_then(|v| v.vcp_pattern.as_ref()),
@@ -619,7 +619,7 @@ fn step_tilt(
 fn handle_open_site(
     _state: &mut AppState,
     _live: &mut crate::subsystem::Live,
-    _timeline: &crate::subsystem::Timeline,
+    _sites: &crate::subsystem::Sites,
     _playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
@@ -630,7 +630,7 @@ fn handle_open_site(
 fn handle_reset_camera(
     state: &mut AppState,
     _live: &mut crate::subsystem::Live,
-    _timeline: &crate::subsystem::Timeline,
+    _sites: &crate::subsystem::Sites,
     _playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
@@ -646,7 +646,7 @@ fn handle_reset_camera(
 fn handle_focus_site(
     state: &mut AppState,
     _live: &mut crate::subsystem::Live,
-    _timeline: &crate::subsystem::Timeline,
+    _sites: &crate::subsystem::Sites,
     _playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
@@ -717,6 +717,9 @@ fn handle_continuous_movement(
 // Help overlay
 // ---------------------------------------------------------------------------
 
+/// Below this content width the help map stacks its sections in one column.
+const TWO_COLUMN_MIN_WIDTH: f32 = 620.0;
+
 pub(super) struct ShortcutsHelpLayer;
 
 impl super::layout::Layer for ShortcutsHelpLayer {
@@ -737,16 +740,31 @@ impl super::layout::Layer for ShortcutsHelpLayer {
 fn draw_shortcuts_help(ctx: &egui::Context, state: &mut AppState) {
     let out = super::dialog::Dialog::new(DialogId::ShortcutsHelp, "Keyboard shortcuts")
         .subtitle("Shortcuts pause while a dialog is open; ? closes this one")
+        .width(super::dialog::Width::Full)
         .show(ctx, |ui| {
             let max_h = ctx.input(|i| i.viewport_rect().height()) * 0.65;
+            let is_3d = state.viz_state.view_mode() == ViewMode::Globe3D;
+            let mac = ctx.os() == egui::os::OperatingSystem::Mac;
             egui::ScrollArea::vertical()
                 .max_height(max_h)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    let is_3d = state.viz_state.view_mode() == ViewMode::Globe3D;
-                    let mac = ctx.os() == egui::os::OperatingSystem::Mac;
-                    for section in SECTION_ORDER {
-                        render_help_section(ui, section, is_3d, mac);
+                    // Playback is as long as the other three sections together,
+                    // so two columns fit the whole map without scrolling.
+                    if ui.available_width() >= TWO_COLUMN_MIN_WIDTH {
+                        ui.columns(2, |cols| {
+                            let (first, rest) = SECTION_ORDER.split_at(1);
+                            for section in first {
+                                render_help_section(&mut cols[0], section, is_3d, mac);
+                            }
+                            for section in rest {
+                                render_help_section(&mut cols[1], section, is_3d, mac);
+                            }
+                        });
+                    } else {
+                        for section in SECTION_ORDER {
+                            render_help_section(ui, section, is_3d, mac);
+                        }
                     }
                 });
         });
@@ -855,9 +873,9 @@ mod tests {
     /// Drive `handle_stop_live` directly with the real state bundle.
     fn run_stop_live(live_phase: crate::core::LivePhase) -> Vec<crate::core::Intent> {
         let mut state = crate::state::AppState::default();
-        let mut live = crate::subsystem::Live::new(crate::nexrad::RealtimeChannel::new());
+        let mut live = crate::subsystem::Live::new();
         live.mode_state.phase = live_phase;
-        let timeline = crate::subsystem::Timeline::default();
+        let sites = crate::subsystem::Sites::default();
         let mut playback = crate::subsystem::Playback::default();
         let mut chrome = crate::subsystem::Chrome::new();
         let ctx = egui::Context::default();
@@ -865,7 +883,7 @@ mod tests {
         handle_stop_live(
             &mut state,
             &mut live,
-            &timeline,
+            &sites,
             &mut playback,
             &mut chrome,
             &ctx,

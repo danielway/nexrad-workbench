@@ -55,8 +55,9 @@ glance to power-user archival analysis, and from desktop to phone.
 5. Scale gracefully from a casual glance to power-user archival analysis — and
    from desktop to phone.
 
-**Non-goals (v1):** multi-radar mosaic timelines, collaborative sessions,
-alerting/notifications, offline-first guarantees beyond the existing cache.
+**Non-goals (v1):** collaborative sessions, alerting/notifications,
+offline-first guarantees beyond the existing cache, more than one site on a
+phone, and a product, tilt rule or playback of its own for each site.
 
 ## 2. Design Principles
 
@@ -93,18 +94,41 @@ alerting/notifications, offline-first guarantees beyond the existing cache.
 
 | Concept | Definition |
 |---|---|
-| **Radar site** | A physical radar installation, identified by a short site ID (e.g. `KDMX`). The site fixes the geographic origin for all rendering; the timeline is scoped to one site at a time. |
+| **Radar site** | A physical radar installation, identified by a short site ID (e.g. `KDMX`). A site fixes the geographic origin of its own disc, scans and stream; the map can show several at once (below). |
 | **Radial** | A single ray of data along one azimuth. The smallest unit. |
 | **Sweep / tilt / elevation** | One full 360° rotation at a single elevation, composed of radials. SAILS/MRLE VCPs may revisit low tilts mid-volume. |
 | **Volume scan** | A complete set of sweeps across several elevations, ~5 minutes. The unit an archive file represents. |
 | **Dead time** | The gap between sweeps while the instrument changes elevation and adjusts speed for the next sweep's parameters. |
 | **VCP (Volume Coverage Pattern)** | Dictates the pattern of sweeps (elevations, products, ordering, timing) for each scan. Carried in the scan's header record (Message Type 5). |
-| **Product / Elevation** | Filterable dimensions enumerated by the active VCP. Elevations are addressed by **elevation number** within the VCP, unique within a scan even when the literal angle repeats (SAILS/MRLE supplemental cuts). |
+| **Product / Elevation** | Filterable dimensions enumerated by the active VCP. A cut is identified by its **elevation number** within the VCP, unique within a scan even when the literal angle repeats (SAILS/MRLE supplemental cuts); storage keys and the inspector use it. A held **tilt is an angle**, not a number: it matches every cut whose angle rounds to the same 0.1° and that plays the same part of a split pair (surveillance for reflectivity, Doppler otherwise), in volume order — the base cut and each SAILS/MRLE repeat. |
 | **Chunk** | Live-streaming delivery unit; 3 or 6 chunks compose a sweep. |
-| **Frame** | UI term: a sweep matching the *currently selected product + tilt* — something the canvas can render. The timeline's primary unit. |
+| **Frame** | UI term: a sweep matching the *currently selected product + tilt* — something the canvas can render. The timeline's primary unit. Under SAILS ×3 a held 0.5° is four frames a volume (about one every two minutes); under VCP 35 it is one. |
 | **Live edge** | The right boundary of acquired data; "now" minus dissemination latency. |
 | **Tether** | Whether the playhead is following the live edge. |
 | **Loop window** | A time/frame range playback cycles over; may be pinned to the live edge. |
+
+**Sites and the focus.** A desktop map shows up to three sites at once; a
+phone shows one, and a desktop window narrowed into the phone's layout keeps
+only the focus. Every site on the map is the same kind of thing: each has
+its own scans, frame, stream and disc, all at the one shared playhead,
+product and tilt rule, drawn older frame first so the newer one is on top.
+Each disc carries its own range rings and Rays marks, the focus's at full
+strength and the others' at half.
+One of them is the **focus**: the surfaces that hold a single value (the
+tilt ladder, the frame readout, the age pill, the caption's first words, the
+timeline's full track, the overview's storm bars, the calendar) follow it.
+What can be a list or a sum covers every site: the top bar's site chip reads
+`KTBW · +2`, the caption names other sites whose frame is off the playhead
+(§11.3), hovering a disc gives its site's frame time and age, the probe
+reads every disc under the cursor, the activity chip sums the streams
+(§4), each other site has a lane under the track (§5), and a range download
+fetches and prices every site (§10.1). The 3D views draw every site (§9.4)
+and storm cells are detected once over every site shown (§13.2). The site
+picker adds a site ("+ Also show"), removes one, moves the focus or keeps
+only the focus; picking a site plainly replaces the set. The map has its own
+centre, set when the focus changes or from a link, apart from any radar's
+position. Preferences remember the focus; the set itself travels only in the
+link.
 
 ### 3.1 Archive vs. streaming
 
@@ -142,9 +166,9 @@ collection time is not yet late if the ingest-lag window hasn't elapsed.
 
 - **Canvas** — full-bleed, dominant. Chrome is dark and muted so reflectivity
   palettes own the color space.
-- **Top readouts** — radar site, product/tilt selector, **displayed-frame
-  timestamp** (primary), data age when tethered ("updated 1m ago"), local time
-  with UTC on tap.
+- **Top readouts** — radar site (the focus, with the count of other sites on
+  the map), product/tilt selector, **displayed-frame timestamp** (primary),
+  data age when tethered ("updated 1m ago"), local time with UTC on tap.
 - **Bottom cluster** — transport row (selection chip, play/pause, frame step,
   speed) above the timeline. The **selection chip** names what plays — `LIVE`,
   a point ("At 14:02:10 · 2:17 behind"), a fixed range, or a range ending now
@@ -158,26 +182,38 @@ collection time is not yet late if the ingest-lag window hasn't elapsed.
   moves the view, never playback.
 - **Activity chip** — tiny, near the transport (and in the mobile top bar);
   always present so its absence is never ambiguous: a muted "Up to date" when
-  idle, "↓ 2 Downloading" with a pulse when acquiring. Tap opens the activity
-  sheet.
+  idle, "↓ 2 Downloading" with a pulse when acquiring. With more than one
+  site streaming it sums them ("Receiving 3 sites · 1 stalled"). Tap opens
+  the activity sheet.
 - **Scan inspector** — popover/sheet opened from a scan (right-click on desktop,
   long-press on touch): lists every sweep with tilt, size, cache state, per-chunk
   progress, tap-to-fetch.
 - **Activity sheet** — the single acquisition-transparency surface: a stage
   strip (Queued › Downloading › Processing › Finishing) with live counts,
   rolling throughput, active/queued/recent downloads with sizes and
-  cancel/retry, the acquisition policy toggles, and a collapsed **Details**
+  cancel/retry, a section per site with its stream, the acquisition policy
+  toggles, and a collapsed **Details**
   disclosure holding session totals and the recent-request log. Raw request
   counts and deep diagnostics (per-phase timings, worker queue depth, FPS,
-  cross-origin isolation, VCP forecast) appear inside Details only in
+  VCP forecast) appear inside Details only in
   developer mode.
 
 ## 5. The Timeline
 
-The timeline spans the full available history of the active site
+The timeline spans the full available history of the focus site
 (~1991 → now − ~30 min) and is **zoomable**, with structural detail tied to
 zoom. It is the single shared map of three decoupled systems: **acquisition**,
 **cache**, and **playback**.
+
+The main strip is the focus's track. Each other site on the map gets an
+11 px lane under it, in the order the sites were added, with its ID at the
+left: one block per volume, solid when it is on the device, hollow when it
+is only listed, hatched while it waits to download, pulsing while it
+downloads, a red edge when its download failed, and the volume its
+stream is collecting solid up to the newest radial with a dashed outline to
+its projected end (red from where the chunks stopped when that stream is
+stalled). One now line crosses the strip and the lanes. The selection strip,
+the zoom and the overview are shared; the overview's bars are the focus's.
 
 ### 5.1 Selection vs. playback position
 
@@ -293,8 +329,10 @@ cached scans.
 A named range selection can be persisted as a **saved event** — a reusable
 bookmark across sessions. Saved events render as colored bars on the timeline,
 surface in a list grouped by site, and offer a "navigate to" action that jumps
-the playback position and selection to the event's range, switching the active
-site if necessary.
+the playback position and selection to the event's range. An event from
+another site picks that site the way the site picker does: it becomes the
+only site on the map and the focus, and if it was already on the map it keeps
+its scans rather than being added twice.
 
 ## 6. Live Streaming & the Tether Model
 
@@ -312,10 +350,22 @@ mode — it is a tether state.
   grows; resuming plays from the pause point (now detached). Detachment is made
   explicit via the chip's change. (Play/pause while tethered does **not**
   enter the pinned loop.)
-- **Session start:** the app opens **tethered to live** for the selected site
-  (the dominant use case). The default live experience is **single-frame
-  following**; the pinned loop (§7) is opt-in via the selection chip's menu, one tap away.
-  Switching sites while tethered re-tethers on the new site.
+- **Session start:** the app opens **tethered to live** (the dominant use
+  case). The default live experience is **single-frame following**; the
+  pinned loop (§7) is opt-in via the selection chip's menu, one tap away.
+  Picking another site while tethered re-tethers on the new site.
+- **Several sites:** while live, every site on the map streams on its own
+  channel, and a site added while live starts its stream at once. The tether,
+  the stop and the stream's phase (connecting, receiving, waiting) belong to
+  the session, not to a site: the phase follows the focus's chunks, the
+  session streams from the first site's start until the user stops it, and
+  going live or stopping acts on every site together.
+- **A failed stream:** a site whose stream fails (it never connects, or the
+  connection drops) starts again on its own after 5 s, then 15 s, 30 s and
+  every 60 s, until it receives data or the user stops the stream. Meanwhile
+  the session stays live, the activity chip says "Reconnecting", its line
+  reads "stream failed · retrying in 0:12", and a map with nothing current
+  says "live stream failed, retrying".
 - **Stopping:** stop is explicit and symmetric with go-live. While tethered,
   the timeline now-cap ("◉ LIVE"), the selection chip's "Stop the stream", and
   **Shift+L** all stop the stream at the live edge; on mobile (which has no
@@ -388,7 +438,9 @@ speed is saved with the preferences. Zoom never changes it (§5.5).
   **1 / 2 / 5 / 10 / 15 fps** (5 fps default). Frames only ever shows whole
   sweeps: live, the last complete sweep for the selected tilt holds until the
   next one finishes, and the canvas tag reads "collecting 2/3" meanwhile.
-  Frames is the default mode.
+  With several sites the frames are every site's frames together; frames of
+  different sites within a minute of each other are one frame at the later
+  time, so a step shows each site's new sweep. Frames is the default mode.
 
 The speed control shows × in Rays and fps in Frames. Switching modes swaps the
 speed list and snaps the active speed to the nearest equivalent, so the
@@ -412,8 +464,12 @@ tilt selected, the reveal pauses while the antenna is on other tilts.
 
 ### 9.1 Filters
 
-The user selects an **elevation** (by number within the active VCP — §3) and a
-**product** from the available set. The filter does double duty: it **drives
+The user selects a **tilt** (an angle; every visit of it in the volume is a
+frame — §3) and a **product** from the available set: reflectivity (REF),
+velocity (VEL), spectrum width (SW), differential reflectivity (ZDR),
+correlation coefficient (CC) and differential phase (KDP). Clutter Filter
+Power is not offered until the worker decodes it as its own product (the
+decoder keeps its moment for that day). The filter does double duty: it **drives
 sweep matching** for rendering (below) and it **scopes acquisition** (§10) — only
 matching data is fetched/cached.
 
@@ -452,20 +508,26 @@ staying in sync with the playback position.
 The radar projects to the canvas in two views (2D by default); sweep matching and
 the playback model are identical across them — only the projection differs.
 
-- **2D map.** Equirectangular projection centered on the active site, drawn
-  alongside the toggleable overlays in §13.
+- **2D map.** Equirectangular projection centered on the map's own centre
+  (§3), with every site's disc on it, drawn alongside the toggleable overlays
+  in §13.
 - **3D globe.** WebGL2 sphere with a single **Google-Earth-style orbit camera**:
   it orbits a pivot point on the surface (always the screen center) at a
   distance, with tilt and heading. Left-drag pans the globe (the grabbed point
   sticks to the cursor), right/middle/Ctrl-drag tilts and rotates, scroll zooms
   toward the cursor, and double-click flies the pivot to the clicked point with
   a smooth transition. Zoomed out it behaves like a planet camera; zoomed in it
-  orbits the site — no mode boundary. A fresh 3D view (and R) opens over the
-  site tilted 40° toward north, so it reads as 3D rather than as the flat map.
-  The globe draws a **volumetric ray-march** by default that composites all
-  elevations of the active scan into a single 3D pass with a user-controlled
-  density cutoff; turning it off (View tab, "Draw every tilt") renders the
-  selected elevation as a surface. While it is on, archive fetches keep whole
+  orbits the pivot — no mode boundary. A fresh 3D view (and R) opens over the
+  map centre tilted 40° toward north, so it reads as 3D rather than as the
+  flat map. The globe draws a **volumetric ray-march** by default that
+  composites all elevations of each site's scan into a 3D pass with a
+  user-controlled density cutoff; turning it off (View tab, "Draw every
+  tilt") renders the selected elevation as a surface. Every site on the map
+  draws: surfaces older frame first as in 2D, then volumes from the farthest
+  from the camera to the nearest, so two overlapping volumes read as two
+  translucent bodies. A desktop holds a volume for every site on the map; a
+  phone holds one. The ladder, the colour scale and the caption describe the
+  focus. While volume drawing is on, archive fetches keep whole
   volumes whatever tilt is selected, and the sweep-level controls stand down
   (the session's tilt role, `DrawsAll`): the ladder keeps its bars and caret
   but highlights no row and takes no clicks, every cut on the device wears the
@@ -499,7 +561,9 @@ default.
   or via an explicit "download this range" action. A finalized selection spanning
   **≤ 6 hours** (~70+ volumes at ~5 MB each) downloads immediately; a longer span
   first shows an estimate (scan count / approximate size) and asks for
-  confirmation.
+  confirmation. A range is fetched for every site on the map, and the
+  confirmation prices them together (`3 sites · 90 scans, 1.3 GB to
+  download`).
 
 This split is the primary guardrail against accidental mass downloads.
 
@@ -591,7 +655,10 @@ only.
 2. When playhead time ≠ frame time (undownloaded region, gap), keep showing the
    most recent available frame and surface the discrepancy via **caption only**
    ("showing 2:41 · fetching 2:51…") — no canvas shimmer. Cheapest, honest, reads
-   in grayscale and to screen readers.
+   in grayscale and to screen readers. With several sites the caption names
+   up to two other sites whose frame is more than a frame off the playhead,
+   newest first ("KJAX showing 02:57:12 · KMLB 02:56:33 · playhead
+   03:00:00"); a blank focus still says why first.
 3. At the live edge, show data age ("updated 1m ago") — radar "live" is minutes
    old by nature; acknowledging it builds trust exactly when severe weather makes
    users notice lag.
@@ -615,7 +682,8 @@ explicit inverse; neither key is a toggle, so go-live can never accidentally
 stop the stream) · +/− timeline zoom anchored at the playhead · **[** / **]**
 speed down/up. Camera pan uses WASD (the arrow keys
 no longer pan the camera); in 3D, **Q/E** rotate the heading and **R/F/N**
-reset / focus the site / align north via animated fly-to. **1/2** select 2D/3D;
+reset / fly back to the map centre / align north via animated fly-to.
+**1/2** select 2D/3D;
 **T** toggles.
 
 ## 13. Overlays, Tools & Platforms
@@ -628,7 +696,7 @@ Independent rendering layers that can be toggled on/off:
   markers.
 - **National mosaic** — a CONUS-wide quality-controlled base-reflectivity
   composite, fetched live and refreshed periodically. Rendered with a **circular
-  cutout** around the active site so the per-site render isn't obscured.
+  cutout** around the focus site so its render isn't obscured.
 - **NWS active alerts** — polygon footprints of active alerts, plus a top-bar
   chip surfacing the highest-severity alert intersecting the visible map.
 - **mPING storm reports** — crowdsourced surface observation markers.
@@ -651,19 +719,165 @@ site) never prints under the toolbar, the colour scale or the tray, or half off
 the canvas: it is hidden, not nudged, so a label always marks its place. A
 radar site's ID label is hidden when a city label or another site's label sits
 within 12 px of it (KFSD beside Sioux Falls, KOAX beside Omaha); the site's
-dot stays, and the current site's label always prints.
+dot stays, and the label of every site on the map always prints.
 
 ### 13.2 Tools
 
 Interactive measurement and analysis affordances on the 2D canvas:
 
 - **Data probe** — hover for lat/lon, azimuth/range, the underlying gate value,
-  and the radial's collection timestamp. (Named "Data probe" to free "inspector"
+  and the radial's collection timestamp; where discs overlap, one line per
+  site under the cursor, the focus first. (Named "Data probe" to free
+  "inspector"
   for the scan inspector in §4.)
-- **Distance Measure** — click two points to read the great-circle distance.
-- **Storm Cells** — detect connected components above a configurable reflectivity
-  threshold (reflectivity only, 2D only, once per displayed sweep); each cell
-  renders as an outline ellipse with a centroid marker and its max dBZ label.
+- **Distance Measure** — click two points to read the great-circle distance
+  (km, nm and mi; the readout sits past the end point, or the first spot
+  beside the line that covers neither end nor the map chrome). A third click starts over. Dragging
+  an end moves it; the map pans only when the drag starts away from both
+  ends.
+  - **Snap.** With storm cells and Tracks on, an end placed or dropped
+    within 16 px (24 px on the phone) of a lettered track's centroid snaps
+    to it and shows the letter beside its marker; a ring under the pointer
+    previews what a click would snap to. Only lettered tracks snap: a cell
+    seen once, with no letter yet, does not. An end placed on the My
+    location dot snaps to it and follows the fix.
+  - **Follow.** A snapped end follows its storm's centroid as the volume
+    changes, scrubbing or live, and the line and readout follow it. A
+    coasting track keeps it. When the track ends (missing from a finished
+    volume; also scrubbing back before it had a letter, turning Tracks off,
+    or changing site) the end lets go where the storm was last seen and
+    draws muted, still lettered; the readout says `Track B ended: point
+    stays where it was last seen`. Dragging a snapped end away unsnaps it.
+  - **Readout.** Under the distance, a storm to a fixed point (a map point,
+    My location or an ended track) adds its closest approach from the
+    track's motion: `Closest approach 4.2 km in 18 min · high confidence`;
+    "Closest approach: motion not known yet" while the motion is below the
+    forecast arrow's confidence, "Moving away: closest approach has passed",
+    "Closest approach more than an hour out", or "B is stationary". Two
+    storms add how the gap changes: `Converging at 12 km/h · closest 3.1 km
+    in 25 min`, `Diverging at 8 km/h`, "Holding about the same distance"
+    (under 2 km/h), or "A and B: motion not known yet".
+  - The measurement is not carried in the link.
+- **Storm Cells** (Layers › Analysis; over any product, 2D only). The
+  detector runs on the volume's lowest reflectivity cut whatever product or
+  tilt is on screen, so the cells stay over velocity, CC and the rest (a
+  couplet inside a cell). It segments that sweep at nested thresholds 5 dB
+  apart and reports *cells* (the finest distinct storms) and *groups* (one
+  envelope holding two or more cells: a supercell line, an MCS, a
+  hurricane's shield).
+  - **Footprint.** A cell's footprint is its share of the envelope: its core
+    (the echo at the level where it became distinct) grown outward over the
+    envelope, strongest echo first, so the cells of a group tile it and two
+    storms split along the weakest echo between them. A lone cell's footprint
+    is its whole envelope. Area, mean dBZ, centroid and the hit test refer to
+    the footprint.
+  - **Outline.** What is drawn picks out the storms without interior
+    borders. Every envelope, a group's or a lone cell's, draws as one faint,
+    thin solid ring (1 px; 1.5 px on the phone, at about two thirds of the
+    cell stroke's opacity over a thin halo, simplified to about 2.5 km so a
+    rainband reads as a smooth ring). Inside it each cell draws its core:
+    for a cell in a group, the echo at the level where it became distinct;
+    for a lone cell, the echo around its peak at the core level (envelope
+    + 10 dB). Cores are one light stroke over a thin dark halo (1.6 px; 2 px
+    on the phone) so they read on every part of the palette. Intensity is
+    never the stroke's color.
+  - **Chip.** The cell's peak dBZ sits in a small mono chip at the outline's
+    top-right (11 px; 12 px on the phone), or its bottom-right when that
+    spot is taken. Chips are placed strongest first and skipped when both
+    spots would crowd one already placed; an outline smaller
+    than about 14 px on screen carries none. With Tracks on the chip leads
+    with the track's letter (`B 58`) and ends with ↑ or ↓ when the peak
+    moved more than 3 dB over the last three volumes.
+  - **Card.** On the desktop, hovering inside a footprint opens a card beside
+    the pointer: peak, area, mean dBZ, the level at which the cell became
+    distinct from its neighbours ("Distinct at 50 dBZ"), group membership
+    ("1 of 5 in this group") and the bearing and range from the radar. On the
+    phone a tap inside a cell selects it (its outline thickens) and a compact
+    card sits above the bottom of the map; a tap anywhere else closes it.
+    When footprints nest, the strongest cell wins. With the data probe on,
+    the probe names the cell instead (`Cell 62 dBZ · 48 km²`, `Cell B …`
+    when tracked) and the hover card stays away. With Tracks on the card
+    also gives the trend in its title (`D · 64 dBZ peak ↑ from 60`), motion
+    (`Moving NE 47 km/h, high confidence`, or `Stationary`), age (`Tracked
+    6 volumes · 25 min`) and, when My location is on, the cell's distance
+    and bearing from you and its closest approach (`Closest to you: 14 km
+    in 22 min`; withheld beyond an hour, "Moving away from you" when it
+    is). The phone's card folds motion and age into one line ("Moving NE 82 km/h, high confidence · 34 min").
+    For closest approach to any other point, or between two storms, snap a
+    distance measurement to the track (Distance Measure, above).
+  - **Column** (the card's vertical extent). Once the volume's higher
+    reflectivity tilts are on device, each cell's footprint is sampled on
+    every tilt (one cut per tilt), and the card adds the cell's echo top
+    and the strongest echo in its column with its height (`Echo top ~13 km
+    · max 63 dBZ at 3 km`; `≥` when the highest tilt still has echo, so the
+    real top is above). The echo top is the highest sample of at least
+    18 dBZ over the footprint (from a tilt with three or more such gates);
+    heights are beam heights above the radar (4/3 earth radius); values pass
+    a three-gate median along each radial so a single gate cannot set them.
+    It is the column over the lowest-cut footprint, so a storm that leans
+    far off it is sampled only where it overhangs it. While the volume's
+    tilts are not all on device (a live volume still arriving, a volume
+    fetched cut by cut) the line says "(partial volume)"; the phone folds it
+    into one line. The columns come after the cells, so they never delay
+    them, and only for the displayed volume. Nothing on the map changes
+    (no 3D drawing).
+  - **Tracks** (the checkbox under the slider). Cells are tracked across
+    volumes (SCIT-style: predicted from their recent motion, matched by
+    distance, area and peak, coasting two volumes before a track ends).
+    A track gets a letter (A–Z, then AA, AB…) once it has been seen in
+    two volumes, or at once when it splits off a lettered storm; a cell
+    seen only once shows its peak alone and uses no letter up, so letters
+    go only to storms that last. A letter stays with its storm and is
+    never handed out again until the letters start over (another site is
+    picked, or the map goes from one site to several or back). The storm's
+    path, every centroid seen (up to 24, about two hours), draws as small
+    dots on a thin
+    line that fades with age, newest strongest; a track that split off
+    another starts with a short dashed join to the parent's centroid at the
+    split. A dashed arrow points to where the cell will be in 30 minutes
+    once its motion is confident (three volumes on a steady course).
+    Turning tracks on also detects up to twelve volumes (about an hour)
+    before the one on screen, nearest first, among those already on the
+    device; it never downloads volumes just for a path. The volume on
+    screen does not wait for them: its tracks gain motion and path as they
+    land.
+    Scrubbing back over volumes already seen, or a loop wrapping, shows
+    the same letters. A volume whose cells arrive late (a loop that runs
+    ahead of detection) is tracked when they do, and the volumes after it
+    are tracked again; letters already shown stay with their storms.
+    Scrubbing more than 20 minutes before the first volume seen
+    starts over with new letters.
+  - **Rays and live.** Rays shows the previous sweep ahead of the sweep line
+    and the current one behind it; cells belong to the current sweep, so a
+    cell draws only once its whole footprint is behind the line and never
+    sits on another sweep's pixels. Cells on a live sweep that is still
+    arriving are provisional: muted outline, hollow chip, and the card says
+    so.
+  - **Slider.** "Min dBZ" (20–60, default 35) is the envelope: the weakest
+    echo that can belong to a cell. A cell needs a core 10 dB above it. The
+    slider works over every product; off reflectivity it notes "Cells from
+    reflectivity".
+  - **Several sites.** With more than one site on the map, the cells are
+    detected once on a composite of every site's lowest reflectivity cut:
+    one 500 m grid around the echo, taking the higher reflectivity where
+    discs overlap. A storm two radars see is one storm with one outline,
+    one chip and one letter, and the tracks, paths and arrows come from
+    one tracker over the whole map. A storm is seen anew only when the
+    radar that shapes it cuts again, so on the composite a track coasts at
+    least 13 minutes before it ends, and a new storm gets its letter at
+    that radar's second cut. The card measures bearing and range
+    from the nearest site that sees the cell and ends with the sites that
+    see it (`KTBW · KMLB`). These cells have no column yet: the card
+    leaves out the echo top and column line, which are one radar's. In
+    Rays a cell waits for the sweep line of every site that sees it.
+    Distance measurements snap to these tracks. Going from one site to
+    several, or back, starts the letters over and lets snapped endpoints
+    go; adding a third site or taking one of three away keeps them. With
+    one site nothing changes: cells come from that radar's own sweep at
+    full resolution.
+  - **3D** draws no cells, card or probe line.
+  - The link carries the overlay as `cells=<dbz>` and tracks as `tracks=1`
+    (§13.4).
 
 ### 13.3 Responsive behavior
 
@@ -671,7 +885,7 @@ Interactive measurement and analysis affordances on the 2D canvas:
 |---|---|---|
 | Desktop ≥1200px | Overview + full strip (~56px) + transport row + readouts | Inspector as popover or side panel; hover tooltips |
 | Touch, short side ≥500 pt | Desktop layout with larger targets | Sheets instead of side panels; pinch zoom. (A distinct tablet tier is out of scope this pass — §16.) |
-| Phone (a touch screen whose short side is under 500 pt, in either orientation; or any window under 500 px wide) | A 120 px dock: a 66 px row of volumes at three zoom stops over a transport row (play · selection chip · NOW / 3 H / 24 H · LIVE when not live); the calendar sheet stands in for the overview | Canvas full-bleed; turned on its side the phone keeps this layout (map full width, the top bar above, the dock along the bottom, its row's blocks spread across the width) and its sheets move to a full-height side sheet on the right that scrolls; a mouse on a short wide window stays desktop; chrome auto-hides during playback, tap to reveal; ranges are never drawn (presets and the long-press sheet; a range shows as one amber bracket); 3D view is desktop-only |
+| Phone (a touch screen whose short side is under 500 pt, in either orientation; or any window under 500 px wide) | A 120 px dock: a 66 px row of volumes at three zoom stops over a transport row (play · selection chip · NOW / 3 H / 24 H · LIVE when not live); the calendar sheet stands in for the overview | Canvas full-bleed; turned on its side the phone keeps this layout (map full width, the top bar above, the dock along the bottom, its row's blocks spread across the width) and its sheets move to a full-height side sheet on the right that scrolls; a mouse on a short wide window stays desktop; chrome auto-hides during playback, tap to reveal; ranges are never drawn (presets and the long-press sheet; a range shows as one amber bracket); one site on the map (a link's `also` is ignored); 3D view is desktop-only |
 
 **The phone timeline is a row of volumes you can touch.** Not a ruler with
 marks on it: each volume is one mark, and everything the row says is in how
@@ -773,8 +987,9 @@ column fills.
 The sheet's month is not persisted or in the link.
 
 **The calendar on the desktop.** The desktop has the overview lane, but
-reaching a day years back by zooming it is slow, so the same calendar opens
-as a popover above the playhead clock: from the calendar button beside the
+reaching a day years back by zooming it is slow, so the same calendar, for
+the focus site, opens as a popover above the playhead clock: from the
+calendar button beside the
 clock, from **G**, or from the chip menu's "Go to a day… G". A picked day
 lands as on the phone (stream stopped, paused on the stormiest volume) and
 the strip shows that whole day with the overview at 48 h around it. Under
@@ -823,14 +1038,17 @@ decision are `core::link`; preferences are `core::prefs`.
 
 | What | Key | Notes |
 |---|---|---|
-| Site | `site` | An unknown site falls back to the preferred site |
+| Site | `site` | The focus. An unknown site falls back to the preferred site |
+| Other sites on the map | `also` | In order (`also=KMLB,KJAX`). Unknown sites and those over the layout's cap are dropped; ignored on the phone |
 | Playhead time | `t` | Unix seconds; not written while pinned |
 | Selection | `sel` | `now` (pinned point), `last6f` / `last1800s` (range ending now), `START~END` (fixed range); absent = a point at `t` |
 | Play mode | `mode` | `frames` or `rays` |
-| Product | `product` | Short code (`REF`, `VEL`, …) |
+| Product | `product` | Short code: `REF`, `VEL`, `SW`, `ZDR`, `CC` or `KDP`. A product that is not offered (`CFP`) is ignored and the default applies |
 | Tilt | `tilt` | An angle (`0.5`) or `latest` |
-| Map center | `lat`, `lon` | |
+| Map center | `lat`, `lon` | The map's own centre; absent, the map centres on the focus site |
 | 2D/3D, camera, map and timeline zoom, volume rendering and cutoff | `v` | Base64 JSON blob; its old `rt` flag is read as `sel=now` |
+| Storm cells | `cells` | Present means on; the value is the envelope threshold in dBZ (`cells=35`). Absent leaves the preference |
+| Storm cell tracks | `tracks` | `tracks=1` on, `tracks=0` off; written only while cells and tracks are both on. Absent leaves the preference |
 | Developer flag | `dev=true` | Wins for that session without being saved |
 
 A link with a pinned selection opens pinned; one with a time (or a fixed
@@ -909,6 +1127,13 @@ not unfinished work:
   missing is that a user watching live never learns it is there. Addressed by
   the selection chip (Oct 2026): the presets sit in the same menu as LIVE, read
   "Last 6 frames → now", and always attach to the live edge.
+- **Blended compositing:** where discs overlap, the newer frame is drawn on
+  top. A blend (maximum reflectivity, distance weighting) would be drawn on
+  the composite grid the storm cells already use (§13.2).
+- **An overview lane per site:** the overview's bars stay the focus's.
+- **Listing only the focus's days:** every site on the map lists the days in
+  view, so three sites make three times the archive listings. Narrowing the
+  listings to the focus is worth doing only if that cost shows.
 
 ---
 
@@ -934,8 +1159,9 @@ deleted in the June 2026 docs cleanup.)
    behavior). Archive downloads have no chunk telemetry; in-flight archive cells
    use a pulse fill inside the frame cell instead of fake segments.
 5. **Background streaming on open / site switch:** the app opens **tethered to
-   live** for the selected site. A site switch while tethered re-tethers on the
-   new site. While detached, streaming continues in the background; a safety
+   live**. A site switch while tethered re-tethers on the new site; with
+   several sites on the map every site streams (§6). While detached,
+   streaming continues in the background; a safety
    idle-stop applies after 60 min detached (a pragmatic S3-cost bound; the
    data-saver toggle is the user-facing control).
 6. **Prefetch across tilts on product/tilt switch:** no proactive refetch.

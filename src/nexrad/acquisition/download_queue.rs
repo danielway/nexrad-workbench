@@ -5,6 +5,10 @@
 //! network channels — it returns [`QueueAction`] values telling the caller
 //! what to do next.
 //!
+//! Items are keyed by site and scan start: every site on the map queues
+//! its own scans into the one queue, and each download, its operation id
+//! and its result stay with their site.
+//!
 //! Downloads may run in parallel up to a configurable concurrency limit
 //! (see [`DEFAULT_MAX_PARALLEL`]); callers advance the queue until either
 //! all pending work is drained or the concurrency ceiling is reached.
@@ -40,6 +44,8 @@ pub(crate) enum QueueOrigin {
 /// A single file in the download queue.
 #[derive(Clone, Debug)]
 pub(crate) struct QueueItem {
+    /// The site this scan belongs to.
+    pub site: crate::data::SiteId,
     pub date: chrono::NaiveDate,
     pub file_name: String,
     pub scan_start: i64,
@@ -66,6 +72,7 @@ pub(crate) struct QueueItem {
 
 impl QueueItem {
     pub(crate) fn new(
+        site: crate::data::SiteId,
         date: chrono::NaiveDate,
         file_name: String,
         scan_start: i64,
@@ -73,6 +80,7 @@ impl QueueItem {
         elevation_filter: Option<u8>,
     ) -> Self {
         Self {
+            site,
             date,
             file_name,
             scan_start,
@@ -89,6 +97,11 @@ impl QueueItem {
     pub(crate) fn with_operation(mut self, id: crate::core::OperationId) -> Self {
         self.operation_id = Some(id);
         self
+    }
+
+    /// Whether this item is `site`'s scan at `scan_start`.
+    fn is(&self, site: &crate::data::SiteId, scan_start: i64) -> bool {
+        self.scan_start == scan_start && &self.site == site
     }
 
     /// Tag the item's enqueue origin (default is `Explicit`).
@@ -134,6 +147,7 @@ pub(crate) enum QueueAction {
     /// Start downloading a specific file. The archive identifier (site,
     /// date, S3 key) is derived from `file_name` by the download channel.
     StartDownload {
+        site: crate::data::SiteId,
         file_name: String,
         scan_start: i64,
         scan_end: i64,
@@ -171,10 +185,11 @@ pub(crate) const DEFAULT_MAX_AUTO_FETCH_BYTES: u64 = 256 * 1024 * 1024;
 /// — the caller acts on the returned [`QueueAction`] values.
 pub(crate) struct DownloadQueueManager {
     queue: Vec<QueueItem>,
-    /// Maps an Active item's `scan_start` to the acquisition operation ID
-    /// that represents it. Keeps correlation correct when multiple downloads
-    /// are in flight simultaneously.
-    active_operation_ids: std::collections::HashMap<i64, crate::core::OperationId>,
+    /// Maps an Active item's site and `scan_start` to the acquisition
+    /// operation ID that represents it. Keeps correlation correct when
+    /// multiple downloads are in flight simultaneously.
+    active_operation_ids:
+        std::collections::HashMap<(crate::data::SiteId, i64), crate::core::OperationId>,
     max_parallel: usize,
     /// Running total of bytes fetched via reactive prefetch this session.
     /// Bounds runaway background downloading; not reset on queue clear.
@@ -204,10 +219,12 @@ impl DownloadQueueManager {
     ///
     /// Idempotent: if the item is already Done or no longer Active, this is
     /// a no-op.
-    pub(crate) fn mark_active_done(&mut self, scan_start: i64) {
-        if let Some(item) = self.queue.iter_mut().find(|item| {
-            matches!(item.state, QueueItemState::Active) && item.scan_start == scan_start
-        }) {
+    pub(crate) fn mark_active_done(&mut self, site: &crate::data::SiteId, scan_start: i64) {
+        if let Some(item) = self
+            .queue
+            .iter_mut()
+            .find(|item| matches!(item.state, QueueItemState::Active) && item.is(site, scan_start))
+        {
             item.state = QueueItemState::Done;
         }
     }
@@ -215,10 +232,10 @@ impl DownloadQueueManager {
     /// Drop a finished (Done) item, so the pumps may queue its scan again.
     /// A Pending or Active item is left alone. Returns whether one was
     /// dropped.
-    pub(crate) fn forget_done(&mut self, scan_start: i64) -> bool {
+    pub(crate) fn forget_done(&mut self, site: &crate::data::SiteId, scan_start: i64) -> bool {
         let before = self.queue.len();
         self.queue.retain(|item| {
-            !(matches!(item.state, QueueItemState::Done) && item.scan_start == scan_start)
+            !(matches!(item.state, QueueItemState::Done) && item.is(site, scan_start))
         });
         self.queue.len() != before
     }
@@ -299,6 +316,7 @@ impl DownloadQueueManager {
         if let Some(idx) = next_pending {
             let item = &self.queue[idx];
             let action = QueueAction::StartDownload {
+                site: item.site.clone(),
                 file_name: item.file_name.clone(),
                 scan_start: item.scan_start,
                 scan_end: item.scan_end,
@@ -325,37 +343,56 @@ impl DownloadQueueManager {
     }
 
     /// Associate an acquisition operation ID with an active download.
-    pub(crate) fn set_operation_id(&mut self, scan_start: i64, id: crate::core::OperationId) {
-        self.active_operation_ids.insert(scan_start, id);
+    pub(crate) fn set_operation_id(
+        &mut self,
+        site: &crate::data::SiteId,
+        scan_start: i64,
+        id: crate::core::OperationId,
+    ) {
+        self.active_operation_ids
+            .insert((site.clone(), scan_start), id);
     }
 
-    /// Take (remove) the operation ID for the given scan_start.
+    /// Take (remove) the operation ID for the site's scan at `scan_start`.
     pub(crate) fn take_operation_id(
         &mut self,
+        site: &crate::data::SiteId,
         scan_start: i64,
     ) -> Option<crate::core::OperationId> {
-        self.active_operation_ids.remove(&scan_start)
+        self.active_operation_ids
+            .remove(&(site.clone(), scan_start))
     }
 
-    /// Find an item by scan_start timestamp.
-    pub(crate) fn find_by_scan_start(&self, scan_start: i64) -> Option<&QueueItem> {
-        self.queue.iter().find(|item| item.scan_start == scan_start)
+    /// Find the site's item at `scan_start`.
+    pub(crate) fn find_by_scan_start(
+        &self,
+        site: &crate::data::SiteId,
+        scan_start: i64,
+    ) -> Option<&QueueItem> {
+        self.queue.iter().find(|item| item.is(site, scan_start))
     }
 
-    /// Every queued item's `scan_start`, in any state (a Done item still
-    /// suppresses re-enqueue). Snapshot for the core prefetch reducers'
-    /// already-satisfied guard — the in-memory mirror of
+    /// Every one of the site's queued items' `scan_start`, in any state (a
+    /// Done item still suppresses re-enqueue). Snapshot for the core
+    /// prefetch reducers' already-satisfied guard — the in-memory mirror of
     /// [`Self::find_by_scan_start`].
-    pub(crate) fn queued_scan_starts(&self) -> Vec<i64> {
-        self.queue.iter().map(|item| item.scan_start).collect()
+    pub(crate) fn queued_scan_starts(&self, site: &crate::data::SiteId) -> Vec<i64> {
+        self.queue
+            .iter()
+            .filter(|item| &item.site == site)
+            .map(|item| item.scan_start)
+            .collect()
     }
 
     /// Append items to the existing queue (used by reactive prefetch, which
-    /// adds to in-flight work rather than replacing it). Skips any scan_start
-    /// already present so the same scan is never queued twice.
+    /// adds to in-flight work rather than replacing it). Skips any site and
+    /// scan_start already present so the same scan is never queued twice.
     pub(crate) fn enqueue(&mut self, items: impl IntoIterator<Item = QueueItem>) {
         for item in items {
-            if self.find_by_scan_start(item.scan_start).is_none() {
+            if self
+                .find_by_scan_start(&item.site, item.scan_start)
+                .is_none()
+            {
                 self.queue.push(item);
             }
         }
@@ -380,14 +417,14 @@ impl DownloadQueueManager {
         if let Some(existing) = self
             .queue
             .iter_mut()
-            .find(|i| i.scan_start == item.scan_start)
+            .find(|i| i.is(&item.site, item.scan_start))
         {
             // A download already in flight finishes on its own terms; don't
             // clobber it (see the doc comment).
             if matches!(existing.state, QueueItemState::Active) {
                 return true;
             }
-            let scan_start = item.scan_start;
+            let key = (item.site.clone(), item.scan_start);
             existing.state = QueueItemState::Pending;
             existing.operation_id = item.operation_id;
             existing.elevation_filter = item.elevation_filter;
@@ -401,11 +438,18 @@ impl DownloadQueueManager {
             // that drain having happened, so a lingering stale entry can never
             // be returned for the requeued retry. The next dispatch re-`set`s
             // the fresh id.
-            self.active_operation_ids.remove(&scan_start);
+            self.active_operation_ids.remove(&key);
         } else {
             self.queue.push(item);
         }
         true
+    }
+
+    /// Drop a site's Pending items (the site left the map), returning them
+    /// so the caller can cancel their acquisition operations. Its Active
+    /// downloads finish and free their slots.
+    pub(crate) fn drop_site_pending(&mut self, site: &crate::data::SiteId) -> Vec<QueueItem> {
+        self.prune_pending(|item| &item.site != site)
     }
 
     /// Whether the session auto-fetch volume cap has been reached.
@@ -424,9 +468,14 @@ mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
+    fn kdmx() -> crate::data::SiteId {
+        crate::data::SiteId::new("KDMX")
+    }
+
     fn item(scan_start: i64, elevation_filter: Option<u8>) -> QueueItem {
         let date = chrono::NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
         QueueItem::new(
+            kdmx(),
             date,
             format!("f{scan_start}"),
             scan_start,
@@ -450,6 +499,53 @@ mod tests {
             assert!(started.insert(scan_start), "a scan was dispatched twice");
         }
         assert_eq!(started.len(), 3); // 100, 400, 700 — the duplicate 100 skipped
+    }
+
+    #[wasm_bindgen_test]
+    fn each_site_queues_its_own_scans_and_keeps_its_own_ids() {
+        let ktbw = crate::data::SiteId::new("KTBW");
+        let mut theirs = item(100, None);
+        theirs.site = ktbw.clone();
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(100, None), theirs]);
+        // The same scan start at two sites is two downloads.
+        let mut started = Vec::new();
+        while let QueueAction::StartDownload {
+            site, scan_start, ..
+        } = q.advance(false)
+        {
+            q.set_operation_id(&site, scan_start, if site == ktbw { 2 } else { 1 });
+            started.push(site);
+        }
+        assert_eq!(started.len(), 2);
+        assert_eq!(q.take_operation_id(&ktbw, 100), Some(2));
+        assert_eq!(q.take_operation_id(&kdmx(), 100), Some(1));
+        q.mark_active_done(&ktbw, 100);
+        assert_eq!(q.active_count(), 1);
+        assert_eq!(q.queued_scan_starts(&ktbw), vec![100]);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_site_leaving_the_map_drops_its_pending_scans_only() {
+        let ktbw = crate::data::SiteId::new("KTBW");
+        let mut q = DownloadQueueManager::new();
+        let mut a = item(100, None);
+        a.site = ktbw.clone();
+        let mut b = item(400, None);
+        b.site = ktbw.clone();
+        q.enqueue([a, item(100, None)]);
+        // KTBW's 100 dispatches first (enqueue order), then KDMX's.
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload { .. }
+        ));
+        q.enqueue([b]);
+        let dropped = q.drop_site_pending(&ktbw);
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].scan_start, 400);
+        // The in-flight KTBW download and KDMX's pending scan stay.
+        assert!(q.find_by_scan_start(&ktbw, 100).is_some());
+        assert!(q.find_by_scan_start(&kdmx(), 100).is_some());
     }
 
     #[wasm_bindgen_test]
@@ -488,14 +584,14 @@ mod tests {
         q.enqueue(vec![item(1000, None), item(2000, None)]);
         // Start 1000 and finish it; 2000 stays Pending.
         let _ = q.advance(false);
-        q.mark_active_done(1000);
-        assert!(!q.forget_done(2000));
-        assert!(q.forget_done(1000));
-        assert_eq!(q.queued_scan_starts(), vec![2000]);
+        q.mark_active_done(&kdmx(), 1000);
+        assert!(!q.forget_done(&kdmx(), 2000));
+        assert!(q.forget_done(&kdmx(), 1000));
+        assert_eq!(q.queued_scan_starts(&kdmx()), vec![2000]);
         // An Active item survives.
         let _ = q.advance(false);
-        assert!(!q.forget_done(2000));
-        assert_eq!(q.queued_scan_starts(), vec![2000]);
+        assert!(!q.forget_done(&kdmx(), 2000));
+        assert_eq!(q.queued_scan_starts(&kdmx()), vec![2000]);
     }
 
     #[wasm_bindgen_test]
@@ -516,9 +612,9 @@ mod tests {
         let pruned_starts: Vec<i64> = pruned.iter().map(|i| i.scan_start).collect();
         assert_eq!(pruned_starts, vec![5000]);
         // The Active item (100) survives; 9000 stays pending.
-        assert!(q.find_by_scan_start(100).is_some());
-        assert!(q.find_by_scan_start(9000).is_some());
-        assert!(q.find_by_scan_start(5000).is_none());
+        assert!(q.find_by_scan_start(&kdmx(), 100).is_some());
+        assert!(q.find_by_scan_start(&kdmx(), 9000).is_some());
+        assert!(q.find_by_scan_start(&kdmx(), 5000).is_none());
     }
 
     #[wasm_bindgen_test]
@@ -534,7 +630,7 @@ mod tests {
                 ..
             }
         ));
-        q.mark_active_done(1000);
+        q.mark_active_done(&kdmx(), 1000);
         // A plain enqueue would see the existing item and skip — no re-fetch.
         q.enqueue([item(1000, Some(1))]);
         assert!(
@@ -587,7 +683,7 @@ mod tests {
         );
 
         // The original completion bookkeeping still applies to the Active item.
-        q.mark_active_done(2000);
+        q.mark_active_done(&kdmx(), 2000);
         assert!(matches!(q.advance(false), QueueAction::Complete));
     }
 
@@ -613,12 +709,12 @@ mod tests {
     #[wasm_bindgen_test]
     fn set_then_take_operation_id_returns_once() {
         let mut q = DownloadQueueManager::new();
-        q.set_operation_id(1000, 42);
-        assert_eq!(q.take_operation_id(1000), Some(42));
+        q.set_operation_id(&kdmx(), 1000, 42);
+        assert_eq!(q.take_operation_id(&kdmx(), 1000), Some(42));
         // Drained — a late second completion finds nothing.
-        assert_eq!(q.take_operation_id(1000), None);
+        assert_eq!(q.take_operation_id(&kdmx(), 1000), None);
         // An unknown scan_start was never mapped.
-        assert_eq!(q.take_operation_id(9999), None);
+        assert_eq!(q.take_operation_id(&kdmx(), 9999), None);
     }
 
     /// `clear()` wipes the operation-id map. This documents the orphan: a late
@@ -627,10 +723,10 @@ mod tests {
     #[wasm_bindgen_test]
     fn clear_drops_pending_operation_id_entry() {
         let mut q = DownloadQueueManager::new();
-        q.set_operation_id(1000, 42);
+        q.set_operation_id(&kdmx(), 1000, 42);
         q.clear();
         assert_eq!(
-            q.take_operation_id(1000),
+            q.take_operation_id(&kdmx(), 1000),
             None,
             "clear() must drop pending op-id entries (orphaning a late completion)"
         );
@@ -655,13 +751,13 @@ mod tests {
             } => {
                 assert_eq!(scan_start, 1000);
                 assert_eq!(operation_id, Some(7));
-                q.set_operation_id(scan_start, 7);
+                q.set_operation_id(&kdmx(), scan_start, 7);
             }
             other => panic!("expected dispatch, got {other:?}"),
         }
         // The download finishes (Done) but — to model the fragile window — the
         // stale map entry for op 7 is deliberately left behind.
-        q.mark_active_done(1000);
+        q.mark_active_done(&kdmx(), 1000);
 
         // A retry requeues the same scan under a NEW op id 99.
         let retry = item(1000, Some(3)).with_operation(99);
@@ -675,13 +771,13 @@ mod tests {
                 ..
             } => {
                 assert_eq!(operation_id, Some(99));
-                q.set_operation_id(scan_start, 99);
+                q.set_operation_id(&kdmx(), scan_start, 99);
             }
             other => panic!("expected re-dispatch, got {other:?}"),
         }
 
         // The completion now correlates to the NEW op id, never the stale 7.
-        assert_eq!(q.take_operation_id(1000), Some(99));
+        assert_eq!(q.take_operation_id(&kdmx(), 1000), Some(99));
     }
 
     /// `requeue` itself drops the stale map entry even before the re-dispatch,
@@ -697,13 +793,13 @@ mod tests {
             q.advance(false),
             QueueAction::StartDownload { .. }
         ));
-        q.set_operation_id(1000, 7);
-        q.mark_active_done(1000);
+        q.set_operation_id(&kdmx(), 1000, 7);
+        q.mark_active_done(&kdmx(), 1000);
 
         // Requeue under a new op id — the stale 7 must be gone immediately.
         assert!(q.requeue(item(1000, Some(3)).with_operation(99)));
         assert_eq!(
-            q.take_operation_id(1000),
+            q.take_operation_id(&kdmx(), 1000),
             None,
             "requeue must drop the stale op-id entry, not leak op 7"
         );
@@ -719,13 +815,13 @@ mod tests {
             q.advance(false),
             QueueAction::StartDownload { .. }
         ));
-        q.set_operation_id(2000, 11);
+        q.set_operation_id(&kdmx(), 2000, 11);
 
         // A requeue lands while the item is Active → it's left untouched, and so
         // is its op-id mapping.
         assert!(q.requeue(item(2000, Some(3)).with_operation(22)));
         assert_eq!(
-            q.take_operation_id(2000),
+            q.take_operation_id(&kdmx(), 2000),
             Some(11),
             "an in-flight download keeps its original op id"
         );
@@ -750,9 +846,14 @@ mod coverage_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
+    fn kdmx() -> crate::data::SiteId {
+        crate::data::SiteId::new("KDMX")
+    }
+
     fn item(scan_start: i64, elevation_filter: Option<u8>) -> QueueItem {
         let date = chrono::NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
         QueueItem::new(
+            kdmx(),
             date,
             format!("f{scan_start}"),
             scan_start,
@@ -813,9 +914,9 @@ mod coverage_tests {
         let pruned = q.prune_pending(keep);
         assert_eq!(pruned.len(), 1);
         assert_eq!(pruned[0].scan_start, 9_000);
-        assert!(q.find_by_scan_start(9_400).is_some());
-        assert!(q.find_by_scan_start(9_800).is_some());
-        assert!(q.find_by_scan_start(1_500).is_some());
+        assert!(q.find_by_scan_start(&kdmx(), 9_400).is_some());
+        assert!(q.find_by_scan_start(&kdmx(), 9_800).is_some());
+        assert!(q.find_by_scan_start(&kdmx(), 1_500).is_some());
     }
 
     // ── has_work / active_count / clear ─────────────────────────────────────
@@ -833,7 +934,7 @@ mod coverage_tests {
         ));
         assert!(q.has_work(), "an Active item is still work");
         // Mark done → no more work pending/active.
-        q.mark_active_done(100);
+        q.mark_active_done(&kdmx(), 100);
         assert!(!q.has_work(), "only a Done item remains — no work");
     }
 
@@ -844,7 +945,7 @@ mod coverage_tests {
         assert!(q.has_work());
         q.clear();
         assert!(!q.has_work());
-        assert!(q.find_by_scan_start(100).is_none());
+        assert!(q.find_by_scan_start(&kdmx(), 100).is_none());
         // After clear, advance reports Complete (nothing pending, nothing active).
         assert!(matches!(q.advance(false), QueueAction::Complete));
     }
@@ -865,7 +966,7 @@ mod coverage_tests {
             QueueAction::StartDownload { .. }
         ));
         assert_eq!(q.active_count(), 2);
-        q.mark_active_done(100);
+        q.mark_active_done(&kdmx(), 100);
         assert_eq!(q.active_count(), 1);
     }
 
@@ -942,11 +1043,11 @@ mod coverage_tests {
         ));
         // In flight, nothing pending → Saturated (NOT Complete), since active>0.
         assert!(matches!(q.advance(false), QueueAction::Saturated));
-        q.mark_active_done(100);
+        q.mark_active_done(&kdmx(), 100);
         // Now nothing pending and nothing active → Complete (and queue cleared).
         assert!(matches!(q.advance(false), QueueAction::Complete));
         assert!(
-            q.find_by_scan_start(100).is_none(),
+            q.find_by_scan_start(&kdmx(), 100).is_none(),
             "Complete clears the queue"
         );
     }
@@ -963,7 +1064,7 @@ mod coverage_tests {
         let mut order = Vec::new();
         while let QueueAction::StartDownload { scan_start, .. } = q.advance(false) {
             order.push(scan_start);
-            q.mark_active_done(scan_start);
+            q.mark_active_done(&kdmx(), scan_start);
         }
         // All priority 0 (default) → enqueue order preserved.
         assert_eq!(order, vec![1000, 2000, 3000]);
@@ -976,7 +1077,7 @@ mod coverage_tests {
         let mut q = DownloadQueueManager::new();
         q.enqueue([item(100, None)]);
         // Item is Pending, not Active — marking done must NOT touch it.
-        q.mark_active_done(100);
+        q.mark_active_done(&kdmx(), 100);
         assert_eq!(q.pending_items().count(), 1, "Pending item untouched");
         // It still dispatches normally.
         assert!(matches!(
@@ -993,11 +1094,11 @@ mod coverage_tests {
             q.advance(false),
             QueueAction::StartDownload { .. }
         ));
-        q.mark_active_done(100);
+        q.mark_active_done(&kdmx(), 100);
         assert_eq!(q.active_count(), 0);
         // Second call is a no-op (already Done), and an unknown scan_start too.
-        q.mark_active_done(100);
-        q.mark_active_done(424242);
+        q.mark_active_done(&kdmx(), 100);
+        q.mark_active_done(&kdmx(), 424242);
         assert_eq!(q.active_count(), 0);
     }
 
@@ -1007,8 +1108,8 @@ mod coverage_tests {
     fn find_by_scan_start_returns_none_when_absent() {
         let mut q = DownloadQueueManager::new();
         q.enqueue([item(100, None)]);
-        assert!(q.find_by_scan_start(100).is_some());
-        assert!(q.find_by_scan_start(101).is_none());
+        assert!(q.find_by_scan_start(&kdmx(), 100).is_some());
+        assert!(q.find_by_scan_start(&kdmx(), 101).is_none());
     }
 
     // ── reprioritize only touches Pending ───────────────────────────────────
@@ -1079,7 +1180,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn queued_scan_starts_includes_every_state() {
         let mut q = DownloadQueueManager::new();
-        assert!(q.queued_scan_starts().is_empty());
+        assert!(q.queued_scan_starts(&kdmx()).is_empty());
         q.enqueue([item(100, None), item(400, None), item(700, None)]);
         // Activate 100, complete it; activate 400; leave 700 pending.
         q.reprioritize(100, true);
@@ -1090,7 +1191,7 @@ mod coverage_tests {
                 ..
             }
         ));
-        q.mark_active_done(100);
+        q.mark_active_done(&kdmx(), 100);
         assert!(matches!(
             q.advance(false),
             QueueAction::StartDownload {
@@ -1099,7 +1200,7 @@ mod coverage_tests {
             }
         ));
 
-        let mut starts = q.queued_scan_starts();
+        let mut starts = q.queued_scan_starts(&kdmx());
         starts.sort();
         assert_eq!(starts, vec![100, 400, 700]);
     }

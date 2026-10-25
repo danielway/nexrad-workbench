@@ -27,15 +27,34 @@ no account, no server: everything runs on your own device.
   differential reflectivity, correlation coefficient, specific differential
   phase, and clutter filter power. The tilt ladder lays out the radar's scan
   pattern so you can see which elevations it has swept and which are still to come.
+- **Follow storms.** Turn on storm cells and each strong cell is outlined
+  with its peak reflectivity. With tracks on, each one gets a letter, a trail
+  of where it has been and an arrow to where it should be in 30 minutes.
+  Hover a cell to see how fast it is moving, whether it is strengthening, and
+  its echo top. With your location on, the card also says how close the storm
+  will pass and when.
 - **Add context.** Turn on NWS warnings, watches and advisories, mPING storm
-  reports, detected storm cells, the national mosaic, and labels for states,
-  counties and cities. Probe any point for its value, or measure a distance.
-- **Share exactly what you see.** The page URL carries the site, time, product,
+  reports, the national mosaic, and labels for states, counties and cities.
+  Probe any point for its value, or measure a distance. A measurement end
+  dropped on a storm sticks to it as it moves.
+- **Watch up to three radars at once.** On a desktop, add nearby sites from
+  the site picker and they play together on one map and one timeline, each
+  with its own lane. The link carries the set, as in
+  [`?site=KTBW&also=KMLB,KJAX`](https://danielway.github.io/nexrad-workbench/?site=KTBW&also=KMLB,KJAX&t=1728529200&lat=28.2&lon=-81.9).
+- **Share exactly what you see.** The page URL carries the sites, time, product,
   tilt and view, so a copied link opens the same picture for someone else.
 - **Use it on your phone.** It works on phones too, and you can
   [install it](#install-it-as-an-app) to your home screen.
 
 ## A closer look
+
+![Milton seen by KTBW, KMLB and KJAX together, with storm cells outlined across all three](docs/media/multi-site.jpg)
+
+<sub>**Three radars, one map.** Milton at 03:00 UTC on 10 October 2024 from Tampa Bay, Melbourne and Jacksonville. The newer frame draws on top where discs overlap, storm cells are found once across all three, and each extra site gets its own lane under the timeline.</sub>
+
+![Storm cells and their tracks near Mayfield, Kentucky on 11 December 2021](docs/media/storm-cells.jpg)
+
+<sub>**Storm tracks.** The Paducah radar at 03:33 UTC on 11 December 2021, with an hour of the outbreak loaded. Cell A, over Marshall County, is the supercell that passed through Mayfield a few minutes earlier. Each lettered cell trails the path it has taken, and the dashed arrows point to where it should be in 30 minutes.</sub>
 
 ![Rays playback of one Milton volume, the sweep line painting each tilt over the last](docs/media/sweep.webp)
 
@@ -84,8 +103,10 @@ published. To remove it, delete it like any other app.
 | To | Do this |
 |----|---------|
 | Change radar | Click the site name at top left, or press `S` |
+| Show another radar beside it | In the site picker, choose **+ Also show** on a site's row |
 | Change product or tilt | Use the menus in the top bar, or press `P` / `E` |
 | Scrub | Drag the playhead along the timeline |
+| Jump to a date | Click the calendar beside the clock, or press `G` |
 | Loop a stretch | Drag across the thin strip above the volumes, or press `I` and `O` |
 | Play, pause, step | `Space`, and `←` / `→` to step a frame |
 | Go back to live | Press **Go live**, or `L` |

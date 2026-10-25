@@ -954,6 +954,50 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    fn a_held_angle_under_sails_marks_each_visit_in_its_block() {
+        use crate::core::tilt::fixtures::{vcp_212_sails_x3, vcp_35, volume, CUT};
+        use crate::core::timeline_view::{FrameJoinInputs, TimelineView};
+        let held = crate::core::ElevationSelection::Fixed {
+            elevation_number: 1,
+            angle: 0.5,
+        };
+        let containers = |vcp| {
+            let tl = crate::core::RadarTimeline {
+                scans: vec![volume(0.0, &vcp), volume(420.0, &vcp)],
+            };
+            TimelineView::build(&tl, &[], None, None).frame_containers_in_range(
+                0.0,
+                900.0,
+                FrameJoinInputs {
+                    queued: &[],
+                    in_flight: &[],
+                    failed: &[],
+                    product: "reflectivity",
+                    tilt: (&held).into(),
+                    active: None,
+                    prev_active: None,
+                },
+            )
+        };
+        let sz = ScanSizes::default();
+        let cs = containers(vcp_212_sails_x3());
+        // A separator before each SAILS visit, and the white block stays on
+        // the volume while the playhead moves through its repeats.
+        for n in [1u8, 9, 14, 19] {
+            let row = row_vm(&inputs(StripZoom::Cuts, &cs, &sz, CUT * n as f64, false));
+            let b = &row.blocks[0];
+            assert_eq!(b.cuts, vec![x(CUT * 8.0), x(CUT * 13.0), x(CUT * 18.0)]);
+            assert!(b.selected && !row.blocks[1].selected, "cut {n}");
+        }
+        let cs = containers(vcp_35());
+        let row = row_vm(&inputs(StripZoom::Cuts, &cs, &sz, CUT, false));
+        assert!(
+            row.blocks[0].cuts.is_empty(),
+            "one visit, nothing to separate"
+        );
+    }
+
+    #[wasm_bindgen_test]
     fn labels_are_start_times_and_live_and_give_way_to_each_other() {
         let cs = strip();
         let sz = ScanSizes::default();

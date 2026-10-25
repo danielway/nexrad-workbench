@@ -1,16 +1,15 @@
 //! Canvas data-probe tool and measurement overlays.
 //!
 //! Renders the hover tooltip (lat/lon, azimuth, range, product value),
-//! the crosshair cursor, distance measurement lines, and detected storm
-//! cell bounding boxes on top of the radar canvas. The "Data probe" name
+//! the crosshair cursor and distance measurement lines on top of the radar
+//! canvas. The "Data probe" name
 //! distinguishes this map-space hover tool from the scan inspector (the
 //! per-scan volume breakdown), which is a separate surface.
 
-use crate::core::StormCellInfo;
 use crate::geo::MapProjection;
 use crate::nexrad::RadarGpuRenderer;
 use crate::ui::theme;
-use eframe::egui::{self, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
 use geo_types::Coord;
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +26,12 @@ pub(crate) fn render_data_probe(
     product: &crate::core::RadarProduct,
     use_local_time: bool,
     sweep_params: Option<(f32, f32)>,
+    // The storm cell under the pointer (core::storm_cell_view::probe_line).
+    cell_line: Option<String>,
+    // With several sites on the map, one line per site under the cursor
+    // (core::site_canvas::probe_site_line), focus first; they replace the
+    // single site's polar, value and time lines.
+    site_lines: Option<Vec<String>>,
 ) {
     let geo = projection.screen_to_geo(hover_pos);
     let lat = geo.y;
@@ -46,10 +51,17 @@ pub(crate) fn render_data_probe(
         .unwrap_or((None, None));
 
     // Build tooltip text
-    let mut lines = vec![
-        format!("{:.4}\u{00B0}N {:.4}\u{00B0}W", lat, -lon),
-        format!("Az: {:.1}\u{00B0}  Rng: {:.1} km", azimuth_deg, range_km),
-    ];
+    let mut lines = vec![format!("{:.4}\u{00B0}N {:.4}\u{00B0}W", lat, -lon)];
+    if let Some(site_lines) = site_lines {
+        lines.extend(site_lines);
+        lines.extend(cell_line);
+        paint_probe(painter, hover_pos, &lines.join("\n"));
+        return;
+    }
+    lines.push(format!(
+        "Az: {:.1}\u{00B0}  Rng: {:.1} km",
+        azimuth_deg, range_km
+    ));
     if let Some(v) = value {
         let unit = product.unit();
         if unit.is_empty() {
@@ -61,11 +73,15 @@ pub(crate) fn render_data_probe(
     if let Some(ts) = collection_time {
         lines.push(format_unix_timestamp(ts, use_local_time));
     }
-    let text = lines.join("\n");
+    lines.extend(cell_line);
+    paint_probe(painter, hover_pos, &lines.join("\n"));
+}
 
+/// The probe's tooltip and crosshair at `hover_pos`.
+fn paint_probe(painter: &Painter, hover_pos: Pos2, text: &str) {
     // Draw tooltip background
     let font_id = egui::FontId::monospace(11.0);
-    let galley = painter.layout_no_wrap(text.clone(), font_id.clone(), theme::TEXT);
+    let galley = painter.layout_no_wrap(text.to_string(), font_id, theme::TEXT);
     let tooltip_size = galley.size();
     let padding = Vec2::new(6.0, 4.0);
     let tooltip_pos = hover_pos + Vec2::new(16.0, -tooltip_size.y - 8.0);
@@ -99,185 +115,126 @@ pub(crate) fn render_data_probe(
     );
 }
 
+/// Paint the distance tool's view-model ([`crate::core::measure::view`]):
+/// the snap hint ring, the line, the endpoint markers (a snapped end with
+/// its track letter beside it, an ended track's end muted) and the readout
+/// just past the end point.
 pub(crate) fn render_distance_measurement(
     painter: &Painter,
     projection: &MapProjection,
-    start: Option<(f64, f64)>,
-    end: Option<(f64, f64)>,
+    vm: &crate::core::measure::MeasureVm,
+    // Whether a screen rectangle is on the canvas and clear of the chrome.
+    clear: &dyn Fn(Rect) -> bool,
 ) {
-    let Some((start_lat, start_lon)) = start else {
-        return;
-    };
+    let screen = |lat: f64, lon: f64| projection.geo_to_screen(Coord { x: lon, y: lat });
 
-    let start_screen = projection.geo_to_screen(Coord {
-        x: start_lon,
-        y: start_lat,
-    });
+    if let Some(h) = &vm.snap_hint {
+        let p = screen(h.lat, h.lon);
+        painter.circle_stroke(p, 11.0, Stroke::new(3.0_f32, theme::map::HALO));
+        painter.circle_stroke(p, 11.0, Stroke::new(1.5_f32, theme::map::TOOL));
+    }
 
-    // Draw start marker
-    painter.circle_filled(start_screen, 5.0, theme::map::TOOL);
-    painter.circle_stroke(start_screen, 5.0, Stroke::new(1.5_f32, theme::map::OUTLINE));
-
-    if let Some((end_lat, end_lon)) = end {
-        let end_screen = projection.geo_to_screen(Coord {
-            x: end_lon,
-            y: end_lat,
-        });
-
-        // Draw line
+    if let Some((a, b)) = vm.line {
         painter.line_segment(
-            [start_screen, end_screen],
+            [screen(a.0, a.1), screen(b.0, b.1)],
             Stroke::new(2.0_f32, theme::map::TOOL),
         );
+    }
 
-        // Draw end marker
-        painter.circle_filled(end_screen, 5.0, theme::map::TOOL);
-        painter.circle_stroke(end_screen, 5.0, Stroke::new(1.5_f32, theme::map::OUTLINE));
+    for e in &vm.ends {
+        let p = screen(e.lat, e.lon);
+        let (fill, text) = if e.muted {
+            (theme::TEXT_DIM, theme::TEXT_DIM)
+        } else {
+            (theme::map::TOOL, theme::TEXT)
+        };
+        painter.circle_filled(p, 5.0, fill);
+        painter.circle_stroke(p, 5.0, Stroke::new(1.5_f32, theme::map::OUTLINE));
+        if let Some(label) = &e.label {
+            let galley = painter.layout_no_wrap(label.clone(), egui::FontId::monospace(11.0), text);
+            let pos = p + Vec2::new(8.0, -8.0 - galley.size().y / 2.0);
+            let bg = Rect::from_min_size(pos, galley.size()).expand2(Vec2::new(3.0, 1.0));
+            painter.rect_filled(bg, 3.0, theme::alpha(theme::RAISED, 220));
+            painter.rect_stroke(bg, 3.0, Stroke::new(1.0_f32, fill), StrokeKind::Outside);
+            painter.galley(pos, galley, text);
+        }
+    }
 
-        // Compute great-circle distance using Haversine formula
-        let distance_km = haversine_km(start_lat, start_lon, end_lat, end_lon);
-        let distance_nm = distance_km * 0.539957; // nautical miles
-        let distance_mi = distance_km * 0.621371; // statute miles
-
-        // Draw label at midpoint
-        let mid = Pos2::new(
-            (start_screen.x + end_screen.x) / 2.0,
-            (start_screen.y + end_screen.y) / 2.0,
+    if let (Some((a, b)), false) = (vm.line, vm.readout.is_empty()) {
+        let (sa, sb) = (screen(a.0, a.1), screen(b.0, b.1));
+        let galley = painter.layout_no_wrap(
+            vm.readout.join("\n"),
+            egui::FontId::monospace(11.0),
+            theme::TEXT,
         );
-        let label = format!(
-            "{:.1} km / {:.1} nm / {:.1} mi",
-            distance_km, distance_nm, distance_mi
-        );
-
-        let font_id = egui::FontId::monospace(11.0);
-        let galley = painter.layout_no_wrap(label, font_id, theme::TEXT);
-        let label_size = galley.size();
+        let size = galley.size();
         let padding = Vec2::new(5.0, 3.0);
-        let label_pos = mid - Vec2::new(label_size.x / 2.0, label_size.y + 8.0);
-        let bg_rect = Rect::from_min_size(label_pos - padding, label_size + padding * 2.0);
-
-        painter.rect_filled(bg_rect, 3.0, theme::alpha(theme::RAISED, 220));
+        // Just past the end point, along the line, so it covers neither
+        // the line nor the start (a snapped storm and its letter); failing
+        // that past the start, beside the middle, or above, below or beside
+        // either end: the first spot on the canvas, clear of the chrome and
+        // of the end markers and their letters.
+        let along = (sb - sa).normalized();
+        let along = if along.is_finite() && along != Vec2::ZERO {
+            along
+        } else {
+            Vec2::new(0.0, -1.0)
+        };
+        let half = size / 2.0 + padding;
+        let reach = |d: Vec2| (half.x / d.x.abs()).min(half.y / d.y.abs()) + 16.0;
+        let mid = sa + (sb - sa) / 2.0;
+        let perp = Vec2::new(-along.y, along.x);
+        let up = if perp.y <= 0.0 { perp } else { -perp };
+        let clip = painter.clip_rect().shrink2(padding + Vec2::splat(4.0));
+        // The end markers and their letters stay uncovered.
+        let marks: Vec<Rect> = vm
+            .ends
+            .iter()
+            .map(|e| {
+                let p = screen(e.lat, e.lon);
+                match e.label {
+                    Some(_) => {
+                        Rect::from_min_max(p + Vec2::new(-8.0, -26.0), p + Vec2::new(40.0, 8.0))
+                    }
+                    None => Rect::from_center_size(p, Vec2::splat(16.0)),
+                }
+            })
+            .collect();
+        let (dx, dy) = (Vec2::new(half.x + 16.0, 0.0), Vec2::new(0.0, half.y + 16.0));
+        let candidates = [
+            sb + along * reach(along),
+            sa - along * reach(along),
+            mid + up * reach(up),
+            mid - up * reach(up),
+            sb - dy,
+            sb + dy,
+            sa - dy,
+            sa + dy,
+            sb - dx,
+            sb + dx,
+            sa - dx,
+            sa + dx,
+        ];
+        let fits = |c: &Pos2| {
+            let bg = Rect::from_center_size(*c, size + padding * 2.0);
+            clear(bg) && !marks.iter().any(|m| m.intersects(bg))
+        };
+        let center = candidates
+            .iter()
+            .copied()
+            .find(fits)
+            .unwrap_or(candidates[0]);
+        let mut pos = center - size / 2.0;
+        pos.x = pos.x.min(clip.right() - size.x).max(clip.left());
+        pos.y = pos.y.min(clip.bottom() - size.y).max(clip.top());
+        let bg = Rect::from_min_size(pos - padding, size + padding * 2.0);
+        painter.rect_filled(bg, 3.0, theme::alpha(theme::RAISED, 220));
         painter.rect_stroke(
-            bg_rect,
+            bg,
             3.0,
             Stroke::new(1.0_f32, theme::map::TOOL),
             StrokeKind::Outside,
         );
-        painter.galley(label_pos, galley, theme::TEXT);
-    }
-}
-
-fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    let r = 6371.0; // Earth radius in km
-    let dlat = (lat2 - lat1).to_radians();
-    let dlon = (lon2 - lon1).to_radians();
-    let a = (dlat / 2.0).sin().powi(2)
-        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
-    let c = 2.0 * a.sqrt().asin();
-    r * c
-}
-
-/// Number of samples for each cell's extent ellipse. A ~32-gon is
-/// indistinguishable from a true ellipse at typical zoom levels while
-/// staying cheap to tessellate.
-const ELLIPSE_SEGMENTS: usize = 32;
-
-pub(crate) fn render_storm_cells(
-    painter: &Painter,
-    projection: &MapProjection,
-    cells: &[StormCellInfo],
-    _dark: bool,
-) {
-    for cell in cells {
-        let center = projection.geo_to_screen(Coord {
-            x: cell.lon,
-            y: cell.lat,
-        });
-
-        let color = crate::ui::data_colors::storm_cell(cell.max_dbz);
-
-        // Derive ellipse semi-axes from area + elongation: an ellipse of
-        // area A and ratio e has semi-minor b = √(A / (π·e)) and semi-major
-        // a = b·e. Clamp to avoid imaginary/zero axes for tiny cells.
-        let elongation = cell.elongation.max(1.0);
-        let area = cell.area_km2.max(1.0);
-        let semi_minor_km = (area as f64 / (std::f64::consts::PI * elongation as f64)).sqrt();
-        let semi_major_km = semi_minor_km * elongation as f64;
-
-        let cos_lat = cell.lat.to_radians().cos().max(1e-6);
-        // Compass heading (0° = N, CW) → math angle (0 = +x east, CCW).
-        let math_angle_rad = (90.0 - cell.orientation_deg as f64).to_radians();
-        let (sin_t, cos_t) = math_angle_rad.sin_cos();
-
-        let mut points = Vec::with_capacity(ELLIPSE_SEGMENTS);
-        for i in 0..ELLIPSE_SEGMENTS {
-            let phi = (i as f64) / (ELLIPSE_SEGMENTS as f64) * std::f64::consts::TAU;
-            // Ellipse point in axis-aligned frame (km).
-            let ex = semi_major_km * phi.cos();
-            let ey = semi_minor_km * phi.sin();
-            // Rotate into radar-local frame (x = east, y = north, km).
-            let dx_km = ex * cos_t - ey * sin_t;
-            let dy_km = ex * sin_t + ey * cos_t;
-            // km → lat/lon offset (equirectangular, matches projection).
-            let lat = cell.lat + dy_km / 111.0;
-            let lon = cell.lon + dx_km / (111.0 * cos_lat);
-            points.push(projection.geo_to_screen(Coord { x: lon, y: lat }));
-        }
-        painter.add(Shape::closed_line(points, Stroke::new(1.5_f32, color)));
-
-        // Small centroid marker + max-dBZ label. Bearing/range stay
-        // available in the state struct for future tooltip / side-panel
-        // consumers; surfacing them inline on the map was too noisy.
-        painter.circle_stroke(center, 3.0, Stroke::new(1.5_f32, color));
-        painter.text(
-            center + Vec2::new(6.0, -6.0),
-            egui::Align2::LEFT_BOTTOM,
-            format!("{:.0}", cell.max_dbz),
-            egui::FontId::proportional(10.0),
-            color,
-        );
-    }
-}
-
-#[cfg(test)]
-mod coverage_tests {
-    use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test;
-
-    #[wasm_bindgen_test]
-    fn haversine_identical_points_is_zero() {
-        let d = haversine_km(41.73111, -93.72278, 41.73111, -93.72278);
-        assert!(d.abs() < 1e-9, "expected ~0, got {d}");
-    }
-
-    #[wasm_bindgen_test]
-    fn haversine_one_degree_longitude_at_equator() {
-        // 1 deg of longitude at the equator: r*pi/180 with r=6371.
-        let d = haversine_km(0.0, 0.0, 0.0, 1.0);
-        assert!((d - 111.19492664455873).abs() < 1e-6, "got {d}");
-    }
-
-    #[wasm_bindgen_test]
-    fn haversine_one_degree_latitude() {
-        // 1 deg of latitude (meridian arc) equals 1 deg of equatorial longitude.
-        let d = haversine_km(0.0, 0.0, 1.0, 0.0);
-        assert!((d - 111.19492664455873).abs() < 1e-6, "got {d}");
-    }
-
-    #[wasm_bindgen_test]
-    fn haversine_longitude_shrinks_with_latitude() {
-        // 1 deg of longitude at 45N is cos(45) of the equatorial span.
-        let d = haversine_km(45.0, 0.0, 45.0, 1.0);
-        assert!((d - 78.62618767687454).abs() < 1e-6, "got {d}");
-        // And it is strictly less than the equatorial 1-degree span.
-        assert!(d < 111.19492664455873);
-    }
-
-    #[wasm_bindgen_test]
-    fn haversine_is_symmetric() {
-        let ab = haversine_km(40.7128, -74.0060, 34.0522, -118.2437);
-        let ba = haversine_km(34.0522, -118.2437, 40.7128, -74.0060);
-        assert!((ab - 3935.746254609723).abs() < 1e-4, "got {ab}");
-        assert!((ab - ba).abs() < 1e-9, "asymmetry: {ab} vs {ba}");
+        painter.galley(pos, galley, theme::TEXT);
     }
 }

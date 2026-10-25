@@ -11,9 +11,6 @@ use eframe::egui;
 
 impl WorkbenchApp {
     pub(crate) fn start_live_mode(&mut self, ctx: &egui::Context) {
-        let site_id = self.state.viz_state.site_id.clone();
-        log::info!("Starting live mode for site: {}", site_id);
-
         let now = self.state.frame_now.secs();
 
         // Initialize live mode state. Going live pins the playhead to "now"
@@ -35,17 +32,56 @@ impl WorkbenchApp {
             self.playback.state.center_view_on(now);
         }
 
-        // Push the current elevation filter into the channel before starting
-        // so the streaming loop's init-time backfill targets the user's
-        // selected elevation rather than a default.
-        self.live
-            .channel
-            .sync_filter(&self.state.viz_state.elevation_selection);
-        self.live.channel.start(
+        // Every listed site streams from its own channel.
+        for site in 0..self.sites.list.len() {
+            self.start_site_stream(ctx, site);
+        }
+    }
+
+    /// Start again every site whose failed stream has waited out its retry
+    /// ([`crate::core::due_restarts`]).
+    pub(crate) fn restart_due_streams(&mut self, ctx: &egui::Context) {
+        let now = self.state.frame_now.secs();
+        let retries: Vec<_> = self.sites.iter().map(|s| s.live.retry.as_ref()).collect();
+        let due = crate::core::due_restarts(self.live.mode_state.is_active(), &retries, now);
+        for site in due {
+            let state = &mut self.sites.list[site];
+            if let Some(retry) = state.live.retry.as_mut() {
+                log::info!(
+                    "Retrying live stream for {} (failure {})",
+                    state.id.0,
+                    retry.failures
+                );
+                retry.started = true;
+            }
+            self.live.mode_state.apply_site_event(
+                crate::core::SiteStreamEvent::Restarted,
+                site == self.sites.focus,
+                now,
+            );
+            self.start_site_stream(ctx, site);
+        }
+    }
+
+    /// Start site `site`'s stream, with that site's id and projection
+    /// engine: at session start for every site, and for a site added while
+    /// the session is live.
+    pub(crate) fn start_site_stream(&mut self, ctx: &egui::Context, site: usize) {
+        let site = &mut self.sites.list[site];
+        log::info!("Starting live mode for site: {}", site.id.0);
+        site.live.volume.begin();
+        // Push the current elevation filter into the channel before
+        // starting so the streaming loop's init-time backfill targets the
+        // user's selected elevation rather than a default.
+        site.live.channel.sync_filter(
+            &self.state.viz_state.elevation_selection,
+            site.live.radar_model.vcp_pattern(),
+        );
+        site.live.channel.start(
             ctx.clone(),
-            site_id,
+            site.id.0.clone(),
             self.acquisition.coordinator.facade().clone(),
-            self.live.engine.clone(),
+            site.live.engine.clone(),
         );
     }
 
@@ -163,7 +199,10 @@ impl WorkbenchApp {
                 now,
                 crate::LIVE_DETACHED_STOP_SECS,
             ) {
-                self.live.stop(crate::core::LiveExitReason::DetachedTimeout);
+                self.live.stop(
+                    &mut self.sites,
+                    crate::core::LiveExitReason::DetachedTimeout,
+                );
                 self.state
                     .toasts
                     .notice(crate::core::LiveExitReason::DetachedTimeout.message());
@@ -189,10 +228,11 @@ impl WorkbenchApp {
     ) -> (f64, f64) {
         match basis {
             crate::core::LoopBasis::FrameCount(n) => self
-                .timeline
+                .sites
+                .focus()
                 .scans
                 .lookback_window(
-                    &self.timeline.shadow_scan_boundaries,
+                    &self.sites.focus().shadows,
                     self.live_volume_frames(),
                     &self.state.viz_state.elevation_selection,
                     self.state.viz_state.product.to_worker_string(),
@@ -211,10 +251,11 @@ impl WorkbenchApp {
         if !self.live.mode_state.is_active() {
             return None;
         }
-        let anchor = self.live.mode_state.current_volume.as_ref()?;
+        let live = &self.sites.focus().live;
+        let anchor = live.volume.current_volume.as_ref()?;
         Some(crate::core::LiveVolume {
             key_secs: anchor.scan_key.scan_start.0 as f64 / 1000.0,
-            projection: self.live.radar_model.position.as_ref()?,
+            projection: live.radar_model.position.as_ref()?,
         })
     }
 
@@ -242,14 +283,24 @@ impl WorkbenchApp {
         }
     }
 
-    /// Update the canvas overlay text with sweep timing and elevation info.
-    pub(crate) fn update_overlay_from_sweep(&mut self, start: f64, end: f64, elevation_deg: f32) {
-        self.state
-            .viz_state
-            .update_overlay(start, end, elevation_deg, self.state.frame_now.secs());
+    /// Set site `site`'s staleness from a sweep's timing and, for the focus,
+    /// the elevation readout.
+    pub(crate) fn update_overlay_from_sweep(
+        &mut self,
+        site: usize,
+        start: f64,
+        end: f64,
+        elevation_deg: f32,
+    ) {
+        if site == self.sites.focus {
+            self.state.viz_state.set_elevation_label(elevation_deg);
+        }
+        let now = self.state.frame_now.secs();
+        self.sites.list[site].set_staleness(start, end, now);
     }
 
-    /// Send a render request to the worker for the current scan/elevation/product.
+    /// Send a render request to the worker for site `site`'s
+    /// scan/elevation/product at the playhead.
     ///
     /// Mode-agnostic: the unified resolver merges the live in-progress
     /// accumulator with the cached timeline and returns one of three intents.
@@ -260,17 +311,19 @@ impl WorkbenchApp {
     /// Honours the user's intent exactly: no fuzzy elevation fallback — if the
     /// user picks 5° and the resolved scan only has 1°/3°/7°, the canvas blanks
     /// rather than snapping to a neighbor.
-    pub(crate) fn request_worker_render(&mut self) {
+    pub(crate) fn request_worker_render(&mut self, site: usize) {
         use crate::core::playback_manager::DesiredDisplay;
 
+        let live_cut = self.live_render_sources(site);
+        let target = &self.sites.list[site];
         let desired = crate::core::playback_manager::resolve_desired_display(
-            &self.state.viz_state.site_id,
+            &target.id.0,
             self.playback.state.playback_position(),
             &self.state.viz_state.elevation_selection,
             self.state.viz_state.product,
-            &self.timeline.scans,
+            &target.scans,
             MAX_SCAN_AGE_SECS,
-            self.live_render_sources(),
+            live_cut,
             self.live_shows_whole_sweeps(),
         );
 
@@ -283,15 +336,17 @@ impl WorkbenchApp {
                 // playhead just reached the live cut, or a scrubbed playhead
                 // was pinned again), draw the partial now rather than at the
                 // next chunk.
-                if !self.gpu_holds_live_sweep() {
+                if !self.gpu_holds_live_sweep(site) {
                     self.render.coordinator.render_live(
+                        self.sites.list[site].id.clone(),
                         elevation_number,
                         self.state.viz_state.product.to_worker_string().to_string(),
                     );
                 }
             }
             DesiredDisplay::Cached(identity) => {
-                if self.render.coordinator.request_render_for(identity) {
+                let track = &mut self.sites.list[site].render;
+                if self.render.coordinator.request_render_for(track, identity) {
                     // Was guarded by `&& !pipeline.processing`, which only ever
                     // skipped a redundant `true = true`.
                     self.state.session_stats.pipeline.processing = true;
@@ -305,47 +360,48 @@ impl WorkbenchApp {
                 // resolve to `Blank` even though the GPU holds a good `live|*`
                 // sweep. Only blank when archive owns the canvas — which it
                 // does whenever the playhead is detached from the live edge.
-                let protecting_live_partial = self.live.canvas_follows_live(&self.playback.state)
-                    && self.gpu_holds_live_sweep();
+                let protecting_live_partial = self
+                    .live
+                    .canvas_follows_live(&self.sites.list[site].live, &self.playback.state)
+                    && self.gpu_holds_live_sweep(site);
                 // Don't blank merely because the playhead drifted into a gap
                 // (spec §11.2): a Blank with NO scan covering the playhead is the
                 // "drifted away in time" case — keep the held frame and let the
                 // canvas caption surface the discrepancy. Blank only when a scan
                 // IS present but the selected elevation/product isn't in it (the
                 // honest "nothing here for your filter" case).
-                let scan_covers_playhead = self
-                    .timeline
+                let scan_covers_playhead = self.sites.list[site]
                     .scans
                     .find_recent_scan(self.playback.state.playback_position(), MAX_SCAN_AGE_SECS)
                     .is_some();
                 if !protecting_live_partial && scan_covers_playhead {
-                    self.clear_display_no_sweep();
+                    self.clear_display_no_sweep(site);
                 }
             }
         }
     }
 
-    /// The live cut feeding [`crate::core::playback_manager::resolve_desired_display`]:
+    /// Site `site`'s live cut feeding [`crate::core::playback_manager::resolve_desired_display`]:
     /// `Some((collecting_elevation, anchor_key_ms))` while streaming with a
-    /// fully-known volume, the canvas following the live stream (see
-    /// [`crate::subsystem::Live::canvas_follows_live`]) AND radials of that
+    /// fully-known volume, the canvas following the site's live stream (see
+    /// [`crate::subsystem::SiteLive::canvas_follows_live`]) AND radials of that
     /// elevation still in the accumulator (see
     /// [`crate::core::worker_ingest::live_cut`]), else
     /// `None` (which collapses the resolver to the cache path — a detached
     /// playhead resolves whatever's cached under the cursor, untouched by
     /// the background stream). Shared by `request_worker_render` and the
     /// `Decoded` upload gate in `handle_decoded_outcome`.
-    pub(crate) fn live_render_sources(&self) -> Option<(u8, i64)> {
-        if !self.live.canvas_follows_live(&self.playback.state) {
+    pub(crate) fn live_render_sources(&self, site: usize) -> Option<(u8, i64)> {
+        let live = &self.sites.list[site].live;
+        if !self.live.canvas_follows_live(live, &self.playback.state) {
             return None;
         }
-        let anchor_ms = self
-            .live
-            .mode_state
+        let anchor_ms = live
+            .volume
             .current_volume
             .as_ref()
             .map(|a| a.scan_key.scan_start.0);
-        let engine = self.live.engine.borrow();
+        let engine = live.engine.borrow();
         let obs = engine.observations();
         crate::core::worker_ingest::live_cut(
             obs.current_in_progress_elevation,
@@ -360,15 +416,16 @@ impl WorkbenchApp {
         self.playback.state.playback_mode() == crate::core::PlaybackMode::Macro
     }
 
-    /// Whether the main GPU texture currently holds a live partial sweep
+    /// Whether site `site`'s main GPU texture holds a live partial sweep
     /// (`current_sweep_id` like `live|{elev}`, set by
     /// `handle_live_decoded_outcome`). Lets `request_worker_render` avoid
     /// blanking a valid partial during a between-chunks frame, and lets
     /// `sync_prev_sweep_texture` tell a live partial (whose prev slot the
     /// LiveDecoded promote owns) from a cached cut shown during live.
-    pub(crate) fn gpu_holds_live_sweep(&self) -> bool {
-        self.gpu
+    pub(crate) fn gpu_holds_live_sweep(&self, site: usize) -> bool {
+        self.sites.list[site]
             .gpu
+            .radar
             .as_ref()
             .and_then(|renderer| {
                 renderer
@@ -379,19 +436,30 @@ impl WorkbenchApp {
             .unwrap_or(false)
     }
 
-    /// Request volume render (all elevations for ray marching).
-    pub(crate) fn request_worker_render_volume(&mut self) {
+    /// Request a volume render (all elevations for ray marching) of site
+    /// `site`'s active scan. A site past the volume budget asks for none.
+    pub(crate) fn request_worker_render_volume(&mut self, site: usize) {
+        let resident = self.sites.volume_residency(self.chrome.device_layout);
+        if !resident.get(site).copied().unwrap_or(false) {
+            return;
+        }
         let product = self.state.viz_state.product.to_worker_string().to_string();
-        self.render.coordinator.request_volume_render(&product);
+        let track = &mut self.sites.list[site].render;
+        self.render
+            .coordinator
+            .request_volume_render(track, &product);
     }
 
     /// Stop live mode streaming.
     pub(crate) fn stop_live_mode(&mut self, reason: crate::core::LiveExitReason) {
         log::info!("Stopping live mode: {:?}", reason);
 
-        self.live.stop(reason);
+        self.live.stop(&mut self.sites, reason);
         self.playback.state.exit_live(crate::core::FreezeAt::Keep);
-        self.live.channel.stop();
+        for site in self.sites.list.iter_mut() {
+            site.live.channel.stop();
+            site.live.retry = None;
+        }
 
         // Halt playback: every remaining stop path (explicit stop, error,
         // site change) lands the cursor where it was, and leaving
@@ -400,18 +468,26 @@ impl WorkbenchApp {
         self.playback.state.playing = false;
     }
 
-    /// Handle a realtime streaming result.
+    /// Handle a realtime streaming result from the channel of the site at
+    /// `site` in the list. The result lands on that site's live state; only
+    /// the focus site moves the session phase past acquiring.
     pub(crate) fn handle_realtime_result(
         &mut self,
+        site: usize,
         result: nexrad::RealtimeResult,
         _ctx: &egui::Context,
     ) {
         let now = self.state.frame_now.secs();
+        let from_focus = site == self.sites.focus;
 
         match result {
             nexrad::RealtimeResult::Started { site_id } => {
                 log::debug!("Realtime streaming started for site: {}", site_id);
-                self.live.mode_state.handle_streaming_started(now);
+                self.live.mode_state.apply_site_event(
+                    crate::core::SiteStreamEvent::Started,
+                    from_focus,
+                    now,
+                );
             }
             nexrad::RealtimeResult::ChunkReceived {
                 chunks_in_volume,
@@ -432,12 +508,18 @@ impl WorkbenchApp {
                     fetch_latency_ms,
                     plan.as_ref().and_then(|p| p.next_available_in_secs(now)),
                 );
-                self.live
-                    .mode_state
-                    .handle_realtime_chunk(chunks_in_volume, now, plan.as_ref());
-
+                let awaiting_target = plan.as_ref().and_then(|p| p.next_target()).is_some();
+                self.live.mode_state.apply_site_event(
+                    crate::core::SiteStreamEvent::Chunk { awaiting_target },
+                    from_focus,
+                    now,
+                );
+                // Data arrived: a restarted stream is healthy again.
+                self.sites.list[site].live.retry = None;
+                let volume = &mut self.sites.list[site].live.volume;
+                volume.chunks_received = chunks_in_volume;
                 if let Some(stat) = arrival_stat {
-                    self.live.mode_state.record_chunk_arrival(stat);
+                    volume.record_chunk_arrival(stat);
                 }
 
                 // Record chunk latency for the acquisition drawer. No radial
@@ -470,7 +552,7 @@ impl WorkbenchApp {
                 );
 
                 // Track realtime chunk as an acquisition operation
-                let rt_site_id = self.state.viz_state.site_id.clone();
+                let rt_site_id = self.sites.list[site].id.0.clone();
                 let op_id =
                     self.acquisition
                         .state
@@ -495,7 +577,7 @@ impl WorkbenchApp {
                 }
 
                 // Forward chunk to worker for incremental ingest
-                let site_id = self.state.viz_state.site_id.clone();
+                let site_id = self.sites.list[site].id.0.clone();
                 let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
                 if is_start {
                     self.state.session_stats.pipeline.processing = true;
@@ -530,12 +612,20 @@ impl WorkbenchApp {
             }
             nexrad::RealtimeResult::Error(msg) => {
                 log::error!("Realtime streaming error: {}", msg);
-                self.stop_live_mode(crate::core::LiveExitReason::ConnectionError);
-                // Preserve error message (stop_live_mode clears it)
-                self.live.mode_state.error_message = Some(msg.clone());
+                // A failed channel stops its own site, which waits and starts
+                // again (`restart_due_streams`); the session stays live.
+                let live = &mut self.sites.list[site].live;
+                live.channel.stop();
+                live.volume.clear();
+                live.engine.borrow_mut().reset_volume_observations();
+                live.retry = Some(crate::core::StreamRetry::after_failure(
+                    live.retry.as_ref(),
+                    msg.clone(),
+                    now,
+                ));
 
                 // Track error as a failed acquisition operation
-                let err_site_id = self.state.viz_state.site_id.clone();
+                let err_site_id = self.sites.list[site].id.0.clone();
                 let op_id =
                     self.acquisition
                         .state

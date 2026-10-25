@@ -108,6 +108,7 @@ fn draw_sheet(ctx: &mut LayoutCtx) {
                     RailTab::Events => super::super::right_panel::render_events_section(
                         ui,
                         ctx.state,
+                        ctx.sites,
                         ctx.live,
                         ctx.playback,
                         ctx.chrome,
@@ -137,7 +138,7 @@ fn header(ui: &mut egui::Ui, state: &mut AppState, tab: RailTab) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let mark = ui.add(
                 egui::Button::new(
-                    RichText::new(egui_phosphor::regular::X)
+                    RichText::new(crate::ui::icons::X)
                         .size(20.0)
                         .color(theme::TEXT_DIM),
                 )
@@ -223,10 +224,7 @@ fn about_section(
             .color(theme::TEXT_FAINT),
     );
     if ui
-        .button(format!(
-            "{}  Changelog",
-            egui_phosphor::regular::ARROW_SQUARE_OUT
-        ))
+        .button(format!("{}  Changelog", crate::ui::icons::ARROW_SQUARE_OUT))
         .clicked()
     {
         state.push_command(Intent::OpenExternalUrl(

@@ -19,11 +19,16 @@
     <!-- iOS "Add to Home Screen" PWA metadata. The manifest's display:standalone
          covers modern browsers, but iOS Safari still reads these legacy tags to
          decide whether to launch without Safari chrome and how to style the
-         status bar. `black-translucent` lets the app paint under the status bar
-         together with viewport-fit=cover above. -->
+         status bar. The status bar is opaque `black`, not `black-translucent`:
+         since iOS 26, a translucent bar blurs the top of the page (where the
+         top bar sits) and the viewport comes up short by the status bar's
+         height, leaving a gap at the bottom (WebKit bug 301108). With an
+         opaque bar the page starts below it and env(safe-area-inset-top) is 0.
+         iOS keeps the style an app was installed with, so a change here only
+         reaches an installed app after it is removed and added again. -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <meta name="apple-mobile-web-app-title" content="NEXRAD">
 
     <!-- Privacy-friendly aggregate pageview analytics. Include the host in the
@@ -60,35 +65,23 @@
     <link data-trunk rel="copy-file" href="worker.js" />
     <link data-trunk rel="copy-file" href="service-worker.js" />
 
-    <!-- Favicon/PWA assets. Only these files under assets/ are shipped; the
-         shapefiles in assets/vectors/ and the alert zone geometry in
-         assets/zone_geometry.json are already baked into the binary via
-         include_bytes! and must not be duplicated into dist/. -->
+    <!-- Favicon/PWA assets and the alert zone geometry, which the app fetches
+         the first time a zone-only alert needs it. The shapefiles in
+         assets/vectors/ are baked into the binary via include_bytes! and must
+         not be duplicated into dist/. -->
     <link data-trunk rel="copy-file" href="assets/favicon.svg"           data-target-path="assets" />
     <link data-trunk rel="copy-file" href="assets/apple-touch-icon.png"  data-target-path="assets" />
     <link data-trunk rel="copy-file" href="assets/icon-192.png"          data-target-path="assets" />
     <link data-trunk rel="copy-file" href="assets/icon-512.png"          data-target-path="assets" />
     <link data-trunk rel="copy-file" href="assets/manifest.webmanifest"  data-target-path="assets" />
+    <link data-trunk rel="copy-file" href="assets/zone_geometry.json"    data-target-path="assets" />
 
     <script>
-        // Register service worker for cross-origin isolation + network monitoring.
-        // If the SW is not yet controlling this page, register it and reload so
-        // the COOP/COEP response headers take effect before the app loads.
+        // Register the service worker for the installed app's offline shell
+        // and the request readout. It takes control of this page once it
+        // activates (clients.claim), so no reload is needed.
         if ('serviceWorker' in navigator) {
-            if (!navigator.serviceWorker.controller) {
-                navigator.serviceWorker.register('service-worker.js').then(function(reg) {
-                    var sw = reg.installing || reg.waiting;
-                    if (sw) {
-                        sw.addEventListener('statechange', function() {
-                            if (sw.state === 'activated') {
-                                window.location.reload();
-                            }
-                        });
-                    } else if (reg.active) {
-                        window.location.reload();
-                    }
-                });
-            }
+            navigator.serviceWorker.register('service-worker.js').catch(function () {});
         }
     </script>
 
@@ -191,9 +184,8 @@
 
         /* iOS safe-area insets exposed as CSS custom properties so the WASM
            app can read them via getComputedStyle. Needed because the canvas
-           extends under the status bar / home indicator when installed as a
-           PWA (viewport-fit=cover + apple-mobile-web-app-status-bar-style
-           black-translucent), and egui has to compensate in its own layout. */
+           extends under the home indicator (and the notch in landscape) with
+           viewport-fit=cover, and egui has to compensate in its own layout. */
         :root {
             --sa-inset-top: env(safe-area-inset-top, 0px);
             --sa-inset-right: env(safe-area-inset-right, 0px);
@@ -216,6 +208,12 @@
             display: block;
             width: 100%;
             height: 100%;
+            /* iOS 26+ blurs the top of a home-screen app (the Liquid Glass
+               scroll edge effect), over the phone top bar. WebKit skips it
+               when a full-width fixed box with a solid background touches the
+               top edge and tints with that colour instead, so the canvas gets
+               one: theme::MAP, the top bar's fill. */
+            background-color: #06080c;
             /* Prevent the browser from claiming touch gestures (pinch-to-zoom,
                double-tap-to-zoom, swipe-to-scroll) so they reach egui as
                multi-touch events. */

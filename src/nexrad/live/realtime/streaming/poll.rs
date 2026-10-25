@@ -128,7 +128,7 @@ pub(super) async fn fetch_next_chunk(
                     )
                     .await
                 }
-                StreamingFilter::Elevation(_) => {
+                StreamingFilter::Cuts(_) => {
                     attempt_with_timeout(
                         async {
                             let outcome = iter

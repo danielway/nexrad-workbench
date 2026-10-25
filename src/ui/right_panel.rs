@@ -14,13 +14,14 @@
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::ladder::VolumeLadder;
 use crate::core::panels::{self, MpingRow, RailTab};
+use crate::core::storm_cell_view::StormCellIntent;
 use crate::core::storm_cells;
 use crate::core::top_bar::{TopBarIntent, TopBarVm};
 use crate::core::{Intent, InterpolationMode};
 use crate::state::{format_bytes, AppState, StorageSettings};
+use crate::ui::icons;
 use crate::ui::theme;
 use eframe::egui::{self, RichText, ScrollArea};
-use egui_phosphor::regular as icons;
 
 /// The rail's width.
 const RAIL_W: f32 = 44.0;
@@ -70,6 +71,7 @@ impl Layer for RightPanelLayer {
                             render_events_section(
                                 ui,
                                 ctx.state,
+                                ctx.sites,
                                 ctx.live,
                                 ctx.playback,
                                 ctx.chrome,
@@ -79,7 +81,7 @@ impl Layer for RightPanelLayer {
                     });
                 });
         }
-        rail(ctx.root_ui, ctx.state, ctx.chrome);
+        rail(ctx.root_ui, ctx.state, &ctx.sites.focus().id.0, ctx.chrome);
     }
 }
 
@@ -94,13 +96,17 @@ fn tab_icon(tab: RailTab) -> &'static str {
     }
 }
 
-fn rail(root_ui: &mut egui::Ui, state: &AppState, chrome: &mut crate::subsystem::Chrome) {
-    let site = &state.viz_state.site_id;
+fn rail(
+    root_ui: &mut egui::Ui,
+    state: &AppState,
+    site: &str,
+    chrome: &mut crate::subsystem::Chrome,
+) {
     let events_here = state
         .saved_events
         .events
         .iter()
-        .filter(|e| &e.site_id == site)
+        .filter(|e| e.site_id == site)
         .count();
     let tabs = panels::rail_tabs(
         chrome.rail_tab,
@@ -367,7 +373,7 @@ pub(super) fn render_layers_section(
     }
 
     section(ui, "Live");
-    if let Some(note) = panels::live_layers_note(derived.data_is_live) {
+    if let Some(note) = panels::live_layers_note(derived.live_overlays_off) {
         ui.label(
             RichText::new(note)
                 .size(theme::CAPTION)
@@ -461,13 +467,19 @@ pub(super) fn render_rendering_section(
     let in_macro = playback.state.playback_mode() == crate::core::PlaybackMode::Macro;
     section(ui, "Analysis");
 
-    ui.checkbox(&mut state.viz_state.storm_cells_visible, "Storm cells")
-        .on_hover_text("Detect and outline storm cells on the radar");
+    // The checkbox and the slider read the state and emit intents
+    // (core::storm_cell_view::reduce); they never write it.
+    let mut visible = state.viz_state.storm_cells_visible;
+    if ui
+        .checkbox(&mut visible, "Storm cells")
+        .on_hover_text("Outline each storm's footprint with its peak dBZ")
+        .changed()
+    {
+        state.push_command(Intent::StormCells(StormCellIntent::SetVisible(visible)));
+    }
     if state.viz_state.storm_cells_visible {
         let slider = storm_cells::threshold_slider(state.viz_state.product);
         ui.indent("storm_cell_indent", |ui| {
-            // two-way binding: the egui widget owns this value while the user edits it.
-            // A new threshold re-runs detection (the result is keyed on it).
             let mut threshold = state.viz_state.storm_cell_threshold_dbz;
             if ui
                 .add_enabled(
@@ -479,9 +491,10 @@ pub(super) fn render_rendering_section(
                     .text("Min dBZ")
                     .step_by(1.0),
                 )
+                .on_hover_text("The weakest echo that can belong to a cell (the envelope)")
                 .changed()
             {
-                state.viz_state.storm_cell_threshold_dbz = threshold;
+                state.push_command(Intent::StormCells(StormCellIntent::SetThreshold(threshold)));
             }
             if let Some(hint) = slider.hint {
                 ui.label(
@@ -489,6 +502,14 @@ pub(super) fn render_rendering_section(
                         .size(theme::CAPTION)
                         .color(theme::TEXT_DIM),
                 );
+            }
+            let mut tracks = state.viz_state.storm_tracks_visible;
+            if ui
+                .checkbox(&mut tracks, "Tracks")
+                .on_hover_text("Track letters, trails of the last 3 volumes and 30 min forecasts")
+                .changed()
+            {
+                state.push_command(Intent::StormCells(StormCellIntent::SetTracks(tracks)));
             }
         });
     }
@@ -539,11 +560,12 @@ pub(super) fn render_rendering_section(
 pub(super) fn render_events_section(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    sites: &mut crate::subsystem::Sites,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    let current_site = state.viz_state.site_id.clone();
+    let current_site = sites.focus().id.0.clone();
     let site_events: Vec<_> = state
         .saved_events
         .events
@@ -554,7 +576,7 @@ pub(super) fn render_events_section(
     let other_count = state.saved_events.events.len() - site_events.len();
 
     for event in &site_events {
-        event_row(ui, state, live, playback, chrome, event, false);
+        event_row(ui, state, sites, live, playback, chrome, event, false);
     }
 
     if other_count > 0 {
@@ -575,7 +597,7 @@ pub(super) fn render_events_section(
                 .cloned()
                 .collect();
             for event in &other_events {
-                event_row(ui, state, live, playback, chrome, event, true);
+                event_row(ui, state, sites, live, playback, chrome, event, true);
             }
         });
     }
@@ -592,9 +614,11 @@ pub(super) fn render_events_section(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn event_row(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    sites: &mut crate::subsystem::Sites,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
@@ -624,7 +648,7 @@ fn event_row(
                 .on_hover_text("Go to this event and loop it")
                 .clicked()
             {
-                navigate_to_event(state, live, playback, event);
+                navigate_to_event(state, sites, live, playback, event);
             }
         });
     });
@@ -638,30 +662,30 @@ fn event_row(
     ui.add_space(2.0);
 }
 
-/// Navigate to a saved event: switch site if needed, loop its span, center timeline.
+/// Navigate to a saved event: pick its site if it is another (through
+/// `SelectSite`, as any site pick), loop its span, center the timeline.
 fn navigate_to_event(
     state: &mut AppState,
+    sites: &mut crate::subsystem::Sites,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     event: &crate::state::SavedEvent,
 ) {
     use crate::data::get_site;
 
-    if event.site_id != state.viz_state.site_id {
+    if event.site_id != sites.focus().id.0 {
         if let Some(site) = get_site(&event.site_id) {
-            state.viz_state.site_id = site.id.to_string();
-            state.viz_state.center_lat = site.lat;
-            state.viz_state.center_lon = site.lon;
-            state.viz_state.set_pan_offset(egui::Vec2::ZERO);
-            state.viz_state.camera.center_on(site.lat, site.lon);
-            state.push_command(Intent::RefreshTimeline {
-                auto_position: false,
+            state.push_command(Intent::SelectSite {
+                site_id: site.id.to_string(),
+                lat: site.lat,
+                lon: site.lon,
             });
         }
     }
 
     // Loop the event's span (a fixed range: the playhead leaves live).
     live.select_range(
+        sites,
         &mut playback.state,
         event.start_time,
         event.end_time,

@@ -86,8 +86,14 @@ impl DecodeWorker {
         }
     }
 
-    /// Submit a live (partial sweep) render request: reads from in-memory accumulator.
-    pub(crate) fn render_live(&mut self, elevation_number: u8, product: String) {
+    /// Submit a live (partial sweep) render request: reads `site`'s
+    /// in-memory accumulator.
+    pub(crate) fn render_live(
+        &mut self,
+        site: crate::data::SiteId,
+        elevation_number: u8,
+        product: String,
+    ) {
         let id = self.next_request_id();
         // Live renders aren't bound to a stored scan; supply a sentinel
         // ScanKey for the context (the receive path doesn't read it for
@@ -97,20 +103,34 @@ impl DecodeWorker {
             crate::data::ScanKey::new(crate::data::SiteId::new(""), crate::data::UnixMillis(0));
         self.pending_render_live.borrow_mut().insert(
             id,
-            RenderContext {
-                scan_key,
-                elevation_number,
+            super::types::LiveRenderContext {
+                site: site.clone(),
+                render: RenderContext {
+                    scan_key,
+                    elevation_number,
+                },
             },
         );
 
         if *self.ready.borrow() {
-            send_render_live_request(&self.worker, id, elevation_number, &product);
+            send_render_live_request(&self.worker, id, &site, elevation_number, &product);
         } else {
             self.queue.push(super::QueuedRequest::RenderLive(
                 id,
+                site,
                 elevation_number,
                 product,
             ));
+        }
+    }
+
+    /// Tell the worker to forget `site`'s live accumulator. Fire and
+    /// forget: nothing waits on it, so it takes no request id.
+    pub(crate) fn drop_site(&mut self, site: crate::data::SiteId) {
+        if *self.ready.borrow() {
+            send_drop_site_request(&self.worker, &site);
+        } else {
+            self.queue.push(super::QueuedRequest::DropSite(site));
         }
     }
 
@@ -142,6 +162,45 @@ impl DecodeWorker {
                 product,
                 elevation_numbers,
             ));
+        }
+    }
+
+    /// Submit a storm cell detection on one cut.
+    pub(crate) fn detect(&mut self, request: crate::core::storm_cells::DetectRequest) {
+        let id = self.next_request_id();
+        self.pending_detect.borrow_mut().insert(
+            id,
+            DetectFor {
+                request_id: request.request_id,
+                scene: false,
+            },
+        );
+        if *self.ready.borrow() {
+            send_detect_request(&self.worker, id, &request);
+        } else {
+            self.queue.push(super::QueuedRequest::Detect(id, request));
+        }
+    }
+
+    /// Submit a storm cell detection on the composite grid of several
+    /// sites' cuts. Its reply is a `detected` message like `detect`'s.
+    pub(crate) fn detect_composite(
+        &mut self,
+        request: crate::core::storm_cells::SceneDetectRequest,
+    ) {
+        let id = self.next_request_id();
+        self.pending_detect.borrow_mut().insert(
+            id,
+            DetectFor {
+                request_id: request.request_id,
+                scene: true,
+            },
+        );
+        if *self.ready.borrow() {
+            send_detect_composite_request(&self.worker, id, &request);
+        } else {
+            self.queue
+                .push(super::QueuedRequest::DetectComposite(id, request));
         }
     }
 
@@ -336,15 +395,36 @@ pub(super) fn send_render_request(
 }
 
 /// Send a render_live request to the worker.
+/// Post a `drop_site`: the worker forgets `site`'s live accumulator. The
+/// worker sends no reply.
+pub(super) fn send_drop_site_request(worker: &Worker, site: &crate::data::SiteId) {
+    let request = DropSiteRequestMsg {
+        msg_type: RequestType::DropSite.as_str(),
+        site_id: &site.0,
+    };
+    let msg = match serde_wasm_bindgen::to_value(&request) {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("Failed to serialize drop_site for {}: {}", site.0, e);
+            return;
+        }
+    };
+    if let Err(e) = worker.post_message(&msg) {
+        log::error!("Failed to send drop_site for {}: {:?}", site.0, e);
+    }
+}
+
 pub(super) fn send_render_live_request(
     worker: &Worker,
     id: u64,
+    site: &crate::data::SiteId,
     elevation_number: u8,
     product: &str,
 ) {
     let request = RenderLiveRequestMsg {
         msg_type: RequestType::RenderLive.as_str(),
         id: id as f64,
+        site_id: &site.0,
         elevation_number,
         product,
     };
@@ -386,5 +466,80 @@ pub(super) fn send_render_volume_request(
 
     if let Err(e) = worker.post_message(&msg) {
         log::error!("Failed to send render_volume request {}: {:?}", id, e);
+    }
+}
+
+/// The wire name of a cut's input.
+fn input_str(input: crate::core::storm_cells::CutInput) -> &'static str {
+    match input {
+        crate::core::storm_cells::CutInput::Stored => "stored",
+        crate::core::storm_cells::CutInput::Live { .. } => "live",
+    }
+}
+
+/// Send a composite storm cell detection request to the worker.
+pub(super) fn send_detect_composite_request(
+    worker: &Worker,
+    id: u64,
+    request: &crate::core::storm_cells::SceneDetectRequest,
+) {
+    let msg = DetectCompositeRequestMsg {
+        msg_type: RequestType::DetectComposite.as_str(),
+        id: id as f64,
+        sites: request
+            .key
+            .sites
+            .iter()
+            .zip(&request.radars)
+            .map(|(k, &(radar_lat, radar_lon))| DetectCompositeSiteMsg {
+                scan_key: k.scan_key.to_storage_key(),
+                elevation_number: k.elevation_number,
+                input: input_str(k.input),
+                radar_lat,
+                radar_lon,
+            })
+            .collect(),
+        params: &request.params,
+    };
+    let msg = match serde_wasm_bindgen::to_value(&msg) {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("Failed to serialize detect_composite request {}: {}", id, e);
+            return;
+        }
+    };
+    if let Err(e) = worker.post_message(&msg) {
+        log::error!("Failed to send detect_composite request {}: {:?}", id, e);
+    }
+}
+
+/// Send a storm cell detection request to the worker.
+pub(super) fn send_detect_request(
+    worker: &Worker,
+    id: u64,
+    request: &crate::core::storm_cells::DetectRequest,
+) {
+    let key = &request.key;
+    let scan_key = key.scan_key.to_storage_key();
+    let msg = DetectRequestMsg {
+        msg_type: RequestType::Detect.as_str(),
+        id: id as f64,
+        scan_key: &scan_key,
+        elevation_number: key.elevation_number,
+        input: input_str(key.input),
+        params: &request.params,
+        radar_lat: request.radar_lat,
+        radar_lon: request.radar_lon,
+        volume_cuts: &request.volume_cuts,
+    };
+    let msg = match serde_wasm_bindgen::to_value(&msg) {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("Failed to serialize detect request {}: {}", id, e);
+            return;
+        }
+    };
+    if let Err(e) = worker.post_message(&msg) {
+        log::error!("Failed to send detect request {}: {:?}", id, e);
     }
 }

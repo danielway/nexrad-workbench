@@ -58,13 +58,18 @@ pub(crate) fn link_selection(selection: Selection) -> LinkSelection {
 /// Assemble the link for what is on screen — the shell-side input builder
 /// for the pure [`crate::core::decide_persist`]. Kept beside
 /// [`ViewState::from_state`] so the whole state → link field mapping lives in
-/// one place.
+/// one place. `site_id` is the focus site and `also` the other sites on the
+/// map, in list order; `map_centre` is what the link's `lat`/`lon` carry.
 pub(crate) fn build_link(
     state: &super::AppState,
     playback: &crate::core::PlaybackState,
+    site_id: &str,
+    also: Vec<String>,
+    map_centre: (f64, f64),
 ) -> LinkState {
     LinkState {
-        site: Some(state.viz_state.site_id.clone()),
+        site: Some(site_id.to_string()),
+        also,
         time: Some(playback.playback_position()),
         selection: Some(link_selection(playback.selection)),
         play_mode: Some(playback.chosen_play_mode()),
@@ -73,9 +78,15 @@ pub(crate) fn build_link(
             ElevationSelection::Latest => LinkTilt::Latest,
             ElevationSelection::Fixed { angle, .. } => LinkTilt::Angle(angle),
         }),
-        lat: Some(state.viz_state.center_lat),
-        lon: Some(state.viz_state.center_lon),
+        lat: Some(map_centre.0),
+        lon: Some(map_centre.1),
         view: ViewState::from_state(state, playback),
+        cells: state
+            .viz_state
+            .storm_cells_visible
+            .then_some(state.viz_state.storm_cell_threshold_dbz),
+        tracks: (state.viz_state.storm_cells_visible && state.viz_state.storm_tracks_visible)
+            .then_some(true),
         dev: Some(state.dev_mode),
     }
 }
@@ -103,12 +114,38 @@ mod tests {
     use crate::core::{LoopBasis, PlaybackMode};
     use wasm_bindgen_test::wasm_bindgen_test;
 
+    /// The link with KDMX as the focus site and the map on it.
+    fn kdmx_link(
+        state: &crate::state::AppState,
+        playback: &crate::core::PlaybackState,
+    ) -> LinkState {
+        build_link(state, playback, "KDMX", Vec::new(), (41.7312, -93.7229))
+    }
+
+    #[wasm_bindgen_test]
+    fn storm_cells_join_the_link_only_when_on() {
+        let mut state = crate::state::AppState::default();
+        let playback = crate::core::PlaybackState::default();
+        assert_eq!(kdmx_link(&state, &playback).cells, None);
+        state.viz_state.storm_cells_visible = true;
+        state.viz_state.storm_cell_threshold_dbz = 45.0;
+        let q = crate::core::link::to_query(&kdmx_link(&state, &playback));
+        assert!(q.contains("cells=45"), "{q}");
+        assert!(!q.contains("tracks"), "{q}");
+        state.viz_state.storm_tracks_visible = true;
+        let q = crate::core::link::to_query(&kdmx_link(&state, &playback));
+        assert!(q.contains("cells=45&tracks=1"), "{q}");
+        // Tracks without cells draw nothing, so the link leaves them out.
+        state.viz_state.storm_cells_visible = false;
+        assert_eq!(kdmx_link(&state, &playback).tracks, None);
+    }
+
     #[wasm_bindgen_test]
     fn a_pinned_point_travels_as_sel_now_not_rt() {
         let state = crate::state::AppState::default();
         let mut playback = crate::core::PlaybackState::default();
         playback.enter_pinned_live(1_700_000_000.0);
-        let link = build_link(&state, &playback);
+        let link = kdmx_link(&state, &playback);
         assert_eq!(link.selection, Some(LinkSelection::PinnedNow));
         assert_eq!(link.view.rt, None);
         // And it opens pinned again.
@@ -121,7 +158,7 @@ mod tests {
         let state = crate::state::AppState::default();
         let mut playback = crate::core::PlaybackState::default();
         playback.set_playback_position(1_700_000_000.0);
-        let link = build_link(&state, &playback);
+        let link = kdmx_link(&state, &playback);
         assert_eq!(link.selection, Some(LinkSelection::Point));
         let q = crate::core::link::to_query(&link);
         assert!(q.contains("t=1700000000"), "{q}");
@@ -151,14 +188,11 @@ mod tests {
     fn link_carries_mode_product_tilt_center_and_dev() {
         let mut state = crate::state::AppState::default();
         let mut playback = crate::core::PlaybackState::default();
-        state.viz_state.site_id = "KDMX".to_string();
         state.viz_state.product = crate::core::RadarProduct::Velocity;
-        state.viz_state.center_lat = 41.25;
-        state.viz_state.center_lon = -93.75;
         state.viz_state.elevation_selection = ElevationSelection::Latest;
         state.dev_mode = true;
         playback.restore_play_mode(PlaybackMode::Micro);
-        let link = build_link(&state, &playback);
+        let link = build_link(&state, &playback, "KDMX", Vec::new(), (41.25, -93.75));
         assert_eq!(link.site.as_deref(), Some("KDMX"));
         assert_eq!(link.product.as_deref(), Some("VEL"));
         assert_eq!(link.tilt, Some(LinkTilt::Latest));

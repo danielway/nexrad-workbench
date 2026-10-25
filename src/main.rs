@@ -26,6 +26,7 @@ mod mping;
 mod net;
 mod nexrad;
 mod state;
+mod storm_cells;
 mod subsystem;
 mod ui;
 
@@ -102,6 +103,44 @@ fn main() {}
 
 // Worker exports (worker_ingest, worker_render) are in nexrad::decode::worker_api.
 
+/// Console log level for the main thread and the decode workers. Release
+/// builds log at Info: Debug writes several lines per live chunk to every
+/// visitor's console.
+pub(crate) const LOG_LEVEL: log::LevelFilter = if cfg!(debug_assertions) {
+    log::LevelFilter::Debug
+} else {
+    log::LevelFilter::Info
+};
+
+/// Send `log` output to the browser console at [`LOG_LEVEL`], keeping only
+/// errors from the decoder: nexrad-decode 1.0.0-rc.3 warns once per TDWR
+/// radial about the padding after it (see `record_decode::record_ranges`).
+pub(crate) fn init_logger() {
+    struct Logger(eframe::WebLogger);
+
+    impl log::Log for Logger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            if metadata.target().starts_with("nexrad_decode") {
+                return metadata.level() <= log::Level::Error;
+            }
+            self.0.enabled(metadata)
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata()) {
+                self.0.log(record);
+            }
+        }
+
+        fn flush(&self) {
+            self.0.flush();
+        }
+    }
+
+    log::set_max_level(LOG_LEVEL);
+    log::set_boxed_logger(Box::new(Logger(eframe::WebLogger::new(LOG_LEVEL)))).ok();
+}
+
 /// Entry point for the WASM application.
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub async fn start() {
@@ -113,7 +152,7 @@ pub async fn start() {
     use eframe::wasm_bindgen::JsCast as _;
 
     // Redirect `log` messages to `console.log`:
-    eframe::WebLogger::init(log::LevelFilter::Debug).ok();
+    init_logger();
 
     let web_options = eframe::WebOptions::default();
 
@@ -156,18 +195,13 @@ pub async fn start() {
 
 /// All GPU renderers and their shared GL context, grouped for clarity.
 pub struct GpuResources {
-    /// GPU renderer for radar data (None if GL not available).
-    pub gpu: Option<std::sync::Arc<std::sync::Mutex<nexrad::RadarGpuRenderer>>>,
-    /// GL context for uploading data to GPU textures.
+    /// GL context for uploading data to GPU textures. Each site's own
+    /// renderers live on its [`subsystem::sites::SiteGpu`].
     pub gl: Option<std::sync::Arc<glow::Context>>,
     /// Globe sphere renderer (3D mode).
     pub globe: Option<std::sync::Arc<std::sync::Mutex<geo::GlobeRenderer>>>,
     /// Geographic line renderer for 3D globe.
     pub geo_line: Option<std::sync::Arc<std::sync::Mutex<geo::GeoLineRenderer>>>,
-    /// Globe-mode radar renderer (projects radar data onto sphere).
-    pub globe_radar: Option<std::sync::Arc<std::sync::Mutex<nexrad::GlobeRadarRenderer>>>,
-    /// Volumetric ray-march renderer for 3D mode.
-    pub volume_ray: Option<std::sync::Arc<std::sync::Mutex<nexrad::VolumeRayRenderer>>>,
 }
 
 use state::MAX_RECENT_NETWORK_REQUESTS;
@@ -196,9 +230,12 @@ pub struct WorkbenchApp {
     /// derived models (live radar model, top-level app mode).
     live: subsystem::Live,
 
-    /// Timeline subsystem: scan inventory + shadow scan boundaries
-    /// derived from the archive listing.
+    /// Timeline subsystem: the storm-activity book shared across sites.
     timeline: subsystem::Timeline,
+
+    /// The active radar sites (one today) and which one the single-valued
+    /// surfaces describe. Everything per site lives on its element.
+    sites: subsystem::Sites,
 
     /// Playback subsystem: cursor position, speed, mode, animation,
     /// realtime lock.
@@ -244,32 +281,52 @@ static COUNTIES_DBF: &[u8] =
 /// following the pure [`core::link::BootPlan`]. Extracted from
 /// `WorkbenchApp::new` to keep the constructor focused on wiring up
 /// subsystems rather than restoring view state.
+///
+/// Returns the sites the link shows beside the focus (`also`), already
+/// limited to the layout's cap of `cap` sites.
 fn apply_link(
     link: &core::link::LinkState,
     prefs: &core::Preferences,
     state: &mut AppState,
+    site: &mut subsystem::SiteState,
     playback: &mut subsystem::Playback,
     chrome: &mut subsystem::Chrome,
-) {
+    cap: usize,
+) -> Vec<&'static data::sites::NexradSite> {
     use core::link::{BootStart, LinkTilt};
 
-    let plan = core::link::decide_boot(link, state.preferred_site.as_deref(), |id| {
-        data::get_site(id).is_some()
-    });
+    let plan = core::link::decide_boot(
+        link,
+        state.preferred_site.as_deref(),
+        |id| data::get_site(id).is_some(),
+        cap,
+    );
+    let also: Vec<&'static data::sites::NexradSite> = plan
+        .also
+        .iter()
+        .filter_map(|id| data::get_site(id))
+        .collect();
 
     // The link's developer flag wins for this session without being saved.
     if let Some(dev) = link.dev {
         state.dev_mode = dev;
     }
+    // A link that carries storm cells turns them on at its threshold.
+    if let Some(dbz) = link.cells {
+        state.viz_state.storm_cells_visible = true;
+        state.viz_state.storm_cell_threshold_dbz = core::storm_cells::clamp_threshold(dbz);
+    }
+    // ...and `tracks=1` / `tracks=0` turns their tracks on or off.
+    if let Some(on) = link.tracks {
+        state.viz_state.storm_tracks_visible = on;
+    }
 
     match plan.site.as_deref().and_then(data::get_site) {
-        Some(site) => {
-            state.viz_state.site_id = site.id.to_string();
-            state.viz_state.center_lat = site.lat;
-            state.viz_state.center_lon = site.lon;
+        Some(found) => {
             if state.recent_sites.is_empty() {
-                state.recent_sites = vec![site.id.to_string()];
+                state.recent_sites = vec![found.id.to_string()];
             }
+            site.retarget(found.id, found.lat, found.lon);
             if plan.site_from_link {
                 state.push_command(crate::core::Intent::RefreshTimeline {
                     auto_position: false,
@@ -284,16 +341,13 @@ fn apply_link(
             chrome.site_required = true;
         }
     }
-    if let Some(lat) = link.lat {
-        state.viz_state.center_lat = lat;
+    // The Recent list learns every site the link shows.
+    for extra in &also {
+        crate::core::site_picker::push_recent(&mut state.recent_sites, extra.id);
     }
-    if let Some(lon) = link.lon {
-        state.viz_state.center_lon = lon;
-    }
-    state
-        .viz_state
-        .camera
-        .center_on(state.viz_state.center_lat, state.viz_state.center_lon);
+    // The map centre: the link's `lat`/`lon`, else the focus site.
+    let (lat, lon) = plan.map_centre.unwrap_or((site.lat, site.lon));
+    state.viz_state.centre_map_on(lat, lon);
 
     let pinned = plan.start.is_pinned();
 
@@ -355,6 +409,7 @@ fn apply_link(
         .product
         .as_deref()
         .and_then(crate::core::RadarProduct::from_short_code)
+        .filter(|p| p.is_offered())
     {
         state.viz_state.product = product;
     }
@@ -403,6 +458,27 @@ fn apply_link(
             state.push_command(crate::core::Intent::ApplyLoopPreset(preset));
         }
     }
+    also
+}
+
+/// The layout the session opens in, read from the window before egui has
+/// measured anything (the per-frame `refresh_mobile_mode` takes over from
+/// the first frame). Only the boot's site cap reads it.
+fn boot_layout(state: &AppState, touch_screen: bool) -> core::phone::DeviceLayout {
+    let size = web_sys::window().map(|w| {
+        let read = |v: Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>| {
+            v.ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32
+        };
+        (read(w.inner_width()), read(w.inner_height()))
+    });
+    let (width, height) = size.unwrap_or((0.0, 0.0));
+    core::phone::device_layout(core::phone::LayoutInputs {
+        width,
+        height,
+        touch_seen: false,
+        touch_screen,
+        forced: state.mobile_override,
+    })
 }
 
 impl WorkbenchApp {
@@ -467,13 +543,33 @@ impl WorkbenchApp {
         chrome.right_sidebar_visible = loaded_prefs.panel_open;
 
         let link = state::url_state::read_link();
-        apply_link(&link, &loaded_prefs, &mut state, &mut playback, &mut chrome);
+        let mut initial_site = subsystem::SiteState::default();
+        let cap = core::sites::cap(boot_layout(&state, chrome.touch_screen));
+        let also = apply_link(
+            &link,
+            &loaded_prefs,
+            &mut state,
+            &mut initial_site,
+            &mut playback,
+            &mut chrome,
+            cap,
+        );
 
-        let initial_site_id = state.viz_state.site_id.clone();
+        let initial_site_id = initial_site.id.0.clone();
         let data_facade = MainThreadStore::new();
         let acquisition = subsystem::Acquisition::new(data_facade.clone());
-        let realtime_channel =
-            nexrad::RealtimeChannel::with_stats(acquisition.coordinator.download_stats());
+        // Each site's stream counts its bytes in the shared download stats.
+        initial_site.live = subsystem::SiteLive::new(nexrad::RealtimeChannel::with_stats(
+            acquisition.coordinator.download_stats(),
+        ));
+        let mut sites = subsystem::Sites::new(initial_site);
+        for extra in also {
+            let mut site = subsystem::SiteState::new(extra.id, extra.lat, extra.lon);
+            site.live = subsystem::SiteLive::new(nexrad::RealtimeChannel::with_stats(
+                acquisition.coordinator.download_stats(),
+            ));
+            sites.list.push(site);
+        }
 
         // Open the record cache database
         {
@@ -503,19 +599,6 @@ impl WorkbenchApp {
             }
         };
 
-        // Create GPU renderer for radar visualization
-        let gpu_renderer_gl = cc.gl.clone();
-        let gpu_renderer = cc
-            .gl
-            .as_ref()
-            .and_then(|gl| match nexrad::RadarGpuRenderer::new(gl) {
-                Ok(renderer) => Some(std::sync::Arc::new(std::sync::Mutex::new(renderer))),
-                Err(e) => {
-                    log::error!("Failed to create GPU radar renderer: {}", e);
-                    None
-                }
-            });
-
         // Create globe and geo-line renderers for 3D mode
         let globe_renderer = cc.gl.as_ref().map(|gl| {
             let r = geo::GlobeRenderer::new(gl);
@@ -537,30 +620,20 @@ impl WorkbenchApp {
             r.upload_layers(gl, &owned);
             std::sync::Arc::new(std::sync::Mutex::new(r))
         });
-        let globe_radar_renderer = cc.gl.as_ref().map(|gl| {
-            let r = nexrad::GlobeRadarRenderer::new(gl);
-            std::sync::Arc::new(std::sync::Mutex::new(r))
-        });
-        let volume_ray_renderer = cc.gl.as_ref().map(|gl| {
-            let r = nexrad::VolumeRayRenderer::new(gl);
-            std::sync::Arc::new(std::sync::Mutex::new(r))
-        });
 
         let mut app = Self {
             state,
             geo_layers,
             gpu: GpuResources {
-                gpu: gpu_renderer,
-                gl: gpu_renderer_gl,
+                gl: cc.gl.clone(),
                 globe: globe_renderer,
                 geo_line: geo_line_renderer,
-                globe_radar: globe_radar_renderer,
-                volume_ray: volume_ray_renderer,
             },
             render: subsystem::Render::new(nexrad::RenderCoordinator::new(decode_worker)),
             acquisition,
-            live: subsystem::Live::new(realtime_channel),
+            live: subsystem::Live::new(),
             timeline: subsystem::Timeline::default(),
+            sites,
             playback,
             chrome,
             persistence: app::persistence_manager::PersistenceManager::new(
@@ -578,12 +651,6 @@ impl WorkbenchApp {
             },
             last_favicon_live: None,
         };
-
-        // Check cross-origin isolation status on startup
-        app.state.cross_origin_isolated = subsystem::network_monitor::is_cross_origin_isolated();
-        if !app.state.cross_origin_isolated {
-            log::warn!("Not cross-origin isolated: SharedArrayBuffer unavailable");
-        }
 
         // Attach the service-worker network monitor for every user: it is the
         // high-fidelity source behind the activity surface's throughput and
@@ -635,13 +702,17 @@ impl WorkbenchApp {
     ) -> core::activity::ActivityVm {
         let now_ms = self.state.frame_now.millis();
         let stats = &self.state.session_stats;
+        let site_streams = self.sites.activity_streams(
+            self.live.mode_state.phase,
+            self.live.mode_state.last_exit_reason,
+        );
         core::activity::ActivityVm::build_settled(
             core::activity::ActivityInputs {
                 now_ms,
                 operations: &self.acquisition.state.operations,
                 queue_paused: self.acquisition.state.is_paused(),
-                ledger: self.acquisition.request_ledger.summarize(now_ms),
-                awaiting_scan_starts: &self.acquisition.request_ledger.awaiting_scan_starts(now_ms),
+                ledger: self.sites.ledger_summary(now_ms),
+                awaiting: &self.sites.awaiting_scans(now_ms),
                 worker: stats.worker_load,
                 last_worker_outcome_ms: stats.last_worker_outcome_ms,
                 gpu_render_in_flight: stats.pipeline.rendering,
@@ -653,20 +724,23 @@ impl WorkbenchApp {
                 fps: stats.avg_fps,
                 recent_requests: &self.state.recent_network_requests,
                 cache_size_bytes: stats.cache_size_bytes,
-                stream: self.live.session.stream,
+                sites: &site_streams,
+                focus: self.sites.focus,
                 sheet_open: self.chrome.activity_sheet_open,
                 errors: &self.state.errors,
                 errors_acked: self.chrome.errors_acked,
                 dev: self
                     .state
                     .dev_mode
-                    .then_some(core::activity::ActivityDevInputs {
-                        cross_origin_isolated: self.state.cross_origin_isolated,
+                    .then(|| core::activity::ActivityDevInputs {
                         avg_fetch_ms: stats.median_chunk_latency_ms,
                         avg_processing_ms: stats.median_processing_time_ms,
                         avg_render_ms: stats.avg_render_time_ms,
-                        vcp_forecast_available: self.live.mode_state.volume_start_plan.is_some()
-                            || self.live.mode_state.last_completed_volume.is_some(),
+                        vcp_forecast_available: {
+                            let volume = &self.sites.focus().live.volume;
+                            volume.volume_start_plan.is_some()
+                                || volume.last_completed_volume.is_some()
+                        },
                         ingest_phases: stats.last_ingest_detail.as_ref().map(|d| {
                             [
                                 ("Split", d.split_ms),
@@ -690,6 +764,8 @@ impl WorkbenchApp {
                             .state
                             .latency_summary()
                             .map(|l| (l.avg_fetch_ms, l.p95_fetch_ms, l.avg_e2e_ms)),
+                        storm_cells: self.sites.shown_cell_stats(),
+                        volume_textures: self.sites.volume_textures(),
                     }),
             },
             settle,
@@ -707,8 +783,10 @@ impl WorkbenchApp {
         let use_local = self.state.use_local_time;
         let elevations = self.state.current_elevation_list(
             &self.playback.state,
-            &self.timeline.scans,
-            self.live
+            &self.sites.focus().scans,
+            self.sites
+                .focus()
+                .live
                 .radar_model
                 .volume
                 .as_ref()
@@ -719,7 +797,8 @@ impl WorkbenchApp {
             core::top_bar::TopBarInputs {
                 session: &self.live.session,
                 now_secs: now,
-                site_id: &self.state.viz_state.site_id,
+                site_id: &self.sites.focus().id.0,
+                other_sites: self.sites.iter().len() - 1,
                 product: self.state.viz_state.product,
                 elevation_selection: &self.state.viz_state.elevation_selection,
                 elevations: &elevations,
@@ -743,20 +822,22 @@ impl WorkbenchApp {
         let now = self.state.frame_now.secs();
         let playhead = self.playback.state.playback_position();
         let live_vcp = self
+            .sites
+            .focus()
             .live
             .radar_model
             .volume
             .as_ref()
             .and_then(|v| v.vcp_pattern.as_ref());
-        let entries =
-            self.state
-                .current_elevation_list(&self.playback.state, &self.timeline.scans, live_vcp);
-        let view = core::TimelineView::build(
-            &self.timeline.scans,
-            &self.timeline.shadow_scan_boundaries,
-            Some(&self.live.mode_state),
-            self.live.radar_model.position.as_ref(),
+        let entries = self.state.current_elevation_list(
+            &self.playback.state,
+            &self.sites.focus().scans,
+            live_vcp,
         );
+        let view = self
+            .sites
+            .focus()
+            .timeline_view(self.live.mode_state.is_active());
         let pinned = self.live.session.playhead == core::session::Playhead::PinnedToNow;
         let (volume, clock) = core::ladder::ladder_volume(&view, pinned, now, playhead);
         let viz = &self.state.viz_state;
@@ -767,10 +848,12 @@ impl WorkbenchApp {
                 product: viz.product,
                 volume: volume.as_ref(),
                 clock,
-                antenna_azimuth: self.live.radar_model.estimated_azimuth,
-                on_screen: viz.displayed.as_ref().map(|d| core::ladder::OnScreenCut {
-                    elevation_number: d.identity.elevation_number,
-                    start_secs: d.start_time,
+                antenna_azimuth: self.sites.focus().live.radar_model.estimated_azimuth,
+                on_screen: self.sites.focus().displayed.as_ref().map(|d| {
+                    core::ladder::OnScreenCut {
+                        elevation_number: d.identity.elevation_number,
+                        start_secs: d.start_time,
+                    }
                 }),
                 role: viz.tilt_role(),
                 fetching: viz.caption_context.fetch_covers_playhead,
@@ -852,6 +935,7 @@ impl WorkbenchApp {
             self.state.frame_now.secs(),
             &self.state,
             &self.playback.state,
+            &self.sites,
             state::PanelPrefs {
                 tab: self.chrome.rail_tab,
                 open: self.chrome.right_sidebar_visible,
@@ -939,20 +1023,21 @@ impl eframe::App for WorkbenchApp {
         let early_derived = subsystem::Derived::for_frame(
             &self.state,
             &self.playback,
-            self.live.canvas_follows_live(&self.playback.state),
-            self.live.radar_model.collecting_elevation(),
+            self.live
+                .canvas_follows_live(&self.sites.focus().live, &self.playback.state),
+            &self.sites.focus().live.radar_model,
         );
         self.state.national_mosaic.poll_tick(
             ctx,
-            self.state.layer_state.geo.national_mosaic && early_derived.data_is_live,
+            self.state.layer_state.geo.national_mosaic && early_derived.data_is_live(),
         );
         // NWS alerts and mPING storm reports — polled if due.
         let diagnostics_inputs = subsystem::diagnostics::DiagnosticsInputs {
-            is_live: early_derived.data_is_live,
+            is_live: early_derived.data_is_live(),
             mping_layer_visible: self.state.layer_state.geo.mping,
             mping_pinned_to_now: self.playback.state.is_pinned()
                 || self.playback.state.is_live_range(),
-            site_id: &self.state.viz_state.site_id,
+            map_centre: self.state.viz_state.map_centre,
             playback_secs: self.playback.state.playback_position(),
         };
         self.diagnostics
@@ -968,6 +1053,7 @@ impl eframe::App for WorkbenchApp {
         // live edge moves continuously, so request a repaint to keep it smooth
         // even when the user isn't interacting.
         self.tick_live();
+        self.restart_due_streams(ctx);
         if self.live.mode_state.is_active() {
             // Pinned: the live edge moves every frame — repaint fast. Detached
             // (background stream while browsing): the now-line and in-progress
@@ -1030,15 +1116,17 @@ impl eframe::App for WorkbenchApp {
 
         // 14-17. FRAME SNAPSHOT: materialize the per-frame state UI reads.
         // Live::refresh derives everything from this frame's shared `now`.
-        self.live.refresh(subsystem::live::LiveRefreshInputs {
-            playback: &self.playback.state,
-            archive_boundaries: &self.timeline.shadow_scan_boundaries,
-            now: self.state.frame_now,
-            elevation_selection: &self.state.viz_state.elevation_selection,
-            displayed: self.state.viz_state.displayed.as_ref(),
-            caption_context: self.state.viz_state.caption_context,
-            volume_3d_active: self.state.viz_state.volume_3d_active(),
-        });
+        self.live.refresh(
+            &mut self.sites,
+            subsystem::live::LiveRefreshInputs {
+                playback: &self.playback.state,
+                now: self.state.frame_now,
+                elevation_selection: &self.state.viz_state.elevation_selection,
+                caption_context: self.state.viz_state.caption_context,
+                volume_3d_active: self.state.viz_state.volume_3d_active(),
+                flat: self.state.viz_state.view_mode() == geo::ViewMode::Flat2D,
+            },
+        );
         // The touch-screen fact is re-read when the viewport changes size, so
         // an emulator's device toggle (or a rotation) sees the current one.
         let size = ctx.content_rect().size();
@@ -1051,6 +1139,7 @@ impl eframe::App for WorkbenchApp {
         self.chrome.device_layout = self
             .state
             .refresh_mobile_mode(ctx, self.chrome.touch_screen);
+        self.fit_sites_to_layout();
 
         // Drain GPS-overlay async results before panels render so the
         // "My Location" checkbox sees coords/error on the same frame the
@@ -1085,8 +1174,9 @@ impl eframe::App for WorkbenchApp {
         let derived = subsystem::Derived::for_frame(
             &self.state,
             &self.playback,
-            self.live.canvas_follows_live(&self.playback.state),
-            self.live.radar_model.collecting_elevation(),
+            self.live
+                .canvas_follows_live(&self.sites.focus().live, &self.playback.state),
+            &self.sites.focus().live.radar_model,
         );
 
         // 19. Resolve the phone chrome's auto-hide for this frame
@@ -1148,6 +1238,7 @@ impl eframe::App for WorkbenchApp {
             root_ui: ui,
             state: &mut self.state,
             timeline: &self.timeline,
+            sites: &mut self.sites,
             live: &mut self.live,
             playback: &mut self.playback,
             acquisition: &mut self.acquisition,
@@ -1180,7 +1271,7 @@ impl eframe::App for WorkbenchApp {
         ui::render_canvas_with_geo(
             ui,
             &mut self.state,
-            &self.timeline,
+            &self.sites,
             &self.live,
             &mut self.playback,
             &mut self.chrome,
@@ -1195,7 +1286,7 @@ impl eframe::App for WorkbenchApp {
             ctx,
             &mut self.state,
             &mut self.live,
-            &self.timeline,
+            &self.sites,
             &mut self.playback,
             &mut self.chrome,
         );

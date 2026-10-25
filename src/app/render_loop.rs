@@ -19,44 +19,65 @@ impl WorkbenchApp {
     /// [`crate::core::render_loop`]): assemble → [`reduce_advance_playback`]
     /// → execute, then re-snapshot → [`decide_prefetch_and_caption`] →
     /// execute. The re-snapshot matters: the executed render request can
-    /// blank `viz_state.displayed` and the active-scan sync moves the
-    /// coordinator key, and the follow-up decision must see both.
+    /// blank the site's `displayed` and the active-scan sync moves its
+    /// track's key, and the follow-up decision must see both.
+    ///
+    /// Runs once per site; the caption describes the focus site.
     pub(crate) fn advance_playback(&mut self) {
         // Rays stands down while the volume draws every tilt (and comes
         // back when it stops).
         self.playback
             .state
             .apply_tilt_role(self.state.viz_state.tilt_role().draws_all());
+        // The Frames list walks every site's frames, so it is built once
+        // from all of them before each site's scrub.
+        let timelines: Vec<&crate::core::RadarTimeline> =
+            self.sites.iter().map(|s| &s.scans).collect();
+        crate::core::render_loop::reduce_macro_frames(
+            self.state.viz_state.product,
+            self.state.viz_state.volume_3d_active(),
+            &mut self.playback.state,
+            &self.state.viz_state.elevation_selection,
+            &timelines,
+        );
+        for site in 0..self.sites.list.len() {
+            self.advance_playback_for(site);
+        }
+    }
+
+    /// [`Self::advance_playback`] for one site.
+    fn advance_playback_for(&mut self, site: usize) {
+        let target = &mut self.sites.list[site];
         let actions = reduce_advance_playback(
             AdvancePlaybackEnv {
                 live_active: self.live.mode_state.is_active(),
                 has_worker: self.render.coordinator.has_worker(),
-                site_id: &self.state.viz_state.site_id,
-                product: self.state.viz_state.product,
-                volume_3d_active: self.volume_3d_active(),
-                coordinator_scan_key: self.render.coordinator.scan_key(),
+                site_id: &target.id.0,
+                volume_3d_active: self.state.viz_state.volume_3d_active(),
+                track_scan_key: target.render.scan_key(),
                 max_scan_age_secs: MAX_SCAN_AGE_SECS,
             },
             AdvancePlaybackSlices {
                 playback: &mut self.playback.state,
                 elevation_selection: &mut self.state.viz_state.elevation_selection,
-                scrub_cache: &mut self.render.scrub_cache,
+                scrub_cache: &mut target.scrub,
             },
-            &self.timeline.scans,
+            &target.scans,
         );
-        self.execute_advance_playback_actions(actions);
+        self.execute_advance_playback_actions(site, actions);
 
+        let target = &self.sites.list[site];
         let followup = decide_prefetch_and_caption(
             FrameFollowupEnv {
                 live_active: self.live.mode_state.is_active(),
                 has_worker: self.render.coordinator.has_worker(),
                 product: self.state.viz_state.product,
-                site_id: &self.state.viz_state.site_id,
+                site_id: &target.id.0,
                 elevation_selection: &self.state.viz_state.elevation_selection,
                 volume_3d_active: self.volume_3d_active(),
-                archive_boundaries: &self.timeline.shadow_scan_boundaries,
-                displayed: self.state.viz_state.displayed.as_ref(),
-                coordinator_scan_key: self.render.coordinator.scan_key(),
+                archive_boundaries: &target.shadows,
+                displayed: target.displayed.as_ref(),
+                track_scan_key: target.render.scan_key(),
                 active_download_ranges: &self.state.download_progress.active_scans,
                 in_flight_download_ranges: &self.state.download_progress.in_flight_scans,
                 pending_download_ranges: &self.state.download_progress.pending_scans,
@@ -64,7 +85,7 @@ impl WorkbenchApp {
                 prefetch_lookahead_secs: PREFETCH_LOOKAHEAD_SECS,
             },
             &self.playback.state,
-            &self.timeline.scans,
+            &target.scans,
         );
         if let Some(prefetch) = followup.prefetch {
             log::debug!(
@@ -73,39 +94,43 @@ impl WorkbenchApp {
                 prefetch.lead_secs,
             );
             let identity = prefetch.identity;
-            self.render.coordinator.set_last_render(identity.clone());
+            self.sites.list[site]
+                .render
+                .set_last_render(identity.clone());
             self.render.coordinator.render_direct(
                 &identity.scan_key,
                 identity.elevation_number,
                 identity.product.clone(),
             );
         }
-        self.state.viz_state.caption_context = followup.caption_context;
+        if site == self.sites.focus {
+            self.state.viz_state.caption_context = followup.caption_context;
+        }
     }
 
     /// Execute the effects described by [`reduce_advance_playback`], in
     /// field order.
-    fn execute_advance_playback_actions(&mut self, actions: AdvancePlaybackActions) {
+    fn execute_advance_playback_actions(&mut self, site: usize, actions: AdvancePlaybackActions) {
         match actions.active_scan {
             Some(ActiveScanSync::Set {
                 scan_key,
                 elevations,
-                scan_ts,
-            }) => self.set_active_scan(scan_key, elevations, scan_ts),
-            Some(ActiveScanSync::AdvanceChunkEmpty { scan_key, scan_ts }) => {
-                self.advance_active_scan_chunk(scan_key, &[], scan_ts)
+                ..
+            }) => self.set_active_scan(site, scan_key, elevations),
+            Some(ActiveScanSync::AdvanceChunkEmpty { scan_key, .. }) => {
+                self.advance_active_scan_chunk(site, scan_key, &[])
             }
-            Some(ActiveScanSync::Clear) => self.clear_active_scan(),
+            Some(ActiveScanSync::Clear) => self.clear_active_scan(site),
             None => {}
         }
         if actions.force_fresh_render {
-            self.render.coordinator.force_fresh_render();
+            self.sites.list[site].render.force_fresh_render();
         }
         if actions.request_render {
-            self.request_worker_render();
+            self.request_worker_render(site);
         }
         if actions.request_volume_render {
-            self.request_worker_render_volume();
+            self.request_worker_render_volume(site);
         }
     }
 
@@ -116,23 +141,33 @@ impl WorkbenchApp {
     /// The "previous sweep" is the one displayed just before the current one:
     /// within the same scan that's the preceding sweep in time order. Only look
     /// at the previous scan if the current sweep is the very first in its scan.
+    ///
+    /// Runs once per site.
     pub(crate) fn sync_prev_sweep_texture(&mut self) {
+        for site in 0..self.sites.list.len() {
+            self.sync_prev_sweep_texture_for(site);
+        }
+    }
+
+    /// [`Self::sync_prev_sweep_texture`] for one site.
+    fn sync_prev_sweep_texture_for(&mut self, site: usize) {
         // When a live partial is on the canvas, its previous-sweep texture is
         // owned by promote_current_to_previous in the LiveDecoded handler —
         // don't let the timeline-based sync overwrite or clear it. But when a
         // *cached* cut is shown during live (e.g. just after a mid-stream
         // reload), there's no live promote for it, so the archive prev-sweep
         // animation is correct and should run.
-        if self.live.mode_state.is_active() && self.gpu_holds_live_sweep() {
+        if self.live.mode_state.is_active() && self.gpu_holds_live_sweep(site) {
             return;
         }
 
+        let live = &self.sites.list[site].live;
         if !self.state.effective_sweep_animation(
             &self.playback.state,
-            self.live.canvas_follows_live(&self.playback.state),
-            self.live.radar_model.collecting_elevation(),
+            self.live.canvas_follows_live(live, &self.playback.state),
+            &live.radar_model,
         ) {
-            self.state.viz_state.previous_displayed = None;
+            self.sites.list[site].previous_displayed = None;
             self.state.viz_state.last_sweep_line_cache = None;
             return;
         }
@@ -141,9 +176,7 @@ impl WorkbenchApp {
         // Anchor "previous" to the on-GPU main slot (i.e., what's
         // actually on screen), not the resolver's intent — otherwise
         // the prev-sweep upload races ahead of the main upload.
-        let displayed_elev = match self
-            .state
-            .viz_state
+        let displayed_elev = match self.sites.list[site]
             .displayed
             .as_ref()
             .map(|d| d.identity.elevation_number)
@@ -161,17 +194,17 @@ impl WorkbenchApp {
             playback_ts_bits: playback_ts.to_bits(),
             displayed_elev,
             is_auto,
-            scan_count: self.timeline.scans.scans.len(),
+            scan_count: self.sites.list[site].scans.scans.len(),
         };
         let prev_info = if self.state.render_cache.prev_sweep_cache_key.as_ref() == Some(&cache_key)
         {
             self.state.render_cache.prev_sweep_cache_value
         } else {
             let computed = PlaybackManager::find_prev_sweep(
-                &self.timeline.scans,
+                &self.sites.list[site].scans,
                 playback_ts,
                 displayed_elev,
-                is_auto,
+                crate::core::tilt::TiltFilter::from(&self.state.viz_state.elevation_selection),
                 MAX_SCAN_AGE_SECS,
             );
             self.state.render_cache.prev_sweep_cache_key = Some(cache_key);
@@ -183,9 +216,9 @@ impl WorkbenchApp {
         {
             Some(info) => info,
             None => {
-                self.state.viz_state.previous_displayed = None;
+                self.sites.list[site].previous_displayed = None;
                 // Clear GPU previous sweep so shader composites against black
-                if let Some(ref renderer) = self.gpu.gpu {
+                if let Some(ref renderer) = self.sites.list[site].gpu.radar {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_previous_data();
                     }
@@ -195,15 +228,15 @@ impl WorkbenchApp {
         };
 
         let prev_scan_key =
-            data::ScanKey::from_secs_f64(&self.state.viz_state.site_id, prev_scan_key_ts);
+            data::ScanKey::from_secs_f64(&self.sites.list[site].id.0, prev_scan_key_ts);
 
-        // Mirror the prev-sweep slot into viz_state so the timeline's
+        // Mirror the prev-sweep slot onto the site so the timeline's
         // secondary border and the prev-sweep overlay panel reflect what
         // we're driving into the prev-sweep GPU texture. Product matches
         // the current main-slot product (prev animation only makes sense
         // within a single product channel).
         let prev_product = self.state.viz_state.product.to_worker_string().to_string();
-        self.state.viz_state.previous_displayed = Some(crate::core::DisplayedSweep {
+        self.sites.list[site].previous_displayed = Some(crate::core::DisplayedSweep {
             identity: SweepIdentity::new(prev_scan_key.clone(), prev_elev_num, prev_product),
             start_time: prev_start,
             end_time: prev_end,
@@ -211,15 +244,19 @@ impl WorkbenchApp {
         });
 
         // Get current GPU prev sweep ID for comparison
-        let current_gpu_prev_id = self.gpu.gpu.as_ref().and_then(|renderer| {
-            renderer
-                .lock()
-                .ok()
-                .and_then(|r| r.prev_sweep_id().map(String::from))
-        });
+        let current_gpu_prev_id = self.sites.list[site]
+            .gpu
+            .radar
+            .as_ref()
+            .and_then(|renderer| {
+                renderer
+                    .lock()
+                    .ok()
+                    .and_then(|r| r.prev_sweep_id().map(String::from))
+            });
 
         let product = self.state.viz_state.product.to_worker_string().to_string();
-        let action = self.render.playback_manager.resolve_prev_sweep(
+        let action = self.sites.list[site].crossfade.resolve_prev_sweep(
             &prev_scan_key,
             prev_elev_num,
             current_gpu_prev_id.as_deref(),
@@ -230,13 +267,15 @@ impl WorkbenchApp {
             PrevSweepAction::AlreadyLoaded => {}
             PrevSweepAction::UploadFromCache(cache_key) => {
                 // Clear stale previous sweep immediately
-                if let Some(ref renderer) = self.gpu.gpu {
+                if let Some(ref renderer) = self.sites.list[site].gpu.radar {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_previous_data();
                     }
                 }
-                if let Some(cached) = self.render.playback_manager.get_cached_sweep(&cache_key) {
-                    if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
+                if let Some(cached) = self.sites.list[site].crossfade.get_cached_sweep(&cache_key) {
+                    if let (Some(ref renderer), Some(ref gl)) =
+                        (&self.sites.list[site].gpu.radar, &self.gpu.gl)
+                    {
                         if let Ok(mut r) = renderer.lock() {
                             r.update_previous_data(
                                 gl,
@@ -263,7 +302,7 @@ impl WorkbenchApp {
                 product,
             } => {
                 // Clear stale previous sweep immediately
-                if let Some(ref renderer) = self.gpu.gpu {
+                if let Some(ref renderer) = self.sites.list[site].gpu.radar {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_previous_data();
                     }
@@ -273,7 +312,7 @@ impl WorkbenchApp {
                     .render_direct(&scan_key, elevation_number, product);
             }
             PrevSweepAction::Clear => {
-                if let Some(ref renderer) = self.gpu.gpu {
+                if let Some(ref renderer) = self.sites.list[site].gpu.radar {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_previous_data();
                     }
@@ -283,45 +322,43 @@ impl WorkbenchApp {
     }
 
     /// Clear the on-canvas sweep and the overlay fields when the entire scan
-    /// is gone (e.g. scrubbed off the timeline). Resets the scan key too.
-    pub(crate) fn clear_display_no_scan(&mut self) {
-        if let Some(ref renderer) = self.gpu.gpu {
+    /// is gone (e.g. scrubbed off the timeline). Resets site `site`'s scan
+    /// key too.
+    pub(crate) fn clear_display_no_scan(&mut self, site: usize) {
+        if let Some(ref renderer) = self.sites.list[site].gpu.radar {
             if let Ok(mut r) = renderer.lock() {
                 r.clear_data();
             }
         }
-        self.clear_active_scan();
-        self.state.viz_state.data_staleness_secs = None;
-        self.state.viz_state.data_staleness_start_secs = None;
-        self.state.viz_state.elevation = "-- deg".to_string();
+        self.clear_active_scan(site);
+        if site == self.sites.focus {
+            self.state.viz_state.elevation = "-- deg".to_string();
+        }
         // clear_data() drops both GPU textures; match the prev-sweep state
         // so the timeline highlight and canvas overlay don't point at state
         // that no longer has backing pixels. `displayed = None` is the canonical
         // "no frame" signal the overlay/readout read to drop the timestamp.
-        self.state.viz_state.displayed = None;
-        self.state.viz_state.previous_displayed = None;
-        self.render.scrub_cache.last_active_scan_ts = None;
-        self.state.viz_state.storm_cells.clear();
+        let target = &mut self.sites.list[site];
+        target.clear_display();
+        target.scrub.last_active_scan_ts = None;
     }
 
     /// Clear the on-canvas sweep when the selected (elevation, product) isn't
     /// available for the current scan, but the scan itself is still valid.
     /// Leaves the scan key intact so other elevations/products can still render.
-    pub(crate) fn clear_display_no_sweep(&mut self) {
-        if let Some(ref renderer) = self.gpu.gpu {
+    pub(crate) fn clear_display_no_sweep(&mut self, site: usize) {
+        if let Some(ref renderer) = self.sites.list[site].gpu.radar {
             if let Ok(mut r) = renderer.lock() {
                 r.clear_data();
             }
         }
-        self.state.viz_state.data_staleness_secs = None;
-        self.state.viz_state.data_staleness_start_secs = None;
-        self.state.viz_state.elevation = "-- deg".to_string();
+        if site == self.sites.focus {
+            self.state.viz_state.elevation = "-- deg".to_string();
+        }
         // clear_data() drops both GPU textures. sync_prev_sweep_texture
         // early-returns while `displayed` is None, so clearing it here
         // also keeps the prev slot from drifting until a new sweep lands.
-        self.state.viz_state.displayed = None;
-        self.state.viz_state.previous_displayed = None;
-        self.state.viz_state.storm_cells.clear();
+        self.sites.list[site].clear_display();
         // Keep `last_render` set to the failed identity. A "no pre-computed
         // sweep" answer is permanent for that exact (scan, elev, product), so
         // the dedup must suppress the next frame's identical request — clearing
@@ -329,23 +366,31 @@ impl WorkbenchApp {
     }
 
     /// Re-render when the user changes elevation, product, or view mode.
+    /// Runs once per site.
     pub(crate) fn request_render_if_needed(&mut self) {
         if !self.render.coordinator.has_worker() {
             return;
         }
+        for site in 0..self.sites.list.len() {
+            self.request_render_if_needed_for(site);
+        }
+    }
+
+    /// [`Self::request_render_if_needed`] for one site.
+    fn request_render_if_needed_for(&mut self, site: usize) {
         let live_active = self.live.mode_state.is_active();
         // Archive renders against an active scan; without one there's nothing
         // to re-render. Live drives the unified resolver off the timeline, so
         // it doesn't need a coordinator scan key — switching to a completed
         // cut repaints it immediately from cache instead of waiting ~12s for
         // the next chunk. Volume (3D) renders stay archive-only.
-        if !live_active && self.render.coordinator.scan_key().is_none() {
+        if !live_active && self.sites.list[site].render.scan_key().is_none() {
             return;
         }
         if !live_active && self.volume_3d_active() {
-            self.request_worker_render_volume();
+            self.request_worker_render_volume(site);
         }
-        self.request_worker_render();
+        self.request_worker_render(site);
     }
 
     /// The single 3D predicate every volume-render gate shares: the

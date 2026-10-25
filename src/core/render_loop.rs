@@ -13,8 +13,8 @@
 //! 2. [`decide_prefetch_and_caption`] — the near-boundary prefetch target and
 //!    the canvas honesty caption. Runs on a **fresh** snapshot taken *after*
 //!    step 1's effects executed, because the executed render request can blank
-//!    `viz_state.displayed` (`clear_display_no_sweep`) and the active-scan
-//!    sync moves `coordinator.scan_key()` — both of which the original code
+//!    the site's `displayed` (`clear_display_no_sweep`) and the active-scan
+//!    sync moves its `render.scan_key()` — both of which the original code
 //!    read after those calls.
 //!
 //! The reducers mutate only the core slices (playback/macro-frame state,
@@ -58,16 +58,14 @@ pub(crate) struct AdvancePlaybackEnv<'a> {
     pub live_active: bool,
     /// `render.coordinator.has_worker()`.
     pub has_worker: bool,
-    /// `viz_state.site_id`.
+    /// The site's id (`SiteState::id`).
     pub site_id: &'a str,
-    /// `viz_state.product`.
-    pub product: RadarProduct,
     /// The combined 3D predicate: `viz_state.volume_3d_enabled` AND the view
     /// mode is `Globe3D` (the shell's `WorkbenchApp::volume_3d_active`). All
     /// 3D gates share this one predicate so they can't disagree.
     pub volume_3d_active: bool,
-    /// `render.coordinator.scan_key()` at frame start.
-    pub coordinator_scan_key: Option<&'a ScanKey>,
+    /// The site's `render.scan_key()` at frame start.
+    pub track_scan_key: Option<&'a ScanKey>,
     /// `crate::MAX_SCAN_AGE_SECS`.
     pub max_scan_age_secs: f64,
 }
@@ -79,20 +77,20 @@ pub(crate) struct AdvancePlaybackSlices<'a> {
     pub scrub_cache: &'a mut ScrubCache,
 }
 
-/// Coordinator active-scan sync decided by the scrub walk.
+/// Render-track active-scan sync decided by the scrub walk.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ActiveScanSync {
-    /// `self.set_active_scan(scan_key, elevations, scan_ts)` — full elevation
-    /// list known.
+    /// `self.set_active_scan(site, scan_key, elevations)` — full elevation
+    /// list known. `scan_ts` is the scan's key time in seconds.
     Set {
         scan_key: ScanKey,
         elevations: Vec<u8>,
         scan_ts: f64,
     },
-    /// `self.advance_active_scan_chunk(scan_key, &[], scan_ts)` — scan with no
+    /// `self.advance_active_scan_chunk(site, scan_key, &[])` — scan with no
     /// sweeps yet (key only; the elevation list stays as-is).
     AdvanceChunkEmpty { scan_key: ScanKey, scan_ts: f64 },
-    /// `self.clear_active_scan()` — the playhead left every cached scan.
+    /// `self.clear_active_scan(site)` — the playhead left every cached scan.
     Clear,
 }
 
@@ -100,9 +98,9 @@ pub(crate) enum ActiveScanSync {
 /// shell in this field order.
 #[derive(Default, Debug, PartialEq)]
 pub(crate) struct AdvancePlaybackActions {
-    /// Active-scan sync on the render coordinator.
+    /// Active-scan sync on the site's render track.
     pub active_scan: Option<ActiveScanSync>,
-    /// `render.coordinator.force_fresh_render()`.
+    /// `render.force_fresh_render()` on the site's track.
     pub force_fresh_render: bool,
     /// Shell calls `request_worker_render()` (the unified display resolver).
     pub request_render: bool,
@@ -110,32 +108,24 @@ pub(crate) struct AdvancePlaybackActions {
     pub request_volume_render: bool,
 }
 
-/// Rebuild the macro frame list when dirty and keep the coordinator's active
-/// scan in sync while scrubbing. Pure: in-memory mutation of the slices only.
-pub(crate) fn reduce_advance_playback(
-    env: AdvancePlaybackEnv<'_>,
-    slices: AdvancePlaybackSlices<'_>,
-    timeline: &RadarTimeline,
-) -> AdvancePlaybackActions {
-    let AdvancePlaybackSlices {
-        playback,
-        elevation_selection,
-        scrub_cache,
-    } = slices;
-    let mut actions = AdvancePlaybackActions::default();
-
-    // Live mode no longer skips playback-driven renders: the unified
-    // resolver (`request_worker_render`) runs in both modes so a cached
-    // cut paints while streaming. Live still owns *acquisition* (the
-    // archive "acquiring" hint never applies) and the active-scan tracking
-    // + prefetch-next-sweep path stay archive-only.
-    let live_active = env.live_active;
-
+/// Rebuild the Frames-mode frame list when dirty, from every site's
+/// timeline: the union of their frame times, frames of different sites
+/// within [`crate::core::SCAN_JOIN_TOLERANCE_SECS`] joined
+/// ([`crate::core::sites::frame_union`]). Runs once per frame, before the
+/// per-site [`reduce_advance_playback`]. Pure: in-memory mutation of
+/// `playback` only.
+pub(crate) fn reduce_macro_frames(
+    product: RadarProduct,
+    volume_3d_active: bool,
+    playback: &mut PlaybackState,
+    elevation_selection: &ElevationSelection,
+    timelines: &[&RadarTimeline],
+) {
     // Rebuild macro frame list when dirty (elevation selection, bounds, or
     // scan count changed). Uses the *effective* mode so the list is also
     // built during a lookback replay (which frame-steps regardless of zoom).
     if playback.playback_mode() == PlaybackMode::Macro {
-        let product = env.product.to_worker_string();
+        let product = product.to_worker_string();
         let inputs = MacroFrameInputs {
             elevation: elevation_selection.clone(),
             product,
@@ -147,30 +137,37 @@ pub(crate) fn reduce_advance_playback(
                 playback.view_width_secs(),
                 playback.playback_position(),
             ),
-            scan_count: timeline.scans.len(),
-            volume_3d: env.volume_3d_active,
+            // Every site's count, so a scan landing at any site rebuilds.
+            scan_count: timelines.iter().map(|t| t.scans.len()).sum(),
+            volume_3d: volume_3d_active,
         };
 
         if let Some(cause) = playback.macro_playback.rebuild_cause(&inputs) {
             // In 3D a frame is a whole scan: the volume render is keyed
             // (scan_key, product), so per-sweep frames would advance the
             // playhead/captions without changing the picture.
-            let frames = if inputs.volume_3d {
-                timeline.scan_end_frame_times(product, inputs.bounds)
-            } else {
-                match &inputs.elevation {
-                    ElevationSelection::Fixed {
-                        elevation_number, ..
-                    } => timeline.matching_sweep_end_times_by_number(
-                        *elevation_number,
-                        product,
-                        inputs.bounds,
-                    ),
-                    ElevationSelection::Latest => {
-                        timeline.all_sweep_end_times(product, inputs.bounds)
+            let per_site: Vec<Vec<f64>> = timelines
+                .iter()
+                .map(|timeline| {
+                    if inputs.volume_3d {
+                        timeline.scan_end_frame_times(product, inputs.bounds)
+                    } else {
+                        match &inputs.elevation {
+                            // Every visit of the held angle is a frame
+                            // (SAILS/MRLE repeats included).
+                            sel @ ElevationSelection::Fixed { .. } => timeline
+                                .matching_sweep_end_times(sel.into(), product, inputs.bounds),
+                            ElevationSelection::Latest => {
+                                timeline.all_sweep_end_times(product, inputs.bounds)
+                            }
+                        }
                     }
-                }
-            };
+                })
+                .collect();
+            let frames = crate::core::sites::frame_union(
+                &per_site,
+                crate::core::SCAN_JOIN_TOLERANCE_SECS as f64,
+            );
             playback.macro_playback.store_rebuilt(inputs, frames);
             playback.sync_macro_frame_index();
             // When the elevation filter changes, snap playback_position
@@ -197,6 +194,28 @@ pub(crate) fn reduce_advance_playback(
         }
         playback.macro_playback.last_seen_position = pos;
     }
+}
+
+/// Keep the site's render track on the scan under the playhead while
+/// scrubbing. Pure: in-memory mutation of the slices only.
+pub(crate) fn reduce_advance_playback(
+    env: AdvancePlaybackEnv<'_>,
+    slices: AdvancePlaybackSlices<'_>,
+    timeline: &RadarTimeline,
+) -> AdvancePlaybackActions {
+    let AdvancePlaybackSlices {
+        playback,
+        elevation_selection,
+        scrub_cache,
+    } = slices;
+    let mut actions = AdvancePlaybackActions::default();
+
+    // Live mode no longer skips playback-driven renders: the unified
+    // resolver (`request_worker_render`) runs in both modes so a cached
+    // cut paints while streaming. Live still owns *acquisition* (the
+    // archive "acquiring" hint never applies) and the active-scan tracking
+    // + prefetch-next-sweep path stay archive-only.
+    let live_active = env.live_active;
 
     // Auto-load scan when scrubbing: find the most recent scan within 15 minutes.
     // In the worker architecture, this sends a render request directly —
@@ -215,7 +234,7 @@ pub(crate) fn reduce_advance_playback(
         // the idle case cost only a few comparisons.
         let scan_count = timeline.scans.len();
         let elev_sel = &*elevation_selection;
-        let active_ts = env.coordinator_scan_key.map(|k| k.scan_start.as_secs_f64());
+        let active_ts = env.track_scan_key.map(|k| k.scan_start.as_secs_f64());
         let scrub_cache_hit = scrub_cache.last_playback_ts == Some(playback_ts)
             && scrub_cache.last_scan_count == scan_count
             && scrub_cache.last_active_scan_ts == active_ts
@@ -323,7 +342,7 @@ pub(crate) fn reduce_advance_playback(
 // ---------------------------------------------------------------------------
 
 /// Read-only context for the follow-up decision. Assembled **after** the
-/// [`AdvancePlaybackActions`] executed: `displayed` and `coordinator_scan_key`
+/// [`AdvancePlaybackActions`] executed: `displayed` and `track_scan_key`
 /// must be re-read at that point — the executed render request can blank
 /// `displayed`, and the active-scan sync moves the coordinator key.
 pub(crate) struct FrameFollowupEnv<'a> {
@@ -333,7 +352,7 @@ pub(crate) struct FrameFollowupEnv<'a> {
     pub has_worker: bool,
     /// `viz_state.product`.
     pub product: RadarProduct,
-    /// `viz_state.site_id`.
+    /// The site's id (`SiteState::id`).
     pub site_id: &'a str,
     /// `viz_state.elevation_selection`.
     pub elevation_selection: &'a ElevationSelection,
@@ -342,10 +361,10 @@ pub(crate) struct FrameFollowupEnv<'a> {
     /// Archive listing boundaries (`timeline.shadow_scan_boundaries`): scans
     /// the archive has, cached or not.
     pub archive_boundaries: &'a [ScanBoundary],
-    /// `viz_state.displayed`, re-read post-effects.
+    /// the site's `displayed`, re-read post-effects.
     pub displayed: Option<&'a DisplayedSweep>,
-    /// `render.coordinator.scan_key()`, re-read post-effects.
-    pub coordinator_scan_key: Option<&'a ScanKey>,
+    /// The site's `render.scan_key()`, re-read post-effects.
+    pub track_scan_key: Option<&'a ScanKey>,
     /// `state.download_progress` ghost ranges `(start, end)` in Unix seconds:
     /// active, in-flight, and pending downloads. Chained for the
     /// "Acquiring…" coverage test.
@@ -443,7 +462,7 @@ pub(crate) fn decide_prefetch_and_caption(
                 );
 
                 if let Some(next_en) = next_elev {
-                    if let Some(scan_key) = env.coordinator_scan_key {
+                    if let Some(scan_key) = env.track_scan_key {
                         let product = env.product.to_worker_string().to_string();
                         followup.prefetch = Some(PrefetchSweep {
                             identity: SweepIdentity::new(scan_key.clone(), next_en, product),
@@ -505,7 +524,7 @@ pub(crate) fn decide_prefetch_and_caption(
         volume_cuts: env
             .volume_3d_active
             .then(|| {
-                env.coordinator_scan_key
+                env.track_scan_key
                     .and_then(|k| {
                         let start = k.scan_start.as_secs_f64();
                         timeline
@@ -611,9 +630,8 @@ mod tests {
             live_active: false,
             has_worker: true,
             site_id: "KDMX",
-            product: RadarProduct::Reflectivity,
             volume_3d_active: false,
-            coordinator_scan_key: None,
+            track_scan_key: None,
             max_scan_age_secs: MAX_AGE,
         }
     }
@@ -633,7 +651,7 @@ mod tests {
             volume_3d_active: false,
             archive_boundaries: &[],
             displayed: None,
-            coordinator_scan_key: None,
+            track_scan_key: None,
             active_download_ranges: &[],
             in_flight_download_ranges: &[],
             pending_download_ranges: &[],
@@ -672,6 +690,15 @@ mod tests {
             env: AdvancePlaybackEnv<'_>,
             timeline: &RadarTimeline,
         ) -> AdvancePlaybackActions {
+            // The shell's order: the frame list from every site, then each
+            // site's scrub.
+            reduce_macro_frames(
+                RadarProduct::Reflectivity,
+                env.volume_3d_active,
+                &mut self.playback,
+                &self.selection,
+                &[timeline],
+            );
             reduce_advance_playback(
                 env,
                 AdvancePlaybackSlices {
@@ -689,6 +716,45 @@ mod tests {
     }
 
     // ── macro frame-list rebuild ────────────────────────────────────────────
+
+    // The frame list walks every site's frames: their union, a frame of
+    // another site within the join tolerance folded into one at the later
+    // time; and a scan landing at any site rebuilds it.
+    #[wasm_bindgen_test]
+    fn macro_frames_are_the_union_of_every_sites_frames() {
+        let a = two_scan_timeline();
+        let mut b = RadarTimeline {
+            scans: vec![
+                scan(1030.0, vec![sweep(1, 1030.0, 1040.0, vec!["reflectivity"])]),
+                scan(2025.0, vec![sweep(1, 2025.0, 2030.0, vec!["reflectivity"])]),
+            ],
+        };
+        let mut fx = Fx::at(2005.0, PlaybackMode::Macro);
+        fx.selection = ElevationSelection::Latest;
+        let build = |fx: &mut Fx, b: &RadarTimeline| {
+            reduce_macro_frames(
+                RadarProduct::Reflectivity,
+                false,
+                &mut fx.playback,
+                &fx.selection.clone(),
+                &[&a, b],
+            )
+        };
+        build(&mut fx, &b);
+        assert_eq!(
+            fx.playback.macro_playback.sweep_frames,
+            vec![1010.0, 1040.0, 2010.0, 2030.0]
+        );
+        b.scans.push(scan(
+            2400.0,
+            vec![sweep(1, 2400.0, 2410.0, vec!["reflectivity"])],
+        ));
+        build(&mut fx, &b);
+        assert_eq!(
+            fx.playback.macro_playback.sweep_frames.last(),
+            Some(&2410.0)
+        );
+    }
 
     // (1) First macro-tier frame with a fresh state rebuilds the frame list
     // (product differs from the default inputs → window-class change), syncs
@@ -832,7 +898,7 @@ mod tests {
         fx.scrub.last_elevation_selection = Some(fx.selection.clone());
 
         let mut env = base_env();
-        env.coordinator_scan_key = Some(&key);
+        env.track_scan_key = Some(&key);
         let a = fx.run(env, &tl);
 
         assert_eq!(a, AdvancePlaybackActions::default());
@@ -951,7 +1017,7 @@ mod tests {
         let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
 
         let mut env = base_env();
-        env.coordinator_scan_key = Some(&key);
+        env.track_scan_key = Some(&key);
         let a = fx.run(env, &tl);
 
         assert!(a.active_scan.is_none());
@@ -994,7 +1060,7 @@ mod tests {
         let mut env = base_env();
         env.live_active = true;
         env.volume_3d_active = true;
-        env.coordinator_scan_key = Some(&key);
+        env.track_scan_key = Some(&key);
         let a = fx.run(env, &tl);
 
         assert!(a.active_scan.is_none());
@@ -1032,7 +1098,7 @@ mod tests {
         // Archive with an active key → Clear.
         let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
         let mut env = base_env();
-        env.coordinator_scan_key = Some(&key);
+        env.track_scan_key = Some(&key);
         let a = fx.run(env, &empty);
         assert_eq!(a.active_scan, Some(ActiveScanSync::Clear));
         assert!(!a.request_render);
@@ -1041,7 +1107,7 @@ mod tests {
         let mut fx = Fx::at(2005.0, PlaybackMode::Micro);
         let mut env = base_env();
         env.live_active = true;
-        env.coordinator_scan_key = Some(&key);
+        env.track_scan_key = Some(&key);
         let a = fx.run(env, &empty);
         assert!(a.active_scan.is_none());
 
@@ -1061,7 +1127,7 @@ mod tests {
 
         let mut env = base_env();
         env.volume_3d_active = true;
-        env.coordinator_scan_key = Some(&key);
+        env.track_scan_key = Some(&key);
         let a = fx.run(env, &tl);
 
         assert!(a.active_scan.is_none(), "same scan: no sync needed");
@@ -1089,7 +1155,7 @@ mod tests {
         let fx = playing_fx();
 
         let mut env = base_followup_env();
-        env.coordinator_scan_key = Some(&key);
+        env.track_scan_key = Some(&key);
         env.displayed = Some(&displayed);
         let f = fx.followup(env, &tl);
 
@@ -1114,7 +1180,7 @@ mod tests {
         let mut fx = playing_fx();
         fx.playback.playing = false;
         let mut env = base_followup_env();
-        env.coordinator_scan_key = Some(&key);
+        env.track_scan_key = Some(&key);
         env.displayed = Some(&displayed);
         assert!(fx.followup(env, &tl).prefetch.is_none());
 
@@ -1122,7 +1188,7 @@ mod tests {
         let fx = playing_fx();
         let mut env = base_followup_env();
         env.live_active = true;
-        env.coordinator_scan_key = Some(&key);
+        env.track_scan_key = Some(&key);
         env.displayed = Some(&displayed);
         assert!(fx.followup(env, &tl).prefetch.is_none());
 
@@ -1130,7 +1196,7 @@ mod tests {
         let mut fx = playing_fx();
         fx.playback.play_mode = PlaybackMode::Macro;
         let mut env = base_followup_env();
-        env.coordinator_scan_key = Some(&key);
+        env.track_scan_key = Some(&key);
         env.displayed = Some(&displayed);
         assert!(fx.followup(env, &tl).prefetch.is_none());
 
@@ -1138,7 +1204,7 @@ mod tests {
         let fx = playing_fx();
         let mut env = base_followup_env();
         env.has_worker = false;
-        env.coordinator_scan_key = Some(&key);
+        env.track_scan_key = Some(&key);
         env.displayed = Some(&displayed);
         assert!(fx.followup(env, &tl).prefetch.is_none());
 
@@ -1152,7 +1218,7 @@ mod tests {
         let displayed2 = displayed_sweep(2, 1010.0, 1020.0);
         let fx = playing_fx();
         let mut env = base_followup_env();
-        env.coordinator_scan_key = Some(&key);
+        env.track_scan_key = Some(&key);
         env.displayed = Some(&displayed2);
         assert!(fx.followup(env, &tl).prefetch.is_none());
     }
@@ -1169,7 +1235,7 @@ mod tests {
         fx.selection = ElevationSelection::Latest;
 
         let mut env = base_env();
-        env.coordinator_scan_key = Some(&stale_key);
+        env.track_scan_key = Some(&stale_key);
         let a = fx.run(env, &tl);
 
         // The scrub walk re-synced onto the 1000s scan…
@@ -1182,7 +1248,7 @@ mod tests {
         // …the shell executes that sync, then re-reads the coordinator key
         // for the follow-up, so the prefetch targets the new scan.
         let mut env = base_followup_env();
-        env.coordinator_scan_key = Some(&new_key);
+        env.track_scan_key = Some(&new_key);
         env.displayed = Some(&displayed);
         let f = fx.followup(env, &tl);
         let p = f.prefetch.expect("prefetch decided");
@@ -1301,7 +1367,7 @@ mod tests {
         let key = ScanKey::from_secs_f64("KDMX", 2000.0);
         let mut env = base_followup_env();
         env.volume_3d_active = true;
-        env.coordinator_scan_key = Some(&key);
+        env.track_scan_key = Some(&key);
         assert_eq!(
             fx_later.followup(env, &tl).caption_context.volume_cuts,
             Some((1, 3))

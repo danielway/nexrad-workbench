@@ -18,7 +18,6 @@ use crate::core::calendar::{
 };
 use crate::core::dialogs::{DialogId, DialogIntent};
 use crate::core::Intent;
-use crate::data::SiteId;
 use crate::state::AppState;
 use crate::ui::dialog::{Popover, Sheet, Width};
 use crate::ui::theme;
@@ -69,9 +68,9 @@ fn draw(ctx: &mut LayoutCtx) {
     let Some(sheet) = ctx.chrome.go_to_day else {
         return;
     };
-    let site = SiteId::new(ctx.state.viz_state.site_id.clone());
-    let held: Vec<(f64, f64)> = ctx
-        .timeline
+    let focus = ctx.sites.focus();
+    let site = focus.id.clone();
+    let held: Vec<(f64, f64)> = focus
         .scans
         .time_ranges()
         .iter()

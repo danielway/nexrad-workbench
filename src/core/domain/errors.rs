@@ -58,6 +58,10 @@ pub(crate) enum AppError {
         #[allow(dead_code)] // Module docs: taxonomy for UI dispatch as reporters migrate.
         kind: WorkerErrorKind,
         message: String,
+        /// The site of the failing request's scan, when the receive path
+        /// could correlate it; the activity sheet names it while more than
+        /// one site is on the map.
+        site: Option<String>,
         /// Scan timestamp (Unix seconds) the failing request was for,
         /// when the receive path could correlate it with a pending
         /// context. Lets UI link the error back to a timeline scan.
@@ -162,6 +166,7 @@ mod coverage_tests {
             AppError::Worker {
                 kind: WorkerErrorKind::NotFound,
                 message: "w".into(),
+                site: None,
                 scan_timestamp_secs: Some(1.0),
             }
             .message(),

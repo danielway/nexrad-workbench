@@ -37,10 +37,13 @@ pub(crate) struct Derived {
     /// [`crate::state::VizState::last_visible_bounds`]; `None` in 3D
     /// mode or on the very first frame before the canvas has rendered.
     pub visible_bounds: Option<(f64, f64, f64, f64)>,
-    /// Whether the playback cursor is within the live-overlay freshness
-    /// window. Same semantics as
-    /// [`crate::state::recency::data_is_live`].
-    pub data_is_live: bool,
+    /// Why live-only overlays (warnings, the national mosaic) are off this
+    /// frame, `None` while they apply: the playhead is too far behind now,
+    /// or a playing loop reaches further back (see
+    /// [`crate::core::recency`]). It picks the Layers note's wording, and
+    /// [`Self::data_is_live`] reads it. See
+    /// [`crate::state::recency::live_overlays_off`].
+    pub live_overlays_off: Option<crate::core::recency::LiveOverlaysOff>,
     /// Whether sweep animation is effectively enabled this frame: Rays mode,
     /// and — while attached to live with a fixed elevation filter — the
     /// antenna is on that cut.
@@ -55,23 +58,30 @@ impl Derived {
     /// before any subsystem tick or panel render, so every consumer
     /// downstream reads the same values. `follows_live` is
     /// [`crate::subsystem::Live::canvas_follows_live`].
-    /// `collecting_elevation` is the live in-progress cut when known.
+    /// `live` is the frame's live radar snapshot (the in-progress cut).
     pub(crate) fn for_frame(
         state: &AppState,
         playback: &Playback,
         follows_live: bool,
-        collecting_elevation: Option<u8>,
+        live: &crate::core::LiveRadarModel,
     ) -> Self {
         Self {
             frame_now_secs: state.frame_now.secs(),
             visible_bounds: state.viz_state.last_visible_bounds,
-            data_is_live: crate::state::recency::data_is_live(&playback.state),
+            live_overlays_off: crate::state::recency::live_overlays_off(&playback.state),
             effective_sweep_animation: state.effective_sweep_animation(
                 &playback.state,
                 follows_live,
-                collecting_elevation,
+                live,
             ),
             canvas_follows_live: follows_live,
         }
+    }
+
+    /// Whether live-only overlays apply this frame (nothing in
+    /// `live_overlays_off`): the one answer the mosaic fetch, alert
+    /// polling, canvas and legends gate on.
+    pub(crate) fn data_is_live(&self) -> bool {
+        self.live_overlays_off.is_none()
     }
 }

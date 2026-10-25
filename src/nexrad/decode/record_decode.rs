@@ -21,8 +21,7 @@ pub(crate) fn decode_record_to_radials(record_bytes: &[u8]) -> Result<Vec<Radial
     let record = Record::from_slice(record_bytes);
 
     if !record.compressed() {
-        return record
-            .radials()
+        return record_radials(record.data())
             .map_err(|e| format!("Failed to decode uncompressed record: {}", e));
     }
 
@@ -30,9 +29,80 @@ pub(crate) fn decode_record_to_radials(record_bytes: &[u8]) -> Result<Vec<Radial
         .decompress()
         .map_err(|e| format!("Failed to decompress record: {}", e))?;
 
-    decompressed
-        .radials()
+    record_radials(decompressed.data())
         .map_err(|e| format!("Failed to decode record radials: {}", e))
+}
+
+/// Size of a message header, counting the 12 bytes ahead of the ICD header.
+const MESSAGE_HEADER_SIZE: usize = 28;
+/// Size of one fixed-length message frame.
+const FIXED_FRAME_SIZE: usize = 2432;
+/// Message type of a digital radar data (generic format) message.
+const DIGITAL_RADAR_DATA: u8 = 31;
+
+/// Split a decompressed record into byte ranges that each end where a
+/// digital radar data message declares it ends (the last range runs to the
+/// end of the record).
+///
+/// TDWR radials pad a few bytes past their last data block. nexrad-decode
+/// 1.0.0-rc.3 stops reading at the last block and takes the padding for the
+/// next header, losing every later radial in the record. Decoding each range
+/// on its own starts every radial at its real header. Drop this once a
+/// nexrad-decode release resumes at the declared end (danielway/nexrad#200).
+fn record_ranges(data: &[u8]) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    let mut pos = 0;
+    while pos + MESSAGE_HEADER_SIZE <= data.len() {
+        let header = &data[pos..pos + MESSAGE_HEADER_SIZE];
+        let segment_halfwords = u16::from_be_bytes([header[12], header[13]]);
+        let message_type = header[15];
+        let size = if message_type == DIGITAL_RADAR_DATA {
+            12 + segment_halfwords as usize * 2
+        } else if segment_halfwords == u16::MAX {
+            12 + u32::from_be_bytes([header[24], header[25], header[26], header[27]]) as usize
+        } else {
+            FIXED_FRAME_SIZE
+        };
+        if size < MESSAGE_HEADER_SIZE {
+            break;
+        }
+        pos += size;
+        if message_type == DIGITAL_RADAR_DATA && pos <= data.len() {
+            ranges.push(start..pos);
+            start = pos;
+        }
+    }
+    if start < data.len() {
+        ranges.push(start..data.len());
+    }
+    ranges
+}
+
+/// Decode every message in a decompressed record. See [`record_ranges`].
+pub(crate) fn record_messages(
+    data: &[u8],
+) -> nexrad_decode::result::Result<Vec<nexrad_decode::messages::Message<'_>>> {
+    let mut messages = Vec::new();
+    for range in record_ranges(data) {
+        messages.extend(nexrad_decode::messages::decode_messages(&data[range])?);
+    }
+    Ok(messages)
+}
+
+/// Decode the radials (type 31 and legacy type 1) in a decompressed record.
+pub(crate) fn record_radials(data: &[u8]) -> nexrad_decode::result::Result<Vec<Radial>> {
+    use nexrad_decode::messages::MessageContents;
+
+    let mut radials = Vec::new();
+    for message in record_messages(data)? {
+        match message.into_contents() {
+            MessageContents::DigitalRadarData(m) => radials.push(m.into_radial()?),
+            MessageContents::DigitalRadarDataLegacy(m) => radials.push(m.into_radial()?),
+            _ => {}
+        }
+    }
+    Ok(radials)
 }
 
 /// Extract the volume start time from decoded radials.
@@ -448,5 +518,62 @@ mod coverage_tests {
             GateValues::U8(vals) => assert_eq!(vals, &vec![7u8, 8, 0, 0]),
             GateValues::U16(_) => panic!("expected u8 gate values"),
         }
+    }
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// The first three radials of a TFLL record (2026-10-25 20:35 UTC),
+    /// decompressed. Each pads 6 bytes past its last data block.
+    const TFLL_RADIALS: &[u8] = include_bytes!("testdata/tfll_radials.bin");
+
+    /// A message header declaring `message_type` and a segment size in
+    /// halfwords, followed by `body` bytes.
+    fn message(message_type: u8, halfwords: u16, body: usize) -> Vec<u8> {
+        let mut bytes = vec![0u8; MESSAGE_HEADER_SIZE + body];
+        bytes[12..14].copy_from_slice(&halfwords.to_be_bytes());
+        bytes[15] = message_type;
+        bytes
+    }
+
+    #[wasm_bindgen_test]
+    fn every_padded_tdwr_radial_decodes() {
+        let radials = record_radials(TFLL_RADIALS).expect("decodes");
+        assert_eq!(radials.len(), 3);
+        let azimuths: Vec<f32> = radials.iter().map(|r| r.azimuth_angle_degrees()).collect();
+        assert!(azimuths.windows(2).all(|w| w[1] > w[0]), "{azimuths:?}");
+    }
+
+    #[wasm_bindgen_test]
+    fn ranges_end_at_each_radials_declared_end() {
+        let radial = message(DIGITAL_RADAR_DATA, 100, 200 - 16);
+        let fixed = message(2, 1208, FIXED_FRAME_SIZE - MESSAGE_HEADER_SIZE);
+        let data = [fixed.clone(), radial.clone(), radial.clone(), fixed].concat();
+        let first_end = FIXED_FRAME_SIZE + 212;
+        assert_eq!(
+            record_ranges(&data),
+            vec![
+                0..first_end,
+                first_end..first_end + 212,
+                first_end + 212..data.len()
+            ]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_record_without_radials_is_one_range() {
+        let fixed = message(5, 1208, FIXED_FRAME_SIZE - MESSAGE_HEADER_SIZE);
+        let data = [fixed.clone(), fixed].concat();
+        assert_eq!(record_ranges(&data), vec![0..data.len()]);
+        assert!(record_ranges(&[]).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn a_radial_declaring_past_the_end_leaves_the_rest_whole() {
+        let radial = message(DIGITAL_RADAR_DATA, 1000, 100);
+        assert_eq!(record_ranges(&radial), vec![0..radial.len()]);
     }
 }

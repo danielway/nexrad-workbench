@@ -91,6 +91,17 @@ pub(crate) fn decode_with_vcp_extraction<'a>(
                     }
                 }
             }
+            // Pre-2008 volumes carry no message 5; the pattern number rides
+            // on every legacy radial instead.
+            MessageContents::DigitalRadarDataLegacy(ref m) if extracted_vcp.is_none() => {
+                let raw = m.vcp_number();
+                if raw > 0 {
+                    *extracted_vcp = Some(ExtractedVcp {
+                        number: raw,
+                        elevations: Vec::new(),
+                    });
+                }
+            }
             _ => {}
         }
         match msg.into_contents() {
@@ -122,8 +133,6 @@ pub(crate) struct DecodeResult {
 pub(crate) fn decompress_and_decode_records(
     records: &[nexrad_data::volume::Record<'_>],
 ) -> Result<DecodeResult, wasm_bindgen::JsValue> {
-    use super::record_decode::decode_record_to_radials;
-
     let mut decompress_ms_total = 0.0f64;
     let mut decode_only_ms = 0.0f64;
     let mut all_radials: Vec<::nexrad::model::data::Radial> = Vec::new();
@@ -134,7 +143,11 @@ pub(crate) fn decompress_and_decode_records(
     for (record_id, record) in records.iter().enumerate() {
         let record_id = record_id as u32;
 
-        let radials = if record.compressed() {
+        // Records are bzip2'd in modern archives. Pre-2016 files are one
+        // gzip'd stream (inflated by `File::decompress` upstream) that
+        // splits into a single uncompressed record, so both kinds go
+        // through the same decode and VCP extraction.
+        let inflated = if record.compressed() {
             compressed_count += 1;
             let t_decompress = web_time::Instant::now();
             let decompressed = record.decompress().map_err(|e| {
@@ -144,29 +157,26 @@ pub(crate) fn decompress_and_decode_records(
                 ))
             })?;
             decompress_ms_total += t_decompress.elapsed().as_secs_f64() * 1000.0;
-            let t_radials = web_time::Instant::now();
-
-            let needs_vcp = extracted_vcp
-                .as_ref()
-                .map(|v| v.elevations.is_empty())
-                .unwrap_or(true);
-            let r = if needs_vcp {
-                match decompressed.messages() {
-                    Ok(msgs) => decode_with_vcp_extraction(msgs, &mut extracted_vcp),
-                    Err(_) => Vec::new(),
-                }
-            } else {
-                decompressed.radials().unwrap_or_default()
-            };
-
-            decode_only_ms += t_radials.elapsed().as_secs_f64() * 1000.0;
-            r
+            Some(decompressed)
         } else {
-            let t_radials = web_time::Instant::now();
-            let r = decode_record_to_radials(record.data()).unwrap_or_default();
-            decode_only_ms += t_radials.elapsed().as_secs_f64() * 1000.0;
-            r
+            None
         };
+        let record = inflated.as_ref().unwrap_or(record);
+
+        let t_radials = web_time::Instant::now();
+        let needs_vcp = extracted_vcp
+            .as_ref()
+            .map(|v| v.elevations.is_empty())
+            .unwrap_or(true);
+        let radials = if needs_vcp {
+            match super::record_decode::record_messages(record.data()) {
+                Ok(msgs) => decode_with_vcp_extraction(msgs, &mut extracted_vcp),
+                Err(_) => Vec::new(),
+            }
+        } else {
+            super::record_decode::record_radials(record.data()).unwrap_or_default()
+        };
+        decode_only_ms += t_radials.elapsed().as_secs_f64() * 1000.0;
 
         if !radials.is_empty() {
             for r in &radials {
@@ -344,12 +354,16 @@ pub(crate) fn decode_start_chunk(data: Vec<u8>, accum_has_full_vcp: bool) -> Chu
                             .map(|v| v.elevations.is_empty())
                             .unwrap_or(true)
                     {
-                        if let Ok(msgs) = decompressed.messages() {
+                        if let Ok(msgs) = super::record_decode::record_messages(decompressed.data())
+                        {
                             let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
                             chunk_radials.extend(r);
                         }
                     } else {
-                        chunk_radials.extend(decompressed.radials().unwrap_or_default());
+                        chunk_radials.extend(
+                            super::record_decode::record_radials(decompressed.data())
+                                .unwrap_or_default(),
+                        );
                     }
                 }
                 Err(e) => {
@@ -389,12 +403,15 @@ pub(crate) fn decode_subsequent_chunk(
         match record.decompress() {
             Ok(decompressed) => {
                 if !accum_has_full_vcp {
-                    if let Ok(msgs) = decompressed.messages() {
+                    if let Ok(msgs) = super::record_decode::record_messages(decompressed.data()) {
                         let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
                         chunk_radials.extend(r);
                     }
                 } else {
-                    chunk_radials.extend(decompressed.radials().unwrap_or_default());
+                    chunk_radials.extend(
+                        super::record_decode::record_radials(decompressed.data())
+                            .unwrap_or_default(),
+                    );
                 }
             }
             Err(e) => {

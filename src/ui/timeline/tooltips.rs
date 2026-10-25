@@ -77,12 +77,13 @@ pub(super) fn render_timeline_tooltip(
     ui: &mut egui::Ui,
     frame: &TimelineFrame<'_>,
     live: &crate::subsystem::Live,
+    site_live: &crate::subsystem::SiteLive,
     hover_ts: f64,
     hover_pos: Pos2,
 ) {
     let view = &frame.view;
     let (use_local, now_secs) = (frame.use_local, frame.now_secs);
-    let live_state = &live.mode_state;
+    let live_volume = live.mode_state.is_active().then_some(&site_live.volume);
     // Frames-first: one main track. A hover inside the frame-cell inset band
     // (where the cells are painted) reads as hovering a frame cell → the sweep
     // tooltip; the thin margins around it read as the scan container → the scan
@@ -112,8 +113,8 @@ pub(super) fn render_timeline_tooltip(
         && live_position.is_some_and(|p| hover_ts >= p.volume_start && hover_ts <= p.volume_end);
 
     // Countdown for the realtime tooltip — computed here (we have `live`) and
-    // passed into the volume tooltip, which only carries `live_state`.
-    let countdown = live.countdown_remaining_secs(now_secs);
+    // passed into the volume tooltip, which only carries the live volume.
+    let countdown = live.countdown_remaining_secs(site_live, now_secs);
 
     // If in sweep track, search for a cached sweep across settled scans (not
     // just the scan containing hover_ts). This handles edge cases where a
@@ -183,13 +184,46 @@ pub(super) fn render_timeline_tooltip(
             render_scan_tooltip_content(
                 ui,
                 scan,
-                live_state,
-                live.radar_model.volume.as_ref().map(|v| &v.roster),
+                live_volume,
+                site_live.radar_model.volume.as_ref().map(|v| &v.roster),
                 use_local,
             );
         } else if let Some(boundary) = shadow {
             render_available_tooltip_content(ui, &boundary, use_local);
         }
+    });
+}
+
+/// Hover tooltip for a block on another site's lane: the site's volume, its
+/// state in the track's words, and its time.
+pub(super) fn render_lane_tooltip(
+    ui: &mut egui::Ui,
+    site: &str,
+    block: &crate::core::timeline_view::LaneBlock,
+    hover_pos: Pos2,
+    use_local: bool,
+) {
+    use crate::core::timeline_view::LaneBlockState;
+    let color = match block.state {
+        LaneBlockState::Held => tl_colors::STATUS_CACHED,
+        LaneBlockState::Listed | LaneBlockState::Queued => tl_colors::STATUS_AVAILABLE,
+        LaneBlockState::InFlight => theme::legacy::ACTIVE_BLUE,
+        LaneBlockState::LiveFilling { .. } => theme::legacy::ACTIVE_BLUE,
+        LaneBlockState::Stalled { .. } | LaneBlockState::Failed => theme::acquisition::FAILED,
+    };
+    egui::Tooltip::always_open(
+        ui.ctx().clone(),
+        egui::LayerId::new(egui::Order::Tooltip, ui.id()),
+        ui.id().with("tl_lane_tooltip"),
+        Rect::from_center_size(hover_pos, Vec2::splat(20.0)),
+    )
+    .show(|ui: &mut egui::Ui| {
+        tooltip_header(ui, &format!("{site} volume"), block.state.label(), color);
+        ui.label(format_time_range(
+            block.start_secs,
+            block.end_secs,
+            use_local,
+        ));
     });
 }
 
@@ -534,7 +568,7 @@ fn render_realtime_volume_tooltip(
 fn render_scan_tooltip_content(
     ui: &mut egui::Ui,
     scan: &crate::core::Scan,
-    live_state: &crate::core::LiveModeState,
+    live_volume: Option<&crate::core::LiveVolumeState>,
     live_roster: Option<&crate::core::VolumeElevationRoster>,
     use_local: bool,
 ) {
@@ -568,8 +602,8 @@ fn render_scan_tooltip_content(
     }
 
     // Live mode info if this scan matches the active volume
-    if live_state.is_active() {
-        if let Some(vol_start) = live_state
+    if let Some(live_volume) = live_volume {
+        if let Some(vol_start) = live_volume
             .current_volume
             .as_ref()
             .map(|a| a.best_start_secs())

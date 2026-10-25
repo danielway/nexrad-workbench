@@ -34,7 +34,7 @@
 //! renders (spec §6.3).
 
 use crate::core::projection::{ScanProjection, SweepProjectionStatus, SweepTimingProvenance};
-use crate::core::LiveModeState;
+use crate::core::LiveVolumeState;
 use crate::core::ScanBoundary;
 use crate::core::{RadarTimeline, Scan};
 use std::collections::BTreeSet;
@@ -169,9 +169,9 @@ pub(crate) struct FrameJoinInputs<'i> {
     /// Selected product (worker-string) — a cell counts as Cached only when the
     /// sweep holds a blob for this product.
     pub product: &'i str,
-    /// Selected tilt (1-based elevation number); `None` ⇒ Latest/auto (every
-    /// elevation is a frame).
-    pub tilt: Option<u8>,
+    /// Selected tilt: Latest (every cut is a frame) or a held angle (every
+    /// visit of it is a frame, SAILS/MRLE repeats included).
+    pub tilt: crate::core::tilt::TiltFilter,
     /// On-GPU `(scan_key_secs, elevation_number)` for the active-ring cell.
     pub active: Option<(f64, u8)>,
     /// Previous on-GPU `(scan_key_secs, elevation_number)` during blend.
@@ -200,18 +200,22 @@ impl<'a> TimelineView<'a> {
     /// Build the view from every timeline source. Sources are passed by
     /// reference and never reference each other; all merging happens here.
     ///
-    /// `live_position` is the live subsystem's per-frame `from_live` model
-    /// (`live.radar_model.position`); the adapter clones it and overlays the
-    /// cached sweeps for the same volume.
+    /// `live_volume` is the site's live volume while the session streams
+    /// (`None` otherwise). `live_position` is the site's per-frame
+    /// `from_live` model (`site.live.radar_model.position`); the adapter
+    /// clones it and overlays the cached sweeps for the same volume.
     pub(crate) fn build(
         cache: &'a RadarTimeline,
         shadows: &'a [ScanBoundary],
-        live_state: Option<&LiveModeState>,
+        live_volume: Option<&LiveVolumeState>,
         live_position: Option<&ScanProjection>,
     ) -> Self {
-        let (live_position, live_volume_ms) = match (live_state, live_position) {
-            (Some(ls), Some(pos)) if ls.is_active() => {
-                let anchor_ms = ls.current_volume.as_ref().map(|a| a.scan_key.scan_start.0);
+        let (live_position, live_volume_ms) = match (live_volume, live_position) {
+            (Some(volume), Some(pos)) => {
+                let anchor_ms = volume
+                    .current_volume
+                    .as_ref()
+                    .map(|a| a.scan_key.scan_start.0);
                 let mut merged = pos.clone();
                 if let Some(ms) = anchor_ms {
                     if let Some(scan) = scan_with_key_ms(cache, ms) {
@@ -423,9 +427,10 @@ impl<'a> TimelineView<'a> {
             .map(|s| (s.start_time, s.end_time))
             .collect();
 
+        let cuts = join.tilt.cuts(scan.vcp_pattern.as_ref());
         let mut cells: Vec<FrameCell> = Vec::new();
         for sw in &scan.sweeps {
-            if !tilt_matches(join.tilt, sw.elevation_number) {
+            if !cuts.contains(sw.elevation_number) {
                 continue;
             }
             let has_product = sw.cached_products.iter().any(|p| p == join.product)
@@ -467,7 +472,7 @@ impl<'a> TimelineView<'a> {
             cells.push(FrameCell {
                 start_secs: scan.start_time,
                 end_secs: clamped_end,
-                elevation_number: join.tilt.unwrap_or(0),
+                elevation_number: join.tilt.anchor().unwrap_or(0),
                 elevation_angle: 0.0,
                 state,
                 chunks: None,
@@ -513,12 +518,6 @@ impl<'a> TimelineView<'a> {
 }
 
 // ── Frame-cell join helpers (free functions; pure, unit-tested) ────────────
-
-/// Whether a selected tilt matches an elevation number. `None` ⇒ Latest/auto,
-/// where every elevation is a frame.
-fn tilt_matches(tilt: Option<u8>, elevation_number: u8) -> bool {
-    tilt.is_none_or(|t| t == elevation_number)
-}
 
 /// Whether any `(start, end)` range in `ranges` contains the scan-start
 /// `key_i` within [`SCAN_JOIN_TOLERANCE_SECS`] of its start.
@@ -587,7 +586,7 @@ fn container_from_shadow(b: &ScanBoundary, join: &FrameJoinInputs<'_>) -> ScanCo
     let cell = FrameCell {
         start_secs: b.start as f64,
         end_secs: b.end as f64,
-        elevation_number: join.tilt.unwrap_or(0),
+        elevation_number: join.tilt.anchor().unwrap_or(0),
         elevation_angle: 0.0,
         state,
         chunks: None,
@@ -619,9 +618,10 @@ fn container_from_live(pos: &ScanProjection, join: &FrameJoinInputs<'_>) -> Scan
         .map(|s| (s.collection_start_secs, s.collection_end_secs))
         .collect();
 
+    let cuts = join.tilt.cuts(pos.vcp_pattern.as_ref());
     let mut cells: Vec<FrameCell> = Vec::new();
     for sp in &pos.sweeps {
-        if !tilt_matches(join.tilt, sp.elevation_number) {
+        if !cuts.contains(sp.elevation_number) {
             continue;
         }
         let (state, chunks) = match sp.status {
@@ -677,10 +677,11 @@ fn container_from_ghost(ghost: &ScanProjection, join: &FrameJoinInputs<'_>) -> S
         .iter()
         .map(|s| (s.collection_start_secs, s.collection_end_secs))
         .collect();
+    let cuts = join.tilt.cuts(ghost.vcp_pattern.as_ref());
     let cells: Vec<FrameCell> = ghost
         .sweeps
         .iter()
-        .filter(|sp| tilt_matches(join.tilt, sp.elevation_number))
+        .filter(|sp| cuts.contains(sp.elevation_number))
         .map(|sp| FrameCell {
             start_secs: sp.collection_start_secs,
             end_secs: sp.collection_end_secs,
@@ -766,6 +767,194 @@ pub(crate) fn merge_cached_into_live(position: &mut ScanProjection, cached: &Sca
                 p.chunks.clear();
             }
         }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Lanes (multi-site). The focus keeps the full track; every other site gets
+// a compact lane under it that says, per volume, whether the device holds
+// it, the archive lists it, the stream is filling it, the stream stalled on
+// it, or its download failed. One block per volume, no frame cells.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// What one block on a lane stands for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum LaneBlockState {
+    /// A volume on the device: solid.
+    Held,
+    /// A volume the archive listing names that the device does not hold:
+    /// hollow.
+    Listed,
+    /// The volume the site's stream is collecting: solid up to
+    /// `newest_secs` (the newest chunk's last radial), a dashed outline from
+    /// there to the projected end.
+    LiveFilling { newest_secs: f64 },
+    /// The same volume while the stream is past its cadence: the dashed
+    /// part is red from `newest_secs`, where the chunks stopped.
+    Stalled { newest_secs: f64 },
+    /// A volume whose download failed.
+    Failed,
+    /// A volume waiting in the download queue: hollow with a faint hatch.
+    Queued,
+    /// A volume downloading, or downloaded and not yet on the timeline: a
+    /// pulsing fill.
+    InFlight,
+}
+
+impl LaneBlockState {
+    /// The state word for the block's tooltip, in the track's tooltip words.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            LaneBlockState::Held => "On device",
+            LaneBlockState::Listed => "In cloud archive",
+            LaneBlockState::LiveFilling { .. } => "Receiving",
+            LaneBlockState::Stalled { .. } => "Stalled",
+            LaneBlockState::Failed => "Download failed",
+            LaneBlockState::Queued => "Queued",
+            LaneBlockState::InFlight => "Downloading",
+        }
+    }
+}
+
+/// One volume on a lane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LaneBlock {
+    pub start_secs: f64,
+    /// The displayed right edge: the clamped end for a held volume, the
+    /// listing's end for a listed one, the projected end for the live one.
+    pub end_secs: f64,
+    pub state: LaneBlockState,
+}
+
+/// One site's downloads as its lane reads them, by scan start (seconds).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct LaneDownloads {
+    /// Downloads that failed.
+    pub failed: Vec<i64>,
+    /// Scans waiting in the download queue.
+    pub queued: Vec<i64>,
+    /// Scans downloading, or downloaded and not yet on the timeline.
+    pub in_flight: Vec<i64>,
+}
+
+impl LaneDownloads {
+    /// The state of a volume the device does not hold, starting at `key`
+    /// (within [`SCAN_JOIN_TOLERANCE_SECS`]): queued before in flight (a
+    /// queued scan is also pending in the ledger), then failed, else
+    /// listed.
+    pub(crate) fn state_at(&self, key: i64) -> LaneBlockState {
+        if secs_hit(&self.queued, key) {
+            LaneBlockState::Queued
+        } else if secs_hit(&self.in_flight, key) {
+            LaneBlockState::InFlight
+        } else if secs_hit(&self.failed, key) {
+            LaneBlockState::Failed
+        } else {
+            LaneBlockState::Listed
+        }
+    }
+}
+
+/// The lane-only inputs beside the site's [`TimelineView`].
+#[derive(Clone, Copy)]
+pub(crate) struct LaneInputs<'i> {
+    /// This site's downloads: failed, queued and in flight.
+    pub downloads: &'i LaneDownloads,
+    /// Collection time of the newest radial the site's stream has received.
+    pub newest_chunk_secs: Option<f64>,
+    /// The site's stream, classified ([`crate::core::session::Stream`]).
+    pub stream: crate::core::session::Stream,
+}
+
+/// One site's lane.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LaneVm {
+    /// The site id printed at the lane's left edge.
+    pub site: String,
+    /// Blocks overlapping the window, oldest first, with the live block
+    /// last.
+    pub blocks: Vec<LaneBlock>,
+}
+
+/// The lane for `site` over `[start, end]`, from its timeline view.
+///
+/// - A cached scan is `Held`, unless it is indexed with no sweeps
+///   (completeness `Missing`), which reads as a volume not held.
+/// - A listing boundary that no cached scan or live volume covers (within
+///   [`SCAN_JOIN_TOLERANCE_SECS`]) is a volume not held.
+/// - A volume not held is `Queued`, `InFlight`, `Failed` or `Listed`, by
+///   its downloads ([`LaneDownloads::state_at`]).
+/// - The live volume, present only while the session streams, is
+///   `LiveFilling`, or `Stalled` when the site's stream is stalled. Its
+///   solid part ends at the newest chunk, clamped to the volume.
+pub(crate) fn lane_vm(
+    site: &str,
+    view: &TimelineView<'_>,
+    start: f64,
+    end: f64,
+    inputs: LaneInputs<'_>,
+) -> LaneVm {
+    let mut blocks: Vec<LaneBlock> = Vec::new();
+
+    for (scan, clamped_end) in view.settled_scans_in_range(start, end) {
+        let state = if scan.completeness != Some(crate::data::ScanCompleteness::Missing) {
+            LaneBlockState::Held
+        } else {
+            inputs.downloads.state_at(scan.key_timestamp.round() as i64)
+        };
+        blocks.push(LaneBlock {
+            start_secs: scan.start_time,
+            end_secs: clamped_end,
+            state,
+        });
+    }
+
+    for b in view.shadow_boundaries() {
+        if view.is_covered_by_cached(b.start) || (b.end as f64) < start || (b.start as f64) > end {
+            continue;
+        }
+        blocks.push(LaneBlock {
+            start_secs: b.start as f64,
+            end_secs: b.end as f64,
+            state: inputs.downloads.state_at(b.start),
+        });
+    }
+
+    let mut live_block = None;
+    if let Some(pos) = view.live_volume() {
+        if pos.volume_end >= start && pos.volume_start <= end {
+            let newest_secs = inputs
+                .newest_chunk_secs
+                .unwrap_or(pos.volume_start)
+                .clamp(pos.volume_start, pos.volume_end.max(pos.volume_start));
+            live_block = Some(LaneBlock {
+                start_secs: pos.volume_start,
+                end_secs: pos.volume_end,
+                state: if inputs.stream == crate::core::session::Stream::Stalled {
+                    LaneBlockState::Stalled { newest_secs }
+                } else {
+                    LaneBlockState::LiveFilling { newest_secs }
+                },
+            });
+        }
+    }
+
+    blocks.sort_by(|a, b| a.start_secs.total_cmp(&b.start_secs));
+    blocks.extend(live_block);
+    LaneVm {
+        site: site.to_string(),
+        blocks,
+    }
+}
+
+impl LaneVm {
+    /// The block under `ts`, for the hover: the live block wins, then the
+    /// latest-starting block that contains it.
+    pub(crate) fn block_at(&self, ts: f64) -> Option<&LaneBlock> {
+        self.blocks
+            .iter()
+            .rev()
+            .find(|b| b.start_secs <= ts && ts <= b.end_secs)
     }
 }
 
@@ -1431,7 +1620,10 @@ mod tests {
             in_flight: &[],
             failed: &[],
             product,
-            tilt,
+            tilt: tilt.map_or(
+                crate::core::tilt::TiltFilter::Every,
+                crate::core::tilt::TiltFilter::number,
+            ),
             active: None,
             prev_active: None,
         }
@@ -1609,10 +1801,7 @@ mod tests {
         let mut pos = live_model(vec![s_inprog, s_other, s_cached, s_future]);
         pos.in_progress_radials = Some(42);
 
-        let live = crate::core::LiveModeState::with_dummy_streaming(
-            crate::core::LivePhase::Streaming,
-            1_700_000_010.0,
-        );
+        let live = crate::core::LiveVolumeState::default();
         let cache = RadarTimeline { scans: Vec::new() };
         let shadows: Vec<ScanBoundary> = Vec::new();
         let view = TimelineView::build(&cache, &shadows, Some(&live), Some(&pos));
@@ -1709,10 +1898,7 @@ mod tests {
         s_inprog.collection_end_secs = 1_700_000_030.0;
         s_inprog.chunks_in_sweep = 3;
         let pos = live_model(vec![s_inprog]); // volume_start = 1_700_000_000.0
-        let live = crate::core::LiveModeState::with_dummy_streaming(
-            crate::core::LivePhase::Streaming,
-            1_700_000_010.0,
-        );
+        let live = crate::core::LiveVolumeState::default();
         let cache = RadarTimeline { scans: Vec::new() };
         let shadows: Vec<ScanBoundary> = Vec::new();
         let view = TimelineView::build(&cache, &shadows, Some(&live), Some(&pos));
@@ -1815,7 +2001,10 @@ mod coverage_tests {
             in_flight: &[],
             failed: &[],
             product,
-            tilt,
+            tilt: tilt.map_or(
+                crate::core::tilt::TiltFilter::Every,
+                crate::core::tilt::TiltFilter::number,
+            ),
             active: None,
             prev_active: None,
         }
@@ -1823,12 +2012,13 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn tilt_matches_none_is_wildcard() {
-        assert!(tilt_matches(None, 0));
-        assert!(tilt_matches(None, 1));
-        assert!(tilt_matches(None, 7));
-        assert!(tilt_matches(Some(3), 3));
-        assert!(!tilt_matches(Some(3), 2));
-        assert!(!tilt_matches(Some(3), 4));
+        use crate::core::tilt::TiltFilter;
+        assert!(TiltFilter::Every.matches(None, 0));
+        assert!(TiltFilter::Every.matches(None, 1));
+        assert!(TiltFilter::Every.matches(None, 7));
+        assert!(TiltFilter::number(3).matches(None, 3));
+        assert!(!TiltFilter::number(3).matches(None, 2));
+        assert!(!TiltFilter::number(3).matches(None, 4));
     }
 
     #[wasm_bindgen_test]
@@ -1990,10 +2180,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn scan_start_at_prefers_live_volume() {
         let pos = live_model(vec![sweep_pos(1, SweepProjectionStatus::InProgress)]);
-        let live = crate::core::LiveModeState::with_dummy_streaming(
-            crate::core::LivePhase::Streaming,
-            1_700_000_010.0,
-        );
+        let live = crate::core::LiveVolumeState::default();
         let cache = RadarTimeline { scans: Vec::new() };
         let shadows: Vec<ScanBoundary> = Vec::new();
         let view = TimelineView::build(&cache, &shadows, Some(&live), Some(&pos));
@@ -2118,10 +2305,7 @@ mod coverage_tests {
         sp.collection_end_secs = 1_700_000_030.0;
         sp.chunks_in_sweep = 3;
         let pos = live_model(vec![sp]);
-        let live = crate::core::LiveModeState::with_dummy_streaming(
-            crate::core::LivePhase::Streaming,
-            1_700_000_010.0,
-        );
+        let live = crate::core::LiveVolumeState::default();
         let shadows: Vec<ScanBoundary> = Vec::new();
         let view = TimelineView::build(&cache, &shadows, Some(&live), Some(&pos));
         let c = view.frame_containers_in_range(
@@ -2155,10 +2339,7 @@ mod coverage_tests {
         ghost.volume_end = 1_700_000_600.0;
         pos.next_scan_ghost = Some(Box::new(ghost));
 
-        let live = crate::core::LiveModeState::with_dummy_streaming(
-            crate::core::LivePhase::Streaming,
-            1_700_000_010.0,
-        );
+        let live = crate::core::LiveVolumeState::default();
         let cache = RadarTimeline { scans: Vec::new() };
         let shadows: Vec<ScanBoundary> = Vec::new();
         let view = TimelineView::build(&cache, &shadows, Some(&live), Some(&pos));
@@ -2558,5 +2739,447 @@ mod marks_tests {
         let e = edge_markers(100.0, 200.0, None, 300.0);
         assert_eq!(e.playhead, None);
         assert_eq!(e.now, Some(EdgeSide::Right));
+    }
+}
+
+#[cfg(test)]
+mod lane_tests {
+    use super::*;
+    use crate::core::projection::ScanProjection;
+    use crate::core::session::Stream;
+    use crate::core::Sweep;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn cached_sweep(elev: u8, start: f64, end: f64) -> Sweep {
+        Sweep {
+            start_time: start,
+            end_time: end,
+            elevation: 0.5 * elev as f32,
+            elevation_number: elev,
+            start_azimuth: 0.0,
+            radials: Vec::new(),
+            cached_products: Vec::new(),
+        }
+    }
+
+    fn cached_scan(key_secs: f64, sweeps: Vec<Sweep>) -> Scan {
+        Scan {
+            start_time: key_secs,
+            end_time: key_secs + 300.0,
+            key_timestamp: key_secs,
+            vcp: 212,
+            vcp_pattern: None,
+            sweeps,
+            completeness: None,
+            cached_sweep_count: None,
+            planned_sweep_count: None,
+        }
+    }
+
+    fn live_model(start: f64, end: f64) -> ScanProjection {
+        ScanProjection {
+            vcp_number: 212,
+            vcp_pattern: None,
+            roster: crate::core::VolumeElevationRoster::default(),
+            in_progress_elevation: None,
+            in_progress_radials: None,
+            volume_start: start,
+            volume_end: end,
+            sweeps: Vec::new(),
+            extrapolation: None,
+            next_scan_ghost: None,
+        }
+    }
+
+    fn lane_inputs(failed: &[i64], newest: Option<f64>, stream: Stream) -> LaneInputs<'static> {
+        let downloads = LaneDownloads {
+            failed: failed.to_vec(),
+            ..LaneDownloads::default()
+        };
+        LaneInputs {
+            downloads: Box::leak(Box::new(downloads)),
+            newest_chunk_secs: newest,
+            stream,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn a_volume_not_held_reads_queued_then_in_flight_then_failed() {
+        let d = LaneDownloads {
+            failed: vec![1_000, 3_000],
+            queued: vec![1_000],
+            in_flight: vec![1_000, 2_000, 3_000],
+        };
+        assert_eq!(d.state_at(1_010), LaneBlockState::Queued);
+        assert_eq!(d.state_at(2_000), LaneBlockState::InFlight);
+        assert_eq!(d.state_at(3_000), LaneBlockState::InFlight);
+        assert_eq!(d.state_at(9_000), LaneBlockState::Listed);
+        let failed_only = LaneDownloads {
+            failed: vec![3_000],
+            ..LaneDownloads::default()
+        };
+        assert_eq!(failed_only.state_at(3_030), LaneBlockState::Failed);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_lanes_queued_and_downloading_volumes_take_their_states() {
+        let shadows = vec![
+            ScanBoundary {
+                start: 1_000,
+                end: 1_300,
+            },
+            ScanBoundary {
+                start: 1_300,
+                end: 1_600,
+            },
+            ScanBoundary {
+                start: 1_600,
+                end: 1_900,
+            },
+        ];
+        let cache = RadarTimeline::default();
+        let view = TimelineView::build(&cache, &shadows, None, None);
+        let downloads = LaneDownloads {
+            failed: Vec::new(),
+            queued: vec![1_600],
+            in_flight: vec![1_300],
+        };
+        let lane = lane_vm(
+            "KMLB",
+            &view,
+            0.0,
+            5_000.0,
+            LaneInputs {
+                downloads: &downloads,
+                newest_chunk_secs: None,
+                stream: Stream::Off,
+            },
+        );
+        let states: Vec<_> = lane.blocks.iter().map(|b| b.state).collect();
+        assert_eq!(
+            states,
+            vec![
+                LaneBlockState::Listed,
+                LaneBlockState::InFlight,
+                LaneBlockState::Queued
+            ]
+        );
+    }
+
+    /// A live volume anchored at `start_secs` that projects to `end_secs`.
+    fn live_volume_at(start_secs: f64, end_secs: f64) -> (LiveVolumeState, ScanProjection) {
+        let mut volume = LiveVolumeState::default();
+        volume.current_volume = Some(crate::data::LiveVolumeAnchor::new(
+            crate::data::ScanKey::new(
+                "KMLB",
+                crate::data::keys::UnixMillis((start_secs * 1000.0) as i64),
+            ),
+            crate::data::ProvisionalStart(start_secs),
+        ));
+        (volume, live_model(start_secs, end_secs))
+    }
+
+    #[wasm_bindgen_test]
+    fn lane_a_cached_scan_is_held_to_its_clamped_end() {
+        let cache = RadarTimeline {
+            scans: vec![cached_scan(
+                1_000.0,
+                vec![cached_sweep(1, 1_000.0, 1_030.0)],
+            )],
+        };
+        let shadows = vec![ScanBoundary {
+            start: 1_000,
+            end: 1_360,
+        }];
+        let view = TimelineView::build(&cache, &shadows, None, None);
+        let lane = lane_vm(
+            "KMLB",
+            &view,
+            0.0,
+            5_000.0,
+            lane_inputs(&[], None, Stream::Off),
+        );
+        assert_eq!(lane.site, "KMLB");
+        assert_eq!(
+            lane.blocks,
+            vec![LaneBlock {
+                start_secs: 1_000.0,
+                end_secs: 1_360.0,
+                state: LaneBlockState::Held,
+            }]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn lane_a_listing_the_device_lacks_is_listed() {
+        let cache = RadarTimeline { scans: Vec::new() };
+        let shadows = vec![
+            ScanBoundary {
+                start: 1_000,
+                end: 1_360,
+            },
+            ScanBoundary {
+                start: 1_360,
+                end: 1_720,
+            },
+        ];
+        let view = TimelineView::build(&cache, &shadows, None, None);
+        let lane = lane_vm(
+            "KJAX",
+            &view,
+            0.0,
+            5_000.0,
+            lane_inputs(&[], None, Stream::Off),
+        );
+        assert_eq!(lane.blocks.len(), 2);
+        assert!(lane
+            .blocks
+            .iter()
+            .all(|b| b.state == LaneBlockState::Listed));
+        assert_eq!(lane.blocks[1].start_secs, 1_360.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn lane_an_indexed_scan_with_no_sweeps_is_listed_not_held() {
+        let mut missing = cached_scan(1_000.0, Vec::new());
+        missing.completeness = Some(crate::data::ScanCompleteness::Missing);
+        let cache = RadarTimeline {
+            scans: vec![missing],
+        };
+        let shadows: Vec<ScanBoundary> = Vec::new();
+        let view = TimelineView::build(&cache, &shadows, None, None);
+        let lane = lane_vm(
+            "KMLB",
+            &view,
+            0.0,
+            5_000.0,
+            lane_inputs(&[], None, Stream::Off),
+        );
+        assert_eq!(lane.blocks[0].state, LaneBlockState::Listed);
+        // The same scan with a failed download reads failed.
+        let lane = lane_vm(
+            "KMLB",
+            &view,
+            0.0,
+            5_000.0,
+            lane_inputs(&[1_010], None, Stream::Off),
+        );
+        assert_eq!(lane.blocks[0].state, LaneBlockState::Failed);
+    }
+
+    /// A listing matches a cached scan within the join tolerance: the
+    /// archive's filename time and the volume header can differ by seconds.
+    #[wasm_bindgen_test]
+    fn lane_a_listing_within_the_join_tolerance_of_a_held_scan_is_not_drawn_twice() {
+        let cache = RadarTimeline {
+            scans: vec![cached_scan(
+                1_000.0,
+                vec![cached_sweep(1, 1_000.0, 1_030.0)],
+            )],
+        };
+        let near = ScanBoundary {
+            start: 1_000 + SCAN_JOIN_TOLERANCE_SECS,
+            end: 1_400,
+        };
+        let far = ScanBoundary {
+            start: 1_000 + SCAN_JOIN_TOLERANCE_SECS + 1,
+            end: 1_400,
+        };
+        for (shadow, blocks) in [(near, 1), (far, 2)] {
+            let shadows = vec![shadow];
+            let view = TimelineView::build(&cache, &shadows, None, None);
+            let lane = lane_vm(
+                "KMLB",
+                &view,
+                0.0,
+                5_000.0,
+                lane_inputs(&[], None, Stream::Off),
+            );
+            assert_eq!(lane.blocks.len(), blocks, "shadow at {}", shadow.start);
+            assert_eq!(lane.blocks[0].state, LaneBlockState::Held);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn lane_a_failed_download_marks_its_listing_within_the_tolerance() {
+        let cache = RadarTimeline { scans: Vec::new() };
+        let shadows = vec![ScanBoundary {
+            start: 1_000,
+            end: 1_360,
+        }];
+        let view = TimelineView::build(&cache, &shadows, None, None);
+        let at = |failed: i64| {
+            lane_vm(
+                "KMLB",
+                &view,
+                0.0,
+                5_000.0,
+                lane_inputs(&[failed], None, Stream::Off),
+            )
+            .blocks[0]
+                .state
+        };
+        assert_eq!(at(1_000 + SCAN_JOIN_TOLERANCE_SECS), LaneBlockState::Failed);
+        assert_eq!(
+            at(1_000 + SCAN_JOIN_TOLERANCE_SECS + 1),
+            LaneBlockState::Listed
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn lane_the_live_volume_fills_up_to_the_newest_chunk() {
+        let (volume, pos) = live_volume_at(2_000.0, 2_400.0);
+        let cache = RadarTimeline { scans: Vec::new() };
+        // The listing already names the live volume: it is not drawn twice.
+        let shadows = vec![ScanBoundary {
+            start: 2_000,
+            end: 2_400,
+        }];
+        let view = TimelineView::build(&cache, &shadows, Some(&volume), Some(&pos));
+        let lane = lane_vm(
+            "KMLB",
+            &view,
+            0.0,
+            5_000.0,
+            lane_inputs(&[], Some(2_150.0), Stream::Receiving),
+        );
+        assert_eq!(
+            lane.blocks,
+            vec![LaneBlock {
+                start_secs: 2_000.0,
+                end_secs: 2_400.0,
+                state: LaneBlockState::LiveFilling {
+                    newest_secs: 2_150.0
+                },
+            }]
+        );
+        assert_eq!(lane.blocks[0].state.label(), "Receiving");
+    }
+
+    #[wasm_bindgen_test]
+    fn lane_a_stalled_stream_turns_the_live_block_stalled_from_the_last_chunk() {
+        let (volume, pos) = live_volume_at(2_000.0, 2_400.0);
+        let cache = RadarTimeline { scans: Vec::new() };
+        let shadows: Vec<ScanBoundary> = Vec::new();
+        let view = TimelineView::build(&cache, &shadows, Some(&volume), Some(&pos));
+        let lane = lane_vm(
+            "KJAX",
+            &view,
+            0.0,
+            5_000.0,
+            lane_inputs(&[], Some(2_090.0), Stream::Stalled),
+        );
+        assert_eq!(
+            lane.blocks[0].state,
+            LaneBlockState::Stalled {
+                newest_secs: 2_090.0
+            }
+        );
+        assert_eq!(lane.blocks[0].state.label(), "Stalled");
+    }
+
+    #[wasm_bindgen_test]
+    fn lane_the_newest_chunk_is_clamped_to_the_live_volume() {
+        let (volume, pos) = live_volume_at(2_000.0, 2_400.0);
+        let cache = RadarTimeline { scans: Vec::new() };
+        let shadows: Vec<ScanBoundary> = Vec::new();
+        let view = TimelineView::build(&cache, &shadows, Some(&volume), Some(&pos));
+        let newest = |n: Option<f64>| match lane_vm(
+            "KMLB",
+            &view,
+            0.0,
+            5_000.0,
+            lane_inputs(&[], n, Stream::Waiting),
+        )
+        .blocks[0]
+            .state
+        {
+            LaneBlockState::LiveFilling { newest_secs } => newest_secs,
+            other => panic!("{other:?}"),
+        };
+        // No chunk yet: nothing solid.
+        assert_eq!(newest(None), 2_000.0);
+        // A radial from the previous volume, or past the projection.
+        assert_eq!(newest(Some(1_900.0)), 2_000.0);
+        assert_eq!(newest(Some(2_500.0)), 2_400.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn lane_without_a_stream_there_is_no_live_block() {
+        let cache = RadarTimeline { scans: Vec::new() };
+        let shadows: Vec<ScanBoundary> = Vec::new();
+        let view = TimelineView::build(&cache, &shadows, None, None);
+        let lane = lane_vm(
+            "KMLB",
+            &view,
+            0.0,
+            5_000.0,
+            lane_inputs(&[], Some(2_150.0), Stream::Receiving),
+        );
+        assert!(lane.blocks.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn lane_blocks_outside_the_window_are_dropped_and_the_rest_are_in_time_order() {
+        let cache = RadarTimeline {
+            scans: vec![
+                cached_scan(1_000.0, vec![cached_sweep(1, 1_000.0, 1_030.0)]),
+                cached_scan(9_000.0, vec![cached_sweep(1, 9_000.0, 9_030.0)]),
+            ],
+        };
+        let shadows = vec![ScanBoundary {
+            start: 1_400,
+            end: 1_760,
+        }];
+        let (volume, pos) = live_volume_at(2_000.0, 2_400.0);
+        let view = TimelineView::build(&cache, &shadows, Some(&volume), Some(&pos));
+        let lane = lane_vm(
+            "KMLB",
+            &view,
+            900.0,
+            3_000.0,
+            lane_inputs(&[], Some(2_100.0), Stream::Receiving),
+        );
+        let starts: Vec<f64> = lane.blocks.iter().map(|b| b.start_secs).collect();
+        assert_eq!(starts, [1_000.0, 1_400.0, 2_000.0]);
+        assert_eq!(lane.blocks[0].state, LaneBlockState::Held);
+        assert_eq!(lane.blocks[1].state, LaneBlockState::Listed);
+        assert!(matches!(
+            lane.blocks[2].state,
+            LaneBlockState::LiveFilling { .. }
+        ));
+    }
+
+    #[wasm_bindgen_test]
+    fn lane_block_at_finds_the_hovered_volume_and_prefers_the_live_one() {
+        let lane = LaneVm {
+            site: "KMLB".into(),
+            blocks: vec![
+                LaneBlock {
+                    start_secs: 0.0,
+                    end_secs: 100.0,
+                    state: LaneBlockState::Held,
+                },
+                LaneBlock {
+                    start_secs: 100.0,
+                    end_secs: 200.0,
+                    state: LaneBlockState::LiveFilling { newest_secs: 150.0 },
+                },
+            ],
+        };
+        assert_eq!(lane.block_at(50.0).unwrap().state, LaneBlockState::Held);
+        // On the shared edge the live block wins.
+        assert!(matches!(
+            lane.block_at(100.0).unwrap().state,
+            LaneBlockState::LiveFilling { .. }
+        ));
+        assert!(lane.block_at(250.0).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn lane_state_words_match_the_track_tooltips() {
+        assert_eq!(LaneBlockState::Held.label(), "On device");
+        assert_eq!(LaneBlockState::Listed.label(), "In cloud archive");
+        assert_eq!(LaneBlockState::Failed.label(), "Download failed");
     }
 }

@@ -45,6 +45,7 @@ fn draw_mobile_chrome(ctx: &mut super::super::layout::LayoutCtx) {
         root_ui,
         state,
         timeline,
+        sites,
         live,
         playback,
         chrome,
@@ -89,7 +90,7 @@ fn draw_mobile_chrome(ctx: &mut super::super::layout::LayoutCtx) {
         .frame(dock)
         .show_collapsible(root_ui, &mut expanded, |ui| {
             crate::ui::timeline::mini::render_mini_timeline(
-                ui, state, timeline, live, playback, chrome,
+                ui, state, timeline, sites, live, playback, chrome,
             );
         });
 }
@@ -140,7 +141,7 @@ fn render_transport_row(
                     chrome.phone_selected_start,
                     chrome.phone_loading.is_some(),
                     &clock,
-                    egui_phosphor::regular::ARROW_RIGHT,
+                    crate::ui::icons::ARROW_RIGHT,
                 );
                 // "Loop what's in view" loops the row's window on the phone.
                 let view_start = playback.state.timeline_view_start;

@@ -35,11 +35,13 @@ pub(super) fn setup_onmessage(
     pending_ingest: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     pending_chunk_ingest: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     pending_render: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
-    pending_render_live: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending_render_live: &Rc<RefCell<HashMap<RequestId, LiveRenderContext>>>,
     pending_volume: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
+    pending_detect: &Rc<RefCell<HashMap<RequestId, DetectFor>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
     let ready_c = ready.clone();
+    let pending_detect_c = pending_detect.clone();
     let pending_ingest_c = pending_ingest.clone();
     let pending_chunk_ingest_c = pending_chunk_ingest.clone();
     let pending_render_c = pending_render.clone();
@@ -114,8 +116,30 @@ pub(super) fn setup_onmessage(
                     ctx_c.request_repaint();
                 }
             }
+            ResponseType::Detected => {
+                if let Some(id) = require_id(&header, kind_str) {
+                    handle_detected_message(id, &data, &pending_detect_c, &results_c);
+                    ctx_c.request_repaint();
+                }
+            }
             ResponseType::Error => {
                 if let Some(id) = require_id(&header, kind_str) {
+                    // A failed detection is not a scan failure: report it to
+                    // the storm cell state only.
+                    if let Some(owner) = pending_detect_c.borrow_mut().remove(&id) {
+                        let message = js_sys::Reflect::get(&data, &"message".into())
+                            .ok()
+                            .and_then(|m| m.as_string())
+                            .unwrap_or_else(|| "Unknown worker error".to_string());
+                        log::warn!("Worker detect failed (request {}): {}", id, message);
+                        results_c.borrow_mut().push(WorkerOutcome::DetectFailed {
+                            scene: owner.scene,
+                            request_id: owner.request_id,
+                            message,
+                        });
+                        ctx_c.request_repaint();
+                        return;
+                    }
                     handle_error_message(
                         id,
                         &data,
@@ -229,15 +253,17 @@ fn push_payload_parse_error(
     id: RequestId,
     msg_type: &str,
     err: impl std::fmt::Display,
-    failed_scan_timestamp_secs: Option<f64>,
+    failed_scan: Option<(crate::data::SiteId, f64)>,
 ) {
     let message = format!("Failed to parse {} payload: {}", msg_type, err);
     log::error!("{} (request {})", message, id);
+    let (failed_site, failed_scan_timestamp_secs) = failed_scan.unzip();
     results.borrow_mut().push(WorkerOutcome::WorkerError {
         id,
         kind: WorkerErrorKind::InvalidData,
         message,
         failed_scan_timestamp_secs,
+        failed_site,
     });
 }
 
@@ -260,7 +286,13 @@ fn handle_ingested_message(
     let r: IngestResultMsg = match serde_wasm_bindgen::from_value(result_obj) {
         Ok(r) => r,
         Err(e) => {
-            push_payload_parse_error(results, id, "ingested", e, Some(context.timestamp_secs));
+            push_payload_parse_error(
+                results,
+                id,
+                "ingested",
+                e,
+                Some((context.scan_key.site.clone(), context.timestamp_secs)),
+            );
             return;
         }
     };
@@ -328,7 +360,7 @@ fn handle_chunk_ingested_message(
                 id,
                 "chunk_ingested",
                 e,
-                Some(context.timestamp_secs),
+                Some((context.scan_key.site.clone(), context.timestamp_secs)),
             );
             return;
         }
@@ -400,7 +432,10 @@ fn handle_decoded_message(
                 id,
                 "decoded",
                 e,
-                Some(context.scan_key.scan_start.as_secs_f64()),
+                Some((
+                    context.scan_key.site.clone(),
+                    context.scan_key.scan_start.as_secs_f64(),
+                )),
             );
             return;
         }
@@ -431,10 +466,13 @@ fn handle_decoded_message(
 fn handle_live_decoded_message(
     id: RequestId,
     data: &JsValue,
-    pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending: &Rc<RefCell<HashMap<RequestId, LiveRenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let context = match take_pending_context(id, "live_decoded", pending) {
+    let LiveRenderContext {
+        site,
+        render: context,
+    } = match take_pending_context(id, "live_decoded", pending) {
         Some(ctx) => ctx,
         None => return,
     };
@@ -449,7 +487,10 @@ fn handle_live_decoded_message(
                 id,
                 "live_decoded",
                 e,
-                Some(context.scan_key.scan_start.as_secs_f64()),
+                Some((
+                    context.scan_key.site.clone(),
+                    context.scan_key.scan_start.as_secs_f64(),
+                )),
             );
             return;
         }
@@ -464,15 +505,10 @@ fn handle_live_decoded_message(
         r.total_ms,
     );
 
-    results
-        .borrow_mut()
-        .push(WorkerOutcome::LiveDecoded(build_decode_result(
-            context,
-            r,
-            azimuths,
-            gate_values,
-            radial_times,
-        )));
+    results.borrow_mut().push(WorkerOutcome::LiveDecoded {
+        site,
+        result: build_decode_result(context, r, azimuths, gate_values, radial_times),
+    });
 }
 
 /// A `render_live` whose elevation the worker stored before the request ran
@@ -482,7 +518,7 @@ fn handle_live_decoded_message(
 fn handle_live_superseded_message(
     id: RequestId,
     data: &JsValue,
-    pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending: &Rc<RefCell<HashMap<RequestId, LiveRenderContext>>>,
 ) {
     let Some(context) = take_pending_context(id, "live_superseded", pending) else {
         return;
@@ -492,7 +528,7 @@ fn handle_live_superseded_message(
         .and_then(|v| v.as_f64());
     log::debug!(
         "Worker live_superseded: elev={} already stored (accumulator current={:?}), nothing to draw",
-        context.elevation_number,
+        context.render.elevation_number,
         current,
     );
 }
@@ -516,7 +552,10 @@ fn handle_volume_decoded_message(
                 id,
                 "volume_decoded",
                 e,
-                Some(volume_ctx.scan_key.scan_start.as_secs_f64()),
+                Some((
+                    volume_ctx.scan_key.site.clone(),
+                    volume_ctx.scan_key.scan_start.as_secs_f64(),
+                )),
             );
             return;
         }
@@ -558,12 +597,53 @@ fn handle_volume_decoded_message(
     results
         .borrow_mut()
         .push(WorkerOutcome::VolumeDecoded(VolumeData {
+            site: volume_ctx.scan_key.site.clone(),
             buffer,
             word_size,
             sweeps,
             product: r.product,
             total_ms: r.total_ms,
         }));
+}
+
+fn handle_detected_message(
+    id: RequestId,
+    data: &JsValue,
+    pending: &Rc<RefCell<HashMap<RequestId, DetectFor>>>,
+    results: &Rc<RefCell<Vec<WorkerOutcome>>>,
+) {
+    let Some(DetectFor { request_id, scene }) = take_pending_context(id, "detected", pending)
+    else {
+        return;
+    };
+    let r: DetectedResultMsg = match serde_wasm_bindgen::from_value(data.clone()) {
+        Ok(r) => r,
+        Err(e) => {
+            let message = format!("Failed to parse detected payload: {e}");
+            log::error!("{} (request {})", message, id);
+            results.borrow_mut().push(WorkerOutcome::DetectFailed {
+                scene,
+                request_id,
+                message,
+            });
+            return;
+        }
+    };
+    results.borrow_mut().push(WorkerOutcome::Detected {
+        scene,
+        reply: crate::core::storm_cells::DetectReply {
+            request_id,
+            result: r.result,
+            timing: crate::core::storm_cells::DetectTiming {
+                fetch_ms: r.fetch_ms,
+                detect_ms: r.detect_ms,
+                total_ms: r.total_ms,
+                azimuth_count: r.azimuth_count,
+                gate_count: r.gate_count,
+            },
+            complete: r.complete,
+        },
+    });
 }
 
 /// Handle an "error" message from the worker.
@@ -582,7 +662,7 @@ fn handle_error_message(
     pending_ingest: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     pending_chunk_ingest: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     pending_render: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
-    pending_render_live: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending_render_live: &Rc<RefCell<HashMap<RequestId, LiveRenderContext>>>,
     pending_volume: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
@@ -617,44 +697,47 @@ fn handle_error_message(
         e.message
     );
 
-    let failed_scan_timestamp_secs = cleanup_pending_by_id(
+    let (failed_site, failed_scan_timestamp_secs) = cleanup_pending_by_id(
         e.id,
         pending_ingest,
         pending_chunk_ingest,
         pending_render,
         pending_render_live,
         pending_volume,
-    );
+    )
+    .unzip();
 
     results.borrow_mut().push(WorkerOutcome::WorkerError {
         id: e.id,
         kind: e.kind,
         message: e.message,
         failed_scan_timestamp_secs,
+        failed_site,
     });
 }
 
 /// Remove a pending entry across every pending-context map (whichever one
-/// owns it). Returns the failing scan's start timestamp when it could be
-/// correlated, so callers can reset per-scan UI state.
+/// owns it). Returns the failing scan's site and start timestamp when it
+/// could be correlated, so callers can reset that site's per-scan state.
 fn cleanup_pending_by_id(
     id: RequestId,
     pending_ingest: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     pending_chunk_ingest: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     pending_render: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
-    pending_render_live: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending_render_live: &Rc<RefCell<HashMap<RequestId, LiveRenderContext>>>,
     pending_volume: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
-) -> Option<f64> {
+) -> Option<(crate::data::SiteId, f64)> {
+    let of = |key: &crate::data::ScanKey| (key.site.clone(), key.scan_start.as_secs_f64());
     if let Some(ctx) = pending_ingest.borrow_mut().remove(&id) {
-        Some(ctx.timestamp_secs)
+        Some((ctx.scan_key.site, ctx.timestamp_secs))
     } else if let Some(ctx) = pending_chunk_ingest.borrow_mut().remove(&id) {
-        Some(ctx.timestamp_secs)
+        Some((ctx.scan_key.site, ctx.timestamp_secs))
     } else if let Some(ctx) = pending_render.borrow_mut().remove(&id) {
-        Some(ctx.scan_key.scan_start.as_secs_f64())
+        Some(of(&ctx.scan_key))
     } else if let Some(ctx) = pending_render_live.borrow_mut().remove(&id) {
-        Some(ctx.scan_key.scan_start.as_secs_f64())
+        Some(of(&ctx.render.scan_key))
     } else if let Some(ctx) = pending_volume.borrow_mut().remove(&id) {
-        Some(ctx.scan_key.scan_start.as_secs_f64())
+        Some(of(&ctx.scan_key))
     } else {
         None
     }
@@ -747,7 +830,7 @@ mod coverage_tests {
         Rc<RefCell<HashMap<RequestId, IngestContext>>>,
         Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
         Rc<RefCell<HashMap<RequestId, RenderContext>>>,
-        Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+        Rc<RefCell<HashMap<RequestId, LiveRenderContext>>>,
         Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
     );
 
@@ -768,8 +851,9 @@ mod coverage_tests {
             .insert(5, ingest_ctx("KDMX", 1000, 12345.5));
 
         let ts = cleanup_pending_by_id(5, &ing, &chunk, &rend, &live, &vol);
-        assert!(ts.is_some());
-        assert!((ts.unwrap() - 12345.5).abs() < 1e-9);
+        let (site, ts) = ts.unwrap();
+        assert_eq!(site.0, "KDMX");
+        assert!((ts - 12345.5).abs() < 1e-9);
         // Removed.
         assert!(ing.borrow().is_empty());
     }
@@ -782,8 +866,7 @@ mod coverage_tests {
             .insert(8, chunk_ctx("KDMX", 2000, 6789.0));
 
         let ts = cleanup_pending_by_id(8, &ing, &chunk, &rend, &live, &vol);
-        assert!(ts.is_some());
-        assert!((ts.unwrap() - 6789.0).abs() < 1e-9);
+        assert!((ts.unwrap().1 - 6789.0).abs() < 1e-9);
         assert!(chunk.borrow().is_empty());
     }
 
@@ -795,8 +878,7 @@ mod coverage_tests {
             .insert(3, render_ctx("KDMX", 1_700_000_000_000, 1));
 
         let ts = cleanup_pending_by_id(3, &ing, &chunk, &rend, &live, &vol);
-        assert!(ts.is_some());
-        assert!((ts.unwrap() - 1_700_000_000.0).abs() < 1e-3);
+        assert!((ts.unwrap().1 - 1_700_000_000.0).abs() < 1e-3);
         assert!(rend.borrow().is_empty());
     }
 
@@ -811,8 +893,9 @@ mod coverage_tests {
         );
 
         let ts = cleanup_pending_by_id(9, &ing, &chunk, &rend, &live, &vol);
-        assert!(ts.is_some());
-        assert!((ts.unwrap() - 5.0).abs() < 1e-6);
+        let (site, ts) = ts.unwrap();
+        assert_eq!(site.0, "KDMX");
+        assert!((ts - 5.0).abs() < 1e-6);
         assert!(vol.borrow().is_empty());
     }
 
@@ -832,7 +915,13 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn push_payload_parse_error_emits_invalid_data_outcome() {
         let results: Rc<RefCell<Vec<WorkerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
-        push_payload_parse_error(&results, 17, "decoded", "boom", Some(42.0));
+        push_payload_parse_error(
+            &results,
+            17,
+            "decoded",
+            "boom",
+            Some((crate::data::SiteId::new("KTBW".to_string()), 42.0)),
+        );
 
         let r = results.borrow();
         assert_eq!(r.len(), 1);
@@ -842,7 +931,9 @@ mod coverage_tests {
                 kind,
                 message,
                 failed_scan_timestamp_secs,
+                failed_site,
             } => {
+                assert_eq!(failed_site.as_ref().map(|s| s.0.as_str()), Some("KTBW"));
                 assert_eq!(*id, 17);
                 assert_eq!(*kind, WorkerErrorKind::InvalidData);
                 assert!(message.contains("decoded"));

@@ -19,8 +19,9 @@
 //! the base tokens live in the submodules ([`timeline`], [`canvas`]), and the
 //! map marks in [`map`]. Hues in use today that the grammar retires are kept,
 //! folded and named, in [`legacy`] until the PR that removes their use lands.
-//! Data colors (mPING categories, storm-cell intensity,
-//! the radar color tables) are not chrome and live in
+//! Storm cell marks (footprint outline, chip, card) live in [`storm_cells`].
+//! Data colors (mPING categories, the radar color tables) are not chrome and
+//! live in
 //! [`crate::ui::data_colors`] / `crate::nexrad::render::color_table`.
 //!
 //! **Type.** IBM Plex Sans for prose and labels, IBM Plex Mono for every time,
@@ -207,6 +208,78 @@ pub(crate) mod map {
     /// The scrim's hairline edge.
     pub(crate) fn scrim_edge() -> Color32 {
         alpha(LINE, 200)
+    }
+}
+
+/// Storm cell marks over the radar (PRODUCT.md §13.2). One light stroke over
+/// a dark halo reads on every part of the reflectivity palette; intensity is
+/// carried by the chip's number, never by the stroke's color. The app has one
+/// (dark) theme, so these are constants like every other token.
+pub(crate) mod storm_cells {
+    use super::{alpha, Color32};
+
+    /// The footprint stroke and the chip/card text.
+    pub(crate) const OUTLINE: Color32 = Color32::from_rgb(232, 244, 255);
+    /// The dark surface under storm cell marks: halo, chip, card.
+    const INK: Color32 = Color32::from_rgb(10, 15, 24);
+    /// The halo under the footprint stroke.
+    pub(crate) fn halo() -> Color32 {
+        alpha(INK, 178)
+    }
+    /// A provisional cell's stroke (live sweep still arriving): muted.
+    pub(crate) fn outline_provisional() -> Color32 {
+        alpha(OUTLINE, 150)
+    }
+    /// The faint envelope ring around a group's cells or a lone cell's
+    /// core: solid but subordinate to a cell's stroke (thinner, and at about
+    /// two thirds of its opacity), legible over yellow and orange echo.
+    pub(crate) fn group() -> Color32 {
+        alpha(OUTLINE, 185)
+    }
+    /// The faint halo under the group ring.
+    pub(crate) fn group_halo() -> Color32 {
+        alpha(INK, 90)
+    }
+    /// The peak dBZ on a chip: the one warm value, as in the mock.
+    pub(crate) const CHIP_VALUE: Color32 = Color32::from_rgb(255, 210, 122);
+    /// A chip's dark fill.
+    pub(crate) fn chip_fill() -> Color32 {
+        alpha(INK, 209)
+    }
+    /// A chip's hairline edge.
+    pub(crate) fn chip_edge() -> Color32 {
+        alpha(OUTLINE, 90)
+    }
+    /// A hollow (provisional) chip's edge: it has no fill, so the edge
+    /// carries it.
+    pub(crate) fn chip_edge_hollow() -> Color32 {
+        alpha(OUTLINE, 200)
+    }
+    /// The dark halo behind a hollow chip's number.
+    pub(crate) fn text_halo() -> Color32 {
+        alpha(INK, 220)
+    }
+    /// The hover / selected cell card's surface.
+    pub(crate) fn card_fill() -> Color32 {
+        alpha(INK, 232)
+    }
+    /// The card's hairline edge.
+    pub(crate) fn card_edge() -> Color32 {
+        alpha(OUTLINE, 77)
+    }
+    /// The card's secondary lines (position, provisional note).
+    pub(crate) const CARD_DIM: Color32 = super::TEXT_DIM;
+    /// A track's trail: the line joining its last centroids.
+    pub(crate) fn trail() -> Color32 {
+        alpha(OUTLINE, 170)
+    }
+    /// The trail's centroid dots.
+    pub(crate) fn trail_dot() -> Color32 {
+        alpha(OUTLINE, 230)
+    }
+    /// The dashed 30-minute forecast arrow.
+    pub(crate) fn forecast() -> Color32 {
+        alpha(OUTLINE, 215)
     }
 }
 
@@ -534,10 +607,11 @@ pub(crate) fn text_styles() -> std::collections::BTreeMap<TextStyle, FontId> {
 
 const PLEX_SANS: &str = "IBMPlexSans-Regular";
 const PLEX_MONO: &str = "IBMPlexMono-Regular";
+const PHOSPHOR: &str = "Phosphor-Regular";
 
 /// The app's font set: IBM Plex Sans (proportional) and IBM Plex Mono
 /// (monospace) first, egui's bundled fonts kept behind them as glyph
-/// fallbacks, and the Phosphor icon font.
+/// fallbacks, and the Phosphor icons the app draws ([`super::icons`]).
 pub(crate) fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
@@ -560,7 +634,15 @@ pub(crate) fn font_definitions() -> egui::FontDefinitions {
         .entry(FontFamily::Monospace)
         .or_default()
         .insert(0, PLEX_MONO.to_owned());
-    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    // The icons go second among the proportional fonts: after Plex Sans and
+    // ahead of egui's fallback fonts.
+    fonts.font_data.insert(
+        PHOSPHOR.to_owned(),
+        egui::FontData::from_static(include_bytes!("../../assets/fonts/Phosphor-Regular.ttf"))
+            .into(),
+    );
+    let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
+    proportional.insert(proportional.len().min(1), PHOSPHOR.to_owned());
     fonts
 }
 

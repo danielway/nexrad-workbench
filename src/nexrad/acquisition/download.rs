@@ -379,6 +379,7 @@ async fn download_specific_file(
     let Some(url) = archive_url(&archive::Identifier::new(file_name.to_string())) else {
         return DownloadResult::Error {
             message: format!("Download failed: bad file name {file_name}"),
+            site_id: site_id.to_string(),
             scan_start: timestamp,
         };
     };
@@ -398,6 +399,7 @@ async fn download_specific_file(
             stats.request_completed(0);
             return DownloadResult::Error {
                 message: format!("Download failed: {}", msg),
+                site_id: site_id.to_string(),
                 scan_start: timestamp,
             };
         }

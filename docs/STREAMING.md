@@ -27,6 +27,34 @@ on top of those definitions and focuses on the operational flow.
 The async task drives the streaming. The channels are just typed mailboxes
 between it and the UI thread.
 
+The channel and the live state belong to a site; the phase belongs to the
+session. Each listed site (`SiteState.live`, a
+[`SiteLive`](../src/subsystem/live.rs)) holds its own `RealtimeChannel`,
+started with that site's id, its projection engine, the volume in progress
+(`LiveVolumeState`: chunk counts, azimuths, the volume plan and chunk
+arrivals) and its per-frame live models; each channel's results land on its
+own site, and in the worker each site's chunks fill their own accumulator
+(keyed by site id, which `ingest_chunk`, `render_live` and the live `detect`
+carry; a site that leaves the map sends `drop_site`, so its accumulator goes
+with it). The session (`subsystem::Live`, a `LiveModeState`) holds the one
+phase, exit reason, detached time and pulse: it starts streaming when the
+first site's stream starts, only the focus site's chunks move it between
+receiving and waiting, and it stops when the last site stops
+(`core::live_mode::session_phase_after`, `session_stream_ended`).
+
+On the timeline the focus site keeps the full track; every other site gets an
+11 px lane under it, in list order (`core::timeline_view::lane_vm`, assembled
+by `Sites::lanes`). A lane has one block per volume: held (on the device,
+solid), listed (in the archive listing but not held, hollow), failed (that
+site's download failed, hollow with a red edge), queued (hatched) and in
+flight (a pulsing fill, from the download queue and the site's request
+ledger until its timeline shows the scan), and the volume the site's
+stream is collecting, solid up to its newest radial and a dashed outline to
+its projected end. When that site's stream is stalled the dashed part is red
+from where its chunks stopped. Listings, failures and cached scans are joined
+with the track's tolerance (`SCAN_JOIN_TOLERANCE_SECS`). One now line crosses
+the track and the lanes; with one site there are no lanes.
+
 ### Communication shape
 
 Three typed channels (all replaced on each `start()` so a winding-down previous
@@ -110,7 +138,7 @@ sweep to all arrive in order. The init phase backfills as follows:
 | Filter | What gets backfilled |
 | --- | --- |
 | `All` (latest) | The current sweep's chunks (sequences earlier than the latest, same elevation as the latest). |
-| `Elevation(n)` | Every already-published chunk of elevation `n` in this volume, including completed earlier sweeps of `n` if any (rare). |
+| `Cuts(set)` | Every already-published chunk of the cuts in `set` in this volume: each visit of the held angle (the base cut and every SAILS/MRLE repeat), including completed earlier ones. |
 
 `filter_backfill_sequences` resolves the candidate set against the
 mapper. `cached_elevations_for_scan` then trims sweeps that are already
@@ -186,7 +214,7 @@ now facets of the one plan:
 | Case | How the plan handles it | When it applies |
 | --- | --- | --- |
 | Next sequential chunk | The next target is `current + 1` in the current volume. | `StreamingFilter::All` |
-| Filtered target (multi-hop) | The next target is the next sequence whose elevation matches the filter; the projection sums the same blended intervals across every skipped hop. | `StreamingFilter::Elevation(_)` |
+| Filtered target (multi-hop) | The next target is the next sequence whose elevation matches the filter; the projection sums the same blended intervals across every skipped hop. | `StreamingFilter::Cuts(_)` |
 | Cross-volume | When the filter excludes everything remaining, the projection extends into the **next volume** (`next_volume_chunks`, `next_target_in_next_volume()`): projected end-of-current-volume + 8.5 s inter-volume gap + intra-next-volume hops + lag. | Filter excludes the rest of the current volume. |
 | Timeline placeholders | The same plan's `ChunkProjectionInfo` list feeds the timeline placeholders and the forecast modal. | Always. |
 
@@ -400,7 +428,10 @@ on "Streaming…" for the entire inter-volume gap because
 
 `RealtimeChannel::sync_filter` is called once per egui frame from the
 update loop. It maps the user's `ElevationSelection` into a
-`StreamingFilter` and calls `set_filter`, which sends a
+`StreamingFilter` (`StreamingFilter::for_selection`: a held angle becomes
+the set of cuts at that angle in the live VCP, so a SAILS ×3 volume streams
+all four 0.5° visits; while the VCP is unknown between volumes the last
+resolved set is kept) and calls `set_filter`, which sends a
 `ControlMessage::SetFilter` down the control channel (cheap to send every
 frame). When `drain_control` applies it, it short-circuits on a value equal
 to the loop's current `active_filter`; on a real change it:

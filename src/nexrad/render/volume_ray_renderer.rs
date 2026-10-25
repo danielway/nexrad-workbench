@@ -12,7 +12,9 @@
 //! ascending elevation-angle order with no duplicates, and rows on a uniform
 //! azimuth grid. See `docs/RENDERING.md` for the full pipeline.
 
-use crate::core::volume_plan::{derive_shell_extents, ShellExtents};
+use crate::core::volume_plan::{
+    derive_shell_extents, site_unit_position, volume_texture_bytes, ShellExtents,
+};
 use crate::core::RenderProcessing;
 use crate::core::VolumeSweepMeta;
 use crate::geo::Camera;
@@ -420,7 +422,7 @@ void main() {
 
 // ── Renderer struct ─────────────────────────────────────────────────
 
-pub struct VolumeRayRenderer {
+pub(crate) struct VolumeRayRenderer {
     program: glow::Program,
     quad_vao: glow::VertexArray,
     _quad_vbo: glow::Buffer,
@@ -473,7 +475,23 @@ pub struct VolumeRayRenderer {
 }
 
 impl VolumeRayRenderer {
-    pub fn new(gl: &Arc<glow::Context>) -> Self {
+    /// Delete every GL object this renderer owns (see
+    /// [`crate::nexrad::RadarGpuRenderer::release`]).
+    pub(crate) fn release(&self, gl: &glow::Context) {
+        unsafe {
+            if let Some(tex) = self.volume_texture {
+                gl.delete_texture(tex);
+            }
+            gl.delete_texture(self.fbo_color);
+            gl.delete_framebuffer(self.fbo);
+            gl.delete_vertex_array(self.quad_vao);
+            gl.delete_buffer(self._quad_vbo);
+            gl.delete_program(self.blit_program);
+            gl.delete_program(self.program);
+        }
+    }
+
+    pub(crate) fn new(gl: &Arc<glow::Context>) -> Self {
         unsafe { Self::new_inner(gl) }
     }
 
@@ -662,7 +680,7 @@ impl VolumeRayRenderer {
     /// Upload packed volume data and sweep metadata.
     ///
     /// `word_size` is 1 for u8 data (R8UI) or 2 for u16 data (R16UI).
-    pub fn update_volume(
+    pub(crate) fn update_volume(
         &mut self,
         gl: &glow::Context,
         buffer: &[u8],
@@ -855,13 +873,36 @@ impl VolumeRayRenderer {
     }
 
     /// Returns true if volume data has been uploaded.
-    pub fn has_data(&self) -> bool {
+    pub(crate) fn has_data(&self) -> bool {
         self.has_data
+    }
+
+    /// Bytes the volume texture takes on the GPU; 0 when none is allocated.
+    pub(crate) fn texture_bytes(&self) -> u64 {
+        match self.tex_alloc {
+            Some((width, height, format)) => volume_texture_bytes(
+                width as u32,
+                height as u32,
+                if format == glow::R8UI as i32 { 1 } else { 2 },
+            ),
+            None => 0,
+        }
+    }
+
+    /// Give the volume texture back (the site is past the memory budget,
+    /// see [`crate::core::volume_plan::resident_volumes`]). The next upload
+    /// allocates a new one.
+    pub(crate) fn clear_volume(&mut self, gl: &glow::Context) {
+        if let Some(tex) = self.volume_texture.take() {
+            unsafe { gl.delete_texture(tex) };
+        }
+        self.tex_alloc = None;
+        self.has_data = false;
     }
 
     /// Paint the volume at half resolution into an FBO, then blit to screen.
     #[allow(clippy::too_many_arguments)]
-    pub fn paint(
+    pub(crate) fn paint(
         &mut self,
         gl: &glow::Context,
         camera: &Camera,
@@ -949,9 +990,7 @@ impl VolumeRayRenderer {
             // Site position on unit sphere
             let lat_rad = self.site_lat.to_radians();
             let lon_rad = self.site_lon.to_radians();
-            let site_x = (lat_rad.cos() * lon_rad.sin()) as f32;
-            let site_y = lat_rad.sin() as f32;
-            let site_z = (lat_rad.cos() * lon_rad.cos()) as f32;
+            let [site_x, site_y, site_z] = site_unit_position(self.site_lat, self.site_lon);
             gl.uniform_3_f32(self.u_site_pos.as_ref(), site_x, site_y, site_z);
             gl.uniform_1_f32(self.u_site_lat_rad.as_ref(), lat_rad as f32);
             gl.uniform_1_f32(self.u_site_lon_rad.as_ref(), lon_rad as f32);

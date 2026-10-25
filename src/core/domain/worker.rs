@@ -28,6 +28,8 @@ pub(crate) struct WorkerLoad {
     pub render_live: usize,
     /// Whole-volume packs for the 3-D ray marcher.
     pub volume: usize,
+    /// Storm cell detections.
+    pub detect: usize,
     /// Requests posted before the worker signalled `ready`, still parked in
     /// its local queue.
     pub queued_pre_ready: usize,
@@ -42,6 +44,7 @@ impl WorkerLoad {
             + self.render
             + self.render_live
             + self.volume
+            + self.detect
             + self.queued_pre_ready
     }
 
@@ -53,6 +56,7 @@ impl WorkerLoad {
             render: a.render + b.render,
             render_live: a.render_live + b.render_live,
             volume: a.volume + b.volume,
+            detect: a.detect + b.detect,
             queued_pre_ready: a.queued_pre_ready + b.queued_pre_ready,
         }
     }
@@ -213,12 +217,14 @@ pub(crate) struct DecodeResult {
 }
 
 /// Per-sweep metadata for the volume ray marcher.
-pub struct VolumeSweepMeta {
+pub(crate) struct VolumeSweepMeta {
     pub elevation_deg: f32,
     pub azimuth_count: u32,
     pub gate_count: u32,
     pub first_gate_km: f32,
     pub gate_interval_km: f32,
+    /// Filled from the worker's metadata; nothing reads it yet.
+    #[allow(dead_code)]
     pub max_range_km: f32,
     pub data_offset: u32,
     pub scale: f32,
@@ -227,6 +233,8 @@ pub struct VolumeSweepMeta {
 
 /// All-elevation packed volume data for ray-march rendering.
 pub(crate) struct VolumeData {
+    /// The site whose volume this is, so the reply reaches its site.
+    pub site: crate::data::SiteId,
     /// Packed raw gate values (all sweeps concatenated).
     /// Byte width per value is determined by `word_size`.
     pub buffer: Vec<u8>,
@@ -296,6 +304,7 @@ mod coverage_tests {
             render: 3,
             render_live: 4,
             volume: 5,
+            detect: 7,
             queued_pre_ready: 6,
         };
         let b = WorkerLoad {
@@ -304,6 +313,7 @@ mod coverage_tests {
             render: 30,
             render_live: 40,
             volume: 50,
+            detect: 70,
             queued_pre_ready: 60,
         };
         let merged = WorkerLoad::merge(a, b);
@@ -312,6 +322,7 @@ mod coverage_tests {
         assert_eq!(merged.render, 33);
         assert_eq!(merged.render_live, 44);
         assert_eq!(merged.volume, 55);
+        assert_eq!(merged.detect, 77);
         assert_eq!(merged.queued_pre_ready, 66);
     }
 

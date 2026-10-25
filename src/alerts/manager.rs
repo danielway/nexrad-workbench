@@ -44,10 +44,11 @@ impl AlertsManager {
 
     /// Called every frame. Drains any events, kicks off a new fetch when due.
     ///
-    /// `is_live` should reflect [`crate::state::recency::data_is_live`] —
-    /// when the user is scrubbed far behind wall-clock the alerts overlay
-    /// is hidden so we skip the poll. Computed by the caller so this
-    /// manager doesn't need to reach back into `AppState`.
+    /// `is_live` should reflect [`crate::subsystem::Derived::data_is_live`] —
+    /// when the user is scrubbed far behind wall-clock, or plays a loop that
+    /// reaches further back, the alerts overlay is hidden so we skip the
+    /// poll. Computed by the caller so this manager doesn't need to reach
+    /// back into `AppState`.
     ///
     /// `errors` is the app-wide error collector; failures encountered
     /// while polling are pushed here in addition to landing in
@@ -60,11 +61,7 @@ impl AlertsManager {
         errors: &mut crate::core::ErrorContext,
     ) {
         // Drain events produced by any in-flight fetch.
-        let events = self.channel.drain();
-        if !events.is_empty() {
-            self.fetch_in_flight = false;
-        }
-        for event in events {
+        for event in self.channel.drain() {
             self.apply_event(alerts, event, errors);
         }
 
@@ -81,10 +78,14 @@ impl AlertsManager {
         }
 
         // Fill in footprints for zone-only alerts (most watches, advisories,
-        // statements) from the baked zone-geometry table — a local lookup, no
-        // network. Repaint when something resolved so the overlay/top bar pick
-        // it up.
-        if self.zones.resolve(&mut alerts.alerts) {
+        // statements) from the zone-geometry table, fetched the first time one
+        // needs it. Repaint when something resolved so the overlay/top bar
+        // pick it up.
+        let resolved = self.zones.resolve(&mut alerts.alerts, js_sys::Date::now());
+        if resolved.fetch_table {
+            api::spawn_zone_table_fetch(ctx.clone(), self.channel.clone());
+        }
+        if resolved.changed {
             ctx.request_repaint();
         }
 
@@ -117,6 +118,15 @@ impl AlertsManager {
         event: AlertsEvent,
         errors: &mut crate::core::ErrorContext,
     ) {
+        if let AlertsEvent::ZoneTable(body) = event {
+            let body = body.as_deref().map_err(Clone::clone);
+            match self.zones.table_arrived(body, js_sys::Date::now()) {
+                Ok(count) => log::info!("loaded {} alert zone geometries", count),
+                Err(e) => log::warn!("alert zone geometry unavailable: {}", e),
+            }
+            return;
+        }
+        self.fetch_in_flight = false;
         alerts.fetch_in_flight = false;
         match event {
             AlertsEvent::Updated {
@@ -139,6 +149,7 @@ impl AlertsManager {
                 alerts.last_error = Some(msg.clone());
                 errors.push(crate::core::AppError::Alerts { message: msg });
             }
+            AlertsEvent::ZoneTable(_) => {}
         }
     }
 }

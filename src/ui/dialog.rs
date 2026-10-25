@@ -112,6 +112,14 @@ fn frame() -> egui::Frame {
 /// a popover's is invisible but still catches the click outside. Returns
 /// whether it was clicked.
 fn backdrop(ctx: &egui::Context, id: DialogId, dim: bool) -> bool {
+    // A press on the backdrop (the click outside) asks egui to move it to
+    // the top of the foreground, over its own window; the next open would
+    // then draw a window that gets no hover or clicks. Keeping the window
+    // a sublayer of the backdrop pins it directly above, whatever moved.
+    ctx.set_sublayer(
+        LayerId::new(Order::Foreground, backdrop_id(id)),
+        LayerId::new(Order::Foreground, window_id(id)),
+    );
     let mut clicked = false;
     egui::Area::new(backdrop_id(id))
         .fixed_pos(Pos2::ZERO)
@@ -138,7 +146,7 @@ fn header(ui: &mut egui::Ui, title: &str, subtitle: Option<&str>, dismissible: b
                 close = ui
                     .add(
                         egui::Button::new(
-                            RichText::new(egui_phosphor::regular::X)
+                            RichText::new(crate::ui::icons::X)
                                 .size(theme::BODY)
                                 .color(theme::TEXT_DIM),
                         )
@@ -271,7 +279,7 @@ impl<'a> Sheet<'a> {
                             close |= ui
                                 .add(
                                     egui::Button::new(
-                                        RichText::new(egui_phosphor::regular::X)
+                                        RichText::new(crate::ui::icons::X)
                                             .size(theme::BODY)
                                             .color(theme::TEXT_DIM),
                                     )
@@ -443,7 +451,7 @@ pub(crate) fn secondary(ui: &mut egui::Ui, label: &str) -> egui::Response {
 pub(crate) fn destructive(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(sized(
         egui::Button::new(
-            RichText::new(format!("{} {label}", egui_phosphor::regular::TRASH))
+            RichText::new(format!("{} {label}", crate::ui::icons::TRASH))
                 .color(theme::dialog::DESTRUCTIVE),
         )
         .fill(egui::Color32::TRANSPARENT)
@@ -527,5 +535,43 @@ mod tests {
         }
         ctx.end_pass().textures_delta.clear();
         assert!(drew.0 && drew.1);
+    }
+
+    /// The popover's window stays above its backdrop after a click outside
+    /// moved the backdrop to the top (the picker's dead reopen).
+    #[wasm_bindgen_test]
+    fn window_stays_above_its_backdrop_after_a_click_outside() {
+        let ctx = egui::Context::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0))),
+            ..Default::default()
+        };
+        let anchor = Rect::from_min_size(Pos2::new(100.0, 10.0), Vec2::new(80.0, 24.0));
+        let show = |ctx: &egui::Context| {
+            Popover::new(DialogId::SitePicker, anchor)
+                .title("Site")
+                .show(ctx, |ui, _| {
+                    ui.label("row");
+                });
+        };
+        let window = LayerId::new(Order::Foreground, window_id(DialogId::SitePicker));
+        let backdrop = LayerId::new(Order::Foreground, backdrop_id(DialogId::SitePicker));
+
+        ctx.begin_pass(input());
+        show(&ctx);
+        ctx.end_pass().textures_delta.clear();
+
+        // The click outside: the press on the backdrop asks for the top.
+        ctx.begin_pass(input());
+        show(&ctx);
+        ctx.move_to_top(backdrop);
+        ctx.end_pass().textures_delta.clear();
+
+        // Reopened: a point inside the window must still hit the window.
+        ctx.begin_pass(input());
+        show(&ctx);
+        let inside = anchor.left_bottom() + Vec2::new(20.0, 40.0);
+        assert_eq!(ctx.layer_id_at(inside), Some(window));
+        ctx.end_pass().textures_delta.clear();
     }
 }

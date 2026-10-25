@@ -69,6 +69,11 @@ impl RadarProduct {
         }
     }
 
+    /// The products a person can pick: the product chips (desktop rail and
+    /// phone View sheet), the top bar's menu and P's steps. Clutter Filter
+    /// Power is left out: the worker cannot decode it into its own product
+    /// yet (it would draw reflectivity under a CFP legend), so it waits
+    /// here, decoder and all, until it can.
     pub(crate) fn all() -> &'static [RadarProduct] {
         &[
             RadarProduct::Reflectivity,
@@ -77,8 +82,25 @@ impl RadarProduct {
             RadarProduct::DifferentialReflectivity,
             RadarProduct::CorrelationCoefficient,
             RadarProduct::DifferentialPhase,
-            RadarProduct::ClutterFilterPower,
         ]
+    }
+
+    /// The product after this one in [`Self::all`] (P), or before it when
+    /// `forward` is false (Shift+P), wrapping at either end. A product that
+    /// is not offered steps to the first.
+    pub(crate) fn step(self, forward: bool) -> RadarProduct {
+        let products = Self::all();
+        let n = products.len();
+        match products.iter().position(|p| *p == self) {
+            Some(i) if forward => products[(i + 1) % n],
+            Some(i) => products[(i + n - 1) % n],
+            None => products[0],
+        }
+    }
+
+    /// Whether a person can pick this product (see [`Self::all`]).
+    pub(crate) fn is_offered(self) -> bool {
+        Self::all().contains(&self)
     }
 
     /// String identifier used by the worker protocol.
@@ -320,7 +342,7 @@ pub(crate) fn build_elevation_list_from_vcp(
 
 /// Interpolation mode for radar rendering.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum InterpolationMode {
+pub(crate) enum InterpolationMode {
     /// Raw nearest-neighbor sampling (blocky, traditional).
     #[default]
     Nearest,
@@ -328,22 +350,25 @@ pub enum InterpolationMode {
     Bilinear,
 }
 
+// Nothing outside the tests reads these. They were hidden from the dead-code
+// lint while the renderers were reachable through a `pub` struct.
+#[allow(dead_code)]
 impl InterpolationMode {
-    pub fn label(&self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self {
             InterpolationMode::Nearest => "Nearest",
             InterpolationMode::Bilinear => "Bilinear",
         }
     }
 
-    pub fn all() -> &'static [InterpolationMode] {
+    pub(crate) fn all() -> &'static [InterpolationMode] {
         &[InterpolationMode::Nearest, InterpolationMode::Bilinear]
     }
 }
 
 /// GPU rendering processing options (shader uniforms).
 #[derive(Clone)]
-pub struct RenderProcessing {
+pub(crate) struct RenderProcessing {
     /// Interpolation mode (nearest vs bilinear).
     pub interpolation: InterpolationMode,
     /// Global opacity for radar data (0.0..1.0).
@@ -363,34 +388,9 @@ impl Default for RenderProcessing {
     }
 }
 
-/// Lightweight storm cell info for rendering on the canvas.
-#[derive(Clone, Debug)]
-pub struct StormCellInfo {
-    /// Reflectivity-weighted centroid latitude.
-    pub lat: f64,
-    /// Reflectivity-weighted centroid longitude.
-    pub lon: f64,
-    /// Maximum reflectivity (dBZ) anywhere in the cell.
-    pub max_dbz: f32,
-    /// Mean reflectivity (dBZ) across the cell's gates.
-    pub mean_dbz: f32,
-    /// Cell footprint area in km².
-    pub area_km2: f32,
-    /// Bounding box (min_lat, min_lon, max_lat, max_lon).
-    pub bounds: (f64, f64, f64, f64),
-    /// Compass bearing (0° = N, clockwise) from radar to centroid.
-    pub bearing_from_radar_deg: f32,
-    /// Great-circle-approximate distance from radar to centroid, km.
-    pub range_from_radar_km: f32,
-    /// Orientation of the cell's major axis in compass degrees, folded
-    /// into [0, 180) since an axis is undirected.
-    pub orientation_deg: f32,
-    /// √(λ_major / λ_minor) from the pixel-weighted covariance. 1.0 = round.
-    pub elongation: f32,
-    /// Number of gates comprising the cell. Useful for debugging / further
-    /// filtering.
-    pub gate_count: u32,
-}
+/// Storm cell types live in the dependency-free `storm_cells` leaf module
+/// (kept extractable so it can move upstream into the nexrad crates).
+pub(crate) use crate::storm_cells::{StormCell, StormCellsResult};
 
 #[cfg(test)]
 mod coverage_tests {
@@ -399,6 +399,18 @@ mod coverage_tests {
 
     use crate::data::keys::UnixMillis;
     use crate::data::ScanKey;
+
+    #[wasm_bindgen_test]
+    fn p_steps_products_and_shift_p_steps_back() {
+        use RadarProduct::*;
+        assert_eq!(Reflectivity.step(true), Velocity);
+        assert_eq!(Velocity.step(false), Reflectivity);
+        assert_eq!(DifferentialPhase.step(true), Reflectivity);
+        assert_eq!(Reflectivity.step(false), DifferentialPhase);
+        for p in RadarProduct::all() {
+            assert_eq!(p.step(true).step(false), *p);
+        }
+    }
 
     fn scan_key(site: &str, ms: i64) -> ScanKey {
         ScanKey::new(site, UnixMillis(ms))
@@ -453,9 +465,18 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
+    fn clutter_filter_power_is_not_offered() {
+        let codes: Vec<_> = RadarProduct::all().iter().map(|p| p.short_code()).collect();
+        assert_eq!(codes, ["REF", "VEL", "SW", "ZDR", "CC", "KDP"]);
+        assert!(!RadarProduct::ClutterFilterPower.is_offered());
+        // The decoder's moment stays: the code still names it.
+        assert!(RadarProduct::from_short_code("CFP") == Some(RadarProduct::ClutterFilterPower));
+    }
+
+    #[wasm_bindgen_test]
     fn radar_product_all_and_default() {
         let all = RadarProduct::all();
-        assert_eq!(all.len(), 7);
+        assert_eq!(all.len(), 6);
         assert!(all[0] == RadarProduct::Reflectivity);
         // Default is Reflectivity.
         assert!(RadarProduct::default() == RadarProduct::Reflectivity);

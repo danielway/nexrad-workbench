@@ -4,6 +4,7 @@
 
 mod frame_cells;
 mod interaction;
+mod lanes;
 mod marks;
 pub(in crate::ui) mod mini;
 mod now_edge;
@@ -32,8 +33,9 @@ use ruler::{render_playback_cursor, render_tick_marks};
 use scan_track::render_macro_track;
 use tooltips::render_timeline_tooltip;
 
-/// Sub-rects of the timeline widget. One main track now (frames-first), with
-/// a tick rail above. The `overlay` rect spans the main track for the cursor,
+/// Sub-rects of the timeline widget. One main track (frames-first) with a
+/// tick rail above and, with more than one site, a lane per other site below.
+/// The `overlay` rect spans the main track and the lanes for the cursor,
 /// selection, and now-affordance.
 pub(super) struct TrackRects {
     /// Timestamp rail above the main track.
@@ -41,7 +43,8 @@ pub(super) struct TrackRects {
     /// The single main track: scan containers + frame cells (Micro), or
     /// uniform ticks / coverage fill (Macro).
     pub scan: Rect,
-    /// Main-track span for cursor, selection, and now-affordance overlays.
+    /// Main track plus lanes: the span for cursor, selection, and
+    /// now-affordance overlays.
     pub overlay: Rect,
 }
 
@@ -281,17 +284,23 @@ pub(super) fn format_timestamp_full(ts: f64, use_local: bool) -> String {
     )
 }
 
+/// Draw the desktop timeline strip and apply its gestures. The main track
+/// is the focus site's; every other site gets a lane under it. Returns where
+/// a scrub put the pointer this frame, for the caller to seek to once the
+/// strip's view of the sites is done.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_timeline(
     ui: &mut egui::Ui,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
+    sites: &crate::subsystem::Sites,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     acquisition: &crate::subsystem::Acquisition,
     derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
-) {
+) -> Option<f64> {
+    let site = sites.focus();
     let use_local = state.use_local_time;
     let available_width = ui.available_width() as f64;
     playback.state.timeline_width_px = available_width;
@@ -314,17 +323,18 @@ pub(super) fn render_timeline(
     // allocated widget (distinct response id) so its drag/click never shares a
     // hit-test layer with the main strip's press-seek/scrub. Desktop only —
     // the mini timeline plays this role on phones.
-    overview::render_overview(ui, state, timeline, live, playback);
+    overview::render_overview(ui, state, timeline, site, live, playback);
 
     // The main strip widget covers the tick rail, the selection strip and the
     // main track; the overview above is its own allocated widget. The
     // selection strip registers its own interact rect over its band after the
     // strip's interaction runs, so it owns presses there.
     let selection_strip_h = style::SELECTION_STRIP_H;
+    let lane_count = sites.list.len().saturating_sub(1);
     let (response, painter) = ui.allocate_painter(
         Vec2::new(
             available_width as f32,
-            tick_lane_h + selection_strip_h + main_track_h,
+            tick_lane_h + selection_strip_h + main_track_h + style::lanes_h(lane_count),
         ),
         Sense::click_and_drag(),
     );
@@ -354,7 +364,7 @@ pub(super) fn render_timeline(
     );
 
     if zoom <= 0.0 {
-        return;
+        return None;
     }
 
     let view_start = playback.state.timeline_view_start;
@@ -367,7 +377,7 @@ pub(super) fn render_timeline(
     // intent, which may have a render in flight). Now applies in the Micro
     // tier (frames-first).
     let active_sweep = if tier == TimelineTier::Micro {
-        state.viz_state.displayed.as_ref().map(|d| {
+        site.displayed.as_ref().map(|d| {
             (
                 d.identity.scan_timestamp_secs(),
                 d.identity.elevation_number,
@@ -377,7 +387,7 @@ pub(super) fn render_timeline(
         None
     };
     let prev_active_sweep = if derived.effective_sweep_animation && tier == TimelineTier::Micro {
-        state.viz_state.previous_displayed.as_ref().map(|d| {
+        site.previous_displayed.as_ref().map(|d| {
             (
                 d.identity.scan_timestamp_secs(),
                 d.identity.elevation_number,
@@ -387,8 +397,20 @@ pub(super) fn render_timeline(
         None
     };
 
-    // The overlay rect spans the main track (not the tick rail).
-    let overlay_rect = scan_rect;
+    // The other sites' lanes under the track. The overlay rect spans the
+    // main track and the lanes (not the tick rail), so the one now line and
+    // the playhead cross every site.
+    let lane_rects = lanes::lane_rects(scan_rect, lane_count);
+    let overlay_rect = lane_rects
+        .last()
+        .map_or(scan_rect, |last| scan_rect.union(*last));
+    let site_lanes = sites.lanes(
+        &live.mode_state,
+        |id| acquisition.lane_downloads(id),
+        derived.frame_now_secs * 1000.0,
+        view_start,
+        view_end,
+    );
 
     // -- Build the per-frame TimelineFrame --
     // One adapter (`TimelineView`) merges every timeline source (cache,
@@ -399,12 +421,7 @@ pub(super) fn render_timeline(
     // volume's already-downloaded sweeps visible lives inside
     // `TimelineView::build`.
     let frame = TimelineFrame {
-        view: crate::core::TimelineView::build(
-            &timeline.scans,
-            &timeline.shadow_scan_boundaries,
-            Some(&live.mode_state),
-            live.radar_model.position.as_ref(),
-        ),
+        view: site.timeline_view(live.mode_state.is_active()),
         now_secs: state.frame_now.secs(),
         view_start,
         view_end,
@@ -456,7 +473,7 @@ pub(super) fn render_timeline(
         in_flight: &in_flight_all,
         failed: &failed_secs,
         product,
-        tilt: state.viz_state.elevation_selection.elevation_number(),
+        tilt: (&state.viz_state.elevation_selection).into(),
         active: active_sweep,
         prev_active: prev_active_sweep,
     };
@@ -482,7 +499,7 @@ pub(super) fn render_timeline(
 
         // Which container carries the "next data" countdown (the core's
         // call: the live container's next cut, else the soonest ghost).
-        let countdown = live.countdown_remaining_secs(frame.now_secs);
+        let countdown = live.countdown_remaining_secs(&site.live, frame.now_secs);
         let countdown_idx =
             crate::core::timeline_view::countdown_container(&containers, frame.now_secs);
 
@@ -516,23 +533,19 @@ pub(super) fn render_timeline(
         }
     }
 
+    lanes::paint_lanes(&painter, &frame, &site_lanes, &lane_rects);
+
     // Draw tick marks and labels in the dedicated tick lane above the main
     // track. Tick spacing/alignment is derived inside from the frame's zoom
     // and view bounds.
     render_tick_marks(&painter, &frame);
 
     // Draw saved event overlays (behind the selection range).
-    render_saved_events(
-        &painter,
-        &frame,
-        &state.saved_events,
-        &state.viz_state.site_id,
-    );
+    render_saved_events(&painter, &frame, &state.saved_events, &site.id.0);
 
     // The range as the core places it: a pinned range runs to the now line.
     let range_marks = playback.state.selection_range().and_then(|(s, e)| {
-        let site = crate::data::SiteId::new(state.viz_state.site_id.clone());
-        let sizes = timeline.activity.scans(&site, s.min(e), s.max(e));
+        let sizes = timeline.activity.scans(&site.id, s.min(e), s.max(e));
         let cost = frame.view.range_cost_sized(s, e, &sizes);
         crate::core::timeline_view::range_marks(
             Some((s, e)),
@@ -684,7 +697,6 @@ pub(super) fn render_timeline(
     let interaction = handle_timeline_interaction(
         ui,
         state,
-        live,
         playback,
         chrome,
         &response,
@@ -694,10 +706,19 @@ pub(super) fn render_timeline(
 
     // -- Hover tooltips --
     // Suppressed during an active scrub so the popup doesn't chase the pointer.
+    // A hover over a lane names that site's volume instead.
     if response.hovered() && !interaction.scrubbing {
         if let Some(hover_pos) = response.hover_pos() {
             let hover_ts = frame.x_to_ts(hover_pos.x);
-            render_timeline_tooltip(ui, &frame, live, hover_ts, hover_pos);
+            if hover_pos.y > scan_rect.bottom() {
+                if let Some((lane, block)) =
+                    lanes::hovered(&site_lanes, &lane_rects, hover_pos, hover_ts)
+                {
+                    tooltips::render_lane_tooltip(ui, &lane.site, block, hover_pos, use_local);
+                }
+            } else {
+                render_timeline_tooltip(ui, &frame, live, &site.live, hover_ts, hover_pos);
+            }
         }
     }
 
@@ -705,4 +726,5 @@ pub(super) fn render_timeline(
     // After the strip's interaction, so its interact rect is on top over its
     // band (the strip also suppresses seeks there).
     selection_strip::render_selection_strip(ui, state, live, playback, &frame, selection_rect);
+    interaction.scrub_to
 }

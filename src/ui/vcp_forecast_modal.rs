@@ -38,20 +38,22 @@ impl Layer for VcpForecastModalLayer {
         ctx.chrome.vcp_forecast_open
     }
     fn render(&self, ctx: &mut LayoutCtx) {
-        draw_vcp_forecast_modal(ctx.ctx, ctx.state, ctx.live);
+        let site = ctx.sites.focus();
+        draw_vcp_forecast_modal(ctx.ctx, ctx.state, &site.id.0, &site.live);
     }
 }
 
 fn draw_vcp_forecast_modal(
     ctx: &egui::Context,
     state: &mut AppState,
-    live: &crate::subsystem::Live,
+    site_id: &str,
+    live: &crate::subsystem::SiteLive,
 ) {
-    let site_id = state.viz_state.site_id.clone();
+    let site_id = site_id.to_string();
     let (snap_opt, arrivals) = {
         let eng = live.engine.borrow();
         let obs = eng.observations();
-        let live = &live.mode_state;
+        let live = &live.volume;
         if let Some(snap) = live.derive_current_volume_forecast(obs) {
             (Some(snap), live.chunk_arrivals.clone())
         } else if let Some(record) = live.last_completed_volume.as_ref() {

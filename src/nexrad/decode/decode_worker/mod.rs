@@ -37,8 +37,10 @@ pub(crate) struct DecodeWorker {
     pending_ingest: Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     pending_chunk_ingest: Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     pending_render: Rc<RefCell<HashMap<RequestId, RenderContext>>>,
-    pending_render_live: Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending_render_live: Rc<RefCell<HashMap<RequestId, types::LiveRenderContext>>>,
     pending_volume: Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
+    /// Storm cell detections, mapped to the core's request id.
+    pending_detect: Rc<RefCell<HashMap<RequestId, types::DetectFor>>>,
     results: Rc<RefCell<Vec<WorkerOutcome>>>,
     /// Requests queued before the worker was ready.
     queue: Vec<QueuedRequest>,
@@ -63,8 +65,11 @@ enum QueuedRequest {
         bool,
     ),
     Render(RequestId, String, u8, String),
-    RenderLive(RequestId, u8, String),
+    RenderLive(RequestId, crate::data::SiteId, u8, String),
     RenderVolume(RequestId, String, String, Vec<u8>),
+    Detect(RequestId, crate::core::storm_cells::DetectRequest),
+    DetectComposite(RequestId, crate::core::storm_cells::SceneDetectRequest),
+    DropSite(crate::data::SiteId),
 }
 
 impl DecodeWorker {
@@ -100,9 +105,11 @@ impl DecodeWorker {
             Rc::new(RefCell::new(HashMap::new()));
         let pending_render: Rc<RefCell<HashMap<RequestId, RenderContext>>> =
             Rc::new(RefCell::new(HashMap::new()));
-        let pending_render_live: Rc<RefCell<HashMap<RequestId, RenderContext>>> =
+        let pending_render_live: Rc<RefCell<HashMap<RequestId, types::LiveRenderContext>>> =
             Rc::new(RefCell::new(HashMap::new()));
         let pending_volume: Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+        let pending_detect: Rc<RefCell<HashMap<RequestId, types::DetectFor>>> =
             Rc::new(RefCell::new(HashMap::new()));
         let results: Rc<RefCell<Vec<WorkerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
 
@@ -116,6 +123,7 @@ impl DecodeWorker {
             &pending_render,
             &pending_render_live,
             &pending_volume,
+            &pending_detect,
             &results,
         );
 
@@ -160,6 +168,7 @@ impl DecodeWorker {
             pending_render,
             pending_render_live,
             pending_volume,
+            pending_detect,
             results,
             queue: Vec::new(),
         })
@@ -224,8 +233,17 @@ impl DecodeWorker {
                     QueuedRequest::Render(id, scan_key, elev, product) => {
                         send::send_render_request(&self.worker, id, &scan_key, elev, &product);
                     }
-                    QueuedRequest::RenderLive(id, elev, product) => {
-                        send::send_render_live_request(&self.worker, id, elev, &product);
+                    QueuedRequest::RenderLive(id, site, elev, product) => {
+                        send::send_render_live_request(&self.worker, id, &site, elev, &product);
+                    }
+                    QueuedRequest::Detect(id, request) => {
+                        send::send_detect_request(&self.worker, id, &request);
+                    }
+                    QueuedRequest::DetectComposite(id, request) => {
+                        send::send_detect_composite_request(&self.worker, id, &request);
+                    }
+                    QueuedRequest::DropSite(site) => {
+                        send::send_drop_site_request(&self.worker, &site);
                     }
                     QueuedRequest::RenderVolume(id, scan_key, product, elev_nums) => {
                         send::send_render_volume_request(
@@ -260,6 +278,7 @@ impl DecodeWorker {
             render: self.pending_render.borrow().len(),
             render_live: self.pending_render_live.borrow().len(),
             volume: self.pending_volume.borrow().len(),
+            detect: self.pending_detect.borrow().len(),
             queued_pre_ready: self.queue.len(),
         }
     }

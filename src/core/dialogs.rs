@@ -304,7 +304,7 @@ impl DialogStack {
 // ── Destructive confirmations ──────────────────────────────────────────────
 
 /// An action waiting for confirmation: the destructive ones, and the
-/// phone's site switch from a map tap ([`crate::core::canvas::MapPick::intent_for`]).
+/// phone's site switch from a map tap ([`crate::core::canvas::SiteClick::AskSwitch`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Confirm {
     /// Delete every downloaded scan on this device.
