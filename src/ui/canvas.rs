@@ -42,6 +42,13 @@ pub(crate) fn render_canvas_with_geo(
     // Every site on the map, in list order: each is drawn highlighted with
     // its id, and none is a pick target.
     let on_map: Vec<&str> = sites.iter().map(|s| s.id.0.as_str()).collect();
+    // What a click on a site marker does: Cmd (Ctrl off a Mac) adds it.
+    let site_click = crate::core::canvas::site_click(
+        state.is_mobile,
+        ctx.input(|i| i.modifiers.command),
+        on_map.len(),
+        crate::core::sites::cap(chrome.device_layout),
+    );
     egui::CentralPanel::default().show(root_ui, |ui| {
         let available_size = ui.available_size();
 
@@ -689,7 +696,15 @@ pub(crate) fn render_canvas_with_geo(
                             &storm_cells_vm,
                         ) {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                            paint_pick_hover(&painter, &projection, &pick, pos, rect, diagnostics);
+                            paint_pick_hover(
+                                &painter,
+                                &projection,
+                                &pick,
+                                site_click,
+                                pos,
+                                rect,
+                                diagnostics,
+                            );
                         } else if on_map.len() > 1 && !state.viz_state.data_probe_enabled {
                             // A radar on the map reads its frame's time and age.
                             if let Some(label) =
@@ -768,6 +783,7 @@ pub(crate) fn render_canvas_with_geo(
                         derived,
                         &projection,
                         &storm_cells_vm,
+                        site_click,
                     );
                 }
             }
@@ -1224,6 +1240,7 @@ fn paint_pick_hover(
     painter: &egui::Painter,
     projection: &MapProjection,
     pick: &crate::core::canvas::MapPick,
+    site_click: crate::core::canvas::SiteClick,
     cursor: egui::Pos2,
     rect: Rect,
     diagnostics: &crate::subsystem::Diagnostics,
@@ -1243,7 +1260,7 @@ fn paint_pick_hover(
         let at = projection.geo_to_screen(Coord { x: lon, y: lat });
         painter.circle_stroke(at, 9.0, Stroke::new(1.5_f32, theme::SEEN));
     }
-    let Some(label) = pick.hover_label() else {
+    let Some(label) = pick.hover_label(site_click) else {
         return;
     };
     paint_hover_label(painter, label, cursor, rect);
