@@ -284,6 +284,13 @@ impl<'a> TimelineView<'a> {
         (!is_live_scan(scan, self.live_volume_ms)).then_some(scan)
     }
 
+    /// [`Self::settled_scan_at`], letting a partial scan reach until the
+    /// next volume (see [`RadarTimeline::find_volume_at`]).
+    pub(crate) fn settled_volume_at(&self, ts: f64) -> Option<&'a Scan> {
+        let scan = self.cache.find_volume_at(ts)?;
+        (!is_live_scan(scan, self.live_volume_ms)).then_some(scan)
+    }
+
     /// The full cache handle (for callers that need range bounds or sweep
     /// lookups across all cached scans). Prefer
     /// the availability-oriented accessors above where possible.

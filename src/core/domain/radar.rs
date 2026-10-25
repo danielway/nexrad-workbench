@@ -297,15 +297,22 @@ impl RadarTimeline {
 
     /// Find the scan containing the given timestamp.
     ///
-    /// A partial scan (one tilt fetched) ends where its stored sweeps end,
-    /// but the volume itself runs on until the next one starts, so it
-    /// counts as under the playhead until the next stored scan begins, at
-    /// most [`PARTIAL_SCAN_REACH_SECS`] after its start.
-    ///
     /// Uses binary search on the sorted scan list for O(log n) lookup.
     pub(crate) fn find_scan_at_timestamp(&self, ts: f64) -> Option<&Scan> {
         // partition_point returns the first index where start_time > ts,
         // so the candidate scan is the one just before that.
+        let idx = self.scans.partition_point(|s| s.start_time <= ts);
+        let scan = self.scans.get(idx.wrapping_sub(1))?;
+        (ts <= scan.end_time).then_some(scan)
+    }
+
+    /// The volume under the playhead, for the tilt list and the ladder:
+    /// [`Self::find_scan_at_timestamp`], except that a partial scan (one
+    /// tilt fetched), which ends where its stored sweeps end, counts until
+    /// the next stored scan starts, at most [`PARTIAL_SCAN_REACH_SECS`]
+    /// after its own start. Callers ask the live volume first, so a volume
+    /// joined part way never stands in for the one being collected.
+    pub(crate) fn find_volume_at(&self, ts: f64) -> Option<&Scan> {
         let idx = self.scans.partition_point(|s| s.start_time <= ts);
         let scan = self.scans.get(idx.wrapping_sub(1))?;
         let end = if scan.is_partial() {
@@ -1985,27 +1992,23 @@ mod coverage_tests {
         let tl = RadarTimeline {
             scans: vec![partial.clone(), scan(1270.0, 1540.0)],
         };
-        assert_eq!(
-            tl.find_scan_at_timestamp(1200.0).unwrap().start_time,
-            1000.0
-        );
-        assert_eq!(
-            tl.find_scan_at_timestamp(1270.0).unwrap().start_time,
-            1270.0
-        );
+        assert_eq!(tl.find_volume_at(1200.0).unwrap().start_time, 1000.0);
+        assert_eq!(tl.find_volume_at(1270.0).unwrap().start_time, 1270.0);
+        // Playback and rendering still see it end with its sweeps.
+        assert!(tl.find_scan_at_timestamp(1200.0).is_none());
 
         // With nothing stored after it, it reaches ten minutes.
         let alone = RadarTimeline {
             scans: vec![partial],
         };
-        assert!(alone.find_scan_at_timestamp(1600.0).is_some());
-        assert!(alone.find_scan_at_timestamp(1601.0).is_none());
+        assert!(alone.find_volume_at(1600.0).is_some());
+        assert!(alone.find_volume_at(1601.0).is_none());
 
         // A complete scan still ends at its end.
         let tl = RadarTimeline {
             scans: vec![scan(1000.0, 1030.0)],
         };
-        assert!(tl.find_scan_at_timestamp(1200.0).is_none());
+        assert!(tl.find_volume_at(1200.0).is_none());
     }
 
     // --- next_any_sweep_end / prev_any_sweep_end (untested) ---
