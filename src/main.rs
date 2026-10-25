@@ -103,6 +103,15 @@ fn main() {}
 
 // Worker exports (worker_ingest, worker_render) are in nexrad::decode::worker_api.
 
+/// Console log level for the main thread and the decode workers. Release
+/// builds log at Info: Debug writes several lines per live chunk to every
+/// visitor's console.
+pub(crate) const LOG_LEVEL: log::LevelFilter = if cfg!(debug_assertions) {
+    log::LevelFilter::Debug
+} else {
+    log::LevelFilter::Info
+};
+
 /// Entry point for the WASM application.
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub async fn start() {
@@ -114,7 +123,7 @@ pub async fn start() {
     use eframe::wasm_bindgen::JsCast as _;
 
     // Redirect `log` messages to `console.log`:
-    eframe::WebLogger::init(log::LevelFilter::Debug).ok();
+    eframe::WebLogger::init(LOG_LEVEL).ok();
 
     let web_options = eframe::WebOptions::default();
 

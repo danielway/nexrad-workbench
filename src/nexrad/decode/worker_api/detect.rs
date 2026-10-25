@@ -205,7 +205,7 @@ pub fn worker_detect(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         if volume {
-            log::info!(
+            log::debug!(
                 "detect volume: {} {} cells over {} tilts | columns {:.1}ms, tilt fetch {:.1}ms, detect {:.1}ms, total {:.1}ms",
                 p.scan_key,
                 result.cells.len(),
@@ -216,7 +216,7 @@ pub fn worker_detect(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 total_ms,
             );
         }
-        log::info!(
+        log::debug!(
             "detect: {} elev={} ({:.1}°) {} {}x{}, {} cells in {} groups (envelope {:.0} dBZ) | detect {:.1}ms, fetch {:.1}ms, total {:.1}ms",
             p.scan_key,
             p.elevation_number,
