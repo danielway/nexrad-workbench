@@ -1511,33 +1511,78 @@ impl MapPick {
         }
     }
 
-    /// What a click or tap on it does, for the layout: on the phone a tap
-    /// near a site asks before switching ([`Confirm::SwitchSite`]); every
-    /// other pick does what [`Self::intent`] says.
-    ///
-    /// [`Confirm::SwitchSite`]: crate::core::dialogs::Confirm::SwitchSite
-    pub(crate) fn intent_for(&self, phone: bool) -> crate::core::Intent {
+    /// What a click or tap on it does: a site does what `site_click` says
+    /// ([`site_click`]); every other pick does what [`Self::intent`] says.
+    pub(crate) fn intent_for(&self, site_click: SiteClick) -> crate::core::Intent {
         use crate::core::dialogs::{Confirm, DialogIntent};
-        match self {
-            MapPick::Site { id, lat, lon } if phone => {
+        match (self, site_click) {
+            (MapPick::Site { id, lat, lon }, SiteClick::AskSwitch) => {
                 crate::core::Intent::Dialog(DialogIntent::RequestConfirm(Confirm::SwitchSite {
                     id,
                     lat: *lat,
                     lon: *lon,
                 }))
             }
+            // A full set refuses the add where the set is changed
+            // (`sites::add`); the hover label already said so.
+            (MapPick::Site { id, lat, lon }, SiteClick::Add | SiteClick::Full { .. }) => {
+                crate::core::Intent::AddSite {
+                    site_id: id.to_string(),
+                    lat: *lat,
+                    lon: *lon,
+                }
+            }
             _ => self.intent(),
         }
     }
 
-    /// The hover label beside the cursor: the site's ID, or the alert's
-    /// event. A report's marker needs none (its popover is one click away).
-    pub(crate) fn hover_label(&self) -> Option<String> {
+    /// The hover label beside the cursor: the site's ID and what a click on
+    /// it does, or the alert's event. A report's marker needs none (its
+    /// popover is one click away).
+    pub(crate) fn hover_label(&self, site_click: SiteClick) -> Option<String> {
         match self {
-            MapPick::Site { id, .. } => Some(format!("{id} · switch site")),
+            MapPick::Site { id, .. } => Some(match site_click {
+                SiteClick::Switch | SiteClick::AskSwitch => format!("{id} · switch site"),
+                SiteClick::Add => format!("{id} · add site"),
+                SiteClick::Full { cap } => format!(
+                    "{id} · {}",
+                    crate::core::sites::Refusal::AtCap { cap }.words()
+                ),
+            }),
             MapPick::Mping(_) | MapPick::StormCell { .. } => None,
             MapPick::Alert { event, .. } => Some(event.clone()),
         }
+    }
+}
+
+/// What a click on a site marker does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SiteClick {
+    /// Show that site alone (`SelectSite`).
+    Switch,
+    /// The phone: ask before switching ([`Confirm::SwitchSite`]).
+    ///
+    /// [`Confirm::SwitchSite`]: crate::core::dialogs::Confirm::SwitchSite
+    AskSwitch,
+    /// Cmd (Ctrl off a Mac) is held: show the site beside the others
+    /// (`AddSite`).
+    Add,
+    /// Cmd is held but the map already shows `cap` sites.
+    Full { cap: usize },
+}
+
+/// What a click on a site marker does: on the phone a tap asks before
+/// switching; on the desktop a click switches, and a click with Cmd held
+/// (`add_held`) adds the site while fewer than `cap` of them are shown.
+pub(crate) fn site_click(phone: bool, add_held: bool, shown: usize, cap: usize) -> SiteClick {
+    if phone {
+        SiteClick::AskSwitch
+    } else if !add_held {
+        SiteClick::Switch
+    } else if shown < cap {
+        SiteClick::Add
+    } else {
+        SiteClick::Full { cap }
     }
 }
 
@@ -3013,7 +3058,7 @@ mod pick_tests {
             })
         );
         assert_eq!(
-            pick.unwrap().intent_for(true),
+            pick.unwrap().intent_for(SiteClick::AskSwitch),
             Intent::StormCells(crate::core::storm_cell_view::StormCellIntent::Select(Some(
                 (42.0, -93.0)
             )))
@@ -3046,17 +3091,17 @@ mod pick_tests {
             lon: -98.9,
         };
         assert_eq!(
-            site.intent_for(true),
+            site.intent_for(SiteClick::AskSwitch),
             Intent::Dialog(DialogIntent::RequestConfirm(Confirm::SwitchSite {
                 id: "KFDR",
                 lat: 34.3,
                 lon: -98.9,
             }))
         );
-        assert_eq!(site.intent_for(false), site.intent());
+        assert_eq!(site.intent_for(SiteClick::Switch), site.intent());
         // Reports and alerts open the same on both.
         assert_eq!(
-            MapPick::Mping(7).intent_for(true),
+            MapPick::Mping(7).intent_for(SiteClick::AskSwitch),
             MapPick::Mping(7).intent()
         );
     }
@@ -3111,6 +3156,45 @@ mod pick_tests {
     }
 
     #[wasm_bindgen_test]
+    fn a_cmd_click_on_a_site_adds_it_while_there_is_room() {
+        assert_eq!(site_click(false, false, 1, 3), SiteClick::Switch);
+        assert_eq!(site_click(false, true, 1, 3), SiteClick::Add);
+        assert_eq!(site_click(false, true, 2, 3), SiteClick::Add);
+        assert_eq!(site_click(false, true, 3, 3), SiteClick::Full { cap: 3 });
+        // A full map still switches on a plain click.
+        assert_eq!(site_click(false, false, 3, 3), SiteClick::Switch);
+        // The phone shows one site: a tap asks before switching, Cmd or not.
+        assert_eq!(site_click(true, true, 1, 1), SiteClick::AskSwitch);
+
+        let site = MapPick::Site {
+            id: "KFDR",
+            lat: 34.3,
+            lon: -98.9,
+        };
+        let add = Intent::AddSite {
+            site_id: "KFDR".to_string(),
+            lat: 34.3,
+            lon: -98.9,
+        };
+        assert_eq!(site.intent_for(SiteClick::Add), add);
+        // The set refuses a full map's add itself (`sites::add`).
+        assert_eq!(site.intent_for(SiteClick::Full { cap: 3 }), add);
+        assert_eq!(
+            site.hover_label(SiteClick::Add).as_deref(),
+            Some("KFDR · add site")
+        );
+        assert_eq!(
+            site.hover_label(SiteClick::Full { cap: 3 }).as_deref(),
+            Some("KFDR · 3 sites max")
+        );
+        // Other picks ignore the modifier.
+        assert_eq!(
+            MapPick::Mping(7).intent_for(SiteClick::Add),
+            MapPick::Mping(7).intent()
+        );
+    }
+
+    #[wasm_bindgen_test]
     fn a_pick_carries_its_click_and_its_hover() {
         let site = decide_map_pick(all(), ON).unwrap();
         assert_eq!(
@@ -3121,17 +3205,23 @@ mod pick_tests {
                 lon: -98.9,
             }
         );
-        assert_eq!(site.hover_label().as_deref(), Some("KFDR · switch site"));
+        assert_eq!(
+            site.hover_label(SiteClick::Switch).as_deref(),
+            Some("KFDR · switch site")
+        );
         assert_eq!(
             MapPick::Mping(7).intent(),
             Intent::Diagnostics(DiagnosticsIntent::SelectMpingReport(7))
         );
-        assert_eq!(MapPick::Mping(7).hover_label(), None);
+        assert_eq!(MapPick::Mping(7).hover_label(SiteClick::Add), None);
         let alert = MapPick::Alert {
             id: "a1".to_string(),
             event: "Tornado Warning".to_string(),
         };
-        assert_eq!(alert.hover_label().as_deref(), Some("Tornado Warning"));
+        assert_eq!(
+            alert.hover_label(SiteClick::Switch).as_deref(),
+            Some("Tornado Warning")
+        );
     }
 }
 
