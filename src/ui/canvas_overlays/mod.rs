@@ -156,6 +156,14 @@ pub(crate) fn viewport_bounds(rect: Rect) -> ScreenBounds {
     }
 }
 
+/// Room the map's top-edge chrome keeps clear of the phone's top inset
+/// (status bar, and its blur in an iOS home-screen app) once the top bar
+/// has slid away ([`crate::core::map_chrome::top_clearance`]).
+pub(crate) fn map_top_clearance(rect: Rect) -> f32 {
+    let (inset_top, _, _, _) = crate::ui::mobile::safe_area_insets();
+    crate::core::map_chrome::top_clearance(rect.top(), inset_top)
+}
+
 /// Measure every visible corner-chrome overlay and lay them out
 /// ([`crate::core::map_chrome::layout_map_chrome`]). `toolbar` is the map
 /// toolbar's size (2D), so the tray keeps clear of it. Called before the
@@ -192,6 +200,7 @@ pub(crate) fn layout_chrome(
     let layout = layout_map_chrome(&ChromeInputs {
         width: ctx.rect.width(),
         height: ctx.rect.height(),
+        top: map_top_clearance(ctx.rect),
         toolbar: toolbar.map(|s| ChromeSize { w: s.x, h: s.y }),
         color_scale,
         tray: &tray,
