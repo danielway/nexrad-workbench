@@ -121,6 +121,7 @@ void main() {{
     }}
 
 {RAW_TO_PHYSICAL}
+{STORM_RELATIVE}
 {COLOR_LOOKUP}
 {PREMULTIPLIED_ALPHA_OUTPUT}
 }}
@@ -149,6 +150,7 @@ pub(crate) struct GlobeRadarRenderer {
     u_opacity: glow::UniformLocation,
     u_offset: glow::UniformLocation,
     u_scale: glow::UniformLocation,
+    u_storm_motion: glow::UniformLocation,
     u_azimuth_spacing_deg: glow::UniformLocation,
 
     /// Radar site location (for rebuilding mesh when site changes).
@@ -196,6 +198,7 @@ impl GlobeRadarRenderer {
         let u_opacity = gl.get_uniform_location(program, "u_opacity").unwrap();
         let u_offset = gl.get_uniform_location(program, "u_offset").unwrap();
         let u_scale = gl.get_uniform_location(program, "u_scale").unwrap();
+        let u_storm_motion = gl.get_uniform_location(program, "u_storm_motion").unwrap();
         let u_azimuth_spacing_deg = gl
             .get_uniform_location(program, "u_azimuth_spacing_deg")
             .unwrap();
@@ -252,6 +255,7 @@ impl GlobeRadarRenderer {
             u_opacity,
             u_offset,
             u_scale,
+            u_storm_motion,
             u_azimuth_spacing_deg,
             site_lat: 0.0,
             site_lon: 0.0,
@@ -380,6 +384,8 @@ impl GlobeRadarRenderer {
             // Raw-to-physical conversion
             gl.uniform_1_f32(Some(&self.u_offset), flat_renderer.data_offset());
             gl.uniform_1_f32(Some(&self.u_scale), flat_renderer.data_scale());
+            let [east, north] = flat_renderer.storm_motion().unwrap_or([0.0, 0.0]);
+            gl.uniform_2_f32(Some(&self.u_storm_motion), east, north);
             gl.uniform_1_f32(
                 Some(&self.u_azimuth_spacing_deg),
                 flat_renderer.azimuth_spacing_deg(),

@@ -67,6 +67,7 @@ pub(crate) mod sites;
 pub(crate) mod storm_activity;
 pub(crate) mod storm_cell_view;
 pub(crate) mod storm_cells;
+pub(crate) mod storm_motion;
 pub(crate) mod storm_tracks;
 pub(crate) mod streaming_filter;
 pub(crate) mod streaming_plan;

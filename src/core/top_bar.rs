@@ -30,6 +30,9 @@ pub(crate) enum TopBarIntent {
     OpenSitePicker,
     /// A product was chosen.
     SetProduct(RadarProduct),
+    /// Storm-relative velocity's "Update": take the storm motion again from
+    /// the tracks on screen.
+    UpdateStormMotion,
     /// A tilt was chosen.
     SetTilt(TiltPick),
     /// The zone label (or the frame clock) was clicked: flip local ↔ UTC.
@@ -60,6 +63,8 @@ pub(crate) struct TopBarInputs<'a> {
     /// How many other sites are on the map.
     pub other_sites: usize,
     pub product: RadarProduct,
+    /// The storm motion storm-relative velocity subtracts.
+    pub storm_motion: &'a crate::core::storm_motion::MotionLock,
     pub elevation_selection: &'a ElevationSelection,
     /// The volume's cuts, as the panel's elevation list builds them.
     pub elevations: &'a [ElevationListEntry],
@@ -106,6 +111,9 @@ pub(crate) struct ProductPicker {
     /// "Reflectivity · dBZ", under the panel's product row.
     pub name: String,
     pub rows: Vec<ProductRow>,
+    /// Under the name while storm-relative velocity is shown: its storm
+    /// motion, or the note that it waits for one.
+    pub motion: Option<crate::core::storm_motion::MotionVm>,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -239,6 +247,7 @@ impl TopBarVm {
                     selected: p == inputs.product,
                 })
                 .collect(),
+            motion: crate::core::storm_motion::motion_vm(inputs.product, inputs.storm_motion),
         };
 
         let tilt = tilt_picker(
@@ -624,6 +633,7 @@ mod tests {
                     site_id: "KTLX",
                     other_sites: self.other_sites,
                     product: RadarProduct::Reflectivity,
+                    storm_motion: &Default::default(),
                     elevation_selection: &self.selection,
                     elevations: &self.elevations,
                     zone: "UTC",

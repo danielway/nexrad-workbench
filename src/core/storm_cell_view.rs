@@ -900,7 +900,7 @@ fn height_text(km: f32) -> String {
 }
 
 /// Eight-point compass name for a direction in degrees.
-fn compass(deg: f64) -> &'static str {
+pub(crate) fn compass(deg: f64) -> &'static str {
     const NAMES: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
     NAMES[((deg.rem_euclid(360.0) + 22.5) / 45.0) as usize % 8]
 }

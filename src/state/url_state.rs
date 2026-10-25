@@ -87,6 +87,14 @@ pub(crate) fn build_link(
             .then_some(state.viz_state.storm_cell_threshold_dbz),
         tracks: (state.viz_state.storm_cells_visible && state.viz_state.storm_tracks_visible)
             .then_some(true),
+        srm: match state.viz_state.storm_motion {
+            crate::core::storm_motion::MotionLock::Locked(m)
+                if state.viz_state.product == crate::core::RadarProduct::StormRelativeVelocity =>
+            {
+                Some(m)
+            }
+            _ => None,
+        },
         dev: Some(state.dev_mode),
     }
 }

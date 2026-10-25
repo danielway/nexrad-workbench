@@ -1,7 +1,8 @@
 # Engineering docs
 
 Reference material for working on NEXRAD Workbench. For building and running
-the app, see [CONTRIBUTING.md](../CONTRIBUTING.md).
+the app, see [CONTRIBUTING.md](../CONTRIBUTING.md). For what each radar product
+shows and how the app handles it, see [PRODUCTS.md](PRODUCTS.md).
 
 | Document | What it covers |
 |----------|----------------|

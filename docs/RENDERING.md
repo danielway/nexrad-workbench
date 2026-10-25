@@ -25,7 +25,12 @@ For each on-screen pixel, the fragment shader:
 4. Samples the gate value from a 2D `R32F` texture (gate × azimuth).
 5. Rejects sentinel values (`raw <= 1`: 0 = below threshold,
    1 = range-folded).
-6. Converts raw → physical: `(raw - offset) / scale`.
+6. Converts raw → physical: `(raw - offset) / scale`. For
+   storm-relative velocity it then subtracts the storm motion's component
+   along the beam, `dot(u_storm_motion, (sin az, cos az))`; the uniform is
+   zero for every other product (see
+   [`core::storm_motion`](../src/core/storm_motion.rs)). The globe and
+   volume shaders do the same.
 7. Normalizes against the product's value range and looks up RGBA
    from a 1024-entry LUT texture (`GL_LINEAR`-filtered, no visible
    quantization).
@@ -224,7 +229,7 @@ so the renderer doesn't need to. It does explicitly:
 [`inspect.rs`](../src/nexrad/render/gpu_renderer/inspect.rs) exposes:
 
 - `value_at_polar(azimuth_deg, range_km, sweep_params)` — physical
-  units, or `None` for sentinels / out-of-range / behind the sweep
+  units (storm-relative when the renderer holds a storm motion), or `None` for sentinels / out-of-range / behind the sweep
   line in a partial sweep.
 - `collection_time_at_polar(azimuth_deg, sweep_params)` — Unix seconds
   for the radial that produced this azimuth.

@@ -158,6 +158,33 @@ impl WorkbenchApp {
                 self.sync_storm_cells_for(site);
             }
         }
+        self.sync_storm_motion();
+    }
+
+    /// Lock storm-relative velocity's motion once the tracks have one
+    /// ([`crate::core::storm_motion::settle`]), and hand every site's
+    /// renderer the motion to subtract (none unless SRV is shown and
+    /// locked).
+    fn sync_storm_motion(&mut self) {
+        use crate::core::storm_motion::{settle, shader_motion, wants_tracks};
+        let viz = &self.state.viz_state;
+        if wants_tracks(viz.product, &viz.storm_motion) {
+            let view = self.sites.shown_tracks_view(&viz.storm_tracks, None);
+            let viz = &mut self.state.viz_state;
+            if settle(&mut viz.storm_motion, viz.product, view.as_ref()) {
+                log::info!("storm-relative velocity: locked {:?}", viz.storm_motion);
+            }
+        }
+        let viz = &self.state.viz_state;
+        let motion = shader_motion(viz.product, &viz.storm_motion);
+        for site in self.sites.iter() {
+            if let Some(renderer) = site.gpu.radar.as_ref() {
+                renderer
+                    .lock()
+                    .expect("renderer mutex poisoned")
+                    .set_storm_motion(motion);
+            }
+        }
     }
 
     /// A measurement endpoint snapped to a track (or "My location") follows
@@ -204,7 +231,7 @@ impl WorkbenchApp {
         let target = &mut self.sites.list[site];
         let inputs = SiteCellInputs::of(target, streaming);
         // Tracks need the cells of the volumes before the displayed one.
-        let tracks_on = is_focus && viz.storm_cells_visible && viz.storm_tracks_visible;
+        let tracks_on = is_focus && tracks_wanted(viz);
         let history = match inputs.displayed() {
             Some(d) if tracks_on => history_keys(
                 &target.scans.scans,
@@ -270,7 +297,7 @@ impl WorkbenchApp {
                 env: i.env(viz, &s.scans, &s.live, (s.lat, s.lon), now_ms, &[]),
             })
             .collect();
-        let tracks_on = viz.storm_cells_visible && viz.storm_tracks_visible;
+        let tracks_on = tracks_wanted(viz);
         // History follows the scene that is shown: its sites' volumes before
         // it.
         let history = match scene.cells.computed_for.as_ref() {
@@ -289,7 +316,7 @@ impl WorkbenchApp {
             _ => Vec::new(),
         };
         let env = SceneCellEnv {
-            visible: viz.storm_cells_visible,
+            visible: cells_wanted(viz),
             view_mode: viz.view_mode(),
             threshold_dbz: viz.storm_cell_threshold_dbz,
             now_ms,
@@ -314,6 +341,21 @@ impl WorkbenchApp {
             }
         }
     }
+}
+
+/// Whether storm cells are detected: their layer is on, or storm-relative
+/// velocity waits for a storm motion ([`crate::core::storm_motion::wants_tracks`]).
+/// Drawing them still follows the layer alone.
+fn cells_wanted(viz: &crate::state::VizState) -> bool {
+    viz.storm_cells_visible
+        || crate::core::storm_motion::wants_tracks(viz.product, &viz.storm_motion)
+}
+
+/// Whether the tracker runs: the cells and tracks layers are on, or
+/// storm-relative velocity waits for a storm motion.
+fn tracks_wanted(viz: &crate::state::VizState) -> bool {
+    (viz.storm_cells_visible && viz.storm_tracks_visible)
+        || crate::core::storm_motion::wants_tracks(viz.product, &viz.storm_motion)
 }
 
 fn log_tracks(
@@ -399,7 +441,7 @@ impl SiteCellInputs {
             .flatten()
             .and_then(|v| v.vcp_pattern.as_ref());
         crate::core::storm_cells::StormCellEnv {
-            visible: viz.storm_cells_visible,
+            visible: cells_wanted(viz),
             view_mode: viz.view_mode(),
             displayed,
             threshold_dbz: viz.storm_cell_threshold_dbz,

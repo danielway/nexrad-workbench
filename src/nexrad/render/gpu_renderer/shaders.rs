@@ -30,6 +30,10 @@ uniform float u_opacity;
 uniform float u_offset;
 uniform float u_scale;
 
+// Storm-relative velocity: the (east, north) storm motion in m/s removed
+// along each beam ([`STORM_RELATIVE`]); zero for every other product.
+uniform vec2 u_storm_motion;
+
 // Median angular spacing between adjacent sorted radials, in degrees.
 // Used by the search threshold (not derived from azimuth_count so partial
 // and non-uniform sweeps get a correct reject distance).
@@ -170,6 +174,13 @@ pub(crate) const RAW_TO_PHYSICAL: &str = "\
     } else {
         physical = (value - s_offset) / s_scale;
     }
+";
+
+pub(crate) const STORM_RELATIVE: &str = "\
+    // Storm-relative velocity: remove the storm motion's component along
+    // the beam (u_storm_motion is zero for every other product).
+    float az_rad = radians(azimuth_deg);
+    physical -= dot(u_storm_motion, vec2(sin(az_rad), cos(az_rad)));
 ";
 
 pub(crate) const COLOR_LOOKUP: &str = "\
@@ -399,6 +410,7 @@ void main() {{
     }}
 
 {RAW_TO_PHYSICAL}
+{STORM_RELATIVE}
 {COLOR_LOOKUP}
     // Apply desaturation
     if (desat_factor > 0.0) {{

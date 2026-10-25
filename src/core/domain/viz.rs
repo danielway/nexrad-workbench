@@ -9,6 +9,9 @@ pub(crate) enum RadarProduct {
     #[default]
     Reflectivity,
     Velocity,
+    /// Velocity with the storm motion removed along each beam (see
+    /// [`crate::core::storm_motion`]). Drawn from the velocity sweeps.
+    StormRelativeVelocity,
     SpectrumWidth,
     DifferentialReflectivity,
     CorrelationCoefficient,
@@ -21,6 +24,7 @@ impl RadarProduct {
         match self {
             RadarProduct::Reflectivity => "Reflectivity",
             RadarProduct::Velocity => "Velocity",
+            RadarProduct::StormRelativeVelocity => "Storm-Relative Velocity",
             RadarProduct::SpectrumWidth => "Spectrum Width",
             RadarProduct::DifferentialReflectivity => "Differential Reflectivity",
             RadarProduct::CorrelationCoefficient => "Correlation Coefficient",
@@ -34,6 +38,7 @@ impl RadarProduct {
         match self {
             RadarProduct::Reflectivity => "dBZ",
             RadarProduct::Velocity => "m/s",
+            RadarProduct::StormRelativeVelocity => "m/s",
             RadarProduct::SpectrumWidth => "m/s",
             RadarProduct::DifferentialReflectivity => "dB",
             RadarProduct::CorrelationCoefficient => "",
@@ -47,6 +52,7 @@ impl RadarProduct {
         match self {
             RadarProduct::Reflectivity => "REF",
             RadarProduct::Velocity => "VEL",
+            RadarProduct::StormRelativeVelocity => "SRV",
             RadarProduct::SpectrumWidth => "SW",
             RadarProduct::DifferentialReflectivity => "ZDR",
             RadarProduct::CorrelationCoefficient => "CC",
@@ -60,6 +66,7 @@ impl RadarProduct {
         match code {
             "REF" => Some(RadarProduct::Reflectivity),
             "VEL" => Some(RadarProduct::Velocity),
+            "SRV" => Some(RadarProduct::StormRelativeVelocity),
             "SW" => Some(RadarProduct::SpectrumWidth),
             "ZDR" => Some(RadarProduct::DifferentialReflectivity),
             "CC" => Some(RadarProduct::CorrelationCoefficient),
@@ -78,6 +85,7 @@ impl RadarProduct {
         &[
             RadarProduct::Reflectivity,
             RadarProduct::Velocity,
+            RadarProduct::StormRelativeVelocity,
             RadarProduct::SpectrumWidth,
             RadarProduct::DifferentialReflectivity,
             RadarProduct::CorrelationCoefficient,
@@ -94,7 +102,7 @@ impl RadarProduct {
     pub(crate) fn to_worker_string(self) -> &'static str {
         match self {
             RadarProduct::Reflectivity => "reflectivity",
-            RadarProduct::Velocity => "velocity",
+            RadarProduct::Velocity | RadarProduct::StormRelativeVelocity => "velocity",
             RadarProduct::SpectrumWidth => "spectrum_width",
             RadarProduct::DifferentialReflectivity => "differential_reflectivity",
             RadarProduct::CorrelationCoefficient => "correlation_coefficient",
@@ -442,7 +450,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn clutter_filter_power_is_not_offered() {
         let codes: Vec<_> = RadarProduct::all().iter().map(|p| p.short_code()).collect();
-        assert_eq!(codes, ["REF", "VEL", "SW", "ZDR", "CC", "KDP"]);
+        assert_eq!(codes, ["REF", "VEL", "SRV", "SW", "ZDR", "CC", "KDP"]);
         assert!(!RadarProduct::ClutterFilterPower.is_offered());
         // The decoder's moment stays: the code still names it.
         assert!(RadarProduct::from_short_code("CFP") == Some(RadarProduct::ClutterFilterPower));
@@ -451,7 +459,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn radar_product_all_and_default() {
         let all = RadarProduct::all();
-        assert_eq!(all.len(), 6);
+        assert_eq!(all.len(), 7);
         assert!(all[0] == RadarProduct::Reflectivity);
         // Default is Reflectivity.
         assert!(RadarProduct::default() == RadarProduct::Reflectivity);
@@ -464,6 +472,10 @@ mod coverage_tests {
             "reflectivity"
         );
         assert_eq!(RadarProduct::Velocity.to_worker_string(), "velocity");
+        assert_eq!(
+            RadarProduct::StormRelativeVelocity.to_worker_string(),
+            "velocity"
+        );
         assert_eq!(
             RadarProduct::SpectrumWidth.to_worker_string(),
             "spectrum_width"
