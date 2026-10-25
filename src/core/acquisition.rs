@@ -725,6 +725,10 @@ pub(crate) enum IngestFailureAction {
     RetryQuietly { scan_start: i64 },
     /// Report it: record the error and back off automatic requests.
     Report,
+    /// Not a failure: a render asked for a sweep the cache does not hold
+    /// (yet). Nothing is recorded and nothing backs off; the canvas just
+    /// shows that it has no data for the selection.
+    NoSweep,
 }
 
 /// Which scans have had their one quiet retry after a truncated download.
@@ -737,9 +741,17 @@ pub(crate) struct IngestRetries {
 impl IngestRetries {
     /// Decide a failed ingest of the scan listed at `scan_start` (`None` when
     /// the failure could not be tied to a scan). A truncated archive gets
-    /// one quiet retry per scan; anything else, or a second truncation, is
-    /// reported.
-    pub(crate) fn decide(&mut self, scan_start: Option<i64>, message: &str) -> IngestFailureAction {
+    /// one quiet retry per scan; a missing sweep is no failure at all;
+    /// anything else, or a second truncation, is reported.
+    pub(crate) fn decide(
+        &mut self,
+        scan_start: Option<i64>,
+        kind: crate::core::WorkerErrorKind,
+        message: &str,
+    ) -> IngestFailureAction {
+        if kind == crate::core::WorkerErrorKind::NotFound {
+            return IngestFailureAction::NoSweep;
+        }
         match scan_start {
             Some(s) if ingest_failure_is_truncated(message) && self.retried.insert(s) => {
                 IngestFailureAction::RetryQuietly { scan_start: s }
@@ -1999,6 +2011,8 @@ mod reducer_tests {
 
     // ── failed ingests ──────────────────────────────────────────────────────
 
+    const UNKNOWN: crate::core::WorkerErrorKind = crate::core::WorkerErrorKind::Unknown;
+
     const TRUNCATED: &str =
         "Failed to split archive: truncated record: expected 1723139 bytes, got 587040";
 
@@ -2007,14 +2021,39 @@ mod reducer_tests {
     fn truncated_ingest_retries_once_then_reports() {
         let mut r = IngestRetries::default();
         assert_eq!(
-            r.decide(Some(600), TRUNCATED),
+            r.decide(Some(600), UNKNOWN, TRUNCATED),
             IngestFailureAction::RetryQuietly { scan_start: 600 }
         );
-        assert_eq!(r.decide(Some(600), TRUNCATED), IngestFailureAction::Report);
+        assert_eq!(
+            r.decide(Some(600), UNKNOWN, TRUNCATED),
+            IngestFailureAction::Report
+        );
         // Another scan still gets its own retry.
         assert_eq!(
-            r.decide(Some(900), TRUNCATED),
+            r.decide(Some(900), UNKNOWN, TRUNCATED),
             IngestFailureAction::RetryQuietly { scan_start: 900 }
+        );
+    }
+
+    // A render that finds no stored sweep for the selection is not an
+    // error: nothing is reported and the scan is not backed off.
+    #[wasm_bindgen_test]
+    fn a_missing_sweep_is_not_a_failure() {
+        let mut r = IngestRetries::default();
+        let not_found = crate::core::WorkerErrorKind::NotFound;
+        assert_eq!(
+            r.decide(
+                Some(600),
+                not_found,
+                "No pre-computed sweep for elev=1 product=reflectivity"
+            ),
+            IngestFailureAction::NoSweep
+        );
+        assert_eq!(r.decide(None, not_found, ""), IngestFailureAction::NoSweep);
+        // It does not use up a truncated scan's quiet retry.
+        assert_eq!(
+            r.decide(Some(600), UNKNOWN, TRUNCATED),
+            IngestFailureAction::RetryQuietly { scan_start: 600 }
         );
     }
 
@@ -2023,13 +2062,16 @@ mod reducer_tests {
     fn other_ingest_failures_are_reported() {
         let mut r = IngestRetries::default();
         assert_eq!(
-            r.decide(Some(600), "No records found"),
+            r.decide(Some(600), UNKNOWN, "No records found"),
             IngestFailureAction::Report
         );
-        assert_eq!(r.decide(None, TRUNCATED), IngestFailureAction::Report);
+        assert_eq!(
+            r.decide(None, UNKNOWN, TRUNCATED),
+            IngestFailureAction::Report
+        );
         // A reported failure does not use up the scan's retry.
         assert_eq!(
-            r.decide(Some(600), TRUNCATED),
+            r.decide(Some(600), UNKNOWN, TRUNCATED),
             IngestFailureAction::RetryQuietly { scan_start: 600 }
         );
     }

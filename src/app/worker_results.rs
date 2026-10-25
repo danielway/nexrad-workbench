@@ -744,10 +744,11 @@ impl WorkbenchApp {
     ) {
         let site_id = self.sites.list[site].id.clone();
         let focus = &mut self.sites.list[site];
-        match focus
-            .retries
-            .decide(failed_scan_timestamp_secs.map(|ts| ts as i64), message)
-        {
+        match focus.retries.decide(
+            failed_scan_timestamp_secs.map(|ts| ts as i64),
+            kind,
+            message,
+        ) {
             // A truncated download: no error, no backoff. Forget the request
             // and its finished queue item so the pumps download the scan
             // again if it is still wanted (the anchor pump does so on the
@@ -762,6 +763,7 @@ impl WorkbenchApp {
                     .download_queue
                     .forget_done(&site_id, scan_start);
             }
+            crate::core::acquisition::IngestFailureAction::NoSweep => {}
             crate::core::acquisition::IngestFailureAction::Report => {
                 self.state.errors.push(crate::core::AppError::Worker {
                     kind,
