@@ -251,7 +251,7 @@ thread_local! {
 pub(super) fn init_logger() {
     WORKER_LOGGER_INIT.with(|init| {
         if !init.get() {
-            eframe::WebLogger::init(crate::LOG_LEVEL).ok();
+            crate::init_logger();
             init.set(true);
         }
     });
