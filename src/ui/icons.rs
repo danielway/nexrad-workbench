@@ -1,5 +1,6 @@
 //! The Phosphor icons the app draws, as the characters of the bundled
-//! subset font `assets/fonts/Phosphor-Regular.ttf` (registered in
+//! subset font `assets/fonts/Phosphor-Regular.ttf` (MIT, see
+//! `Phosphor-LICENSE.txt` beside it; registered in
 //! [`super::theme::font_definitions`]).
 //!
 //! The font holds only these glyphs. To add an icon, take its codepoint from
