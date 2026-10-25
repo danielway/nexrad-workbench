@@ -52,6 +52,14 @@ no account, no server: everything runs on your own device.
 
 <sub>**Three radars, one map.** Milton at 03:00 UTC on 10 October 2024 from Tampa Bay, Melbourne and Jacksonville. The newer frame draws on top where discs overlap, storm cells are found once across all three, and each extra site gets its own lane under the timeline.</sub>
 
+![KFDX live in Rays mode, the sweep line painting each new chunk of the 0.5° scan over the faded older one](docs/media/live-sweep.webp)
+
+<sub>**Live.** KFDX at Cannon AFB, New Mexico, on 25 October 2026, streaming in Rays mode at 1× and sped up here. The sweep line paints the newest 0.5° data as each chunk arrives from the radar, the older scan ahead of it fades, and the dashed red line marks where the antenna is pointing now. Each finished 0.5° pass appears as a block in the lane under the timeline.</sub>
+
+![KFDX with a tornado warning polygon and the national mosaic on](docs/media/tornado-warning.jpg)
+
+<sub>**Warnings.** The same storm half an hour earlier, inside a tornado warning from NWS Albuquerque. The warning count at top right opens the list, and the national mosaic is on.</sub>
+
 ![Storm cells and their tracks near Mayfield, Kentucky on 11 December 2021](docs/media/storm-cells.jpg)
 
 <sub>**Storm tracks.** The Paducah radar at 03:33 UTC on 11 December 2021, with an hour of the outbreak loaded. Cell A, over Marshall County, is the supercell that passed through Mayfield a few minutes earlier. Each lettered cell trails the path it has taken, and the dashed arrows point to where it should be in 30 minutes.</sub>
