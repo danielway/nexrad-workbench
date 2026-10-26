@@ -467,6 +467,58 @@ impl Camera {
         self.world_to_screen(geo_to_world(lat_deg, lon_deg), screen_rect)
     }
 
+    /// Whether a surface point is on the hemisphere the eye can see: in
+    /// front of the horizon, not merely in front of the camera. Always
+    /// true in 2D.
+    pub fn faces_camera(&self, lat_deg: f64, lon_deg: f64) -> bool {
+        match self {
+            Camera::Flat2D(_) => true,
+            Camera::Orbit(s) => {
+                let p = geo_to_world(lat_deg, lon_deg);
+                let eye = orbit_eye_pivot_up(s).0;
+                p.dot(eye - p) > 0.0
+            }
+        }
+    }
+
+    /// The 2D zoom that shows the ground at the screen centre at the same
+    /// scale as this view, so layers and labels that switch on with 2D
+    /// zoom switch on at the same ground scale in 3D. 2D returns its own
+    /// zoom.
+    pub fn flat_zoom_equivalent(&self) -> f32 {
+        match self {
+            Camera::Flat2D(f) => f.view.zoom,
+            Camera::Orbit(s) => {
+                // Half the screen height spans distance·tan(fov/2) Earth
+                // radii at the pivot; 2D spans BASE_RANGE_DEG / zoom.
+                let half_span_deg = (s.distance * (s.common.fov_y * 0.5).tan()).to_degrees();
+                crate::geo::projection::BASE_RANGE_DEG as f32 / half_span_deg
+            }
+        }
+    }
+
+    /// Fingerprint of the 3D view for label placement and motion settle,
+    /// or `None` in 2D (which fingerprints its `MapProjection`).
+    pub(crate) fn globe_fingerprint(
+        &self,
+        screen_rect: Rect,
+    ) -> Option<crate::geo::ProjectionFingerprint> {
+        match self {
+            Camera::Flat2D(_) => None,
+            Camera::Orbit(s) => Some(crate::geo::ProjectionFingerprint::globe(
+                [
+                    s.pivot_lat,
+                    s.pivot_lon,
+                    s.distance,
+                    s.tilt,
+                    s.heading,
+                    s.common.fov_y,
+                ],
+                screen_rect,
+            )),
+        }
+    }
+
     /// Ray-sphere intersection: screen position → geographic (lat°, lon°).
     /// Returns `None` if the ray misses the globe.
     pub fn screen_to_geo(&self, pos: Pos2, screen_rect: Rect) -> Option<(f64, f64)> {
@@ -945,14 +997,9 @@ pub struct UrlOrbitFields {
 /// project against, but the [`Projection`](crate::geo::projection::Projection)
 /// trait can't take one as a parameter because
 /// [`MapProjection`](crate::geo::projection::MapProjection) stores its own.
-/// This wrapper binds a camera + rect together so callers that want a
-/// uniform `&dyn Projection` can pass it.
-///
-/// 2D-only overlays (sites, alerts, scale bar) call sites that take
-/// `&dyn Projection` today; the 3D side is wired through this wrapper for
-/// the future hybrid path or 3D overlays that may want to share the same
-/// call sites.
-#[allow(dead_code)] // Doc above: 3D overlays don't share the &dyn Projection call sites yet.
+/// This wrapper binds a camera + rect together so the map overlays that
+/// take `&dyn Projection` (sites, labels, city markers) draw on the globe.
+/// A point past the horizon projects to `None`.
 pub(crate) struct GlobeProjection<'a> {
     pub camera: &'a Camera,
     pub screen_rect: Rect,
@@ -960,6 +1007,9 @@ pub(crate) struct GlobeProjection<'a> {
 
 impl crate::geo::projection::Projection for GlobeProjection<'_> {
     fn geo_to_screen(&self, lat: f64, lon: f64) -> Option<Pos2> {
+        if !self.camera.faces_camera(lat, lon) {
+            return None;
+        }
         self.camera.geo_to_screen(lat, lon, self.screen_rect)
     }
 
@@ -1809,5 +1859,66 @@ mod tests {
         assert_eq!(f.saved.pivot_lat, saved_before.pivot_lat);
         assert_eq!(f.saved.tilt, saved_before.tilt);
         assert_eq!(f.saved.distance, saved_before.distance);
+    }
+
+    #[wasm_bindgen_test]
+    fn faces_camera_splits_near_and_far_hemispheres() {
+        let (c, _) = orbit_with_rect();
+        // The pivot and its neighbourhood face the eye.
+        assert!(c.faces_camera(39.0, -98.0));
+        assert!(c.faces_camera(41.0, -96.0));
+        // The antipode and a point well past the horizon (~22° from the
+        // eye at the default altitude) do not.
+        assert!(!c.faces_camera(-39.0, 82.0));
+        assert!(!c.faces_camera(79.0, -98.0));
+        // 2D has no far side.
+        assert!(Camera::centered_on(39.0, -98.0).faces_camera(-39.0, 82.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn globe_projection_hides_points_past_the_horizon() {
+        use crate::geo::projection::Projection;
+        let (c, rect) = orbit_with_rect();
+        let p = GlobeProjection {
+            camera: &c,
+            screen_rect: rect,
+        };
+        let centre = p.geo_to_screen(39.0, -98.0).expect("pivot is visible");
+        assert!((centre - rect.center()).length() < 1.0);
+        assert!(p.geo_to_screen(79.0, -98.0).is_none());
+        assert!(p.geo_to_screen(-39.0, 82.0).is_none());
+        assert!(p.visible_bounds().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn flat_zoom_equivalent_matches_2d_scale() {
+        let (mut c, _) = orbit_with_rect();
+        // The default 3D view shows about what 2D's default zoom does.
+        let z = c.flat_zoom_equivalent();
+        assert!((1.8..2.0).contains(&z), "default 3D zoom equivalent {z}");
+        // Twice as far away is half the zoom.
+        if let Camera::Orbit(s) = &mut c {
+            s.distance *= 2.0;
+        }
+        assert!((c.flat_zoom_equivalent() - z / 2.0).abs() < 1e-4);
+        // 2D reports its own zoom.
+        assert_eq!(
+            Camera::centered_on(39.0, -98.0).flat_zoom_equivalent(),
+            DEFAULT_FLAT_ZOOM
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn globe_fingerprint_tracks_the_pose_and_never_matches_2d() {
+        let (mut c, rect) = orbit_with_rect();
+        let before = c.globe_fingerprint(rect).expect("3D has a fingerprint");
+        assert_eq!(c.globe_fingerprint(rect), Some(before));
+        c.adjust_tilt_heading(40.0, 0.0, 600.0);
+        assert_ne!(c.globe_fingerprint(rect), Some(before));
+        assert!(Camera::centered_on(39.0, -98.0)
+            .globe_fingerprint(rect)
+            .is_none());
+        let flat = crate::geo::MapProjection::new(39.0, -98.0).fingerprint();
+        assert_ne!(flat, before);
     }
 }

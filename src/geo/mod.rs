@@ -11,7 +11,6 @@ mod layer;
 mod projection;
 mod renderer;
 
-#[allow(unused_imports)] // GlobeProjection is the 3D Projection adapter.
 pub(crate) use camera::GlobeProjection;
 pub(crate) use camera::{Camera, Flat2DState, UrlOrbitFields, ViewMode, DEFAULT_FLAT_ZOOM};
 pub(crate) use geo_line_renderer::GeoLineRenderer;
@@ -23,5 +22,5 @@ pub(crate) use layer::{
 pub(crate) use projection::{MapProjection, Projection, ProjectionFingerprint};
 pub(crate) use renderer::{
     build_geo_label_candidates, paint_galley_with_halo, paint_geo_labels, render_geo_layers,
-    GeoPass,
+    render_point_markers, GeoPass,
 };
