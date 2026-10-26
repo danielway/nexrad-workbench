@@ -433,10 +433,9 @@ impl<'a> TimelineView<'a> {
             if !cuts.contains(sw.elevation_number) {
                 continue;
             }
-            let has_product = sw.cached_products.iter().any(|p| p == join.product)
-                // An empty/unknown cached set ("legacy index entry") still
-                // counts as on-device for cell purposes — the scan downloaded.
-                || sw.cached_products.is_empty();
+            // Only a stored blob for this product is renderable; a sweep
+            // stored with no products (nothing extracted) is not.
+            let has_product = sw.cached_products.iter().any(|p| p == join.product);
             // A cached sweep with the product blob is downloaded → Cached. A
             // matching tilt without this product reads InFlight while its scan
             // is mid-fetch, Failed if its scan's download failed, else Available
@@ -2385,7 +2384,9 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn join_empty_cached_products_is_cached() {
+    fn join_sweep_stored_without_products_is_not_cached() {
+        // A sweep stored with no product blobs can't render, so it reads as
+        // available (a click fetches it again), not as on this device.
         let cache = RadarTimeline {
             scans: vec![cached_scan(
                 1_000.0,
@@ -2396,7 +2397,7 @@ mod coverage_tests {
         let view = TimelineView::build(&cache, &shadows, None, None);
         let c = view.frame_containers_in_range(0.0, 5_000.0, empty_join("reflectivity", Some(1)));
         assert_eq!(c[0].cells.len(), 1);
-        assert_eq!(c[0].cells[0].state, FrameCellState::Cached);
+        assert_ne!(c[0].cells[0].state, FrameCellState::Cached);
     }
 
     #[wasm_bindgen_test]

@@ -598,6 +598,7 @@ fn handle_volume_decoded_message(
         .borrow_mut()
         .push(WorkerOutcome::VolumeDecoded(VolumeData {
             site: volume_ctx.scan_key.site.clone(),
+            scan_key: volume_ctx.scan_key.clone(),
             buffer,
             word_size,
             sweeps,

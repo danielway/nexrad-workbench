@@ -21,6 +21,9 @@ pub(crate) struct AcquisitionCoordinator {
     pub(crate) archive_index: ArchiveIndex,
     /// Record-based data facade.
     pub(crate) data_facade: MainThreadStore,
+    /// Set by an eviction that removed scans, so the next frame reloads the
+    /// timeline instead of showing evicted volumes as downloaded.
+    pub(crate) evicted: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 impl AcquisitionCoordinator {
@@ -34,6 +37,7 @@ impl AcquisitionCoordinator {
             download_queue: DownloadQueueManager::new(),
             archive_index: ArchiveIndex::new(),
             data_facade,
+            evicted: Default::default(),
         }
     }
 

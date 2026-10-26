@@ -125,6 +125,15 @@ impl RenderTrack {
         should_dispatch(identity, self.last_render())
     }
 
+    /// Whether a volume reply for `scan_key` / `product` is still wanted:
+    /// it answers the last volume request sent for this site. With none on
+    /// record (the texture was given back) it is taken, as before.
+    pub(crate) fn wants_volume(&self, scan_key: &ScanKey, product: &str) -> bool {
+        self.last_volume_render
+            .as_ref()
+            .is_none_or(|r| r.scan_key == *scan_key && r.product == product)
+    }
+
     /// The dedup gate for a volume request.
     pub(crate) fn admits_volume(&self, request: &VolumeRenderRequest) -> bool {
         should_dispatch(request, self.last_volume_render())
@@ -607,6 +616,19 @@ mod track_tests {
         assert!(!t.admits_volume(&volume("KDMX", 1, "ref")));
         assert!(t.admits_volume(&volume("KDMX", 2, "ref")));
         assert!(t.admits_volume(&volume("KDMX", 1, "vel")));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_volume_reply_is_wanted_only_for_the_last_request() {
+        let mut t = RenderTrack::default();
+        // Nothing on record: taken.
+        assert!(t.wants_volume(&key("KDMX", 1), "ref"));
+        t.set_last_volume_render(volume("KDMX", 1, "ref"));
+        t.set_last_volume_render(volume("KDMX", 2, "ref"));
+        // The reply for the volume asked for first arrives late.
+        assert!(!t.wants_volume(&key("KDMX", 1), "ref"));
+        assert!(!t.wants_volume(&key("KDMX", 2), "vel"));
+        assert!(t.wants_volume(&key("KDMX", 2), "ref"));
     }
 
     #[wasm_bindgen_test]
