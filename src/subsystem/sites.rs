@@ -178,6 +178,10 @@ pub(crate) struct SiteState {
     /// its projection engine and this frame's live models. Whether the app
     /// is streaming at all is the session's ([`crate::subsystem::Live`]).
     pub live: SiteLive,
+    /// What the render loop knows about this site's frame and the playhead
+    /// this frame, the step bringing its volume included: the canvas
+    /// caption reads it.
+    pub caption: crate::core::canvas::CaptionContext,
 }
 
 impl SiteState {
@@ -202,6 +206,7 @@ impl SiteState {
             retries: IngestRetries::default(),
             prefetch_settle: PrefetchSettle::default(),
             live: SiteLive::default(),
+            caption: crate::core::canvas::CaptionContext::default(),
         }
     }
 

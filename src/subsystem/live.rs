@@ -500,6 +500,11 @@ impl Live {
                         .map_or(crate::core::canvas::DEFAULT_FRAME_STEP_SECS, |d| {
                             crate::core::canvas::frame_step_secs(&s.scans, d, latest)
                         }),
+                    context: s.caption.clone(),
+                    stream: crate::core::canvas::StreamFacts::of(
+                        Stream::classify(s.live.frame_status.activity, phase, last_exit),
+                        s.live.live_cut().and_then(|c| c.elevation_angle),
+                    ),
                 })
                 .collect()
         } else {
@@ -520,6 +525,7 @@ impl Live {
             caption_context: inputs.caption_context,
             volume_3d_active: inputs.volume_3d_active,
             others,
+            site_id: &focus.id.0,
         });
     }
 }

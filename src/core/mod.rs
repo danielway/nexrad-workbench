@@ -31,6 +31,7 @@ pub(crate) mod diagnostics;
 pub(crate) mod dialogs;
 pub(crate) mod domain;
 pub(crate) mod effect;
+pub(crate) mod frame_work;
 pub(crate) mod geo_labels;
 pub(crate) mod geo_layers;
 pub(crate) mod geocode;

@@ -710,9 +710,25 @@ impl WorkbenchApp {
             self.live.mode_state.phase,
             self.live.mode_state.last_exit_reason,
         );
+        let listing: Vec<String> = self
+            .sites
+            .iter()
+            .filter(|s| s.caption.work == core::frame_work::SiteWork::Listing)
+            .map(|s| s.id.0.clone())
+            .collect();
+        let download_bytes: Vec<(u64, Option<u64>)> = self
+            .state
+            .download_progress
+            .bytes
+            .entries()
+            .iter()
+            .map(|(_, p)| (p.received, p.total))
+            .collect();
         core::activity::ActivityVm::build_settled(
             core::activity::ActivityInputs {
                 now_ms,
+                listing: &listing,
+                download_bytes: &download_bytes,
                 operations: &self.acquisition.state.operations,
                 queue_paused: self.acquisition.state.is_paused(),
                 ledger: self.sites.ledger_summary(now_ms),
@@ -1127,7 +1143,7 @@ impl eframe::App for WorkbenchApp {
                 playback: &self.playback.state,
                 now: self.state.frame_now,
                 elevation_selection: &self.state.viz_state.elevation_selection,
-                caption_context: self.state.viz_state.caption_context,
+                caption_context: self.state.viz_state.caption_context.clone(),
                 volume_3d_active: self.state.viz_state.volume_3d_active(),
                 flat: self.state.viz_state.view_mode() == geo::ViewMode::Flat2D,
             },

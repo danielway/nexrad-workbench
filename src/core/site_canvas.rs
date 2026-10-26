@@ -22,6 +22,11 @@ pub(crate) struct SiteFrame {
     pub frame: Option<(f64, f64)>,
     /// One frame for this site ([`crate::core::canvas::frame_step_secs`]).
     pub frame_step_secs: f64,
+    /// What the render loop knows about this site's frame: the caption
+    /// rule reads it as it reads the focus's.
+    pub context: crate::core::canvas::CaptionContext,
+    /// This site's live stream.
+    pub stream: crate::core::canvas::StreamFacts,
 }
 
 /// The sites whose frame disagrees with the playhead, and the playhead.
@@ -93,7 +98,7 @@ pub(crate) fn sites_behind_line(
     segs.push((clock.hms(behind.playhead), CaptionRole::Playhead { pinned }));
     CaptionLine {
         segments: segs,
-        action: None,
+        ..CaptionLine::default()
     }
 }
 
@@ -191,6 +196,8 @@ mod tests {
             id: id.to_string(),
             frame: mid.map(|m| (m, m + 15.0)),
             frame_step_secs: 60.0,
+            context: Default::default(),
+            stream: Default::default(),
         }
     }
 

@@ -19,7 +19,7 @@
 //! - **L0 restraint.** A casual viewer with nothing happening sees the glyph
 //!   alone; the words appear on hover or once Advanced is on.
 
-use crate::core::activity::{ActivityGlyph, ActivityState, ActivityVm};
+use crate::core::activity::{ActivityGlyph, ActivityVm};
 use crate::core::Intent;
 use crate::state::AppState;
 use crate::ui::icons;
@@ -36,6 +36,7 @@ fn glyph_icon(glyph: ActivityGlyph) -> &'static str {
         ActivityGlyph::Gear => icons::GEAR,
         ActivityGlyph::Wave => icons::BROADCAST,
         ActivityGlyph::Pause => icons::PAUSE,
+        ActivityGlyph::Listing => icons::ARROWS_CLOCKWISE,
     }
 }
 
@@ -49,7 +50,7 @@ pub(super) fn render_activity_chip(
     font_size: f32,
     folded: bool,
 ) {
-    let idle = vm.state == ActivityState::UpToDate;
+    let idle = vm.chip_idle();
 
     let animate = vm.headline.animate && !super::timeline::reduced_motion(ui.ctx());
     let tint = chip_tint(ui, idle, animate);
@@ -58,7 +59,7 @@ pub(super) fn render_activity_chip(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
 
-        let mut text = glyph_icon(vm.headline.glyph).to_string();
+        let mut text = glyph_icon(vm.chip_glyph()).to_string();
         if let Some(count) = vm.headline.count {
             text.push(' ');
             text.push_str(&count.to_string());
@@ -68,7 +69,7 @@ pub(super) fn render_activity_chip(
         // it is folded into the hover.
         if !folded {
             text.push(' ');
-            text.push_str(&vm.headline.words());
+            text.push_str(&vm.chip_words());
         }
 
         let resp = ui.add(
@@ -79,7 +80,7 @@ pub(super) fn render_activity_chip(
             clicked = true;
         }
         if folded {
-            resp.on_hover_text(format!("{} — {}", vm.headline.words(), vm.hover()));
+            resp.on_hover_text(format!("{} — {}", vm.chip_words(), vm.hover()));
         } else {
             resp.on_hover_text(vm.hover());
         }
@@ -150,6 +151,7 @@ mod coverage_tests {
             ActivityGlyph::Gear,
             ActivityGlyph::Wave,
             ActivityGlyph::Pause,
+            ActivityGlyph::Listing,
         ];
         let icons: Vec<&str> = glyphs.iter().copied().map(glyph_icon).collect();
         for (i, a) in icons.iter().enumerate() {

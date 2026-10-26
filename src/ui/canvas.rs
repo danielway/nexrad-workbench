@@ -1178,9 +1178,11 @@ fn render_phone_loading(
 /// Paint the canvas caption (§7) on a scrim at the bottom center of the map,
 /// lifted over any corner scrim it would cover
 /// ([`crate::core::canvas::caption_bottom_inset`]) — the only text that ever
-/// sits over it. The words and their roles are the
-/// session view-model's ([`crate::core::session::SessionVm::canvas_caption_line`]);
-/// a "fetch" segment emits the line's intent.
+/// sits over it. The lines, their words and roles are the session
+/// view-model's ([`crate::core::session::SessionVm::canvas_caption_lines`]):
+/// one per site with something to say, a turning mark on a line whose frame
+/// is on its way and a bar under a download. A "fetch" or "retry" segment
+/// emits its line's intent.
 fn render_canvas_caption(
     ui: &mut egui::Ui,
     rect: &Rect,
@@ -1189,14 +1191,14 @@ fn render_canvas_caption(
     bottom_scrims: &[crate::core::canvas::BottomScrim],
 ) {
     use crate::core::canvas::CaptionRole;
-    let Some(line) = live
+    let lines = live
         .session
-        .canvas_caption_line(&crate::ui::time_format::ZoneClock {
+        .canvas_caption_lines(&crate::ui::time_format::ZoneClock {
             use_local: state.use_local_time,
-        })
-    else {
+        });
+    if lines.is_empty() {
         return;
-    };
+    }
     let font = theme::readout_font();
     let id = egui::Id::unique("canvas_caption");
     // The caption's width is known once laid out: last frame's.
@@ -1205,11 +1207,14 @@ fn render_canvas_caption(
         .memory(|m| m.area_rect(id))
         .map_or(0.0, |r| r.width());
     let inset = crate::core::canvas::caption_bottom_inset(rect.width(), width, bottom_scrims);
+    let reduced = super::timeline::reduced_motion(ui.ctx());
+    let time = ui.ctx().input(|i| i.time);
+    let mut busy = false;
     egui::Area::new(id)
         .order(egui::Order::Middle)
         .pivot(egui::Align2::CENTER_BOTTOM)
         .fixed_pos(egui::pos2(rect.center().x, rect.bottom() - inset))
-        .interactable(line.action.is_some())
+        .interactable(lines.iter().any(|l| l.action.is_some()))
         .show(ui.ctx(), |ui| {
             egui::Frame::new()
                 .fill(theme::map::scrim())
@@ -1220,32 +1225,63 @@ fn render_canvas_caption(
                     // A phone-width map wraps the line rather than cutting
                     // it at both edges.
                     ui.set_max_width((rect.width() - 40.0).max(120.0));
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.horizontal_wrapped(|ui| {
-                        for (words, role) in &line.segments {
-                            let color = match role {
-                                CaptionRole::Words => theme::TEXT_DIM,
-                                CaptionRole::Frame => theme::SEEN,
-                                CaptionRole::Playhead { pinned: true } => theme::NOW,
-                                CaptionRole::Playhead { pinned: false } => theme::SEEN,
-                                CaptionRole::Action => theme::SELECTED,
-                            };
-                            let text = egui::RichText::new(words).font(font.clone()).color(color);
-                            if *role == CaptionRole::Action {
-                                let r = ui
-                                    .add(egui::Label::new(text.underline()).sense(Sense::click()));
-                                if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                                    if let Some(intent) = line.action.clone() {
-                                        state.push_command(intent);
-                                    }
-                                }
-                            } else {
-                                ui.label(text);
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    for line in &lines {
+                        busy |= line.busy;
+                        let row = ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            if line.busy {
+                                let (r, _) =
+                                    ui.allocate_exact_size(egui::vec2(18.0, 14.0), Sense::hover());
+                                super::timeline::mini::paint_arc(
+                                    ui.painter(),
+                                    egui::pos2(r.left() + 6.0, r.center().y),
+                                    5.0,
+                                    crate::core::phone_row::Arc::Spinning,
+                                    time,
+                                    reduced,
+                                );
                             }
+                            for (words, role) in &line.segments {
+                                let color = match role {
+                                    CaptionRole::Words => theme::TEXT_DIM,
+                                    CaptionRole::Frame => theme::SEEN,
+                                    CaptionRole::Playhead { pinned: true } => theme::NOW,
+                                    CaptionRole::Playhead { pinned: false } => theme::SEEN,
+                                    CaptionRole::Action => theme::SELECTED,
+                                    CaptionRole::Failure => theme::acquisition::FAILED,
+                                };
+                                let text =
+                                    egui::RichText::new(words).font(font.clone()).color(color);
+                                if *role == CaptionRole::Action {
+                                    let r = ui.add(
+                                        egui::Label::new(text.underline()).sense(Sense::click()),
+                                    );
+                                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                        if let Some(intent) = line.action.clone() {
+                                            state.push_command(intent);
+                                        }
+                                    }
+                                } else {
+                                    ui.label(text);
+                                }
+                            }
+                        });
+                        if let Some(share) = line.progress {
+                            let w = row.response.rect.width();
+                            let (bar, _) =
+                                ui.allocate_exact_size(egui::vec2(w, 2.0), Sense::hover());
+                            ui.painter().rect_filled(bar, 1.0, theme::LINE);
+                            let mut done = bar;
+                            done.set_width(w * share);
+                            ui.painter().rect_filled(done, 1.0, theme::SEEN);
                         }
-                    });
+                    }
                 });
         });
+    if busy && !reduced {
+        ui.ctx().request_repaint();
+    }
 }
 
 /// Paint a hovered mark's highlight and its label (on a scrim beside the
