@@ -337,6 +337,7 @@ impl WorkbenchApp {
                 // was pinned again), draw the partial now rather than at the
                 // next chunk.
                 if !self.gpu_holds_live_sweep(site) {
+                    self.sites.list[site].render.sweep_left_canvas();
                     self.render.coordinator.render_live(
                         self.sites.list[site].id.clone(),
                         elevation_number,
@@ -376,6 +377,7 @@ impl WorkbenchApp {
                     .is_some();
                 if !protecting_live_partial && scan_covers_playhead {
                     self.clear_display_no_sweep(site);
+                    self.sites.list[site].render.sweep_left_canvas();
                 }
             }
         }

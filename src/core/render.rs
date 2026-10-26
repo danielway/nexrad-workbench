@@ -92,6 +92,14 @@ impl RenderTrack {
         self.last_volume_render = None;
     }
 
+    /// The canvas stopped showing the last single-elevation render: it was
+    /// blanked, or a live partial took its place. Forget it, so asking for
+    /// that sweep again (the product or tilt switched back) sends it instead
+    /// of matching a sweep that is no longer on screen.
+    pub(crate) fn sweep_left_canvas(&mut self) {
+        self.last_render = None;
+    }
+
     /// Clear the scan (no scan in range); the elevations stay.
     pub(crate) fn clear_scan_key(&mut self) {
         self.scan_key = None;
@@ -606,6 +614,17 @@ mod track_tests {
         assert!(t.admits_sweep(&identity("KDMX", 1, 2, "ref")));
         assert!(t.admits_sweep(&identity("KDMX", 1, 1, "vel")));
         assert!(t.admits_sweep(&identity("KTLX", 1, 1, "ref")));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_sweep_that_left_the_canvas_is_admitted_again() {
+        // REF on screen; VEL has nothing here, so the canvas blanks; back on
+        // REF the same sweep must be asked for again.
+        let mut t = RenderTrack::default();
+        t.set_last_render(identity("KDMX", 1, 1, "ref"));
+        assert!(!t.admits_sweep(&identity("KDMX", 1, 1, "ref")));
+        t.sweep_left_canvas();
+        assert!(t.admits_sweep(&identity("KDMX", 1, 1, "ref")));
     }
 
     #[wasm_bindgen_test]
