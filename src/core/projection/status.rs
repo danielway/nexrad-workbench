@@ -597,7 +597,7 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn vol(n: usize) -> VolumeIndex {
-        VolumeIndex::new(n)
+        VolumeIndex::new(n).unwrap()
     }
 
     fn forecast(collection: f64, available: f64) -> ChunkProjectedTimes {
@@ -1208,7 +1208,7 @@ mod coverage_tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn vol(n: usize) -> VolumeIndex {
-        VolumeIndex::new(n)
+        VolumeIndex::new(n).unwrap()
     }
 
     fn forecast(collection: f64, available: f64) -> ChunkProjectedTimes {

@@ -302,7 +302,7 @@ fn get_legacy_default_wait_time(
 ) -> ChronoDuration {
     use nexrad_decode::messages::volume_coverage_pattern::{ChannelConfiguration, WaveformType};
 
-    if waveform_type == WaveformType::CS {
+    if waveform_type == WaveformType::ContiguousSurveillance {
         ChronoDuration::seconds(11)
     } else if channel_config == ChannelConfiguration::ConstantPhase {
         ChronoDuration::seconds(7)
@@ -330,7 +330,7 @@ mod tests {
     fn chunk(sequence: usize, chunk_type: ChunkType) -> ChunkIdentifier {
         ChunkIdentifier::new(
             "KDMX".to_string(),
-            VolumeIndex::new(1),
+            VolumeIndex::new(1).unwrap(),
             when().naive_utc(),
             sequence,
             chunk_type,
@@ -435,17 +435,26 @@ mod tests {
     fn legacy_default_wait_time_branches() {
         // CS → 11s regardless of channel config.
         assert_eq!(
-            get_legacy_default_wait_time(WaveformType::CS, ChannelConfiguration::RandomPhase),
+            get_legacy_default_wait_time(
+                WaveformType::ContiguousSurveillance,
+                ChannelConfiguration::RandomPhase
+            ),
             ChronoDuration::seconds(11)
         );
         // Non-CS + ConstantPhase → 7s.
         assert_eq!(
-            get_legacy_default_wait_time(WaveformType::CDW, ChannelConfiguration::ConstantPhase),
+            get_legacy_default_wait_time(
+                WaveformType::ContiguousDopplerWithAmbiguityResolution,
+                ChannelConfiguration::ConstantPhase
+            ),
             ChronoDuration::seconds(7)
         );
         // Non-CS + non-ConstantPhase → 4s.
         assert_eq!(
-            get_legacy_default_wait_time(WaveformType::CDW, ChannelConfiguration::RandomPhase),
+            get_legacy_default_wait_time(
+                WaveformType::ContiguousDopplerWithAmbiguityResolution,
+                ChannelConfiguration::RandomPhase
+            ),
             ChronoDuration::seconds(4)
         );
     }
@@ -575,7 +584,7 @@ mod coverage_tests {
     fn chunk(sequence: usize, chunk_type: ChunkType) -> ChunkIdentifier {
         ChunkIdentifier::new(
             "KDMX".to_string(),
-            VolumeIndex::new(1),
+            VolumeIndex::new(1).unwrap(),
             when().naive_utc(),
             sequence,
             chunk_type,

@@ -828,12 +828,12 @@ fn chunk_type_str(t: ChunkType) -> &'static str {
 
 fn waveform_str(w: WaveformType) -> &'static str {
     match w {
-        WaveformType::CS => "CS",
-        WaveformType::CDW => "CDW",
-        WaveformType::CDWO => "CDWO",
-        WaveformType::B => "B",
-        WaveformType::SPP => "SPP",
-        WaveformType::Unknown => "?",
+        WaveformType::ContiguousSurveillance => "CS",
+        WaveformType::ContiguousDopplerWithAmbiguityResolution => "CDW",
+        WaveformType::ContiguousDopplerWithoutAmbiguityResolution => "CDWO",
+        WaveformType::Batch => "B",
+        WaveformType::StaggeredPulsePair => "SPP",
+        WaveformType::Unknown(_) => "?",
     }
 }
 
@@ -841,8 +841,8 @@ fn channel_str(c: ChannelConfiguration) -> &'static str {
     match c {
         ChannelConfiguration::ConstantPhase => "CP",
         ChannelConfiguration::RandomPhase => "RP",
-        ChannelConfiguration::SZ2Phase => "SZ2",
-        ChannelConfiguration::UnknownPhase => "?",
+        ChannelConfiguration::Sz2Phase => "SZ2",
+        ChannelConfiguration::Unknown(_) => "?",
     }
 }
 
@@ -1027,7 +1027,7 @@ mod coverage_tests {
     fn bucket_key_from_characteristics_intermediate_cs_constant() {
         let c = ChunkCharacteristics {
             chunk_type: ChunkType::Intermediate,
-            waveform_type: WaveformType::CS,
+            waveform_type: WaveformType::ContiguousSurveillance,
             channel_configuration: ChannelConfiguration::ConstantPhase,
             is_first_in_sweep: false,
         };
@@ -1043,7 +1043,7 @@ mod coverage_tests {
     fn bucket_key_from_characteristics_start_b_random_first() {
         let c = ChunkCharacteristics {
             chunk_type: ChunkType::Start,
-            waveform_type: WaveformType::B,
+            waveform_type: WaveformType::Batch,
             channel_configuration: ChannelConfiguration::RandomPhase,
             is_first_in_sweep: true,
         };
@@ -1058,8 +1058,8 @@ mod coverage_tests {
     fn bucket_key_from_characteristics_end_spp_sz2() {
         let c = ChunkCharacteristics {
             chunk_type: ChunkType::End,
-            waveform_type: WaveformType::SPP,
-            channel_configuration: ChannelConfiguration::SZ2Phase,
+            waveform_type: WaveformType::StaggeredPulsePair,
+            channel_configuration: ChannelConfiguration::Sz2Phase,
             is_first_in_sweep: false,
         };
         let k = BucketKey::from_characteristics(&c);
@@ -1072,8 +1072,8 @@ mod coverage_tests {
     fn bucket_key_from_characteristics_cdw_unknown_channel() {
         let c = ChunkCharacteristics {
             chunk_type: ChunkType::Intermediate,
-            waveform_type: WaveformType::CDW,
-            channel_configuration: ChannelConfiguration::UnknownPhase,
+            waveform_type: WaveformType::ContiguousDopplerWithAmbiguityResolution,
+            channel_configuration: ChannelConfiguration::Unknown(0),
             is_first_in_sweep: false,
         };
         let k = BucketKey::from_characteristics(&c);
@@ -1085,7 +1085,7 @@ mod coverage_tests {
     fn bucket_key_from_characteristics_unknown_waveform() {
         let c = ChunkCharacteristics {
             chunk_type: ChunkType::Intermediate,
-            waveform_type: WaveformType::Unknown,
+            waveform_type: WaveformType::Unknown(0),
             channel_configuration: ChannelConfiguration::ConstantPhase,
             is_first_in_sweep: false,
         };

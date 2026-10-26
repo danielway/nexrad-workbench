@@ -38,7 +38,7 @@ impl super::Overlay for ColorScaleOverlay {
 /// Paint the scale in `scrim`, its corner from the layout.
 fn draw_color_scale(ui: &mut egui::Ui, scrim: Rect, product: &crate::core::RadarProduct) {
     use crate::nexrad::color_table::{build_reflectivity_lut, product_value_range};
-    use nexrad_render::Product;
+    use nexrad::model::data::Product;
 
     let product_nr = match product {
         crate::core::RadarProduct::Reflectivity => Product::Reflectivity,

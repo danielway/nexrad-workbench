@@ -405,7 +405,7 @@ mod tests {
         let when = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         ChunkIdentifier::new(
             "KDMX".to_string(),
-            nexrad_data::aws::realtime::VolumeIndex::new(1),
+            nexrad_data::aws::realtime::VolumeIndex::new(1).unwrap(),
             when.naive_utc(),
             sequence,
             nexrad_data::aws::realtime::ChunkType::Intermediate,
@@ -447,7 +447,7 @@ mod tests {
         let when = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         let anchor = ChunkIdentifier::new(
             "KDMX".to_string(),
-            nexrad_data::aws::realtime::VolumeIndex::new(1),
+            nexrad_data::aws::realtime::VolumeIndex::new(1).unwrap(),
             when.naive_utc(),
             1,
             nexrad_data::aws::realtime::ChunkType::Start,
@@ -466,7 +466,7 @@ mod coverage_tests {
         let when = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         ChunkIdentifier::new(
             "KDMX".to_string(),
-            nexrad_data::aws::realtime::VolumeIndex::new(volume),
+            nexrad_data::aws::realtime::VolumeIndex::new(volume).unwrap(),
             when.naive_utc(),
             sequence,
             nexrad_data::aws::realtime::ChunkType::Intermediate,
@@ -482,7 +482,7 @@ mod coverage_tests {
     ) -> KnownChunk {
         KnownChunk {
             coord: super::super::inventory::ChunkCoord {
-                volume: VolumeIndex::new(volume),
+                volume: VolumeIndex::new(volume).unwrap(),
                 sequence,
             },
             upload_secs: upload,
@@ -622,7 +622,7 @@ mod coverage_tests {
     fn observe_listing_empty_does_not_bump() {
         let mut eng = ProjectionEngine::new();
         // An empty listing can't advance the anchor → no bump.
-        eng.observe_listing(VolumeIndex::new(1), &[]);
+        eng.observe_listing(VolumeIndex::new(1).unwrap(), &[]);
         assert_eq!(eng.input_revision, 0);
     }
 
@@ -631,7 +631,7 @@ mod coverage_tests {
         let mut eng = ProjectionEngine::new();
         // The helper chunk carries an upload date_time → first listing entry
         // advances the anchor → bump.
-        eng.observe_listing(VolumeIndex::new(1), &[cv_chunk(1, 1)]);
+        eng.observe_listing(VolumeIndex::new(1).unwrap(), &[cv_chunk(1, 1)]);
         assert_eq!(eng.input_revision, 1);
     }
 

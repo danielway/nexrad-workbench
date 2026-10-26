@@ -25,11 +25,8 @@ fn decode_volume_cache(raw: &str) -> Option<(nexrad_data::aws::realtime::VolumeI
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
     let v = value.get("v")?.as_u64()? as usize;
     let t = value.get("t")?.as_f64()?;
-    if (1..=999).contains(&v) {
-        Some((nexrad_data::aws::realtime::VolumeIndex::new(v), t))
-    } else {
-        None
-    }
+    let volume = nexrad_data::aws::realtime::VolumeIndex::new(v).ok()?;
+    Some((volume, t))
 }
 
 /// Cache the latest volume number (with the current wall-clock time) in

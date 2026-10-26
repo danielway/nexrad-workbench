@@ -93,12 +93,12 @@ fn chunk_type_order(t: ChunkType) -> u8 {
 
 fn waveform_order(w: WaveformType) -> u8 {
     match w {
-        WaveformType::CS => 0,
-        WaveformType::CDW => 1,
-        WaveformType::CDWO => 2,
-        WaveformType::B => 3,
-        WaveformType::SPP => 4,
-        WaveformType::Unknown => 5,
+        WaveformType::ContiguousSurveillance => 0,
+        WaveformType::ContiguousDopplerWithAmbiguityResolution => 1,
+        WaveformType::ContiguousDopplerWithoutAmbiguityResolution => 2,
+        WaveformType::Batch => 3,
+        WaveformType::StaggeredPulsePair => 4,
+        WaveformType::Unknown(_) => 5,
     }
 }
 
@@ -106,8 +106,8 @@ fn channel_order(c: ChannelConfiguration) -> u8 {
     match c {
         ChannelConfiguration::ConstantPhase => 0,
         ChannelConfiguration::RandomPhase => 1,
-        ChannelConfiguration::SZ2Phase => 2,
-        ChannelConfiguration::UnknownPhase => 3,
+        ChannelConfiguration::Sz2Phase => 2,
+        ChannelConfiguration::Unknown(_) => 3,
     }
 }
 
@@ -487,23 +487,23 @@ fn chunk_type_from_str(s: &str) -> Option<ChunkType> {
 
 fn waveform_type_to_str(t: WaveformType) -> &'static str {
     match t {
-        WaveformType::CS => "CS",
-        WaveformType::CDW => "CDW",
-        WaveformType::CDWO => "CDWO",
-        WaveformType::B => "B",
-        WaveformType::SPP => "SPP",
-        WaveformType::Unknown => "Unknown",
+        WaveformType::ContiguousSurveillance => "CS",
+        WaveformType::ContiguousDopplerWithAmbiguityResolution => "CDW",
+        WaveformType::ContiguousDopplerWithoutAmbiguityResolution => "CDWO",
+        WaveformType::Batch => "B",
+        WaveformType::StaggeredPulsePair => "SPP",
+        WaveformType::Unknown(_) => "Unknown",
     }
 }
 
 fn waveform_type_from_str(s: &str) -> Option<WaveformType> {
     match s {
-        "CS" => Some(WaveformType::CS),
-        "CDW" => Some(WaveformType::CDW),
-        "CDWO" => Some(WaveformType::CDWO),
-        "B" => Some(WaveformType::B),
-        "SPP" => Some(WaveformType::SPP),
-        "Unknown" => Some(WaveformType::Unknown),
+        "CS" => Some(WaveformType::ContiguousSurveillance),
+        "CDW" => Some(WaveformType::ContiguousDopplerWithAmbiguityResolution),
+        "CDWO" => Some(WaveformType::ContiguousDopplerWithoutAmbiguityResolution),
+        "B" => Some(WaveformType::Batch),
+        "SPP" => Some(WaveformType::StaggeredPulsePair),
+        "Unknown" => Some(WaveformType::Unknown(0)),
         _ => None,
     }
 }
@@ -512,8 +512,8 @@ fn channel_configuration_to_str(c: ChannelConfiguration) -> &'static str {
     match c {
         ChannelConfiguration::ConstantPhase => "constant_phase",
         ChannelConfiguration::RandomPhase => "random_phase",
-        ChannelConfiguration::SZ2Phase => "sz2_phase",
-        ChannelConfiguration::UnknownPhase => "unknown_phase",
+        ChannelConfiguration::Sz2Phase => "sz2_phase",
+        ChannelConfiguration::Unknown(_) => "unknown_phase",
     }
 }
 
@@ -521,8 +521,8 @@ fn channel_configuration_from_str(s: &str) -> Option<ChannelConfiguration> {
     match s {
         "constant_phase" => Some(ChannelConfiguration::ConstantPhase),
         "random_phase" => Some(ChannelConfiguration::RandomPhase),
-        "sz2_phase" => Some(ChannelConfiguration::SZ2Phase),
-        "unknown_phase" => Some(ChannelConfiguration::UnknownPhase),
+        "sz2_phase" => Some(ChannelConfiguration::Sz2Phase),
+        "unknown_phase" => Some(ChannelConfiguration::Unknown(0)),
         _ => None,
     }
 }
@@ -535,7 +535,7 @@ mod tests {
     fn bucket() -> ChunkCharacteristics {
         ChunkCharacteristics {
             chunk_type: ChunkType::Intermediate,
-            waveform_type: WaveformType::CS,
+            waveform_type: WaveformType::ContiguousSurveillance,
             channel_configuration: ChannelConfiguration::ConstantPhase,
             is_first_in_sweep: false,
         }
@@ -738,7 +738,7 @@ mod coverage_tests {
     fn cs_bucket() -> ChunkCharacteristics {
         ChunkCharacteristics {
             chunk_type: ChunkType::Intermediate,
-            waveform_type: WaveformType::CS,
+            waveform_type: WaveformType::ContiguousSurveillance,
             channel_configuration: ChannelConfiguration::ConstantPhase,
             is_first_in_sweep: false,
         }
@@ -747,7 +747,7 @@ mod coverage_tests {
     fn other_bucket() -> ChunkCharacteristics {
         ChunkCharacteristics {
             chunk_type: ChunkType::Start,
-            waveform_type: WaveformType::CDW,
+            waveform_type: WaveformType::ContiguousDopplerWithAmbiguityResolution,
             channel_configuration: ChannelConfiguration::RandomPhase,
             is_first_in_sweep: true,
         }

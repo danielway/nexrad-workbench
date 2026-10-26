@@ -99,8 +99,8 @@ async fn emit_backfill_chunks(
     let mut downloaded: Vec<(usize, Vec<u8>)> = Vec::with_capacity(results.len());
     for (chunk_id, res) in targets.iter().zip(results) {
         match res {
-            Ok((_id, chunk)) => {
-                let chunk_data = chunk.data().to_vec();
+            Ok(chunk) => {
+                let chunk_data = chunk.chunk.data().to_vec();
                 log::debug!(
                     "Filter backfill: downloaded chunk seq {} ({} bytes)",
                     chunk_id.sequence(),
@@ -202,7 +202,7 @@ pub(super) async fn run_init_backfill(
 
     let mut emitted_total: u32 = 0;
     if !backfill_seqs.is_empty() {
-        match list_chunks_in_volume(site_id, volume, 100).await {
+        match list_chunks_in_volume(site_id, volume).await {
             Ok(chunk_ids) => {
                 let to_download: Vec<_> = chunk_ids
                     .into_iter()
@@ -312,7 +312,7 @@ pub(super) async fn run_mid_stream_backfill(
     }
 
     let volume = iter.current_volume();
-    let chunk_ids = match list_chunks_in_volume(site_id, volume, 100).await {
+    let chunk_ids = match list_chunks_in_volume(site_id, volume).await {
         Ok(ids) => ids,
         Err(e) => {
             log::warn!(

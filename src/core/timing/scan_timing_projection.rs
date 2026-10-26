@@ -565,7 +565,7 @@ mod tests {
     fn anchor(sequence: usize, chunk_type: ChunkType, upload_secs: i64) -> ChunkIdentifier {
         ChunkIdentifier::new(
             "KDMX".to_string(),
-            VolumeIndex::new(1),
+            VolumeIndex::new(1).unwrap(),
             upload_at(upload_secs).naive_utc(),
             sequence,
             chunk_type,
@@ -623,7 +623,7 @@ mod tests {
         let mut stats = ChunkTimingStats::new();
         let b = ChunkCharacteristics {
             chunk_type: ChunkType::Intermediate,
-            waveform_type: vcpmsg::WaveformType::CS,
+            waveform_type: vcpmsg::WaveformType::ContiguousSurveillance,
             channel_configuration: vcpmsg::ChannelConfiguration::ConstantPhase,
             is_first_in_sweep: false,
         };
@@ -862,7 +862,7 @@ mod coverage_tests {
     fn anchor(sequence: usize, chunk_type: ChunkType, upload_secs: i64) -> ChunkIdentifier {
         ChunkIdentifier::new(
             "KDMX".to_string(),
-            VolumeIndex::new(1),
+            VolumeIndex::new(1).unwrap(),
             upload_at(upload_secs).naive_utc(),
             sequence,
             chunk_type,
@@ -1011,7 +1011,7 @@ mod coverage_tests {
         let start_time = upload_at(3000);
         let p = project_full_scan_timing(
             "KDMX",
-            VolumeIndex::new(1),
+            VolumeIndex::new(1).unwrap(),
             start_time,
             &vcp,
             &mapper,
