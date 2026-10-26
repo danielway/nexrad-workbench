@@ -159,3 +159,63 @@ pub(crate) fn render_nexrad_sites(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geo::{Camera, GlobeProjection};
+    use eframe::egui::Rect;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// A 3D camera over KTLX.
+    fn globe_over_oklahoma() -> (Camera, Rect) {
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+        let mut c = Camera::centered_on(35.333, -97.278);
+        c.set_aspect(rect);
+        c.switch_to_globe();
+        (c, rect)
+    }
+
+    fn ids(sites: &[OnScreen]) -> Vec<(&'static str, bool)> {
+        sites.iter().map(|s| (s.id, s.current)).collect()
+    }
+
+    #[wasm_bindgen_test]
+    fn globe_keeps_near_sites_and_drops_the_far_hemisphere() {
+        let (c, rect) = globe_over_oklahoma();
+        let projection = GlobeProjection {
+            camera: &c,
+            screen_rect: rect,
+        };
+        let visibility = GeoLayerVisibility {
+            nexrad_sites: true,
+            ..Default::default()
+        };
+        let on_screen = ids(&sites_on_screen(
+            &projection,
+            &["KTLX".to_string()],
+            &visibility,
+        ));
+        assert!(on_screen.contains(&("KTLX", true)));
+        assert!(on_screen.contains(&("KINX", false)));
+        // Guam is on the other side of the planet.
+        assert!(!on_screen.iter().any(|(id, _)| *id == "PGUA"));
+    }
+
+    #[wasm_bindgen_test]
+    fn globe_sites_follow_the_layer_toggle_but_keep_the_ones_on_the_map() {
+        let (c, rect) = globe_over_oklahoma();
+        let projection = GlobeProjection {
+            camera: &c,
+            screen_rect: rect,
+        };
+        let visibility = GeoLayerVisibility {
+            nexrad_sites: false,
+            ..Default::default()
+        };
+        let current = ["KTLX".to_string(), "KINX".to_string(), "PGUA".to_string()];
+        let on_screen = ids(&sites_on_screen(&projection, &current, &visibility));
+        // Every site on the map that faces the camera, and nothing else.
+        assert_eq!(on_screen, vec![("KTLX", true), ("KINX", true)]);
+    }
+}

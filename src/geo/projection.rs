@@ -33,7 +33,24 @@ pub(crate) trait Projection {
     /// "visible," and a planet-scale bbox isn't useful for hit-test
     /// culling). 2D always returns `Some`.
     fn visible_bounds(&self) -> Option<(f64, f64, f64, f64)>;
+
+    /// Whether a coordinate (lon, lat) is within the visible bounds plus
+    /// `margin_deg`. Always true without bounds (3D); the horizon check
+    /// there is `geo_to_screen`'s.
+    fn in_view(&self, coord: Coord<f64>, margin_deg: f64) -> bool {
+        let Some((min_lon, min_lat, max_lon, max_lat)) = self.visible_bounds() else {
+            return true;
+        };
+        coord.x >= min_lon - margin_deg
+            && coord.x <= max_lon + margin_deg
+            && coord.y >= min_lat - margin_deg
+            && coord.y <= max_lat + margin_deg
+    }
 }
+
+/// Degrees of latitude from the canvas centre to its nearer edge at 2D
+/// zoom 1.0 (~500 km).
+pub(crate) const BASE_RANGE_DEG: f64 = 4.5;
 
 /// Map projection for converting geographic to screen coordinates.
 #[derive(Debug, Clone)]
@@ -59,7 +76,7 @@ impl Default for MapProjection {
             center_lat: 39.0,
             center_lon: -98.0,
             // ~500km radius view (~4.5 degrees)
-            range_deg: 4.5,
+            range_deg: BASE_RANGE_DEG,
             zoom: 1.0,
             pan_offset: Vec2::ZERO,
             screen_rect: Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)),
@@ -152,15 +169,6 @@ impl MapProjection {
         )
     }
 
-    /// Checks if a coordinate is within the visible bounds (with margin).
-    pub(crate) fn is_visible(&self, coord: Coord<f64>, margin_deg: f64) -> bool {
-        let (min_lon, min_lat, max_lon, max_lat) = self.visible_bounds();
-        coord.x >= min_lon - margin_deg
-            && coord.x <= max_lon + margin_deg
-            && coord.y >= min_lat - margin_deg
-            && coord.y <= max_lat + margin_deg
-    }
-
     /// Checks if a bounding box intersects with the visible bounds.
     pub(crate) fn bbox_visible(
         &self,
@@ -197,6 +205,7 @@ impl MapProjection {
             rect_min_y: self.screen_rect.min.y.to_bits(),
             rect_max_x: self.screen_rect.max.x.to_bits(),
             rect_max_y: self.screen_rect.max.y.to_bits(),
+            globe: false,
         }
     }
 }
@@ -233,6 +242,28 @@ pub(crate) struct ProjectionFingerprint {
     rect_min_y: u32,
     rect_max_x: u32,
     rect_max_y: u32,
+    /// Set for a 3D globe view, so no globe pose ever matches a map view.
+    globe: bool,
+}
+
+impl ProjectionFingerprint {
+    /// Fingerprint of a 3D globe view: the orbit pose plus the canvas.
+    pub(crate) fn globe(pose: [f32; 6], screen_rect: Rect) -> Self {
+        let [pivot_lat, pivot_lon, distance, tilt, heading, fov_y] = pose;
+        Self {
+            center_lat: f64::from(pivot_lat).to_bits(),
+            center_lon: f64::from(pivot_lon).to_bits(),
+            range_deg: f64::from(distance).to_bits(),
+            zoom: tilt.to_bits(),
+            pan_x: heading.to_bits(),
+            pan_y: fov_y.to_bits(),
+            rect_min_x: screen_rect.min.x.to_bits(),
+            rect_min_y: screen_rect.min.y.to_bits(),
+            rect_max_x: screen_rect.max.x.to_bits(),
+            rect_max_y: screen_rect.max.y.to_bits(),
+            globe: true,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -249,6 +280,7 @@ impl ProjectionFingerprint {
             rect_min_y: value as u32,
             rect_max_x: value as u32,
             rect_max_y: value as u32,
+            globe: false,
         }
     }
 }
@@ -332,10 +364,10 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn is_visible_includes_center_excludes_far_point() {
+    fn in_view_includes_center_excludes_far_point() {
         let p = proj(39.0, -98.0);
-        assert!(p.is_visible(Coord { x: -98.0, y: 39.0 }, 0.0));
-        assert!(!p.is_visible(Coord { x: 0.0, y: 0.0 }, 0.0));
+        assert!(p.in_view(Coord { x: -98.0, y: 39.0 }, 0.0));
+        assert!(!p.in_view(Coord { x: 0.0, y: 0.0 }, 0.0));
     }
 
     #[wasm_bindgen_test]
@@ -498,13 +530,13 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn is_visible_margin_extends_inclusion() {
+    fn in_view_margin_extends_inclusion() {
         let p = proj(39.0, -98.0);
         // lon -90.0 is just outside max_lon (~-90.279) without margin...
         let pt = Coord { x: -90.0, y: 39.0 };
-        assert!(!p.is_visible(pt, 0.0));
+        assert!(!p.in_view(pt, 0.0));
         // ...but a 1-degree margin pulls it inside.
-        assert!(p.is_visible(pt, 1.0));
+        assert!(p.in_view(pt, 1.0));
     }
 
     #[wasm_bindgen_test]

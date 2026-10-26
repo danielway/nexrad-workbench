@@ -10,7 +10,7 @@ use super::canvas_overlays::{
 };
 use crate::core::geo_labels::{GeoLabelPlacementKey, GeoLabelVisibilityKey};
 use crate::core::RenderProcessing;
-use crate::geo::{GeoLayerSet, MapProjection, ScreenBounds, ViewMode};
+use crate::geo::{GeoLayerSet, GlobeProjection, MapProjection, ScreenBounds, ViewMode};
 use crate::nexrad::{RadarGpuRenderer, ScreenDisc};
 use crate::state::AppState;
 use crate::ui::theme;
@@ -89,11 +89,56 @@ pub(crate) fn render_canvas_with_geo(
                     chrome.device_layout,
                 );
 
+                // Navigation overlays over the globe: city dots, site
+                // markers, then labels, all through the globe projection
+                // so anything past the horizon drops out.
+                let zoom = state.viz_state.camera.flat_zoom_equivalent();
+                let now_secs = derived.frame_now_secs;
+                // The label placement waits for the camera to settle,
+                // as in 2D, and is reprojected every frame meanwhile.
+                let fingerprint = state.viz_state.camera.globe_fingerprint(rect);
+                let mut camera_settled = false;
+                if let Some(fingerprint) = fingerprint {
+                    let motion = &mut state.render_cache.camera_motion;
+                    motion.observe(fingerprint, now_secs);
+                    camera_settled = motion.is_settled(now_secs);
+                    if let Some(remaining) = motion.time_until_settle(now_secs) {
+                        ctx.request_repaint_after(std::time::Duration::from_millis(
+                            (remaining * 1000.0).ceil().max(1.0) as u64,
+                        ));
+                    }
+                }
+                if let Some(layers) = geo_layers {
+                    crate::geo::render_point_markers(
+                        &painter,
+                        layers,
+                        &state.layer_state.geo,
+                        &GlobeProjection {
+                            camera: &state.viz_state.camera,
+                            screen_rect: rect,
+                        },
+                        zoom,
+                    );
+                }
+                render_nexrad_sites(
+                    &painter,
+                    &GlobeProjection {
+                        camera: &state.viz_state.camera,
+                        screen_rect: rect,
+                    },
+                    &on_map,
+                    &state.layer_state.geo,
+                    crate::geo::GeoPass::Lines,
+                    None,
+                );
+
                 // Corner-chrome overlays (color scale + info + compass)
                 // dispatched through the typed registry. The trait's
                 // `visible` predicate keeps the scale bar (2D-only) out.
-                let bottom_scrims = {
-                    let overlay_ctx = OverlayContext {
+                // Laid out first so the labels keep clear of them.
+                let chrome_frame = layout_chrome(
+                    ui,
+                    &OverlayContext {
                         rect,
                         state,
                         site,
@@ -101,10 +146,83 @@ pub(crate) fn render_canvas_with_geo(
                         derived,
                         mping_reports: &diagnostics.mping.reports,
                         playback_secs: playback.state.playback_position(),
-                    };
-                    let chrome_frame = layout_chrome(ui, &overlay_ctx, None);
-                    render_chrome_overlays(ui, &overlay_ctx, &chrome_frame)
-                };
+                    },
+                    None,
+                );
+                let keep_out = chrome_frame.keep_out();
+                let viewport = viewport_bounds(rect);
+                let mut map_labels = Vec::new();
+                if let Some(layers) = geo_layers {
+                    let visibility = &state.layer_state.geo;
+                    if let Some(fingerprint) = fingerprint {
+                        let placement_key = GeoLabelPlacementKey {
+                            projection: fingerprint,
+                            visibility: GeoLabelVisibilityKey::from(visibility),
+                            dark,
+                        };
+                        if state
+                            .render_cache
+                            .geo_labels
+                            .needs_rebuild(placement_key, camera_settled)
+                        {
+                            let candidates = crate::geo::build_geo_label_candidates(
+                                &painter,
+                                layers,
+                                visibility,
+                                &GlobeProjection {
+                                    camera: &state.viz_state.camera,
+                                    screen_rect: rect,
+                                },
+                                zoom,
+                                dark,
+                            );
+                            state.render_cache.geo_labels.replace(
+                                placement_key,
+                                &candidates,
+                                viewport,
+                            );
+                        }
+                    }
+                    map_labels = crate::geo::paint_geo_labels(
+                        &painter,
+                        &GlobeProjection {
+                            camera: &state.viz_state.camera,
+                            screen_rect: rect,
+                        },
+                        &state.layer_state.geo,
+                        &state.render_cache.geo_labels.entries,
+                        &|b| crate::core::map_chrome::label_clear_of_chrome(b, &keep_out, viewport),
+                    );
+                }
+                render_nexrad_sites(
+                    &painter,
+                    &GlobeProjection {
+                        camera: &state.viz_state.camera,
+                        screen_rect: rect,
+                    },
+                    &on_map,
+                    &state.layer_state.geo,
+                    crate::geo::GeoPass::Labels,
+                    Some(&SiteLabelRoom {
+                        map_labels: &map_labels,
+                        keep_out: &keep_out,
+                        viewport,
+                    }),
+                );
+
+                let bottom_scrims = render_chrome_overlays(
+                    ui,
+                    &OverlayContext {
+                        rect,
+                        state,
+                        site,
+                        live,
+                        derived,
+                        mping_reports: &diagnostics.mping.reports,
+                        playback_secs: playback.state.playback_position(),
+                    },
+                    &chrome_frame,
+                );
 
                 // The caption is the same chrome in 3D (§7).
                 if state.is_mobile {
