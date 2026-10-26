@@ -65,9 +65,21 @@ no account, no server: everything runs on your own device.
 
 <sub>**Warnings.** The same storm half an hour earlier, inside a tornado warning from NWS Albuquerque. The warning count at top right opens the list, and the national mosaic is on.</sub>
 
+![mPING reports over St. Louis during a hail storm, 15 March 2026](docs/media/mping.jpg)
+
+<sub>**Reports from the ground.** St. Louis at 17:30 CDT on 15 March 2026 with the mPING layer on, showing about 200 reports from the hour before the playhead, mostly hail. Click a report to see what was seen and when.</sub>
+
 ![Storm cells and their tracks near Mayfield, Kentucky on 11 December 2021](docs/media/storm-cells.jpg)
 
 <sub>**Storm tracks.** The Paducah radar at 03:33 UTC on 11 December 2021, with an hour of the outbreak loaded. Cell A, over Marshall County, is the supercell that passed through Mayfield a few minutes earlier. Each lettered cell trails the path it has taken, and the dashed arrows point to where it should be in 30 minutes.</sub>
+
+![The distance tool from a tracked storm to Princeton, Kentucky, with its closest approach](docs/media/storm-ruler.jpg)
+
+<sub>**When will it get here.** The same outbreak at 03:47 UTC, with a measurement from Princeton, Kentucky, to the strongest storm. The end on the storm follows it as it moves, and the readout gives the distance and the storm's closest approach: 3.7 km in 23 minutes.</sub>
+
+![Velocity and storm-relative velocity side by side on a Milton rainband storm in St. Lucie County, Florida](docs/media/vel-srv.jpg)
+
+<sub>**Storm-relative velocity.** A storm in one of Hurricane Milton's rainbands, west of Fort Pierce, Florida, at 16:53 UTC on 9 October 2024, seen from Melbourne. The storms were moving north toward the radar at 41 km/h, so plain velocity (left) shows the whole cell inbound and the rotation is only a pale patch beside a darker green one. Storm-relative velocity (right) takes that motion out, and the same spot becomes an outbound and inbound pair side by side.</sub>
 
 ![Rays playback of one Milton volume, the sweep line painting each tilt over the last](docs/media/sweep.webp)
 
