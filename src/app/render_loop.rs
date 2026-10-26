@@ -66,6 +66,8 @@ impl WorkbenchApp {
         );
         self.execute_advance_playback_actions(site, actions);
 
+        let work = crate::core::frame_work::decide(&self.site_work_facts(site));
+        let focus = site == self.sites.focus;
         let target = &self.sites.list[site];
         let followup = decide_prefetch_and_caption(
             FrameFollowupEnv {
@@ -78,11 +80,25 @@ impl WorkbenchApp {
                 archive_boundaries: &target.shadows,
                 displayed: target.displayed.as_ref(),
                 track_scan_key: target.render.scan_key(),
-                active_download_ranges: &self.state.download_progress.active_scans,
-                in_flight_download_ranges: &self.state.download_progress.in_flight_scans,
-                pending_download_ranges: &self.state.download_progress.pending_scans,
+                // The ghost ranges are the focus's downloads.
+                active_download_ranges: if focus {
+                    &self.state.download_progress.active_scans
+                } else {
+                    &[]
+                },
+                in_flight_download_ranges: if focus {
+                    &self.state.download_progress.in_flight_scans
+                } else {
+                    &[]
+                },
+                pending_download_ranges: if focus {
+                    &self.state.download_progress.pending_scans
+                } else {
+                    &[]
+                },
                 max_scan_age_secs: MAX_SCAN_AGE_SECS,
                 prefetch_lookahead_secs: PREFETCH_LOOKAHEAD_SECS,
+                work: &work,
             },
             &self.playback.state,
             &target.scans,
@@ -103,8 +119,58 @@ impl WorkbenchApp {
                 identity.product.clone(),
             );
         }
-        if site == self.sites.focus {
-            self.state.viz_state.caption_context = followup.caption_context;
+        if focus {
+            self.state.viz_state.caption_context = followup.caption_context.clone();
+        }
+        self.sites.list[site].caption = followup.caption_context;
+    }
+
+    /// The facts [`crate::core::frame_work::decide`] reads for one site:
+    /// its timeline and listing at the playhead, its downloads in the queue,
+    /// their bytes, its ledger and its failed downloads.
+    fn site_work_facts(&self, site: usize) -> crate::core::frame_work::WorkFacts {
+        let target = &self.sites.list[site];
+        let playhead = self.playback.state.playback_position();
+        let now_ms = js_sys::Date::now();
+        let id = &target.id;
+        let date = chrono::DateTime::from_timestamp(playhead as i64, 0)
+            .map(|d| d.date_naive())
+            .unwrap_or_default();
+        let coordinator = &self.acquisition.coordinator;
+        let queue = &coordinator.download_queue;
+        crate::core::frame_work::WorkFacts {
+            playhead,
+            on_device: target.scans.find_volume_at(playhead).is_some(),
+            listed: target.shadows.iter().map(|b| (b.start, b.end)).collect(),
+            day_listed: coordinator.archive_index.get(&id.0, &date).is_some(),
+            listing_pending: coordinator
+                .download_channel
+                .is_listing_pending(&id.0, &date),
+            listing_failed: self
+                .acquisition
+                .listing_backoff
+                .get(&(id.0.clone(), date))
+                .is_some_and(|&until| until > now_ms),
+            queued: queue
+                .pending_items()
+                .filter(|item| &item.site == id)
+                .map(|item| item.scan_start)
+                .collect(),
+            downloading: queue
+                .active_items()
+                .filter(|item| &item.site == id)
+                .map(|item| item.scan_start)
+                .collect(),
+            requested: target.ledger.in_progress_scan_starts(now_ms),
+            bytes: self
+                .state
+                .download_progress
+                .bytes
+                .entries()
+                .iter()
+                .map(|&(k, p)| (k, p.received, p.total))
+                .collect(),
+            failed: self.acquisition.state.failed_downloads_for(&id.0),
         }
     }
 

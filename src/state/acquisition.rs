@@ -399,6 +399,34 @@ impl AcquisitionState {
             .collect()
     }
 
+    /// One site's failed downloads, oldest first, with their errors: what
+    /// the canvas caption says when the playhead's volume is one of them.
+    pub(crate) fn failed_downloads_for(
+        &self,
+        site_id: &str,
+    ) -> Vec<crate::core::frame_work::FailedDownload> {
+        self.operations
+            .iter()
+            .filter_map(|op| match (&op.status, &op.kind) {
+                (
+                    OperationStatus::Failed { error },
+                    OperationKind::ArchiveDownload {
+                        site_id: id,
+                        scan_start,
+                        ..
+                    },
+                ) if id.eq_ignore_ascii_case(site_id) => {
+                    Some(crate::core::frame_work::FailedDownload {
+                        scan_start: *scan_start,
+                        error: error.clone(),
+                        id: op.id,
+                    })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Ids of every currently-Failed archive download, oldest first — the
     /// targets of a "retry all" sweep.
     pub(crate) fn failed_operation_ids(&self) -> Vec<OperationId> {

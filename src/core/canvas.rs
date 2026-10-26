@@ -14,6 +14,7 @@
 //! The shell wrappers (`ui::canvas`, `gpu_renderer::inspect`) feed these the data
 //! they read from subsystems / GL handles and apply the results.
 
+use crate::core::frame_work::{format_mb, short_error, SiteWork};
 use crate::core::Sweep;
 
 // ---------------------------------------------------------------------------
@@ -456,7 +457,7 @@ pub(crate) const DEFAULT_FRAME_STEP_SECS: f64 = 300.0;
 /// session facts do not carry. Plain data; the caption rule
 /// ([`decide_canvas_caption`]) reads it beside [`crate::core::session::SessionVm`]'s
 /// frame and playhead facts.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub(crate) struct CaptionContext {
     /// Seconds between consecutive frames of the tilt on screen ("one
     /// frame" in the rule). See [`frame_step_secs`].
@@ -478,6 +479,9 @@ pub(crate) struct CaptionContext {
     /// `(cuts on device, cuts in the volume)`. `None` when the volume is
     /// whole, or no volume renders.
     pub volume_cuts: Option<(usize, usize)>,
+    /// What the site is doing about the volume at the playhead
+    /// ([`crate::core::frame_work::decide`]).
+    pub work: SiteWork,
 }
 
 impl Default for CaptionContext {
@@ -490,15 +494,37 @@ impl Default for CaptionContext {
             fetchable_scan_start: None,
             volume_waiting: false,
             volume_cuts: None,
+            work: SiteWork::Idle,
         }
     }
 }
 
 /// Why the frame is not the one the playhead calls for.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub(crate) enum CaptionReason {
-    /// A download covering the playhead is on its way.
-    Downloading,
+    /// The day's listing is being fetched, to find the volume.
+    Listing,
+    /// The day's listing failed; it is tried again after a wait.
+    ListingFailed,
+    /// The volume waits for a free download slot.
+    Queued { scan_start: i64 },
+    /// A download covering the playhead is on its way: the volume's start
+    /// and its bytes, when the download is known by name.
+    Downloading {
+        scan_start: Option<i64>,
+        received: u64,
+        total: Option<u64>,
+    },
+    /// The volume is downloaded and being decoded.
+    Processing { scan_start: i64 },
+    /// The volume's download failed; `retry` starts it again.
+    Failed {
+        scan_start: i64,
+        error: String,
+        retry: crate::core::OperationId,
+    },
+    /// The live stream is opening.
+    Connecting,
     /// A running stream will bring it; the antenna is elsewhere.
     Waiting { antenna_deg: Option<f32> },
     /// The live stream failed and will start again on its own.
@@ -507,8 +533,75 @@ pub(crate) enum CaptionReason {
     NoData { fetch: Option<i64> },
 }
 
+impl CaptionReason {
+    /// The reason a site's [`SiteWork`] gives, if any.
+    fn from_work(work: &SiteWork) -> Option<Self> {
+        Some(match work {
+            SiteWork::Idle => return None,
+            SiteWork::Listing => CaptionReason::Listing,
+            SiteWork::ListingFailed => CaptionReason::ListingFailed,
+            SiteWork::Queued { scan_start } => CaptionReason::Queued {
+                scan_start: *scan_start,
+            },
+            SiteWork::Downloading {
+                scan_start,
+                received,
+                total,
+            } => CaptionReason::Downloading {
+                scan_start: Some(*scan_start),
+                received: *received,
+                total: *total,
+            },
+            SiteWork::Processing { scan_start } => CaptionReason::Processing {
+                scan_start: *scan_start,
+            },
+            SiteWork::Failed {
+                scan_start,
+                error,
+                retry,
+            } => CaptionReason::Failed {
+                scan_start: *scan_start,
+                error: error.clone(),
+                retry: *retry,
+            },
+        })
+    }
+
+    /// Something is on its way: the caption shows it working.
+    pub(crate) fn is_busy(&self) -> bool {
+        matches!(
+            self,
+            CaptionReason::Listing
+                | CaptionReason::Queued { .. }
+                | CaptionReason::Downloading { .. }
+                | CaptionReason::Processing { .. }
+                | CaptionReason::Connecting
+        )
+    }
+
+    /// A step failed.
+    pub(crate) fn is_failed(&self) -> bool {
+        matches!(
+            self,
+            CaptionReason::ListingFailed | CaptionReason::Failed { .. }
+        )
+    }
+
+    /// The share downloaded, when the download's size is known.
+    fn fraction(&self) -> Option<f32> {
+        match *self {
+            CaptionReason::Downloading {
+                received,
+                total: Some(total),
+                ..
+            } if total > 0 => Some((received as f64 / total as f64).clamp(0.0, 1.0) as f32),
+            _ => None,
+        }
+    }
+}
+
 /// The canvas caption decision — the only text that ever sits over the map.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
+#[derive(Clone, PartialEq, Debug, Default)]
 pub(crate) enum CanvasCaption {
     /// The frame and the playhead agree (within one frame).
     #[default]
@@ -543,18 +636,20 @@ pub(crate) enum CanvasCaption {
 /// playhead differ by more than one frame, pinned or not; a blank map always
 /// says why.
 ///
-/// - `frame` / `playhead`: the session's frame and playhead facts.
+/// - `frame`: the frame on screen's midpoint and end, Unix seconds.
+/// - `playhead`: the session's playhead.
 /// - `now`: this frame's wall clock (the playhead's time when pinned).
-/// - `stream_running` / `antenna_deg`: whether a stream will bring the next
-///   frame, and the tilt the antenna is on.
-/// - `reconnecting`: the focus site's stream failed and waits to start again.
+/// - `stream`: the site's stream ([`StreamFacts`]).
+///
+/// Why, in order: the archive volume at the playhead is on its way or
+/// failed (`ctx.work`), a download covers the playhead, the live stream is
+/// starting again, opening or running, the day's listing is on its way or
+/// failed, else nothing is coming.
 pub(crate) fn decide_canvas_caption(
-    frame: Option<&crate::core::session::FrameFact>,
+    frame: Option<(f64, f64)>,
     playhead: crate::core::session::Playhead,
     now: f64,
-    stream_running: bool,
-    reconnecting: bool,
-    antenna_deg: Option<f32>,
+    stream: StreamFacts,
     ctx: &CaptionContext,
 ) -> CanvasCaption {
     use crate::core::session::Playhead;
@@ -568,40 +663,72 @@ pub(crate) fn decide_canvas_caption(
         return CanvasCaption::VolumePartial {
             on_device,
             total,
-            fetching: ctx.fetch_covers_playhead,
+            fetching: ctx.fetch_covers_playhead || ctx.work.is_busy(),
         };
     }
     let (target, pinned) = match playhead {
         Playhead::PinnedToNow => (now, true),
         Playhead::AtTime { ts, .. } => (ts, false),
     };
-    let reason = if ctx.fetch_covers_playhead {
-        CaptionReason::Downloading
-    } else if pinned && reconnecting {
-        CaptionReason::Reconnecting
-    } else if pinned && stream_running {
-        CaptionReason::Waiting { antenna_deg }
-    } else {
-        CaptionReason::NoData {
+    let reason = match CaptionReason::from_work(&ctx.work) {
+        Some(r) if !matches!(r, CaptionReason::Listing | CaptionReason::ListingFailed) => r,
+        _ if ctx.fetch_covers_playhead => CaptionReason::Downloading {
+            scan_start: None,
+            received: 0,
+            total: None,
+        },
+        _ if pinned && stream.reconnecting => CaptionReason::Reconnecting,
+        _ if pinned && stream.connecting => CaptionReason::Connecting,
+        _ if pinned && stream.running => CaptionReason::Waiting {
+            antenna_deg: stream.antenna_deg,
+        },
+        Some(listing) => listing,
+        None => CaptionReason::NoData {
             fetch: ctx.fetchable_scan_start,
-        }
+        },
     };
-    let Some(f) = frame else {
+    let Some((mid, end)) = frame else {
         return CanvasCaption::NoFrame {
             playhead: target,
             tilt_deg: ctx.wanted_tilt_deg,
             reason,
         };
     };
-    if frame_disagrees(f.time_secs, f.end_secs, target, ctx.frame_step_secs) {
+    if frame_disagrees(mid, end, target, ctx.frame_step_secs) {
         CanvasCaption::Discrepancy {
-            showing: f.time_secs,
+            showing: mid,
             playhead: target,
             tilt_deg: ctx.wanted_tilt_deg,
             reason,
         }
     } else {
         CanvasCaption::None
+    }
+}
+
+/// A site's live stream, as the caption rule reads it.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub(crate) struct StreamFacts {
+    /// A stream runs and will bring the next frame.
+    pub running: bool,
+    /// The stream is opening.
+    pub connecting: bool,
+    /// The stream failed and waits to start again.
+    pub reconnecting: bool,
+    /// The tilt the antenna is on.
+    pub antenna_deg: Option<f32>,
+}
+
+impl StreamFacts {
+    /// The facts of a site's classified stream.
+    pub(crate) fn of(stream: crate::core::session::Stream, antenna_deg: Option<f32>) -> Self {
+        use crate::core::session::Stream;
+        Self {
+            running: stream.is_running(),
+            connecting: stream == Stream::Connecting,
+            reconnecting: stream == Stream::Retrying,
+            antenna_deg,
+        }
     }
 }
 
@@ -692,16 +819,22 @@ pub(crate) enum CaptionRole {
     Frame,
     /// The playhead's time; `pinned` when it is now.
     Playhead { pinned: bool },
-    /// The clickable "fetch" (the line's [`CaptionLine::action`]).
+    /// The clickable "fetch" or "retry" (the line's [`CaptionLine::action`]).
     Action,
+    /// What failed, in the failure color.
+    Failure,
 }
 
 /// The caption as words, segment by segment.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Default)]
 pub(crate) struct CaptionLine {
     pub segments: Vec<(String, CaptionRole)>,
     /// What clicking the [`CaptionRole::Action`] segment does.
     pub action: Option<crate::core::Intent>,
+    /// Something is on its way: the line leads with a turning mark.
+    pub busy: bool,
+    /// A download's share so far, drawn as a bar under the line.
+    pub progress: Option<f32>,
 }
 
 impl CaptionLine {
@@ -715,20 +848,46 @@ impl CaptionLine {
 /// The caption's words while the live stream waits to start again.
 const RECONNECTING: &str = "live stream failed, retrying";
 
+/// The caption's words while the live stream opens.
+const CONNECTING: &str = "connecting to the live stream";
+
 fn tilt_word(tilt_deg: Option<f32>) -> Option<String> {
     tilt_deg.map(|t| format!("{t:.1}°"))
 }
 
-/// The caption's words in the §7 forms:
+/// A download's words: `downloading 2.1 of 4.8 MB`, `downloading 2.1 MB`,
+/// or `downloading` before the first bytes.
+fn downloading_words(received: u64, total: Option<u64>) -> String {
+    match (received, total) {
+        (0, _) => "downloading".to_string(),
+        (r, Some(t)) if t > 0 => format!(
+            "downloading {} of {}",
+            format_mb(r).trim_end_matches(" MB"),
+            format_mb(t)
+        ),
+        (r, _) => format!("downloading {}", format_mb(r)),
+    }
+}
+
+/// The caption's words in the §7 forms. A blank map's line leads with the
+/// site (`site`) and names the step bringing its frame:
+///
+/// - `KAMX · finding volumes near 19:03`
+/// - `KAMX 19:01:12 · waiting to download`
+/// - `KAMX 19:01:12 · downloading 2.1 of 4.8 MB`
+/// - `KAMX 19:01:12 · decoding`
+/// - `couldn't download KAMX 19:01:12 · HTTP 503 · retry`
+/// - `KAMX · waiting for 0.5° (antenna on 4.0°)`
+/// - `KAMX · no 0.5° data at 11:30 · fetch`
+///
+/// A frame held away from the playhead names both:
 ///
 /// - `showing 11:28:51 · playhead 11:30:49 · 0.5° at 11:30 is downloading`
 /// - `… · no 0.5° at 11:30` (`· fetch` when the archive lists it)
-/// - `… · waiting for 0.5° (antenna on 4.0°)`
-/// - `no frame yet · downloading 11:21:49`
-/// - `no 0.5° data at 11:30 · fetch`
 pub(crate) fn caption_line(
     caption: &CanvasCaption,
     pinned: bool,
+    site: &str,
     clock: &dyn crate::core::session::Clock,
 ) -> Option<CaptionLine> {
     let mut segs: Vec<(String, CaptionRole)> = Vec::new();
@@ -744,13 +903,14 @@ pub(crate) fn caption_line(
         }
         s
     };
-    match *caption {
+    let reason = match caption {
         CanvasCaption::None => return None,
         CanvasCaption::VolumeWaiting => {
             segs.push(words(
                 "waiting for the volume to complete · volume rendering needs every tilt"
                     .to_string(),
             ));
+            None
         }
         CanvasCaption::VolumePartial {
             on_device,
@@ -761,78 +921,162 @@ pub(crate) fn caption_line(
                 format!("drawing {on_device} of {total} cuts"),
                 CaptionRole::Frame,
             ));
-            if fetching {
+            if *fetching {
                 segs.push(words(" · fetching the rest".to_string()));
             }
+            None
         }
         CanvasCaption::NoFrame {
             playhead,
             tilt_deg,
             reason,
-        } => match reason {
-            CaptionReason::Downloading => {
-                segs.push(words("no frame yet · downloading ".to_string()));
-                segs.push((clock.hms(playhead), CaptionRole::Playhead { pinned }));
-            }
-            CaptionReason::Waiting { antenna_deg } => {
-                segs.push(words(format!(
-                    "no frame yet · {}",
-                    waiting(tilt_deg, antenna_deg)
-                )));
-            }
-            CaptionReason::Reconnecting => {
-                segs.push(words(format!("no frame yet · {RECONNECTING}")));
-            }
-            CaptionReason::NoData { fetch } => {
-                segs.push(words(match tilt_word(tilt_deg) {
-                    Some(t) => format!("no {t} data at "),
-                    None => "no data at ".to_string(),
-                }));
-                segs.push((clock.hm(playhead), CaptionRole::Playhead { pinned }));
-                if let Some(scan_start) = fetch {
-                    segs.push(words(" · ".to_string()));
-                    segs.push(("fetch".to_string(), CaptionRole::Action));
-                    action = Some(fetch_intent(scan_start));
+        } => {
+            let playhead = *playhead;
+            match reason {
+                CaptionReason::Listing => {
+                    segs.push(words(format!("{site} · finding volumes near ")));
+                    segs.push((clock.hm(playhead), CaptionRole::Playhead { pinned }));
+                }
+                CaptionReason::ListingFailed => {
+                    segs.push((
+                        format!("couldn't list {site} volumes near "),
+                        CaptionRole::Failure,
+                    ));
+                    segs.push((clock.hm(playhead), CaptionRole::Playhead { pinned }));
+                    segs.push(words(" · trying again soon".to_string()));
+                }
+                CaptionReason::Queued { scan_start } => {
+                    segs.push(words(format!(
+                        "{site} {} · waiting to download",
+                        clock.hms(*scan_start as f64)
+                    )));
+                }
+                CaptionReason::Downloading {
+                    scan_start: Some(start),
+                    received,
+                    total,
+                } => {
+                    segs.push(words(format!(
+                        "{site} {} · {}",
+                        clock.hms(*start as f64),
+                        downloading_words(*received, *total)
+                    )));
+                }
+                CaptionReason::Downloading {
+                    scan_start: None, ..
+                } => {
+                    segs.push(words(format!("{site} · downloading ")));
+                    segs.push((clock.hms(playhead), CaptionRole::Playhead { pinned }));
+                }
+                CaptionReason::Processing { scan_start } => {
+                    segs.push(words(format!(
+                        "{site} {} · decoding",
+                        clock.hms(*scan_start as f64)
+                    )));
+                }
+                CaptionReason::Failed {
+                    scan_start,
+                    error,
+                    retry,
+                } => {
+                    segs.push((
+                        format!("couldn't download {site} {}", clock.hms(*scan_start as f64)),
+                        CaptionRole::Failure,
+                    ));
+                    segs.push(words(format!(" · {} · ", short_error(error))));
+                    segs.push(("retry".to_string(), CaptionRole::Action));
+                    action = Some(crate::core::Intent::RetryFailed(*retry));
+                }
+                CaptionReason::Connecting => {
+                    segs.push(words(format!("{site} · {CONNECTING}")));
+                }
+                CaptionReason::Waiting { antenna_deg } => {
+                    segs.push(words(format!(
+                        "{site} · {}",
+                        waiting(*tilt_deg, *antenna_deg)
+                    )));
+                }
+                CaptionReason::Reconnecting => {
+                    segs.push(words(format!("{site} · {RECONNECTING}")));
+                }
+                CaptionReason::NoData { fetch } => {
+                    segs.push(words(match tilt_word(*tilt_deg) {
+                        Some(t) => format!("{site} · no {t} data at "),
+                        None => format!("{site} · no data at "),
+                    }));
+                    segs.push((clock.hm(playhead), CaptionRole::Playhead { pinned }));
+                    if let Some(scan_start) = fetch {
+                        segs.push(words(" · ".to_string()));
+                        segs.push(("fetch".to_string(), CaptionRole::Action));
+                        action = Some(fetch_intent(*scan_start));
+                    }
                 }
             }
-        },
+            Some(reason)
+        }
         CanvasCaption::Discrepancy {
             showing,
             playhead,
             tilt_deg,
             reason,
         } => {
+            let playhead = *playhead;
             segs.push(words("showing ".to_string()));
-            segs.push((clock.hms(showing), CaptionRole::Frame));
+            segs.push((clock.hms(*showing), CaptionRole::Frame));
             segs.push(words(" · playhead ".to_string()));
             segs.push((clock.hms(playhead), CaptionRole::Playhead { pinned }));
             segs.push(words(" · ".to_string()));
+            let at = match tilt_word(*tilt_deg) {
+                Some(t) => format!("{t} at {}", clock.hm(playhead)),
+                None => clock.hm(playhead),
+            };
             match reason {
-                CaptionReason::Downloading => segs.push(words(match tilt_word(tilt_deg) {
-                    Some(t) => format!("{t} at {} is downloading", clock.hm(playhead)),
-                    None => format!("{} is downloading", clock.hm(playhead)),
-                })),
+                CaptionReason::Listing => segs.push(words(format!(
+                    "finding volumes near {}",
+                    clock.hm(playhead)
+                ))),
+                CaptionReason::ListingFailed => segs.push((
+                    format!("couldn't list volumes near {}", clock.hm(playhead)),
+                    CaptionRole::Failure,
+                )),
+                CaptionReason::Queued { .. } => {
+                    segs.push(words(format!("{at} is waiting to download")))
+                }
+                CaptionReason::Downloading { .. } => {
+                    segs.push(words(format!("{at} is downloading")))
+                }
+                CaptionReason::Processing { .. } => segs.push(words(format!("{at} is decoding"))),
+                CaptionReason::Failed { retry, .. } => {
+                    segs.push((format!("couldn't download {at}"), CaptionRole::Failure));
+                    segs.push(words(" · ".to_string()));
+                    segs.push(("retry".to_string(), CaptionRole::Action));
+                    action = Some(crate::core::Intent::RetryFailed(*retry));
+                }
+                CaptionReason::Connecting => segs.push(words(CONNECTING.to_string())),
                 CaptionReason::Waiting { antenna_deg } => {
-                    segs.push(words(waiting(tilt_deg, antenna_deg)))
+                    segs.push(words(waiting(*tilt_deg, *antenna_deg)))
                 }
                 CaptionReason::Reconnecting => segs.push(words(RECONNECTING.to_string())),
                 CaptionReason::NoData { fetch } => {
-                    segs.push(words(match tilt_word(tilt_deg) {
+                    segs.push(words(match tilt_word(*tilt_deg) {
                         Some(t) => format!("no {t} at {}", clock.hm(playhead)),
                         None => format!("no data at {}", clock.hm(playhead)),
                     }));
                     if let Some(scan_start) = fetch {
                         segs.push(words(" · ".to_string()));
                         segs.push(("fetch".to_string(), CaptionRole::Action));
-                        action = Some(fetch_intent(scan_start));
+                        action = Some(fetch_intent(*scan_start));
                     }
                 }
             }
+            Some(reason)
         }
-    }
+    };
     Some(CaptionLine {
         segments: segs,
         action,
+        busy: reason.is_some_and(CaptionReason::is_busy),
+        progress: reason.and_then(CaptionReason::fraction),
     })
 }
 

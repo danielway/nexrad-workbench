@@ -93,6 +93,11 @@ pub(crate) struct ActivityInputs<'a> {
     /// last showed them ([`errors_acked`]).
     pub errors: &'a ErrorContext,
     pub errors_acked: u64,
+    /// The sites fetching the listing of the playhead's day to find its
+    /// volume ([`crate::core::frame_work::SiteWork::Listing`]).
+    pub listing: &'a [String],
+    /// Each download in flight's bytes so far and total, when known.
+    pub download_bytes: &'a [(u64, Option<u64>)],
 }
 
 /// Dev-only inputs, surfaced under the sheet's Details disclosure.
@@ -191,6 +196,8 @@ pub(crate) enum ActivityGlyph {
     Gear,
     Wave,
     Pause,
+    /// A listing is on its way.
+    Listing,
 }
 
 /// The chip's headline.
@@ -228,11 +235,16 @@ impl ActivityHeadline {
     /// The chip's words. With one site, the label alone; with more, the
     /// sum: `Receiving · 3 sites`, `Receiving 3 sites · 1 stalled`.
     pub(crate) fn words(&self) -> String {
+        self.words_with(self.label)
+    }
+
+    /// [`Self::words`] with `label` in place of the headline's own.
+    fn words_with(&self, label: &str) -> String {
         let SiteSum { sites, stalled } = self.sites;
         match (sites, stalled) {
-            (0 | 1, _) => self.label.to_string(),
-            (n, 0) => format!("{} \u{00b7} {n} sites", self.label),
-            (n, k) => format!("{} {n} sites \u{00b7} {k} stalled", self.label),
+            (0 | 1, _) => label.to_string(),
+            (n, 0) => format!("{label} \u{00b7} {n} sites"),
+            (n, k) => format!("{label} {n} sites \u{00b7} {k} stalled"),
         }
     }
 }
@@ -565,6 +577,11 @@ pub(crate) struct ActivityVm {
     /// one site is listed ([`site_sections`]).
     pub sites: Vec<SiteSection>,
     pub detail: Option<ActivityDetailVm>,
+    /// The sites finding the playhead's volume in their day's listing.
+    pub listing: Vec<String>,
+    /// The one download's share, in percent, while it is the only scan to
+    /// fetch and its size is known.
+    pub percent: Option<u8>,
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -572,9 +589,46 @@ pub(crate) struct ActivityVm {
 // ───────────────────────────────────────────────────────────────────────────
 
 impl ActivityVm {
+    /// The chip's words: the headline's, with the one download's share
+    /// (`Downloading 44%`); while nothing else goes on and a site looks
+    /// for the playhead's volume, `Listing KAMX`.
+    pub(crate) fn chip_words(&self) -> String {
+        if self.lists() {
+            return format!("Listing {}", self.listing.join(", "));
+        }
+        match (self.state, self.percent) {
+            (ActivityState::Downloading { .. }, Some(p)) => self
+                .headline
+                .words_with(&format!("{} {p}%", self.headline.label)),
+            _ => self.headline.words(),
+        }
+    }
+
+    /// The chip's glyph ([`Self::chip_words`]).
+    pub(crate) fn chip_glyph(&self) -> ActivityGlyph {
+        if self.lists() {
+            ActivityGlyph::Listing
+        } else {
+            self.headline.glyph
+        }
+    }
+
+    /// Whether the chip rests in its muted tone: up to date, with no
+    /// listing on its way.
+    pub(crate) fn chip_idle(&self) -> bool {
+        self.state == ActivityState::UpToDate && !self.lists()
+    }
+
+    fn lists(&self) -> bool {
+        self.state == ActivityState::UpToDate && !self.listing.is_empty()
+    }
+
     /// The chip's hover sentence. With more than one site it names how many
     /// the chip speaks for and how many of their streams stalled.
     pub(crate) fn hover(&self) -> String {
+        if self.lists() {
+            return "Finding the volume at the playhead in the archive's listing".to_string();
+        }
         let SiteSum { sites, stalled } = self.headline.sites;
         if sites < 2 {
             return match self.state {
@@ -680,6 +734,12 @@ impl ActivityVm {
         } else {
             Vec::new()
         };
+        let percent = match inputs.download_bytes {
+            [(received, Some(total))] if counts.outstanding() == 1 && *total > 0 => {
+                Some(((*received as f64 / *total as f64).clamp(0.0, 1.0) * 100.0).floor() as u8)
+            }
+            _ => None,
+        };
 
         Self {
             state,
@@ -754,6 +814,8 @@ impl ActivityVm {
                 unavailable: inputs.ledger.unavailable,
                 volume_rows: crate::core::volume_plan::volume_texture_rows(&dev.volume_textures),
             }),
+            listing: inputs.listing.to_vec(),
+            percent,
         }
     }
 }
@@ -1156,6 +1218,8 @@ mod coverage_tests {
         now_ms: f64,
         errors: crate::core::ErrorContext,
         errors_acked: u64,
+        listing: Vec<String>,
+        download_bytes: Vec<(u64, Option<u64>)>,
     }
 
     impl Fixture {
@@ -1179,6 +1243,8 @@ mod coverage_tests {
                 now_ms: 1_000.0,
                 errors: crate::core::ErrorContext::default(),
                 errors_acked: 0,
+                listing: Vec::new(),
+                download_bytes: Vec::new(),
             }
         }
 
@@ -1210,6 +1276,8 @@ mod coverage_tests {
                 dev: self.dev.clone(),
                 errors: &self.errors,
                 errors_acked: self.errors_acked,
+                listing: &self.listing,
+                download_bytes: &self.download_bytes,
             }
         }
     }
@@ -1374,6 +1442,50 @@ mod coverage_tests {
         assert_eq!(vm.failed.count, 1);
         assert_eq!(vm.failed.first_error.as_deref(), Some("boom"));
         assert_eq!(vm.failed.retryable, vec![2]);
+    }
+
+    /// One download alone shows its share; with more scans to fetch the
+    /// count stands alone, since one file's share would not say how far
+    /// the batch is.
+    #[wasm_bindgen_test]
+    fn one_download_alone_shows_its_share() {
+        let mut f = Fixture::new();
+        f.operations
+            .push_back(download(1, 1000, OperationStatus::Active));
+        f.download_bytes = vec![(2_100_000, Some(4_800_000))];
+        let vm = f.vm();
+        assert_eq!(vm.chip_words(), "Downloading 43%");
+        assert_eq!(vm.chip_glyph(), ActivityGlyph::ArrowDown);
+
+        f.operations
+            .push_back(download(2, 2000, OperationStatus::Queued));
+        assert_eq!(f.vm().chip_words(), "Downloading");
+
+        f.operations.pop_back();
+        f.download_bytes = vec![(2_100_000, None)];
+        assert_eq!(f.vm().chip_words(), "Downloading");
+    }
+
+    /// With nothing else going on, a site looking for the playhead's
+    /// volume in its listing says so; other work speaks over it.
+    #[wasm_bindgen_test]
+    fn a_listing_shows_when_nothing_else_goes_on() {
+        let mut f = Fixture::new();
+        f.listing = vec!["KAMX".into()];
+        let vm = f.vm();
+        assert_eq!(vm.chip_words(), "Listing KAMX");
+        assert_eq!(vm.chip_glyph(), ActivityGlyph::Listing);
+        assert!(!vm.chip_idle());
+
+        f.operations
+            .push_back(download(1, 1000, OperationStatus::Active));
+        assert_eq!(f.vm().chip_words(), "Downloading");
+
+        f.operations.clear();
+        f.listing.clear();
+        let vm = f.vm();
+        assert_eq!(vm.chip_words(), "Up to date");
+        assert!(vm.chip_idle());
     }
 
     /// A worker that died leaves a pending entry behind forever. Past the
@@ -1742,6 +1854,8 @@ mod coverage_tests {
                 dev: Some(ActivityDevInputs::default()),
                 errors: &f.errors,
                 errors_acked: 0,
+                listing: &[],
+                download_bytes: &[],
             }
         });
         assert_eq!(vm.detail.expect("developer rows").requests, 7);

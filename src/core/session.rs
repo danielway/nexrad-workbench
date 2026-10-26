@@ -40,7 +40,7 @@
 //! finished string here.
 
 use crate::core::canvas::{
-    caption_line, decide_canvas_caption, CanvasCaption, CaptionContext, CaptionLine,
+    caption_line, decide_canvas_caption, CanvasCaption, CaptionContext, CaptionLine, StreamFacts,
 };
 use crate::core::live_status::LiveStatus;
 use crate::core::selection_chip::ChipLabel;
@@ -317,6 +317,8 @@ pub(crate) struct SessionInputs<'a> {
     /// Every drawn site but the focus, for the caption's sites behind;
     /// empty with one site and in 3D, which draws the focus only.
     pub others: Vec<crate::core::site_canvas::SiteFrame>,
+    /// The focus site's id, which a blank map's caption leads with.
+    pub site_id: &'a str,
 }
 
 /// One session, four facts, five surfaces. Rebuilt once per frame.
@@ -348,6 +350,11 @@ pub(crate) struct SessionVm {
     /// The other sites whose frame disagrees with the playhead
     /// ([`crate::core::site_canvas::sites_behind`]).
     pub sites_behind: Option<crate::core::site_canvas::SitesBehind>,
+    /// The focus site's id.
+    pub site_id: String,
+    /// Every other drawn site's caption, decided by the same rule, in list
+    /// order.
+    pub other_captions: Vec<(String, CanvasCaption)>,
 
     /// A stream runs and the selection is pinned to now: what the favicon,
     /// the tab title and the link's pinned selection read.
@@ -379,6 +386,8 @@ impl Default for SessionVm {
             activity_hover: None,
             canvas_caption: CanvasCaption::None,
             sites_behind: None,
+            site_id: String::new(),
+            other_captions: Vec::new(),
             live_now: false,
             tilt_role: TiltRole::Picks,
         }
@@ -451,14 +460,28 @@ impl SessionVm {
             _ => None,
         };
         let canvas_caption = decide_canvas_caption(
-            frame.as_ref(),
+            frame.as_ref().map(|f| (f.time_secs, f.end_secs)),
             playhead,
             now,
-            inputs.any_site_streams,
-            stream == Stream::Retrying,
-            inputs.live_cut.as_ref().and_then(|c| c.elevation_angle),
+            StreamFacts {
+                running: inputs.any_site_streams,
+                ..StreamFacts::of(
+                    stream,
+                    inputs.live_cut.as_ref().and_then(|c| c.elevation_angle),
+                )
+            },
             &inputs.caption_context,
         );
+        let other_captions = inputs
+            .others
+            .iter()
+            .map(|o| {
+                (
+                    o.id.clone(),
+                    decide_canvas_caption(o.frame, playhead, now, o.stream, &o.context),
+                )
+            })
+            .collect();
         let target = match playhead {
             Playhead::PinnedToNow => now,
             Playhead::AtTime { ts, .. } => ts,
@@ -481,6 +504,8 @@ impl SessionVm {
             activity_hover,
             canvas_caption,
             sites_behind,
+            site_id: inputs.site_id.to_string(),
+            other_captions,
             live_now,
             tilt_role: TiltRole::from_volume_3d(inputs.volume_3d_active),
         }
@@ -565,25 +590,87 @@ impl SessionVm {
         }
     }
 
-    /// The canvas caption, segment by segment (§7 forms), or `None` when
-    /// the frame and the playhead agree. With other sites behind the
-    /// playhead the caption names them instead of the focus's own lag (the
-    /// age pill and the frame readout already speak for the focus); a
-    /// blank or waiting focus still says why first.
-    pub(crate) fn canvas_caption_line(&self, clock: &dyn Clock) -> Option<CaptionLine> {
+    /// The canvas caption, one line per site with something to say (§7
+    /// forms); empty when every frame agrees with the playhead.
+    ///
+    /// The focus's line comes first. With other sites behind the playhead
+    /// it names them instead of the focus's own lag (the age pill and the
+    /// frame readout already speak for the focus); a blank or waiting focus
+    /// still says why first. Then each other blank site whose frame is on
+    /// its way, failed, or waits on its stream gets its own line, at most
+    /// [`crate::core::site_canvas::MAX_NAMED_SITES`], and leaves the
+    /// sites-behind list.
+    pub(crate) fn canvas_caption_lines(&self, clock: &dyn Clock) -> Vec<CaptionLine> {
         let pinned = self.playhead == Playhead::PinnedToNow;
-        match (&self.canvas_caption, &self.sites_behind) {
+        let own: Vec<&(String, CanvasCaption)> = self
+            .other_captions
+            .iter()
+            .filter(|(_, c)| {
+                matches!(c, CanvasCaption::NoFrame { reason, .. }
+                    if !matches!(reason, crate::core::canvas::CaptionReason::NoData { .. }))
+            })
+            .take(crate::core::site_canvas::MAX_NAMED_SITES)
+            .collect();
+        let behind = self.sites_behind.as_ref().and_then(|b| {
+            let sites: Vec<_> = b
+                .sites
+                .iter()
+                .filter(|(id, _)| !own.iter().any(|(o, _)| o == id))
+                .cloned()
+                .collect();
+            (!sites.is_empty()).then_some(crate::core::site_canvas::SitesBehind {
+                sites,
+                playhead: b.playhead,
+            })
+        });
+        let mut lines = Vec::new();
+        let focus = match (&self.canvas_caption, &behind) {
             (CanvasCaption::None | CanvasCaption::Discrepancy { .. }, Some(behind)) => Some(
                 crate::core::site_canvas::sites_behind_line(behind, pinned, clock),
             ),
-            (caption, _) => caption_line(caption, pinned, clock),
+            (caption, _) => caption_line(caption, pinned, &self.site_id, clock),
+        };
+        lines.extend(focus);
+        lines.extend(
+            own.into_iter()
+                .filter_map(|(id, c)| caption_line(c, pinned, id, clock)),
+        );
+        lines
+    }
+
+    /// The pill's words with no frame on screen: `loading` while the
+    /// focus's frame is on its way, `no frame` when bringing it failed,
+    /// else `no frame yet`.
+    pub(crate) fn blank_pill(&self) -> (&'static str, &'static str) {
+        match &self.canvas_caption {
+            CanvasCaption::NoFrame { reason, .. } if reason.is_busy() => {
+                ("loading", "Bringing the frame at the playhead: see the map")
+            }
+            CanvasCaption::NoFrame { reason, .. } if reason.is_failed() => (
+                "no frame",
+                "Bringing the frame at the playhead failed: see the map",
+            ),
+            _ => ("no frame yet", "Nothing on screen yet"),
         }
     }
 
     /// The canvas caption's words as one string.
     #[cfg(test)]
     pub(crate) fn canvas_caption_text(&self, clock: &dyn Clock) -> Option<String> {
-        self.canvas_caption_line(clock).map(|l| l.text())
+        let lines = self.canvas_caption_lines(clock);
+        (!lines.is_empty()).then(|| {
+            lines
+                .iter()
+                .map(|l| l.text())
+                .collect::<Vec<_>>()
+                .join(" / ")
+        })
+    }
+
+    /// The focus's caption line, the first.
+    #[cfg(test)]
+    pub(crate) fn canvas_caption_line(&self, clock: &dyn Clock) -> Option<CaptionLine> {
+        self.canvas_caption_lines(clock).into_iter().next()
     }
 }
 
@@ -923,9 +1010,10 @@ mod tests {
                 playback_position_secs: self.playhead,
                 displayed: self.displayed,
                 live_cut: self.live_cut.clone(),
-                caption_context: self.caption,
+                caption_context: self.caption.clone(),
                 volume_3d_active: self.volume_3d_active,
                 others: self.others.clone(),
+                site_id: "KDMX",
             })
         }
     }
@@ -1212,6 +1300,8 @@ mod tests {
             id: "KMLB".to_string(),
             frame: Some((t(11, 20, 0), t(11, 20, 15))),
             frame_step_secs: 90.0,
+            context: Default::default(),
+            stream: Default::default(),
         }];
         assert_eq!(
             s.vm().canvas_caption_text(&Utc).as_deref(),
@@ -1228,7 +1318,7 @@ mod tests {
         s.displayed = None;
         assert_eq!(
             s.vm().canvas_caption_text(&Utc).as_deref(),
-            Some("no data at 11:30")
+            Some("KDMX · no data at 11:30")
         );
     }
 
@@ -1471,7 +1561,7 @@ mod tests {
         };
         assert_eq!(
             s.vm().canvas_caption_text(&Utc).as_deref(),
-            Some("no frame yet · downloading 11:21:49")
+            Some("KDMX · downloading 11:21:49")
         );
 
         // Nothing coming, but the archive lists the scan: offer to fetch it.
@@ -1482,7 +1572,7 @@ mod tests {
         };
         let vm = s.vm();
         let line = vm.canvas_caption_line(&Utc).unwrap();
-        assert_eq!(line.text(), "no 0.5° data at 11:30 · fetch");
+        assert_eq!(line.text(), "KDMX · no 0.5° data at 11:30 · fetch");
         assert_eq!(
             line.action,
             Some(Intent::FetchScan {
@@ -1499,7 +1589,7 @@ mod tests {
         s.caption = tilt(300.0);
         assert_eq!(
             s.vm().canvas_caption_text(&Utc).as_deref(),
-            Some("no 0.5° data at 11:30")
+            Some("KDMX · no 0.5° data at 11:30")
         );
 
         // Pinned with a stream: the frame is on its way.
@@ -1509,7 +1599,7 @@ mod tests {
         s.caption = tilt(300.0);
         assert_eq!(
             s.vm().canvas_caption_text(&Utc).as_deref(),
-            Some("no frame yet · waiting for 0.5° (antenna on 4.0°)")
+            Some("KDMX · waiting for 0.5° (antenna on 4.0°)")
         );
 
         // Pinned while the stream waits to start again: say it failed.
@@ -1519,11 +1609,229 @@ mod tests {
         let vm = s.vm();
         assert_eq!(
             vm.canvas_caption_text(&Utc).as_deref(),
-            Some("no frame yet · live stream failed, retrying")
+            Some("KDMX · live stream failed, retrying")
         );
         assert_eq!(
             vm.activity_chip.as_deref(),
             Some("stream failed \u{00b7} retrying in 0:12")
+        );
+    }
+
+    /// A blank map names the step bringing its frame: the listing, the
+    /// download queue, the download with its bytes, the decode, or the
+    /// failure with its reason and a retry. The pill says loading while
+    /// the frame is on its way and no frame when it failed.
+    #[wasm_bindgen_test]
+    fn a_blank_map_names_the_step_bringing_its_frame() {
+        use crate::core::frame_work::SiteWork;
+        let scan = t(19, 1, 12) as i64;
+        let mut s = S::at(t(20, 0, 0));
+        s.playhead = t(19, 3, 20);
+        let step = |s: &mut S, work: SiteWork| {
+            s.caption = CaptionContext {
+                work,
+                ..tilt(300.0)
+            };
+            let vm = s.vm();
+            let line = vm.canvas_caption_line(&Utc).unwrap();
+            (line, vm.blank_pill().0)
+        };
+
+        let (line, pill) = step(&mut s, SiteWork::Listing);
+        assert_eq!(line.text(), "KDMX · finding volumes near 19:03");
+        assert!(line.busy);
+        assert_eq!(pill, "loading");
+
+        let (line, _) = step(&mut s, SiteWork::Queued { scan_start: scan });
+        assert_eq!(line.text(), "KDMX 19:01:12 · waiting to download");
+
+        let (line, pill) = step(
+            &mut s,
+            SiteWork::Downloading {
+                scan_start: scan,
+                received: 2_100_000,
+                total: Some(4_800_000),
+            },
+        );
+        assert_eq!(line.text(), "KDMX 19:01:12 · downloading 2.1 of 4.8 MB");
+        assert!((line.progress.unwrap() - 0.4375).abs() < 1e-4);
+        assert_eq!(pill, "loading");
+
+        let (line, _) = step(
+            &mut s,
+            SiteWork::Downloading {
+                scan_start: scan,
+                received: 0,
+                total: None,
+            },
+        );
+        assert_eq!(line.text(), "KDMX 19:01:12 · downloading");
+        assert_eq!(line.progress, None);
+
+        let (line, _) = step(&mut s, SiteWork::Processing { scan_start: scan });
+        assert_eq!(line.text(), "KDMX 19:01:12 · decoding");
+        assert!(line.busy);
+
+        let (line, pill) = step(
+            &mut s,
+            SiteWork::Failed {
+                scan_start: scan,
+                error: "HTTP 503".into(),
+                retry: 7,
+            },
+        );
+        assert_eq!(
+            line.text(),
+            "couldn't download KDMX 19:01:12 · HTTP 503 · retry"
+        );
+        assert_eq!(line.action, Some(Intent::RetryFailed(7)));
+        assert!(!line.busy);
+        assert!(line
+            .segments
+            .iter()
+            .any(|(_, r)| *r == CaptionRole::Failure));
+        assert_eq!(pill, "no frame");
+
+        let (line, pill) = step(&mut s, SiteWork::ListingFailed);
+        assert_eq!(
+            line.text(),
+            "couldn't list KDMX volumes near 19:03 · trying again soon"
+        );
+        assert_eq!(pill, "no frame");
+
+        let (line, pill) = step(&mut s, SiteWork::Idle);
+        assert_eq!(line.text(), "KDMX · no 0.5° data at 19:03");
+        assert_eq!(pill, "no frame yet");
+    }
+
+    /// The volume's own step wins over the stream; a stream opening or
+    /// starting again wins over the day's listing.
+    #[wasm_bindgen_test]
+    fn pinned_the_stream_speaks_unless_a_volume_is_on_its_way() {
+        use crate::core::frame_work::SiteWork;
+        let mut s = S::at(t(12, 0, 0)).streaming(LiveStatus {
+            activity: StreamActivity::Connecting,
+            ..LiveStatus::default()
+        });
+        s.selection = PINNED;
+        s.caption = CaptionContext {
+            work: SiteWork::Listing,
+            ..tilt(300.0)
+        };
+        let vm = s.vm();
+        assert_eq!(
+            vm.canvas_caption_text(&Utc).as_deref(),
+            Some("KDMX · connecting to the live stream")
+        );
+        assert_eq!(vm.blank_pill().0, "loading");
+
+        s.caption.work = SiteWork::Downloading {
+            scan_start: t(11, 55, 0) as i64,
+            received: 1_000_000,
+            total: Some(4_000_000),
+        };
+        assert_eq!(
+            s.vm().canvas_caption_text(&Utc).as_deref(),
+            Some("KDMX 11:55:00 · downloading 1.0 of 4.0 MB")
+        );
+    }
+
+    /// A frame held away from the playhead names both, then the step.
+    #[wasm_bindgen_test]
+    fn a_held_frame_names_the_step_bringing_the_next() {
+        use crate::core::frame_work::SiteWork;
+        let f = frame(t(11, 28, 0), 1, 0.5);
+        let mut s = S::at(t(12, 0, 0));
+        s.playhead = t(11, 40, 0);
+        s.displayed = Some(&f);
+        s.caption = CaptionContext {
+            work: SiteWork::Failed {
+                scan_start: t(11, 39, 0) as i64,
+                error: "HTTP 503".into(),
+                retry: 3,
+            },
+            ..tilt(300.0)
+        };
+        let vm = s.vm();
+        let line = vm.canvas_caption_line(&Utc).unwrap();
+        assert_eq!(
+            line.text(),
+            "showing 11:27:50 · playhead 11:40:00 · couldn't download 0.5° at 11:40 · retry"
+        );
+        assert_eq!(line.action, Some(Intent::RetryFailed(3)));
+
+        s.caption.work = SiteWork::Processing {
+            scan_start: t(11, 39, 0) as i64,
+        };
+        assert_eq!(
+            s.vm().canvas_caption_text(&Utc).as_deref(),
+            Some("showing 11:27:50 · playhead 11:40:00 · 0.5° at 11:40 is decoding")
+        );
+    }
+
+    /// With more sites, each blank one whose frame is on its way or failed
+    /// gets its own line after the focus's and leaves the sites-behind
+    /// list; a blank site with nothing coming stays in that list.
+    #[wasm_bindgen_test]
+    fn every_blank_site_says_what_brings_its_frame() {
+        use crate::core::frame_work::SiteWork;
+        let f = frame(t(11, 30, 0), 1, 0.5);
+        let mut s = S::at(t(12, 0, 0));
+        s.playhead = t(11, 30, 49);
+        s.displayed = Some(&f);
+        s.caption = tilt(300.0);
+        let other = |id: &str, work: SiteWork| crate::core::site_canvas::SiteFrame {
+            id: id.to_string(),
+            frame: None,
+            frame_step_secs: 300.0,
+            context: CaptionContext {
+                work,
+                ..tilt(300.0)
+            },
+            stream: Default::default(),
+        };
+        s.others = vec![
+            other(
+                "KMLB",
+                SiteWork::Downloading {
+                    scan_start: t(11, 29, 0) as i64,
+                    received: 0,
+                    total: None,
+                },
+            ),
+            other("KJAX", SiteWork::Idle),
+        ];
+        let vm = s.vm();
+        let lines: Vec<String> = vm
+            .canvas_caption_lines(&Utc)
+            .iter()
+            .map(|l| l.text())
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                "KJAX no frame yet · playhead 11:30:49".to_string(),
+                "KMLB 11:29:00 · downloading".to_string(),
+            ]
+        );
+
+        // The focus blank too: its own line first.
+        s.displayed = None;
+        s.caption.work = SiteWork::Listing;
+        s.others[1].context.work = SiteWork::ListingFailed;
+        let lines: Vec<String> = s
+            .vm()
+            .canvas_caption_lines(&Utc)
+            .iter()
+            .map(|l| l.text())
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                "KDMX · finding volumes near 11:30".to_string(),
+                "KMLB 11:29:00 · downloading".to_string(),
+                "couldn't list KJAX volumes near 11:30 · trying again soon".to_string(),
+            ]
         );
     }
 

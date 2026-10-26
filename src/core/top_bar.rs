@@ -296,11 +296,14 @@ impl TopBarVm {
                     AgeMarker::Loop => "Looping to now: the frame on screen's age",
                 },
             }),
-            (None, None) => Some(ReadoutPill {
-                mark: PillMark::None,
-                text: "no frame yet".to_string(),
-                hover: "Nothing on screen yet",
-            }),
+            (None, None) => {
+                let (text, hover) = session.blank_pill();
+                Some(ReadoutPill {
+                    mark: PillMark::None,
+                    text: text.to_string(),
+                    hover,
+                })
+            }
             (None, Some(_)) => None,
         };
 
@@ -594,6 +597,7 @@ mod tests {
             loop_mode: crate::core::LoopMode::Loop,
             volume_3d_active: false,
             others: Vec::new(),
+            site_id: "KDMX",
         })
     }
 

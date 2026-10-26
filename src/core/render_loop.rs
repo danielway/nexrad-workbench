@@ -376,6 +376,9 @@ pub(crate) struct FrameFollowupEnv<'a> {
     /// `crate::PREFETCH_LOOKAHEAD_SECS` (real seconds; scaled by playback
     /// speed inside the decision).
     pub prefetch_lookahead_secs: f64,
+    /// What the site is doing about the volume at the playhead
+    /// ([`crate::core::frame_work::decide`]).
+    pub work: &'a crate::core::frame_work::SiteWork,
 }
 
 /// A near-boundary prefetch of the upcoming sweep.
@@ -536,6 +539,7 @@ pub(crate) fn decide_prefetch_and_caption(
             })
             .flatten()
             .and_then(partial_volume_cuts),
+        work: env.work.clone(),
     };
 
     followup
@@ -657,6 +661,7 @@ mod tests {
             pending_download_ranges: &[],
             max_scan_age_secs: MAX_AGE,
             prefetch_lookahead_secs: 0.5,
+            work: &crate::core::frame_work::SiteWork::Idle,
         }
     }
 

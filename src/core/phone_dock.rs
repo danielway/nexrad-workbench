@@ -194,7 +194,7 @@ pub(crate) struct PhoneAge {
 /// The pill: what the selection is and how old the frame on screen is.
 pub(crate) fn phone_age(session: &SessionVm) -> PhoneAge {
     let age = session.frame.as_ref().map(|f| format_ago(f.age_secs));
-    let none = || "no frame yet".to_string();
+    let none = || session.blank_pill().0.to_string();
     match (session.selection, session.playhead) {
         (SelectionFact::Point, Playhead::PinnedToNow) => PhoneAge {
             tone: AgeTone::Live,
