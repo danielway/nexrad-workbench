@@ -63,8 +63,8 @@
 
     
 <script type="module">
-import init, * as bindings from '/nexrad-workbench/nexrad-workbench-496a75ad8b185ecd.js';
-const wasm = await init({ module_or_path: '/nexrad-workbench/nexrad-workbench-47b1e3b5019a14cd_bg.wasm' });
+import init, * as bindings from '/nexrad-workbench/nexrad-workbench-29cf76f25a64044b.js';
+const wasm = await init({ module_or_path: '/nexrad-workbench/nexrad-workbench-29cf76f25a64044b_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -76,10 +76,11 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     
     
 
-    <!-- Favicon/PWA assets. Only these files under assets/ are shipped; the
-         shapefiles in assets/vectors/ and the alert zone geometry in
-         assets/zone_geometry.json are already baked into the binary via
-         include_bytes! and must not be duplicated into dist/. -->
+    <!-- Favicon/PWA assets and the alert zone geometry, which the app fetches
+         the first time a zone-only alert needs it. The shapefiles in
+         assets/vectors/ are baked into the binary via include_bytes! and must
+         not be duplicated into dist/. -->
+    
     
     
     
@@ -87,24 +88,11 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     
 
     <script>
-        // Register service worker for cross-origin isolation + network monitoring.
-        // If the SW is not yet controlling this page, register it and reload so
-        // the COOP/COEP response headers take effect before the app loads.
+        // Register the service worker for the installed app's offline shell
+        // and the request readout. It takes control of this page once it
+        // activates (clients.claim), so no reload is needed.
         if ('serviceWorker' in navigator) {
-            if (!navigator.serviceWorker.controller) {
-                navigator.serviceWorker.register('service-worker.js').then(function(reg) {
-                    var sw = reg.installing || reg.waiting;
-                    if (sw) {
-                        sw.addEventListener('statechange', function() {
-                            if (sw.state === 'activated') {
-                                window.location.reload();
-                            }
-                        });
-                    } else if (reg.active) {
-                        window.location.reload();
-                    }
-                });
-            }
+            navigator.serviceWorker.register('service-worker.js').catch(function () {});
         }
     </script>
 
@@ -231,6 +219,12 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             display: block;
             width: 100%;
             height: 100%;
+            /* iOS 26+ blurs the top of a home-screen app (the Liquid Glass
+               scroll edge effect), over the phone top bar. WebKit skips it
+               when a full-width fixed box with a solid background touches the
+               top edge and tints with that colour instead, so the canvas gets
+               one: theme::MAP, the top bar's fill. */
+            background-color: #06080c;
             /* Prevent the browser from claiming touch gestures (pinch-to-zoom,
                double-tap-to-zoom, swipe-to-scroll) so they reach egui as
                multi-touch events. */
@@ -266,7 +260,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             to { transform: rotate(360deg); }
         }
     </style>
-<link rel="modulepreload" href="/nexrad-workbench/nexrad-workbench-496a75ad8b185ecd.js" crossorigin="anonymous" integrity="sha384-bjarCgSs1ZrjQwWtVSR24RCLnKMUb7xKW6zDhWvQv+/h3BXiRn6Mhp/QMZMkq9eH"><link rel="preload" href="/nexrad-workbench/nexrad-workbench-47b1e3b5019a14cd_bg.wasm" crossorigin="anonymous" integrity="sha384-Fjry5tTtYCID7Wh3aPdPwXKJRZCzz+bG/Iu978cPWg9SOFWpODb+0oT29RmEdjXz" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/nexrad-workbench/nexrad-workbench-29cf76f25a64044b.js" crossorigin="anonymous" integrity="sha384-ov5SEEk+zNkM4LB3lpnsABgYk9z8m1Bl85N5b8cY4M1kOxfraH/yUBVsLhT50vxn"><link rel="preload" href="/nexrad-workbench/nexrad-workbench-29cf76f25a64044b_bg.wasm" crossorigin="anonymous" integrity="sha384-p5DUk7i5mnNbYA2mTMvuwN9U/1qUhZGhtfIMK2XjyWMsFrBgY/aYBHEIYsJBHTYB" as="fetch" type="application/wasm"></head>
 <body>
     <canvas id="app_canvas"></canvas>
     <div id="loading_text">
