@@ -655,7 +655,7 @@ only.
 2. When playhead time ≠ frame time (undownloaded region, gap), keep showing the
    most recent available frame and surface the discrepancy via **caption only**
    ("showing 2:41 · fetching 2:51…") — no canvas shimmer. Cheapest, honest, reads
-   in grayscale and to screen readers. With several sites the caption names
+   in grayscale. With several sites the caption names
    up to two other sites whose frame is more than a frame off the playhead,
    newest first ("KJAX showing 02:57:12 · KMLB 02:56:33 · playhead
    03:00:00"); a blank focus still says why first.
@@ -1104,7 +1104,7 @@ adds diagnostics.
 | Acquisition motion reads as alarm | Motion = routine; red = failure/live only |
 | "Live" feels laggy in severe weather | Data-age readout; ghost countdown sets expectations |
 | Accidental mass downloads | Implicit/explicit acquisition split; concurrency + session-volume caps; bulk-confirm threshold |
-| Accessibility | State = fill + shape, never hue alone; reduced-motion replaces pulses with static progress; full keyboard operation; screen reader announces the displayed-frame timestamp |
+| Accessibility | State = fill + shape, never hue alone; reduced-motion replaces pulses with static progress; full keyboard operation. There is no screen reader support: egui draws to a canvas and the app is built without AccessKit |
 
 ## 16. Deferred / Future Work
 
@@ -1120,13 +1120,6 @@ not unfinished work:
   handling of stale projections is a post-v1 revisit.
 - **Wi-Fi-only acquisition toggle:** not implementable in a browser today; revisit
   if a reliable network-type signal becomes available.
-- **Live loop-preset discoverability:** the July 2026 UX audit asked for "a play
-  option that plays within X time or frames of *now*" while streaming — which is
-  exactly what the loop presets already do (Pin to live / Last 4-10 frames /
-  Last 30 min / Last 1 h, §7). The capability exists and is one tap away; what is
-  missing is that a user watching live never learns it is there. Addressed by
-  the selection chip (Oct 2026): the presets sit in the same menu as LIVE, read
-  "Last 6 frames → now", and always attach to the live edge.
 - **Blended compositing:** where discs overlap, the newer frame is drawn on
   top. A blend (maximum reflectivity, distance weighting) would be drawn on
   the composite grid the storm cells already use (§13.2).
@@ -1153,8 +1146,7 @@ deleted in the June 2026 docs cleanup.)
    boundary. Micro↔Macro nominal 1.0 px/s with ~±15% hysteresis (enter Micro ≥
    1.15 px/s, exit Micro ≤ 0.87 px/s). Values are tunable constants in one place.
 3. **Canvas treatment while fetching:** **caption only** ("showing 2:41 ·
-   fetching 2:51…"), no canvas shimmer. Cheapest, honest, reads in grayscale and
-   to screen readers.
+   fetching 2:51…"), no canvas shimmer. Cheapest, honest, reads in grayscale.
 4. **Chunk segmentation:** display 3 vs 6 chunks **faithfully** (the live
    behavior). Archive downloads have no chunk telemetry; in-flight archive cells
    use a pulse fill inside the frame cell instead of fake segments.
@@ -1165,8 +1157,10 @@ deleted in the June 2026 docs cleanup.)
    idle-stop applies after 60 min detached (a pragmatic S3-cost bound; the
    data-saver toggle is the user-facing control).
 6. **Prefetch across tilts on product/tilt switch:** no proactive refetch.
-   Archive scans download whole volumes, so cached scans already have all tilts;
-   the existing playhead-window prefetch covers the rest.
+   Following Latest, archive scans download whole volumes, so they already
+   have every tilt. With a tilt held, only that cut is fetched, and a switch
+   fetches the cut it then needs (the Doppler half of a split pair for
+   velocity, for example) when it is drawn.
 7. **Loop window defaults:** default preset **last 6 frames**; the preset menu
    offers 4 / 6 / 10 frames and 30 min / 1 h durations plus "pin to live". Same
    defaults on all device classes.
