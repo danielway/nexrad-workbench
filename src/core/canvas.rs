@@ -1394,7 +1394,7 @@ pub(crate) fn mping_legend(
     [
         Tornado,
         Hail,
-        WindDamage,
+        StormDamage,
         Flood,
         RainSnow,
         ReducedVisibility,
