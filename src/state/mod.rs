@@ -371,7 +371,8 @@ impl AppState {
 
     /// Elevation list for the current playback context, derived per
     /// call: scan at the playback timestamp first, then the live VCP if
-    /// streaming, else empty. The ladder, the top bar's tilt menu and
+    /// streaming, then a one-tilt volume the playhead is past the end of,
+    /// else empty. The ladder, the top bar's tilt menu and
     /// the E shortcut all build their rows from it.
     ///
     /// `playback` / `timeline` / `live_vcp_pattern` are passed in from
@@ -391,6 +392,10 @@ impl AppState {
             if !vcp.elevations.is_empty() {
                 return crate::core::build_elevation_list_from_vcp(vcp);
             }
+        }
+        // A volume fetched for one tilt, after its stored cut ended.
+        if let Some(scan) = timeline.find_volume_at(ts) {
+            return crate::core::playback_manager::build_elevation_list(scan);
         }
         Vec::new()
     }

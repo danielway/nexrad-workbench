@@ -856,7 +856,8 @@ impl VolumeLadder {
 /// The volume the ladder draws and the clock it is read on. Pinned to now
 /// with a volume being collected, that volume on the live clock; otherwise
 /// the volume under the playhead (a settled scan, else the live volume when
-/// the playhead sits inside it) on the playhead's clock.
+/// the playhead sits inside it, else a one-tilt volume the playhead is past
+/// the stored cut of) on the playhead's clock.
 pub(crate) fn ladder_volume(
     view: &crate::core::TimelineView<'_>,
     pinned: bool,
@@ -876,7 +877,14 @@ pub(crate) fn ladder_volume(
         .live_volume()
         .filter(|v| playhead_secs >= v.volume_start && playhead_secs <= v.volume_end)
         .cloned();
-    (live, at)
+    if live.is_some() {
+        return (live, at);
+    }
+    // A volume fetched for one tilt, after its stored cut ended.
+    let partial = view
+        .settled_volume_at(playhead_secs)
+        .map(scan_to_projection);
+    (partial, at)
 }
 
 #[cfg(test)]
