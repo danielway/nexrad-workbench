@@ -42,7 +42,9 @@ fn draw_color_scale(ui: &mut egui::Ui, scrim: Rect, product: &crate::core::Radar
 
     let product_nr = match product {
         crate::core::RadarProduct::Reflectivity => Product::Reflectivity,
-        crate::core::RadarProduct::Velocity => Product::Velocity,
+        crate::core::RadarProduct::Velocity | crate::core::RadarProduct::StormRelativeVelocity => {
+            Product::Velocity
+        }
         crate::core::RadarProduct::SpectrumWidth => Product::SpectrumWidth,
         crate::core::RadarProduct::DifferentialReflectivity => Product::DifferentialReflectivity,
         crate::core::RadarProduct::CorrelationCoefficient => Product::CorrelationCoefficient,

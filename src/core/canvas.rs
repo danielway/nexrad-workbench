@@ -907,6 +907,7 @@ pub(crate) fn product_max_range_km(product: crate::core::RadarProduct) -> f64 {
     match product {
         Reflectivity | ClutterFilterPower => 460.0,
         Velocity
+        | StormRelativeVelocity
         | SpectrumWidth
         | DifferentialReflectivity
         | CorrelationCoefficient

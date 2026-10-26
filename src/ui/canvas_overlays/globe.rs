@@ -149,6 +149,7 @@ fn paint_volume(
                 processing,
                 flat_r.value_min(),
                 flat_r.value_range(),
+                flat_r.storm_motion(),
                 density_cutoff,
                 vp[2],
                 vp[3],

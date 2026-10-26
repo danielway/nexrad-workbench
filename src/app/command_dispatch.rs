@@ -466,7 +466,15 @@ impl DispatchState<'_> {
                         pick,
                     );
                 }
+                crate::core::storm_motion::on_product_change(
+                    &mut viz.storm_motion,
+                    viz.product,
+                    product,
+                );
                 viz.product = product;
+            }
+            TopBarIntent::UpdateStormMotion => {
+                self.state.viz_state.storm_motion = crate::core::storm_motion::MotionLock::Waiting;
             }
             TopBarIntent::SetTilt(pick) => {
                 let viz = &mut self.state.viz_state;
@@ -1516,6 +1524,32 @@ mod dispatch_tests {
     }
 
     // ---- top bar ------------------------------------------------------
+
+    /// Picking storm-relative velocity starts a new wait for the storm
+    /// motion; "Update" does too; other picks leave a locked motion alone.
+    #[wasm_bindgen_test]
+    fn picking_srv_or_update_waits_for_a_new_storm_motion() {
+        use crate::core::storm_motion::{MotionLock, StormMotion};
+        use crate::core::RadarProduct;
+        let locked = MotionLock::Locked(StormMotion {
+            direction_deg: 45.0,
+            speed_kmh: 47.0,
+        });
+        let mut f = Fixture::new();
+        f.state.viz_state.storm_motion = locked;
+        f.apply(Intent::TopBar(TopBarIntent::SetProduct(
+            RadarProduct::StormRelativeVelocity,
+        )));
+        assert_eq!(f.state.viz_state.storm_motion, MotionLock::Waiting);
+
+        f.state.viz_state.storm_motion = locked;
+        f.apply(Intent::TopBar(TopBarIntent::SetProduct(
+            RadarProduct::Velocity,
+        )));
+        assert_eq!(f.state.viz_state.storm_motion, locked);
+        f.apply(Intent::TopBar(TopBarIntent::UpdateStormMotion));
+        assert_eq!(f.state.viz_state.storm_motion, MotionLock::Waiting);
+    }
 
     /// Each top-bar intent lands on the state it names — written to fail if
     /// two arms were swapped (both panel toggles, both views).

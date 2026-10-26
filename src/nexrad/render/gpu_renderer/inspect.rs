@@ -5,6 +5,7 @@ use crate::core::canvas::{
     collection_time_current, collection_time_prev, polar_in_prev_region, value_at_polar_current,
     value_at_polar_prev, PolarSweepMeta,
 };
+use crate::core::storm_motion::storm_relative;
 
 impl RadarGpuRenderer {
     /// Spatial metadata for the current sweep's CPU buffers.
@@ -33,7 +34,8 @@ impl RadarGpuRenderer {
         }
     }
 
-    /// Look up the raw data value at a given polar coordinate.
+    /// Look up the data value (physical units, storm-relative when a storm
+    /// motion is set) at a given polar coordinate.
     ///
     /// When `sweep_params` is `Some((sweep_azimuth, sweep_start))`, determines
     /// whether the queried position falls in the previous-sweep region and
@@ -41,6 +43,16 @@ impl RadarGpuRenderer {
     /// The lookup math lives in [`crate::core::canvas`]; this binds it to the
     /// renderer's CPU shadow buffers.
     pub(crate) fn value_at_polar(
+        &self,
+        azimuth_deg: f32,
+        range_km: f64,
+        sweep_params: Option<(f32, f32)>,
+    ) -> Option<f32> {
+        self.plain_value_at_polar(azimuth_deg, range_km, sweep_params)
+            .map(|v| storm_relative(v, azimuth_deg, self.storm_motion))
+    }
+
+    fn plain_value_at_polar(
         &self,
         azimuth_deg: f32,
         range_km: f64,

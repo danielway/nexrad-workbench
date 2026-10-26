@@ -23,9 +23,10 @@ no account, no server: everything runs on your own device.
   of a storm, and step through it frame by frame.
 - **See where the weather was.** The overview strip shows a bar for each day
   of storm activity, so the busy days stand out before you download anything.
-- **Look at every product and tilt.** Reflectivity, velocity, spectrum width,
-  differential reflectivity, correlation coefficient, specific differential
-  phase, and clutter filter power. The tilt ladder lays out the radar's scan
+- **Look at every product and tilt.** Reflectivity, velocity, storm-relative
+  velocity, spectrum width, differential reflectivity, correlation coefficient
+  and specific differential phase ([what each one shows](docs/PRODUCTS.md)).
+  The tilt ladder lays out the radar's scan
   pattern so you can see which elevations it has swept and which are still to come.
 - **Follow storms.** Turn on storm cells and each strong cell is outlined
   with its peak reflectivity. With tracks on, each one gets a letter, a trail

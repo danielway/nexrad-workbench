@@ -413,6 +413,10 @@ fn apply_link(
     {
         state.viz_state.product = product;
     }
+    // A shared SRV view opens with the motion it was locked to.
+    if let Some(m) = link.srm {
+        state.viz_state.storm_motion = crate::core::storm_motion::MotionLock::Locked(m);
+    }
     match link.tilt {
         Some(LinkTilt::Latest) => {
             state.viz_state.elevation_selection = crate::core::ElevationSelection::Latest;
@@ -800,6 +804,7 @@ impl WorkbenchApp {
                 site_id: &self.sites.focus().id.0,
                 other_sites: self.sites.iter().len() - 1,
                 product: self.state.viz_state.product,
+                storm_motion: &self.state.viz_state.storm_motion,
                 elevation_selection: &self.state.viz_state.elevation_selection,
                 elevations: &elevations,
                 zone: &zone,

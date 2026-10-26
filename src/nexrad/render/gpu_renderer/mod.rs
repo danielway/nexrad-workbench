@@ -44,6 +44,7 @@ struct UniformLocations {
     sweep_chunk_boundary: glow::UniformLocation,
     azimuth_spacing_deg: glow::UniformLocation,
     prev_azimuth_spacing_deg: glow::UniformLocation,
+    storm_motion: glow::UniformLocation,
 }
 
 /// Spatial metadata for a single sweep (current or previous).
@@ -110,6 +111,10 @@ pub(crate) struct RadarGpuRenderer {
     has_data: bool,
     value_min: f32,
     value_range: f32,
+    /// The (east, north) storm motion in m/s that storm-relative velocity
+    /// subtracts along each beam; `None` draws plain values. Set each frame
+    /// from `crate::core::storm_motion::shader_motion`.
+    storm_motion: Option<[f32; 2]>,
 }
 
 impl RadarGpuRenderer {
@@ -220,6 +225,7 @@ impl RadarGpuRenderer {
                 sweep_chunk_boundary: uniform("u_sweep_chunk_boundary")?,
                 azimuth_spacing_deg: uniform("u_azimuth_spacing_deg")?,
                 prev_azimuth_spacing_deg: uniform("u_prev_azimuth_spacing_deg")?,
+                storm_motion: uniform("u_storm_motion")?,
             };
 
             // Create placeholders for previous sweep textures
@@ -245,8 +251,20 @@ impl RadarGpuRenderer {
                 has_data: false,
                 value_min: 0.0,
                 value_range: 1.0,
+                storm_motion: None,
             })
         }
+    }
+
+    /// Set the storm motion storm-relative velocity subtracts (`None` for
+    /// plain values).
+    pub(crate) fn set_storm_motion(&mut self, motion: Option<[f32; 2]>) {
+        self.storm_motion = motion;
+    }
+
+    /// The storm motion the shaders and the probe subtract, if any.
+    pub(crate) fn storm_motion(&self) -> Option<[f32; 2]> {
+        self.storm_motion
     }
 
     /// Maximum range of the currently loaded data in km.
@@ -436,6 +454,8 @@ impl RadarGpuRenderer {
                 Some(&self.uniforms.prev_azimuth_spacing_deg),
                 self.prev.azimuth_spacing_deg,
             );
+            let [east, north] = self.storm_motion.unwrap_or([0.0, 0.0]);
+            gl.uniform_2_f32(Some(&self.uniforms.storm_motion), east, north);
 
             // Draw fullscreen quad
             gl.draw_arrays(glow::TRIANGLES, 0, 6);

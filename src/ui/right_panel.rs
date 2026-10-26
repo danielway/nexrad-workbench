@@ -227,6 +227,23 @@ pub(super) fn view_tab(
             .size(theme::CAPTION)
             .color(theme::TEXT_DIM),
     );
+    if let Some(motion) = &top_bar.product.motion {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(&motion.text)
+                    .size(theme::CAPTION)
+                    .color(theme::TEXT_DIM),
+            );
+            if motion.can_update
+                && ui
+                    .small_button("Update")
+                    .on_hover_text(crate::core::storm_motion::UPDATE_HOVER)
+                    .clicked()
+            {
+                state.push_command(Intent::TopBar(TopBarIntent::UpdateStormMotion));
+            }
+        });
+    }
     section(ui, "Tilt");
     super::ladder::header(ui, ladder);
     ui.add_space(4.0);

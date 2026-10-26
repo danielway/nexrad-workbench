@@ -106,6 +106,9 @@ uniform float u_opacity;
 uniform float u_density_cutoff;
 uniform float u_value_min;
 uniform float u_value_range;
+// Storm-relative velocity: the (east, north) storm motion in m/s removed
+// along each beam; zero for every other product.
+uniform vec2 u_storm_motion;
 
 const float EARTH_RADIUS = 6371.0;
 // 4/3-earth model: standard atmospheric refraction bends the beam slightly
@@ -212,6 +215,8 @@ bool sample_sweep(int si, float az_deg, float range_km, out float physical) {
     // this sweep's own scale/offset rather than sweep 0's for everything.
     float sc = u_scale[si];
     physical = (sc != 0.0) ? (raw - u_offset[si]) / sc : raw;
+    float az_rad = radians(az_deg);
+    physical -= dot(u_storm_motion, vec2(sin(az_rad), cos(az_rad)));
     return true;
 }
 
@@ -440,6 +445,7 @@ pub(crate) struct VolumeRayRenderer {
     u_density_cutoff: Option<glow::UniformLocation>,
     u_value_min: Option<glow::UniformLocation>,
     u_value_range: Option<glow::UniformLocation>,
+    u_storm_motion: Option<glow::UniformLocation>,
 
     has_data: bool,
     sweep_count: i32,
@@ -511,6 +517,7 @@ impl VolumeRayRenderer {
         let u_density_cutoff = get("u_density_cutoff");
         let u_value_min = get("u_value_min");
         let u_value_range = get("u_value_range");
+        let u_storm_motion = get("u_storm_motion");
 
         // Bind texture samplers
         gl.use_program(Some(program));
@@ -644,6 +651,7 @@ impl VolumeRayRenderer {
             u_density_cutoff,
             u_value_min,
             u_value_range,
+            u_storm_motion,
             has_data: false,
             sweep_count: 0,
             site_lat: 0.0,
@@ -885,6 +893,7 @@ impl VolumeRayRenderer {
         processing: &RenderProcessing,
         value_min: f32,
         value_range: f32,
+        storm_motion: Option<[f32; 2]>,
         density_cutoff: f32,
         viewport_width: i32,
         viewport_height: i32,
@@ -984,6 +993,8 @@ impl VolumeRayRenderer {
             gl.uniform_1_f32(self.u_density_cutoff.as_ref(), density_cutoff);
             gl.uniform_1_f32(self.u_value_min.as_ref(), value_min);
             gl.uniform_1_f32(self.u_value_range.as_ref(), value_range);
+            let [east, north] = storm_motion.unwrap_or([0.0, 0.0]);
+            gl.uniform_2_f32(self.u_storm_motion.as_ref(), east, north);
 
             gl.draw_arrays(glow::TRIANGLES, 0, 6);
 

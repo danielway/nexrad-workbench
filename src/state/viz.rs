@@ -2,6 +2,7 @@
 
 use crate::core::canvas::CaptionContext;
 use crate::core::storm_cell_view::StormCellPointer;
+use crate::core::storm_motion::MotionLock;
 use crate::core::storm_tracks::StormTracks;
 use crate::core::{ElevationSelection, RadarProduct};
 use crate::geo::{Camera, Flat2DState, ViewMode};
@@ -78,6 +79,11 @@ pub(crate) struct VizState {
     /// cell overlay (see `crate::core::storm_cell_view`).
     pub storm_cell_pointer: StormCellPointer,
 
+    /// The storm motion storm-relative velocity subtracts, taken from the
+    /// tracks when SRV is picked and then held (see
+    /// `crate::core::storm_motion`).
+    pub storm_motion: MotionLock,
+
     /// Last observed visible map bounds in 2D mode, as
     /// `(min_lon, min_lat, max_lon, max_lat)`. Updated each frame by the
     /// canvas renderer and consumed by top-bar / modal logic that needs
@@ -112,6 +118,7 @@ impl Default for VizState {
             storm_tracks_visible: false,
             storm_tracks: StormTracks::default(),
             storm_cell_pointer: StormCellPointer::default(),
+            storm_motion: MotionLock::default(),
             last_visible_bounds: None,
             caption_context: CaptionContext::default(),
         }

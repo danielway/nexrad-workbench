@@ -22,6 +22,7 @@
 //! | 2D/3D, camera, map and timeline zoom, volume rendering and cutoff | `v` |
 //! | storm cells on, at this envelope threshold (dBZ) | `cells` |
 //! | storm cell tracks on (`1`) or off (`0`) | `tracks` |
+//! | storm-relative velocity's locked motion (toward degrees, km/h) | `srm` (`srm=45,47`) |
 //! | developer flag | `dev` |
 //!
 //! `sel` is `now` (pinned to now), `last6f` / `last1800s` (a range ending now
@@ -91,6 +92,9 @@ pub(crate) struct LinkState {
     /// `tracks=1`: storm cell tracks (trails, forecast arrows) on; `tracks=0`
     /// off. Absent says nothing.
     pub tracks: Option<bool>,
+    /// `srm=<toward deg>,<km/h>`: the storm motion storm-relative velocity
+    /// holds. Written only while SRV shows a locked motion.
+    pub srm: Option<crate::core::storm_motion::StormMotion>,
     /// `Some(true)` for `dev=true`; wins over the saved preference for the
     /// session without being saved.
     pub dev: Option<bool>,
@@ -164,6 +168,7 @@ pub(crate) fn parse(query: &str) -> LinkState {
                     _ => None,
                 }
             }
+            "srm" => link.srm = crate::core::storm_motion::parse_link_value(value),
             "dev" => {
                 link.dev = match value {
                     "true" => Some(true),
@@ -230,6 +235,9 @@ pub(crate) fn to_query(link: &LinkState) -> String {
     }
     if let Some(on) = link.tracks {
         parts.push(format!("tracks={}", u8::from(on)));
+    }
+    if let Some(m) = &link.srm {
+        parts.push(format!("srm={}", crate::core::storm_motion::link_value(m)));
     }
     if link.dev == Some(true) {
         parts.push("dev=true".to_string());
@@ -444,11 +452,34 @@ mod tests {
             },
             cells: Some(40.0),
             tracks: Some(true),
+            srm: Some(crate::core::storm_motion::StormMotion {
+                direction_deg: 240.0,
+                speed_kmh: 35.0,
+            }),
             dev: Some(true),
         }
     }
 
     #[wasm_bindgen_test]
+    fn storm_motion_travels_as_direction_and_speed() {
+        let m = crate::core::storm_motion::StormMotion {
+            direction_deg: 45.0,
+            speed_kmh: 47.0,
+        };
+        let link = LinkState {
+            product: Some("SRV".into()),
+            srm: Some(m),
+            ..Default::default()
+        };
+        let q = to_query(&link);
+        assert_eq!(q, "?product=SRV&srm=45,47");
+        assert_eq!(parse(&q).srm, Some(m));
+        assert_eq!(parse("?srm=oops").srm, None);
+        assert!(!to_query(&LinkState::default()).contains("srm"));
+    }
+
+    #[wasm_bindgen_test]
+    #[test]
     fn storm_cells_travel_as_their_threshold() {
         let link = LinkState {
             cells: Some(35.0),
