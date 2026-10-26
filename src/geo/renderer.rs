@@ -8,7 +8,7 @@ use super::layer::{
     CityTier, FeatureProjection, GeoLabelCandidate, GeoLabelClass, GeoLayerType, LabelEntry,
     ScreenBounds,
 };
-use super::{GeoFeature, GeoLayer, GeoLayerSet, MapProjection};
+use super::{GeoFeature, GeoLayer, GeoLayerSet, MapProjection, Projection};
 use crate::geo::GeoLayerVisibility;
 use eframe::egui::{Align2, Color32, FontId, Painter, Pos2, Stroke, Vec2};
 use eframe::epaint::Galley;
@@ -86,6 +86,43 @@ pub(crate) fn render_geo_layers(
     }
 }
 
+/// Point markers (city dots) for the 3D globe, where the GL pass draws the
+/// lines and nothing draws points. The same layers and zoom gates as 2D;
+/// a point past the horizon is skipped.
+pub(crate) fn render_point_markers(
+    painter: &Painter,
+    layers: &GeoLayerSet,
+    visibility: &GeoLayerVisibility,
+    projection: &dyn Projection,
+    zoom: f32,
+) {
+    for (layer, visible) in layers_with_visibility(layers, visibility) {
+        if !(visible && layer.visible && zoom >= layer.layer_type.min_zoom()) {
+            continue;
+        }
+        let color = layer.effective_color();
+        for feature in &layer.features {
+            if let GeoFeature::Point { coord, .. } = feature {
+                render_point_marker(painter, coord, projection, color, zoom);
+            }
+        }
+    }
+}
+
+/// Where a label or marker anchor lands on screen, or `None` when it is
+/// out of view: outside the 2D bounds plus `margin_deg`, or past the 3D
+/// globe's horizon.
+pub(crate) fn anchor_on_screen(
+    projection: &dyn Projection,
+    anchor: Coord<f64>,
+    margin_deg: f64,
+) -> Option<Pos2> {
+    if !projection.in_view(anchor, margin_deg) {
+        return None;
+    }
+    projection.geo_to_screen(anchor.y, anchor.x)
+}
+
 fn layers_with_visibility<'a>(
     layers: &'a GeoLayerSet,
     visibility: &'a GeoLayerVisibility,
@@ -143,7 +180,7 @@ pub(crate) fn build_geo_label_candidates(
     painter: &Painter,
     layers: &GeoLayerSet,
     visibility: &GeoLayerVisibility,
-    projection: &MapProjection,
+    projection: &dyn Projection,
     zoom: f32,
     dark: bool,
 ) -> Vec<GeoLabelCandidate> {
@@ -173,9 +210,9 @@ pub(crate) fn build_geo_label_candidates(
             let Some(anchor) = feature.label_anchor() else {
                 continue;
             };
-            if !projection.is_visible(anchor, 0.5) {
+            let Some(anchor_screen) = anchor_on_screen(projection, anchor, 0.5) else {
                 continue;
-            }
+            };
 
             let class = label_class(layer.layer_type, feature);
             let entry = match feature {
@@ -196,8 +233,11 @@ pub(crate) fn build_geo_label_candidates(
                 FontId::proportional(entry.font_size),
                 entry.color,
             );
-            let anchor_screen = projection.geo_to_screen(entry.anchor) + entry.pixel_offset;
-            let pos = aligned_galley_pos(anchor_screen, galley.size(), entry.align);
+            let pos = aligned_galley_pos(
+                anchor_screen + entry.pixel_offset,
+                galley.size(),
+                entry.align,
+            );
             candidates.push(GeoLabelCandidate {
                 entry,
                 bounds: ScreenBounds {
@@ -294,7 +334,7 @@ fn polygon_label_style(layer_type: GeoLayerType) -> (f32, Color32) {
 /// the site labels to give way to.
 pub(crate) fn paint_geo_labels(
     painter: &Painter,
-    projection: &MapProjection,
+    projection: &dyn Projection,
     visibility: &GeoLayerVisibility,
     entries: &[LabelEntry],
     keep: &dyn Fn(ScreenBounds) -> bool,
@@ -308,12 +348,15 @@ pub(crate) fn paint_geo_labels(
         if !label_class_enabled(entry.class, visibility) {
             continue;
         }
+        // Past the 3D globe's horizon since placement: not painted.
+        let Some(anchor_screen) = projection.geo_to_screen(entry.anchor.y, entry.anchor.x) else {
+            continue;
+        };
         let galley = painter.layout_no_wrap(
             entry.text.clone(),
             FontId::proportional(entry.font_size),
             entry.color,
         );
-        let anchor_screen = projection.geo_to_screen(entry.anchor);
         let anchor_with_offset = anchor_screen + entry.pixel_offset;
         let pos = aligned_galley_pos(anchor_with_offset, galley.size(), entry.align);
         let bounds = ScreenBounds {
@@ -347,14 +390,13 @@ fn label_class_enabled(class: GeoLabelClass, visibility: &GeoLayerVisibility) ->
 fn render_point_marker(
     painter: &Painter,
     coord: &Coord<f64>,
-    projection: &MapProjection,
+    projection: &dyn Projection,
     color: Color32,
     zoom: f32,
 ) {
-    if !projection.is_visible(*coord, 0.5) {
+    let Some(pos) = anchor_on_screen(projection, *coord, 0.5) else {
         return;
-    }
-    let pos = projection.geo_to_screen(*coord);
+    };
     let radius = (2.5 * zoom.sqrt()).clamp(2.0, 5.0);
     painter.circle_filled(pos, radius, color);
 }
@@ -398,5 +440,39 @@ fn render_projected_line(
                 painter.line_segment([*p1, *p2], stroke);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geo::{Camera, GlobeProjection};
+    use eframe::egui::Rect;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn rect() -> Rect {
+        Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))
+    }
+
+    #[wasm_bindgen_test]
+    fn anchor_on_screen_culls_outside_2d_bounds() {
+        let mut p = MapProjection::new(39.0, -98.0);
+        p.update(1.0, Vec2::ZERO, rect());
+        assert!(anchor_on_screen(&p, Coord { x: -98.0, y: 39.0 }, 0.5).is_some());
+        assert!(anchor_on_screen(&p, Coord { x: -70.0, y: 39.0 }, 0.5).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn anchor_on_screen_culls_past_the_globe_horizon() {
+        let mut c = Camera::centered_on(39.0, -98.0);
+        c.set_aspect(rect());
+        c.switch_to_globe();
+        let p = GlobeProjection {
+            camera: &c,
+            screen_rect: rect(),
+        };
+        assert!(anchor_on_screen(&p, Coord { x: -97.5, y: 39.5 }, 0.5).is_some());
+        // Antipode: no bounds to cull by, the horizon does it.
+        assert!(anchor_on_screen(&p, Coord { x: 82.0, y: -39.0 }, 0.5).is_none());
     }
 }
