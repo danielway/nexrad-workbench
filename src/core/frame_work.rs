@@ -185,6 +185,8 @@ pub(crate) fn decide(facts: &WorkFacts) -> SiteWork {
 /// most [`ERROR_WORDS`] characters.
 pub(crate) fn short_error(error: &str) -> String {
     let line = error.lines().next().unwrap_or("").trim();
+    // The caption already says the download failed.
+    let line = line.strip_prefix("Download failed: ").unwrap_or(line);
     if line.chars().count() <= ERROR_WORDS {
         return line.to_string();
     }
@@ -322,6 +324,7 @@ mod tests {
     #[wasm_bindgen_test]
     fn errors_and_sizes_read_short() {
         assert_eq!(short_error("HTTP 503\nmore"), "HTTP 503");
+        assert_eq!(short_error("Download failed: HTTP 403"), "HTTP 403");
         let long = "x".repeat(80);
         assert_eq!(short_error(&long).chars().count(), ERROR_WORDS);
         assert_eq!(format_mb(2_100_000), "2.1 MB");

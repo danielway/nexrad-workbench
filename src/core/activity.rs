@@ -235,11 +235,16 @@ impl ActivityHeadline {
     /// The chip's words. With one site, the label alone; with more, the
     /// sum: `Receiving · 3 sites`, `Receiving 3 sites · 1 stalled`.
     pub(crate) fn words(&self) -> String {
+        self.words_with(self.label)
+    }
+
+    /// [`Self::words`] with `label` in place of the headline's own.
+    fn words_with(&self, label: &str) -> String {
         let SiteSum { sites, stalled } = self.sites;
         match (sites, stalled) {
-            (0 | 1, _) => self.label.to_string(),
-            (n, 0) => format!("{} \u{00b7} {n} sites", self.label),
-            (n, k) => format!("{} {n} sites \u{00b7} {k} stalled", self.label),
+            (0 | 1, _) => label.to_string(),
+            (n, 0) => format!("{label} \u{00b7} {n} sites"),
+            (n, k) => format!("{label} {n} sites \u{00b7} {k} stalled"),
         }
     }
 }
@@ -592,9 +597,9 @@ impl ActivityVm {
             return format!("Listing {}", self.listing.join(", "));
         }
         match (self.state, self.percent) {
-            (ActivityState::Downloading { .. }, Some(p)) => {
-                format!("{} {p}%", self.headline.words())
-            }
+            (ActivityState::Downloading { .. }, Some(p)) => self
+                .headline
+                .words_with(&format!("{} {p}%", self.headline.label)),
             _ => self.headline.words(),
         }
     }
