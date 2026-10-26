@@ -35,6 +35,9 @@ pub(crate) struct LiveStatus {
     /// Seconds spent in the current phase — feeds the connecting elapsed
     /// readout.
     pub phase_elapsed_secs: f64,
+    /// Seconds until a failed stream starts again. `Some` only while
+    /// [`StreamActivity::Retrying`].
+    pub retry_in_secs: Option<f64>,
 }
 
 impl Default for LiveStatus {
@@ -46,6 +49,7 @@ impl Default for LiveStatus {
             expected_sweep: None,
             data_age_secs: None,
             phase_elapsed_secs: 0.0,
+            retry_in_secs: None,
         }
     }
 }
@@ -94,6 +98,23 @@ pub(crate) fn derive_live_status(inputs: LiveStatusInputs<'_>) -> LiveStatus {
             None
         },
         phase_elapsed_secs: mode_state.phase_elapsed_secs(now_secs),
+        retry_in_secs: None,
+    }
+}
+
+impl LiveStatus {
+    /// The status of a site whose stream failed and starts again in
+    /// `in_secs`: nothing is arriving, so no countdown, expected cut or data
+    /// age.
+    pub(crate) fn retrying(self, in_secs: f64) -> Self {
+        Self {
+            activity: StreamActivity::Retrying,
+            retry_in_secs: Some(in_secs),
+            countdown_secs: None,
+            expected_sweep: None,
+            data_age_secs: None,
+            ..self
+        }
     }
 }
 
@@ -266,6 +287,23 @@ mod coverage_tests {
             ..inputs(&s)
         });
         assert_eq!(off.activity, StreamActivity::Off);
+    }
+
+    #[wasm_bindgen_test]
+    fn a_retrying_site_promises_nothing() {
+        let s = state_in_phase(LivePhase::WaitingForChunk, 1000.0);
+        let status = derive_live_status(LiveStatusInputs {
+            countdown_secs: Some(30.0),
+            expected_sweep: Some(expected(Some(1), Some(0.5), 1040.0)),
+            now_secs: 1010.0,
+            ..inputs(&s)
+        })
+        .retrying(12.0);
+        assert_eq!(status.activity, StreamActivity::Retrying);
+        assert_eq!(status.retry_in_secs, Some(12.0));
+        assert_eq!(status.countdown_secs, None);
+        assert_eq!(status.expected_sweep, None);
+        assert_eq!(status.data_age_secs, None);
     }
 
     // ── data age ──

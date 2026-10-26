@@ -141,7 +141,7 @@ fn render_transport_row(
                     chrome.phone_selected_start,
                     chrome.phone_loading.is_some(),
                     &clock,
-                    egui_phosphor::regular::ARROW_RIGHT,
+                    crate::ui::icons::ARROW_RIGHT,
                 );
                 // "Loop what's in view" loops the row's window on the phone.
                 let view_start = playback.state.timeline_view_start;
@@ -244,7 +244,7 @@ fn stop_control(ui: &mut egui::Ui, current: StripZoom, narrow: bool) -> Option<S
         let resp = ui
             .interact(
                 seg.expand2(egui::vec2(1.0, 9.0)),
-                ui.id().with(("phone_stop", zoom_pill_label(*stop))),
+                ui.scope_id().with(("phone_stop", zoom_pill_label(*stop))),
                 Sense::click(),
             )
             .on_hover_text("Zoom: now, 3 hours or the day");

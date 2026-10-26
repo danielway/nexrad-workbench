@@ -66,7 +66,7 @@ pub(super) fn paint_strip_marks(
                 painter.text(
                     hit.center(),
                     egui::Align2::CENTER_CENTER,
-                    egui_phosphor::regular::WARNING,
+                    crate::ui::icons::WARNING,
                     egui::FontId::proportional(GLYPH_PX),
                     color,
                 );

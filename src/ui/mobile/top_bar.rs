@@ -15,10 +15,10 @@ use crate::core::phone_dock::{
 };
 use crate::core::top_bar::{TopBarIntent, TopBarVm};
 use crate::state::AppState;
+use crate::ui::icons;
 use crate::ui::theme;
 use crate::ui::theme::phone as colors;
 use eframe::egui::{self, FontId, Frame, Margin, Sense, Stroke, StrokeKind};
-use egui_phosphor::regular as icons;
 
 const TOP_BAR_CONTENT_HEIGHT: f32 = 48.0;
 /// The bell's and the sheet button's square.

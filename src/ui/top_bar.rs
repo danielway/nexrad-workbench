@@ -15,9 +15,9 @@ use crate::core::top_bar::{
 use crate::core::Intent;
 use crate::geo::ViewMode;
 use crate::state::AppState;
+use crate::ui::icons;
 use crate::ui::theme;
 use eframe::egui::{self, Color32, RichText};
-use egui_phosphor::regular as icons;
 
 const BAR_HEIGHT: f32 = 36.0;
 /// The releases page behind ⋯ › About.

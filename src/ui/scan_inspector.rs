@@ -21,9 +21,9 @@ use crate::core::Intent;
 use crate::core::{FrameCell, FrameCellState, FrameJoinInputs, ScanContainer};
 use crate::state::{format_bytes, AppState};
 use crate::subsystem::{Acquisition, Chrome, Live, Playback};
+use crate::ui::icons;
 use crate::ui::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, ScrollArea, Vec2};
-use egui_phosphor::regular as icons;
 
 pub(super) struct ScanInspectorLayer;
 
@@ -69,7 +69,7 @@ fn estimated_sweep_bytes() -> u64 {
 /// press that opened it, remembered per inspected scan (egui memory — it is
 /// a screen position, the shell's fact).
 fn anchor_for(ctx: &egui::Context, scan_start: f64) -> Rect {
-    let id = egui::Id::new("scan_inspector_anchor");
+    let id = egui::Id::unique("scan_inspector_anchor");
     let stored: Option<(f64, Pos2)> = ctx.data(|d| d.get_temp(id));
     let pos = match stored {
         Some((s, pos)) if s == scan_start => pos,

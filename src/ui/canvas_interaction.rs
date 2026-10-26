@@ -124,6 +124,7 @@ pub(crate) fn handle_canvas_interaction(
     derived: &crate::subsystem::Derived,
     projection: &MapProjection,
     storm_cells: &crate::core::storm_cell_view::StormCellsVm,
+    site_click: crate::core::canvas::SiteClick,
 ) {
     // Distance tool: a click places an endpoint and a drag that starts on
     // one moves it (instead of panning). Which endpoint, and what it snaps
@@ -165,8 +166,9 @@ pub(crate) fn handle_canvas_interaction(
                 state.push_command(crate::core::Intent::StormCells(dismiss));
             }
             match pick {
-                // On the phone a tap near a site asks before switching.
-                Some(pick) => state.push_command(pick.intent_for(state.is_mobile)),
+                // On the phone a tap near a site asks before switching; Cmd
+                // adds the site instead.
+                Some(pick) => state.push_command(pick.intent_for(site_click)),
                 // Missed every interactive overlay — dismiss any open mPING
                 // popover.
                 None => state.push_command(crate::core::Intent::Diagnostics(

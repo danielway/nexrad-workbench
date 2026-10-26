@@ -77,7 +77,7 @@ impl RadarProduct {
     }
 
     /// The products a person can pick: the product chips (desktop rail and
-    /// phone View sheet), the top bar's menu and P's cycle. Clutter Filter
+    /// phone View sheet), the top bar's menu and P's steps. Clutter Filter
     /// Power is left out: the worker cannot decode it into its own product
     /// yet (it would draw reflectivity under a CFP legend), so it waits
     /// here, decoder and all, until it can.
@@ -91,6 +91,19 @@ impl RadarProduct {
             RadarProduct::CorrelationCoefficient,
             RadarProduct::DifferentialPhase,
         ]
+    }
+
+    /// The product after this one in [`Self::all`] (P), or before it when
+    /// `forward` is false (Shift+P), wrapping at either end. A product that
+    /// is not offered steps to the first.
+    pub(crate) fn step(self, forward: bool) -> RadarProduct {
+        let products = Self::all();
+        let n = products.len();
+        match products.iter().position(|p| *p == self) {
+            Some(i) if forward => products[(i + 1) % n],
+            Some(i) => products[(i + n - 1) % n],
+            None => products[0],
+        }
     }
 
     /// Whether a person can pick this product (see [`Self::all`]).
@@ -394,6 +407,18 @@ mod coverage_tests {
 
     use crate::data::keys::UnixMillis;
     use crate::data::ScanKey;
+
+    #[wasm_bindgen_test]
+    fn p_steps_products_and_shift_p_steps_back() {
+        use RadarProduct::*;
+        assert_eq!(Reflectivity.step(true), Velocity);
+        assert_eq!(Velocity.step(false), Reflectivity);
+        assert_eq!(DifferentialPhase.step(true), Reflectivity);
+        assert_eq!(Reflectivity.step(false), DifferentialPhase);
+        for p in RadarProduct::all() {
+            assert_eq!(p.step(true).step(false), *p);
+        }
+    }
 
     fn scan_key(site: &str, ms: i64) -> ScanKey {
         ScanKey::new(site, UnixMillis(ms))

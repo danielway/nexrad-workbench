@@ -10,7 +10,7 @@ use eframe::egui::{self};
 /// A dimmed full-screen backdrop. Returns `true` when it was clicked.
 pub(super) fn modal_backdrop(ctx: &egui::Context, id: &str) -> bool {
     let mut close = false;
-    egui::Area::new(egui::Id::new(id))
+    egui::Area::new(egui::Id::unique(id))
         .fixed_pos(egui::Pos2::ZERO)
         .order(egui::Order::Middle)
         .show(ctx, |ui| {

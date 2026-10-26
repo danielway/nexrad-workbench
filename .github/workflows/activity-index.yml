@@ -43,6 +43,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # GitHub disables a public repository's scheduled workflows after 60 days
+  # without activity in it. Enabling this workflow again every night, which
+  # it already is, keeps the schedule from lapsing while nobody commits.
+  keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/activity-index.yml/enable"
+
   # The builder stops starting new days at max_minutes, then finishes the
   # batch in flight and writes its files; Publish runs after that. The build
   # job's timeout must outlast all of it or the listing is thrown away, so

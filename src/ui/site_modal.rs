@@ -26,7 +26,7 @@ use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 /// Where the top bar's site control was drawn this frame (egui memory key);
 /// the picker anchors under it.
 pub(crate) fn anchor_id() -> egui::Id {
-    egui::Id::new("site_picker_anchor")
+    egui::Id::unique("site_picker_anchor")
 }
 
 /// Transient state for the site picker.
@@ -167,7 +167,7 @@ fn draw_site_picker(
             // two-way binding: the egui widget owns this value while the
             // user edits it.
             egui::TextEdit::singleline(&mut picker.query)
-                .id(egui::Id::new("site_picker_search"))
+                .id(egui::Id::unique("site_picker_search"))
                 .hint_text("Site ID, city, state or zip")
                 .desired_width(f32::INFINITY),
         );
@@ -254,11 +254,8 @@ fn draw_site_picker(
             if ui
                 .add(
                     egui::Button::new(
-                        RichText::new(format!(
-                            "{} Pick on map",
-                            egui_phosphor::regular::MAP_TRIFOLD
-                        ))
-                        .color(theme::TEXT),
+                        RichText::new(format!("{} Pick on map", crate::ui::icons::MAP_TRIFOLD))
+                            .color(theme::TEXT),
                     )
                     .frame(false),
                 )
@@ -299,17 +296,14 @@ fn near_you_actions(
         if ui
             .link(format!(
                 "{} Find sites near {zip}",
-                egui_phosphor::regular::MAP_PIN
+                crate::ui::icons::MAP_PIN
             ))
             .clicked()
         {
             state.push_command(Intent::SubmitZip(zip.clone()));
         }
     } else if ui
-        .link(format!(
-            "{} Use my location",
-            egui_phosphor::regular::CROSSHAIR
-        ))
+        .link(format!("{} Use my location", crate::ui::icons::CROSSHAIR))
         .on_hover_text("List the sites nearest you (asks the browser for your location)")
         .clicked()
     {
@@ -317,7 +311,7 @@ fn near_you_actions(
     }
     if let Some(err) = &vm.location_error {
         ui.label(
-            RichText::new(format!("{} {err}", egui_phosphor::regular::WARNING))
+            RichText::new(format!("{} {err}", crate::ui::icons::WARNING))
                 .size(theme::CAPTION)
                 .color(theme::TEXT),
         );
@@ -350,7 +344,7 @@ fn site_row(ui: &mut egui::Ui, row: &SiteRow) -> Option<Intent> {
         };
         push(
             &mut job,
-            RichText::new(format!("{} ", egui_phosphor::regular::RECORD)).color(mark),
+            RichText::new(format!("{} ", crate::ui::icons::RECORD)).color(mark),
         );
     }
     push(
@@ -401,7 +395,7 @@ fn site_row(ui: &mut egui::Ui, row: &SiteRow) -> Option<Intent> {
                 None => {
                     ui.add(
                         egui::Button::new(
-                            RichText::new(egui_phosphor::regular::RADIO_BUTTON).color(theme::TEXT),
+                            RichText::new(crate::ui::icons::RADIO_BUTTON).color(theme::TEXT),
                         )
                         .frame(false),
                     )
@@ -411,8 +405,7 @@ fn site_row(ui: &mut egui::Ui, row: &SiteRow) -> Option<Intent> {
                     let circle = ui
                         .add(
                             egui::Button::new(
-                                RichText::new(egui_phosphor::regular::CIRCLE)
-                                    .color(theme::TEXT_DIM),
+                                RichText::new(crate::ui::icons::CIRCLE).color(theme::TEXT_DIM),
                             )
                             .frame(false),
                         )
@@ -423,7 +416,7 @@ fn site_row(ui: &mut egui::Ui, row: &SiteRow) -> Option<Intent> {
                     let boxed = ui
                         .add(
                             egui::Button::new(
-                                RichText::new(egui_phosphor::regular::CHECK_SQUARE)
+                                RichText::new(crate::ui::icons::CHECK_SQUARE)
                                     .color(theme::SELECTED),
                             )
                             .frame(false),
@@ -445,10 +438,10 @@ fn site_row(ui: &mut egui::Ui, row: &SiteRow) -> Option<Intent> {
                 }
                 match status.dot {
                     Some(LiveDot::Streaming) => {
-                        ui.label(RichText::new(egui_phosphor::regular::RECORD).color(theme::NOW));
+                        ui.label(RichText::new(crate::ui::icons::RECORD).color(theme::NOW));
                     }
                     Some(LiveDot::Stalled) => {
-                        ui.label(RichText::new(egui_phosphor::regular::CIRCLE).color(theme::NOW));
+                        ui.label(RichText::new(crate::ui::icons::CIRCLE).color(theme::NOW));
                     }
                     None => {}
                 }

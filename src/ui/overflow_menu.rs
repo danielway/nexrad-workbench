@@ -18,7 +18,7 @@ pub(super) fn overflow_menu<R>(
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<Option<R>> {
     let result = ui.menu_button(
-        RichText::new(egui_phosphor::regular::DOTS_THREE).size(14.0),
+        RichText::new(crate::ui::icons::DOTS_THREE).size(14.0),
         |ui| {
             ui.set_min_width(180.0);
             add_contents(ui)

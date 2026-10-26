@@ -42,6 +42,13 @@ pub(crate) fn render_canvas_with_geo(
     // Every site on the map, in list order: each is drawn highlighted with
     // its id, and none is a pick target.
     let on_map: Vec<&str> = sites.iter().map(|s| s.id.0.as_str()).collect();
+    // What a click on a site marker does: Cmd (Ctrl off a Mac) adds it.
+    let site_click = crate::core::canvas::site_click(
+        state.is_mobile,
+        ctx.input(|i| i.modifiers.command),
+        on_map.len(),
+        crate::core::sites::cap(chrome.device_layout),
+    );
     egui::CentralPanel::default().show(root_ui, |ui| {
         let available_size = ui.available_size();
 
@@ -173,6 +180,20 @@ pub(crate) fn render_canvas_with_geo(
                     center: site_screen.center,
                     radius: coverage_km as f32 * site_screen.px_per_km,
                 });
+                // The mosaic gives way under every site showing data, not
+                // just the focus.
+                let mosaic_cutouts: Vec<RadarCutout> = sites
+                    .iter()
+                    .filter(|s| data_range_km_of(s).is_some())
+                    .map(|s| {
+                        let screen =
+                            super::canvas_overlays::SiteScreen::new(&projection, s.lat, s.lon);
+                        RadarCutout {
+                            center: screen.center,
+                            radius: coverage_km as f32 * screen.px_per_km,
+                        }
+                    })
+                    .collect();
 
                 if state.layer_state.geo.national_mosaic && derived.data_is_live() {
                     draw_national_mosaic(
@@ -180,7 +201,7 @@ pub(crate) fn render_canvas_with_geo(
                         &projection,
                         &state.national_mosaic,
                         state.viz_state.zoom(),
-                        radar_cutout,
+                        &mosaic_cutouts,
                     );
                 }
 
@@ -374,7 +395,7 @@ pub(crate) fn render_canvas_with_geo(
                         playback_secs: playback.state.playback_position(),
                     },
                     ui.ctx()
-                        .memory(|m| m.area_rect(egui::Id::new(MAP_TOOLBAR_ID)))
+                        .memory(|m| m.area_rect(egui::Id::unique(MAP_TOOLBAR_ID)))
                         .map(|r| r.size()),
                 );
                 let keep_out = chrome_frame.keep_out();
@@ -689,7 +710,15 @@ pub(crate) fn render_canvas_with_geo(
                             &storm_cells_vm,
                         ) {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                            paint_pick_hover(&painter, &projection, &pick, pos, rect, diagnostics);
+                            paint_pick_hover(
+                                &painter,
+                                &projection,
+                                &pick,
+                                site_click,
+                                pos,
+                                rect,
+                                diagnostics,
+                            );
                         } else if on_map.len() > 1 && !state.viz_state.data_probe_enabled {
                             // A radar on the map reads its frame's time and age.
                             if let Some(label) =
@@ -768,6 +797,7 @@ pub(crate) fn render_canvas_with_geo(
                         derived,
                         &projection,
                         &storm_cells_vm,
+                        site_click,
                     );
                 }
             }
@@ -784,7 +814,7 @@ const MAP_TOOLBAR_ID: &str = "map_toolbar";
 /// color.
 fn render_map_toolbar(ui: &egui::Ui, rect: &egui::Rect, state: &mut AppState) {
     use crate::core::panels::MapTool;
-    use egui_phosphor::regular as icons;
+    use crate::ui::icons;
     let tools = [
         (
             MapTool::Probe,
@@ -802,7 +832,7 @@ fn render_map_toolbar(ui: &egui::Ui, rect: &egui::Rect, state: &mut AppState) {
     ];
     let inset = crate::core::map_chrome::TOOLBAR_INSET;
     let top = super::canvas_overlays::map_top_clearance(*rect);
-    egui::Area::new(egui::Id::new(MAP_TOOLBAR_ID))
+    egui::Area::new(egui::Id::unique(MAP_TOOLBAR_ID))
         .fixed_pos(rect.left_top() + egui::vec2(inset, top + inset))
         // Middle, like the caption: dialogs live in Foreground and only
         // restack when their stack changes, so a Foreground area first shown
@@ -1114,7 +1144,7 @@ fn render_phone_loading(
         .ctx()
         .layer_painter(egui::LayerId::new(
             egui::Order::Middle,
-            egui::Id::new("phone_loading"),
+            egui::Id::unique("phone_loading"),
         ))
         .with_clip_rect(*rect);
     painter.rect_filled(*rect, 0.0, theme::phone::loading_scrim());
@@ -1168,7 +1198,7 @@ fn render_canvas_caption(
         return;
     };
     let font = theme::readout_font();
-    let id = egui::Id::new("canvas_caption");
+    let id = egui::Id::unique("canvas_caption");
     // The caption's width is known once laid out: last frame's.
     let width = ui
         .ctx()
@@ -1224,6 +1254,7 @@ fn paint_pick_hover(
     painter: &egui::Painter,
     projection: &MapProjection,
     pick: &crate::core::canvas::MapPick,
+    site_click: crate::core::canvas::SiteClick,
     cursor: egui::Pos2,
     rect: Rect,
     diagnostics: &crate::subsystem::Diagnostics,
@@ -1243,7 +1274,7 @@ fn paint_pick_hover(
         let at = projection.geo_to_screen(Coord { x: lon, y: lat });
         painter.circle_stroke(at, 9.0, Stroke::new(1.5_f32, theme::SEEN));
     }
-    let Some(label) = pick.hover_label() else {
+    let Some(label) = pick.hover_label(site_click) else {
         return;
     };
     paint_hover_label(painter, label, cursor, rect);

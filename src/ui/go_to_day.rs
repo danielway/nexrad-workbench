@@ -46,7 +46,7 @@ pub(in crate::ui) struct GoToDayLayer;
 
 /// Where the desktop's calendar button stores its rect for the popover.
 pub(in crate::ui) fn anchor_id() -> egui::Id {
-    egui::Id::new("go_to_day_anchor")
+    egui::Id::unique("go_to_day_anchor")
 }
 
 impl Layer for GoToDayLayer {
@@ -187,7 +187,7 @@ fn header(
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, HEADER_H), Sense::hover());
     let arrow = |ui: &mut egui::Ui, r: Rect, glyph: &str, to: Option<CalendarNav>| {
-        let resp = ui.interact(r, ui.id().with(glyph), Sense::click());
+        let resp = ui.interact(r, ui.scope_id().with(glyph), Sense::click());
         let color = if to.is_some() {
             theme::TEXT
         } else {
@@ -213,7 +213,7 @@ fn header(
     );
     let mut picked = arrow(ui, left, "\u{2039}", prev);
     picked = picked.or(arrow(ui, right, "\u{203A}", next));
-    let resp = ui.interact(mid, ui.id().with("calendar_title"), Sense::click());
+    let resp = ui.interact(mid, ui.scope_id().with("calendar_title"), Sense::click());
     ui.painter().text(
         mid.center(),
         Align2::CENTER_CENTER,
@@ -488,7 +488,7 @@ fn year(ui: &mut egui::Ui, vm: &YearVm, state: &mut AppState) {
         if big_cell(
             ui,
             rect,
-            ui.id().with(("calendar_month", i)),
+            ui.scope_id().with(("calendar_month", i)),
             &BigCell {
                 label: m.label,
                 level: m.level,
@@ -532,7 +532,7 @@ fn years(ui: &mut egui::Ui, vm: &YearsVm, room: f32, state: &mut AppState) {
                 if big_cell(
                     ui,
                     rect,
-                    ui.id().with(("calendar_year", y.year)),
+                    ui.scope_id().with(("calendar_year", y.year)),
                     &BigCell {
                         label: &y.label,
                         level: y.level,

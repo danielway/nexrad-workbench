@@ -18,7 +18,6 @@
 use crate::core::dialogs::{DialogId, DialogIntent, OwnedShortcut};
 use crate::core::keymap::{keymap_rows, KeyScope};
 use crate::core::transport::{LoopEdge, StepDir, StepUnit};
-use crate::core::RadarProduct;
 use crate::geo::ViewMode;
 use crate::state::AppState;
 use crate::ui::theme;
@@ -181,10 +180,19 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         section: SECTION_PLAYBACK,
         owned: None,
         key_label: "P",
-        description: "Cycle product",
+        description: "Next product",
         pressed: |i| no_mods(i, egui::Key::P),
         scope: KeyScope::Always,
-        handler: handle_cycle_product,
+        handler: |state, _live, _sites, _playback, _chrome, _| step_product(state, true),
+    },
+    OneShotShortcut {
+        section: SECTION_PLAYBACK,
+        owned: None,
+        key_label: "Shift+P",
+        description: "Previous product",
+        pressed: |i| i.modifiers.shift_only() && i.key_pressed(egui::Key::P),
+        scope: KeyScope::Always,
+        handler: |state, _live, _sites, _playback, _chrome, _| step_product(state, false),
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
@@ -569,20 +577,11 @@ fn handle_stop_live(
     }
 }
 
-fn handle_cycle_product(
-    state: &mut AppState,
-    _live: &mut crate::subsystem::Live,
-    _sites: &crate::subsystem::Sites,
-    _playback: &mut crate::subsystem::Playback,
-    _chrome: &mut crate::subsystem::Chrome,
-    _: &egui::Context,
-) {
-    let products = RadarProduct::all();
-    if let Some(idx) = products.iter().position(|p| *p == state.viz_state.product) {
-        state.push_command(crate::core::Intent::TopBar(
-            crate::core::top_bar::TopBarIntent::SetProduct(products[(idx + 1) % products.len()]),
-        ));
-    }
+/// P / Shift+P: the next or previous product ([`crate::core::RadarProduct::step`]).
+fn step_product(state: &mut AppState, forward: bool) {
+    state.push_command(crate::core::Intent::TopBar(
+        crate::core::top_bar::TopBarIntent::SetProduct(state.viz_state.product.step(forward)),
+    ));
 }
 
 /// E / Shift+E: the next row of the one tilt list ([`crate::core::ladder`]),

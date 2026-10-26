@@ -35,7 +35,7 @@ impl Layer for ChipSheetLayer {
 
 /// The glyph beside each row.
 fn icon(row: SheetRow) -> &'static str {
-    use egui_phosphor::regular as ph;
+    use crate::ui::icons as ph;
     match row {
         SheetRow::Live => ph::BROADCAST,
         SheetRow::LoopLast => ph::REPEAT,
