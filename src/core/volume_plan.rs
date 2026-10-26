@@ -269,6 +269,48 @@ pub(crate) fn beam_from_ground_position(ground_arc_km: f32, height_km: f32) -> (
     (theta.to_degrees(), range)
 }
 
+/// How far along its radial a sweep may be sampled away from the point being
+/// shaded, in km, when matching heights between cuts. See
+/// [`height_matched_range_km`].
+pub(crate) const HEIGHT_MATCH_MAX_SHIFT_KM: f32 = 2.0;
+
+/// Slant range at which a beam at `elevation_deg` reaches `height_km`, the
+/// inverse of [`beam_height_km`] in range.
+///
+/// Solves `range² + 2·range·re·sin(e) + re² = (re + h)²` for the positive
+/// root, rationalised so the float32 transcription in the shader does not
+/// lose the answer to cancellation when the beam is nearly horizontal.
+#[allow(dead_code)]
+pub(crate) fn slant_range_at_height_km(elevation_deg: f32, height_km: f32) -> f32 {
+    let re = EFFECTIVE_EARTH_RADIUS_KM;
+    let b = re * elevation_deg.to_radians().sin();
+    let c = height_km * (2.0 * re + height_km);
+    c / ((b * b + c).sqrt() + b)
+}
+
+/// Where along its radial to sample one of the two cuts bracketing a point,
+/// so the interpolation between cuts runs at constant height.
+///
+/// The ray marcher blends the cut below and the cut above a point. Sampling
+/// both at the point's own slant range blends values from two different
+/// heights, so any thin horizontal layer — the melting-layer bright band in
+/// stratiform rain is the usual one — is only drawn where a cut happens to
+/// pass through it, and the cones crossing it show as concentric rings around
+/// the radar. Sampling each cut where it reaches the point's height instead
+/// keeps a layer flat. The shift is capped at
+/// [`HEIGHT_MATCH_MAX_SHIFT_KM`]: near-horizontal low cuts would otherwise
+/// reach across tens of kilometres (and there they overlap closely enough not
+/// to ring anyway), and a longer shift visibly smears storms along the radial.
+///
+/// The shader transcribes this line for line.
+#[allow(dead_code)]
+pub(crate) fn height_matched_range_km(elevation_deg: f32, height_km: f32, range_km: f32) -> f32 {
+    slant_range_at_height_km(elevation_deg, height_km).clamp(
+        range_km - HEIGHT_MATCH_MAX_SHIFT_KM,
+        range_km + HEIGHT_MATCH_MAX_SHIFT_KM,
+    )
+}
+
 /// Bounds of the region a volume ray march needs to visit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ShellExtents {
@@ -853,6 +895,51 @@ mod extent_tests {
                 );
             }
         }
+    }
+
+    #[wasm_bindgen_test]
+    fn slant_range_at_height_inverts_beam_height() {
+        for &range in &[1.0f32, 5.0, 25.0, 100.0, 230.0, 460.0] {
+            for &elev in &[0.5f32, 0.9, 1.5, 3.1, 6.4, 12.0, 19.5] {
+                let h = beam_height_km(range, elev);
+                let back = slant_range_at_height_km(elev, h);
+                assert!(
+                    (back - range).abs() < 0.05,
+                    "{range} km at {elev}°: recovered {back} km"
+                );
+            }
+        }
+        assert_eq!(slant_range_at_height_km(5.0, 0.0), 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn height_matching_samples_each_cut_where_it_reaches_the_point() {
+        // Just above the 6.4° cone 30 km out, a point sits between the 6.4°
+        // and 8.0° cuts. The 6.4° cut passes its height a little farther out
+        // and is sampled there exactly; the 8.0° cut passes it well inside,
+        // beyond the cap, so it is sampled at the cap.
+        let h = beam_height_km(30.0, 6.4) + 0.1;
+        let (elev, range) = beam_from_ground_position(30.0, h);
+        assert!(elev > 6.4 && elev < 8.0, "bracket assumption: {elev}°");
+        let lo = height_matched_range_km(6.4, h, range);
+        let hi = height_matched_range_km(8.0, h, range);
+        assert!(lo > range && lo - range < HEIGHT_MATCH_MAX_SHIFT_KM);
+        assert!((beam_height_km(lo, 6.4) - h).abs() < 0.01);
+        assert!((range - hi - HEIGHT_MATCH_MAX_SHIFT_KM).abs() < 1e-3);
+
+        // On a cut's own cone the shift vanishes, so each cut is still drawn
+        // exactly where it was measured.
+        let h = beam_height_km(80.0, 3.1);
+        assert!((height_matched_range_km(3.1, h, 80.0) - 80.0).abs() < 0.05);
+    }
+
+    #[wasm_bindgen_test]
+    fn height_matching_is_capped_for_near_horizontal_cuts() {
+        // 1 km above the 0.5° cone at 150 km, the 0.5° beam is ~40 km
+        // farther out. The shift stops at the cap.
+        let (_, range) = beam_from_ground_position(150.0, beam_height_km(150.0, 0.5) + 1.0);
+        let r = height_matched_range_km(0.5, beam_height_km(150.0, 0.5) + 1.0, range);
+        assert!((r - range - HEIGHT_MATCH_MAX_SHIFT_KM).abs() < 1e-3);
     }
 
     #[wasm_bindgen_test]
