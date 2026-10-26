@@ -355,6 +355,19 @@ pub(crate) struct BootPlan {
     pub start: BootStart,
 }
 
+impl BootPlan {
+    /// The range the session fetches as it opens: a fixed range from the
+    /// link is fetched for every site on the map, as a range the user just
+    /// selected is (selection = the fetch), through the same gate, so a long
+    /// one asks first. Nothing until a site is known.
+    pub(crate) fn fetch_range(&self) -> Option<(f64, f64)> {
+        match self.start {
+            BootStart::Range { start, end, .. } if self.site.is_some() => Some((start, end)),
+            _ => None,
+        }
+    }
+}
+
 /// Decide how a session opens.
 ///
 /// - No link: pinned to now at the preferred site, as before (the picker
@@ -717,6 +730,20 @@ mod tests {
         assert!(matches!(plan.start, BootStart::Range { playhead, .. } if playhead == 2000.0));
         let plan = decide_boot(&parse("?sel=1000~2000"), None, known, 3);
         assert!(matches!(plan.start, BootStart::Range { playhead, .. } if playhead == 1000.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn a_fixed_range_fetches_as_the_session_opens() {
+        let plan = decide_boot(&parse("?site=KTLX&also=KOAX&sel=1000~2000"), None, known, 3);
+        assert_eq!(plan.fetch_range(), Some((1000.0, 2000.0)));
+        // No site yet (the picker opens first): nothing to fetch for.
+        let plan = decide_boot(&parse("?sel=1000~2000"), None, known, 3);
+        assert_eq!(plan.fetch_range(), None);
+        // A time, or a range pinned to now, fetches the usual way.
+        let plan = decide_boot(&parse("?site=KTLX&t=1500"), None, known, 3);
+        assert_eq!(plan.fetch_range(), None);
+        let plan = decide_boot(&parse("?site=KTLX&sel=last6f"), None, known, 3);
+        assert_eq!(plan.fetch_range(), None);
     }
 
     #[wasm_bindgen_test]

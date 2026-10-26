@@ -449,6 +449,8 @@ fn apply_link(
             playback.state.set_playback_position(playhead);
             playback.state.select_range(start, end, false);
             playback.state.center_view_on((start + end) / 2.0);
+            // Fetched as if just selected (the first frame's gate arms it).
+            state.selection_just_finalized = plan.fetch_range();
         }
         // Session start pinned to now (spec §7 DECIDED). With a site known,
         // tether now — queued behind the initial RefreshTimeline so the
