@@ -448,7 +448,7 @@ impl GlobeRadarRenderer {
             gl.uniform_3_f32(Some(&self.u_site_pos), x, y, z);
             let rivals = &rivals[..rivals.len().min(crate::core::sites::MAX_RIVALS)];
             let mut packed = [0.0f32; 4 * crate::core::sites::MAX_RIVALS];
-            for (slot, disc) in packed.chunks_exact_mut(4).zip(rivals) {
+            for (slot, disc) in packed.as_chunks_mut::<4>().0.iter_mut().zip(rivals) {
                 let [x, y, z] = disc.position;
                 slot.copy_from_slice(&[x, y, z, disc.cos_reach]);
             }

@@ -472,7 +472,7 @@ impl RadarGpuRenderer {
 
             let rivals = &rivals[..rivals.len().min(crate::core::sites::MAX_RIVALS)];
             let mut packed = [0.0f32; 3 * crate::core::sites::MAX_RIVALS];
-            for (slot, disc) in packed.chunks_exact_mut(3).zip(rivals) {
+            for (slot, disc) in packed.as_chunks_mut::<3>().0.iter_mut().zip(rivals) {
                 slot.copy_from_slice(&[disc.center[0], disc.center[1], disc.radius]);
             }
             gl.uniform_1_i32(Some(&self.uniforms.rival_count), rivals.len() as i32);
