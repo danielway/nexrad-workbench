@@ -14,7 +14,7 @@ pub(crate) fn mping_fill(category: ReportCategory) -> Color32 {
     match category {
         ReportCategory::RainSnow => Color32::from_rgb(120, 200, 255),
         ReportCategory::Hail => Color32::from_rgb(255, 230, 80),
-        ReportCategory::WindDamage => Color32::from_rgb(255, 160, 60),
+        ReportCategory::StormDamage => Color32::from_rgb(255, 160, 60),
         ReportCategory::Tornado => Color32::from_rgb(255, 80, 80),
         ReportCategory::Flood => Color32::from_rgb(80, 120, 220),
         ReportCategory::ReducedVisibility => Color32::from_rgb(180, 180, 180),
@@ -61,7 +61,7 @@ mod tests {
         let all = [
             RainSnow,
             Hail,
-            WindDamage,
+            StormDamage,
             Tornado,
             Flood,
             ReducedVisibility,

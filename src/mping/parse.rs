@@ -184,7 +184,7 @@ mod tests {
         let cases = [
             ("Rain/Snow", ReportCategory::RainSnow),
             ("Hail", ReportCategory::Hail),
-            ("Wind Damage", ReportCategory::WindDamage),
+            ("Storm Damage", ReportCategory::StormDamage),
             ("Tornado", ReportCategory::Tornado),
             ("Flood", ReportCategory::Flood),
             ("Reduced Visibility", ReportCategory::ReducedVisibility),

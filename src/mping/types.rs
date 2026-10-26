@@ -6,7 +6,7 @@ pub(crate) struct StormReport {
     pub id: i64,
     /// Observation time, milliseconds since Unix epoch.
     pub obtime_ms: f64,
-    /// High-level category (`"Rain/Snow"`, `"Hail"`, `"Wind Damage"`,
+    /// High-level category (`"Rain/Snow"`, `"Hail"`, `"Storm Damage"`,
     /// `"Tornado"`, `"Flood"`, `"Reduced Visibility"`, …).
     pub category: ReportCategory,
     /// Free-form description string from the API (e.g. "Mixed Ice Pellets and Snow").
@@ -32,7 +32,7 @@ impl StormReport {
 pub(crate) enum ReportCategory {
     RainSnow,
     Hail,
-    WindDamage,
+    StormDamage,
     Tornado,
     Flood,
     ReducedVisibility,
@@ -45,7 +45,7 @@ impl ReportCategory {
         match s {
             "Rain/Snow" => Self::RainSnow,
             "Hail" => Self::Hail,
-            "Wind Damage" => Self::WindDamage,
+            "Storm Damage" => Self::StormDamage,
             "Tornado" => Self::Tornado,
             "Flood" => Self::Flood,
             "Reduced Visibility" => Self::ReducedVisibility,
@@ -58,7 +58,7 @@ impl ReportCategory {
         match self {
             Self::RainSnow => "Rain / Snow",
             Self::Hail => "Hail",
-            Self::WindDamage => "Wind Damage",
+            Self::StormDamage => "Storm Damage",
             Self::Tornado => "Tornado",
             Self::Flood => "Flood",
             Self::ReducedVisibility => "Reduced Visibility",
@@ -117,8 +117,8 @@ mod coverage_tests {
         assert_eq!(ReportCategory::parse("Rain/Snow"), ReportCategory::RainSnow);
         assert_eq!(ReportCategory::parse("Hail"), ReportCategory::Hail);
         assert_eq!(
-            ReportCategory::parse("Wind Damage"),
-            ReportCategory::WindDamage
+            ReportCategory::parse("Storm Damage"),
+            ReportCategory::StormDamage
         );
         assert_eq!(ReportCategory::parse("Tornado"), ReportCategory::Tornado);
         assert_eq!(ReportCategory::parse("Flood"), ReportCategory::Flood);
@@ -142,14 +142,14 @@ mod coverage_tests {
         // Exact-match only: differing case must not match.
         assert_eq!(ReportCategory::parse("HAIL"), ReportCategory::Other);
         assert_eq!(ReportCategory::parse("tornado"), ReportCategory::Other);
-        assert_eq!(ReportCategory::parse("wind damage"), ReportCategory::Other);
+        assert_eq!(ReportCategory::parse("storm damage"), ReportCategory::Other);
     }
 
     #[wasm_bindgen_test]
     fn label_matches_each_variant() {
         assert_eq!(ReportCategory::RainSnow.label(), "Rain / Snow");
         assert_eq!(ReportCategory::Hail.label(), "Hail");
-        assert_eq!(ReportCategory::WindDamage.label(), "Wind Damage");
+        assert_eq!(ReportCategory::StormDamage.label(), "Storm Damage");
         assert_eq!(ReportCategory::Tornado.label(), "Tornado");
         assert_eq!(ReportCategory::Flood.label(), "Flood");
         assert_eq!(
@@ -169,8 +169,8 @@ mod coverage_tests {
             ReportCategory::Hail
         );
         assert_eq!(
-            ReportCategory::parse(ReportCategory::WindDamage.label()),
-            ReportCategory::WindDamage
+            ReportCategory::parse(ReportCategory::StormDamage.label()),
+            ReportCategory::StormDamage
         );
         assert_eq!(
             ReportCategory::parse(ReportCategory::Tornado.label()),
