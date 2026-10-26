@@ -503,9 +503,9 @@ the desktop, 2 h on the phone — and the confirmation shows
 Canvas overlays live in `ui/canvas_overlays/` — one module per overlay
 (national mosaic, alerts, mPING reports, GPS location, sweep line/donut, site
 markers, info text, color scale, scale bar, compass, globe). `ui/canvas.rs`
-owns the draw order and the radar texture pass: every site's disc, older
-frame first (`core::sites::draw_order`), each with its own Rays marks, the
-focus's marks on top. In 3D, `ui/canvas_overlays/globe.rs` draws every site's
+owns the draw order and the radar texture pass: every site's disc, overlaps
+split to the nearest radar (`core::sites::rivals`), each with its own Rays
+marks, the focus's marks on top. In 3D, `ui/canvas_overlays/globe.rs` draws every site's
 surface patch, then their volumes back to front from the camera
 (`core::volume_plan::globe_draw_plan`); `core::volume_plan::resident_volumes`
 decides which sites may hold a volume texture (three on a desktop, one on a

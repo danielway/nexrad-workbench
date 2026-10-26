@@ -13,6 +13,9 @@ use std::sync::Arc;
 /// Radius of the radar patch above the unit sphere (avoid z-fighting).
 const PATCH_RADIUS: f32 = 1.003;
 
+/// Earth's radius the patch mesh is laid out with, km.
+const EARTH_RADIUS_KM: f64 = 6371.0;
+
 /// Number of azimuth steps in the radar patch mesh.
 const PATCH_AZ_STEPS: u32 = 180;
 /// Number of range steps in the radar patch mesh.
@@ -29,9 +32,11 @@ in vec3 a_position;  // 3D point on sphere
 in vec2 a_polar;     // (azimuth_deg, range_km)
 
 out vec2 v_polar;
+out vec3 v_world;
 
 void main() {
     v_polar = a_polar;
+    v_world = a_position;
     gl_Position = u_view_projection * vec4(a_position, 1.0);
 }
 "#;
@@ -43,13 +48,21 @@ void main() {
 /// instead of computing them from screen-space pixel position.
 fn build_globe_fragment_shader() -> String {
     use super::gpu_renderer::shaders::*;
+    const MAX_RIVALS: usize = crate::core::sites::MAX_RIVALS;
     format!(
         r#"#version 300 es
 precision highp float;
 
 in vec2 v_polar; // (azimuth_deg, range_km)
+in vec3 v_world;
 out vec4 fragColor;
 
+// This radar on the unit globe, and the other patches on it: (unit
+// position, cosine of the arc their data reaches). A point one of them is
+// nearer to and covers is theirs (core::sites::rivals).
+uniform vec3 u_site_pos;
+uniform int u_rival_count;
+uniform vec4 u_rivals[{MAX_RIVALS}];
 {FRAGMENT_PREAMBLE}
 {SAMPLE_DATA_P}
 {IS_VALID}
@@ -58,6 +71,17 @@ out vec4 fragColor;
 void main() {{
     float azimuth_deg = v_polar.x;
     float dist_km = v_polar.y;
+
+    // Nearer on the sphere is a larger cosine of the arc to the radar.
+    vec3 p = normalize(v_world);
+    float own_cos = dot(p, u_site_pos);
+    for (int k = 0; k < {MAX_RIVALS}; k++) {{
+        if (k >= u_rival_count) break;
+        float rival_cos = dot(p, u_rivals[k].xyz);
+        if (rival_cos > own_cos && rival_cos > u_rivals[k].w) {{
+            discard;
+        }}
+    }}
 
     if (dist_km < u_first_gate_km || dist_km >= u_max_range_km) {{
         discard;
@@ -130,6 +154,24 @@ void main() {{
 }
 
 /// Globe-mode radar renderer — renders radar data on a spherical cap mesh.
+/// A site's patch on the globe: the radar on the unit sphere and the
+/// cosine of the arc its data reaches.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct GlobeDisc {
+    pub position: [f32; 3],
+    pub cos_reach: f32,
+}
+
+impl GlobeDisc {
+    /// The patch of a radar at `lat`, `lon` whose data reaches `range_km`.
+    pub(crate) fn new(lat: f64, lon: f64, range_km: f64) -> Self {
+        Self {
+            position: crate::core::volume_plan::site_unit_position(lat, lon),
+            cos_reach: (range_km / EARTH_RADIUS_KM).cos() as f32,
+        }
+    }
+}
+
 pub(crate) struct GlobeRadarRenderer {
     program: glow::Program,
     vao: glow::VertexArray,
@@ -152,6 +194,9 @@ pub(crate) struct GlobeRadarRenderer {
     u_scale: glow::UniformLocation,
     u_storm_motion: glow::UniformLocation,
     u_azimuth_spacing_deg: glow::UniformLocation,
+    u_site_pos: glow::UniformLocation,
+    u_rival_count: glow::UniformLocation,
+    u_rivals: glow::UniformLocation,
 
     /// Radar site location (for rebuilding mesh when site changes).
     site_lat: f64,
@@ -202,6 +247,9 @@ impl GlobeRadarRenderer {
         let u_azimuth_spacing_deg = gl
             .get_uniform_location(program, "u_azimuth_spacing_deg")
             .unwrap();
+        let u_site_pos = gl.get_uniform_location(program, "u_site_pos").unwrap();
+        let u_rival_count = gl.get_uniform_location(program, "u_rival_count").unwrap();
+        let u_rivals = gl.get_uniform_location(program, "u_rivals").unwrap();
 
         // Bind texture samplers
         gl.use_program(Some(program));
@@ -257,6 +305,9 @@ impl GlobeRadarRenderer {
             u_scale,
             u_storm_motion,
             u_azimuth_spacing_deg,
+            u_site_pos,
+            u_rival_count,
+            u_rivals,
             site_lat: 0.0,
             site_lon: 0.0,
             mesh_range_km: 0.0,
@@ -314,6 +365,7 @@ impl GlobeRadarRenderer {
         camera: &Camera,
         flat_renderer: &super::gpu_renderer::RadarGpuRenderer,
         processing: &RenderProcessing,
+        rivals: &[GlobeDisc],
     ) {
         if self.index_count == 0 || !flat_renderer.has_data() {
             return;
@@ -391,6 +443,18 @@ impl GlobeRadarRenderer {
                 flat_renderer.azimuth_spacing_deg(),
             );
 
+            let [x, y, z] =
+                crate::core::volume_plan::site_unit_position(self.site_lat, self.site_lon);
+            gl.uniform_3_f32(Some(&self.u_site_pos), x, y, z);
+            let rivals = &rivals[..rivals.len().min(crate::core::sites::MAX_RIVALS)];
+            let mut packed = [0.0f32; 4 * crate::core::sites::MAX_RIVALS];
+            for (slot, disc) in packed.chunks_exact_mut(4).zip(rivals) {
+                let [x, y, z] = disc.position;
+                slot.copy_from_slice(&[x, y, z, disc.cos_reach]);
+            }
+            gl.uniform_1_i32(Some(&self.u_rival_count), rivals.len() as i32);
+            gl.uniform_4_f32_slice(Some(&self.u_rivals), &packed);
+
             gl.draw_elements(glow::TRIANGLES, self.index_count, glow::UNSIGNED_INT, 0);
 
             gl.bind_vertex_array(None);
@@ -411,7 +475,7 @@ fn generate_radar_patch(
     center_lon_deg: f64,
     max_range_km: f64,
 ) -> (Vec<f32>, Vec<u32>) {
-    let earth_radius_km = 6371.0;
+    let earth_radius_km = EARTH_RADIUS_KM;
     let az_steps = PATCH_AZ_STEPS;
     let range_steps = PATCH_RANGE_STEPS;
 

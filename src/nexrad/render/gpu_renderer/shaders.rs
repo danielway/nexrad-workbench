@@ -222,6 +222,7 @@ void main() {
 // ============================================================================
 
 pub(super) fn build_flat_fragment_shader() -> String {
+    const MAX_RIVALS: usize = crate::core::sites::MAX_RIVALS;
     format!(
         r#"#version 300 es
 precision highp float;
@@ -231,6 +232,11 @@ out vec4 fragColor;
 
 uniform vec2 u_radar_center;       // radar center in screen pixels
 uniform float u_radar_radius;      // max coverage radius in screen pixels
+// The other discs on the map: (center x, center y, data radius) in screen
+// pixels. A pixel one of them is nearer to and covers is theirs
+// (core::sites::rivals).
+uniform int u_rival_count;
+uniform vec3 u_rivals[{MAX_RIVALS}];
 {FRAGMENT_PREAMBLE}
 // Processing uniforms
 uniform int u_data_age_desaturation; // 0 or 1: desaturate oldest data behind sweep line
@@ -259,6 +265,14 @@ uniform float u_prev_azimuth_spacing_deg;
 void main() {{
     vec2 delta = v_screen_pos - u_radar_center;
     float dist_px = length(delta);
+    for (int k = 0; k < {MAX_RIVALS}; k++) {{
+        if (k >= u_rival_count) break;
+        float rival_px = length(v_screen_pos - u_rivals[k].xy);
+        if (rival_px < dist_px && rival_px < u_rivals[k].z) {{
+            fragColor = vec4(0.0);
+            return;
+        }}
+    }}
     float dist_km = (dist_px / u_radar_radius) * u_max_range_km;
 
     float azimuth_rad = atan(delta.x, -delta.y);

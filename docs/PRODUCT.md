@@ -111,7 +111,9 @@ phone, and a product, tilt rule or playback of its own for each site.
 phone shows one, and a desktop window narrowed into the phone's layout keeps
 only the focus. Every site on the map is the same kind of thing: each has
 its own scans, frame, stream and disc, all at the one shared playhead,
-product and tilt rule, drawn older frame first so the newer one is on top.
+product and tilt rule. Where discs overlap, each spot shows the nearest
+radar that reaches it, whatever the frame times, so the split stays put
+while a loop plays.
 Each disc carries its own range rings and Rays marks, the focus's at full
 strength and the others' at half.
 One of them is the **focus**: the surfaces that hold a single value (the
@@ -1120,8 +1122,8 @@ not unfinished work:
   handling of stale projections is a post-v1 revisit.
 - **Wi-Fi-only acquisition toggle:** not implementable in a browser today; revisit
   if a reliable network-type signal becomes available.
-- **Blended compositing:** where discs overlap, the newer frame is drawn on
-  top. A blend (maximum reflectivity, distance weighting) would be drawn on
+- **Blended compositing:** where discs overlap, the nearest radar shows. A
+  blend (maximum reflectivity, distance weighting) would be drawn on
   the composite grid the storm cells already use (§13.2).
 - **An overview lane per site:** the overview's bars stay the focus's.
 - **Listing only the focus's days:** every site on the map lists the days in

@@ -10,7 +10,10 @@
 //!   change to the set does, or why it is refused ([`Refusal::words`] is what
 //!   the picker says).
 //! - [`draw_order`]: the order the canvas draws the discs in, older frame
-//!   first so the newer frame is on top.
+//!   first. Where discs overlap the order does not decide what shows:
+//!   [`rivals`] does.
+//! - [`rivals`]: the other discs a disc yields its pixels to. Each pixel
+//!   where discs overlap shows the nearest radar whose data reaches it.
 //! - [`frame_union`]: the Frames-mode frame list across every site.
 //! - [`route`]: the site a worker reply belongs to. Replies that carry a
 //!   stored scan key route by the key's site; a reply whose site is no longer
@@ -155,9 +158,32 @@ pub(crate) fn select(ids: &[SiteId], focus: usize, id: &SiteId) -> Select {
     }
 }
 
+/// Most rivals a disc has: every other site a desktop can show.
+pub(crate) const MAX_RIVALS: usize = DESKTOP_CAP - 1;
+
+/// The discs that take pixels from disc `i` (indices into the list; `None`
+/// for a site with nothing on screen): every other site that has data.
+///
+/// Where discs overlap, a pixel shows the nearest radar whose data reaches
+/// it. Each disc's shader gets its rivals' centres and data ranges and
+/// leaves out the pixels a rival is nearer to and covers, so the split is
+/// the same on every frame. The older rule, newer frame on top, flipped the
+/// whole overlap from one radar to another whenever a playing loop stepped
+/// past one site's scan and not the other's.
+pub(crate) fn rivals<T: Copy>(discs: &[Option<T>], i: usize) -> Vec<T> {
+    discs
+        .iter()
+        .enumerate()
+        .filter(|&(j, _)| j != i)
+        .filter_map(|(_, d)| *d)
+        .take(MAX_RIVALS)
+        .collect()
+}
+
 /// The order the canvas draws the sites in, as indices into the list:
-/// older frame first, so the newer frame is on top. A site with no frame
-/// draws first; ties keep list order.
+/// older frame first. A site with no frame draws first; ties keep list
+/// order. Overlaps are split by [`rivals`], so the order shows only where
+/// two radars are exactly as near.
 pub(crate) fn draw_order(frame_times: &[Option<f64>]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..frame_times.len()).collect();
     order.sort_by(|&a, &b| {
@@ -443,6 +469,17 @@ mod tests {
         assert_eq!(draw_order(&[None, None]), vec![0, 1]);
         assert_eq!(draw_order(&[Some(1.0), Some(1.0)]), vec![0, 1]);
         assert_eq!(draw_order(&[]), Vec::<usize>::new());
+    }
+
+    #[wasm_bindgen_test]
+    fn rivals_are_every_other_disc_with_data() {
+        let discs = [Some('a'), None, Some('c')];
+        assert_eq!(rivals(&discs, 0), vec!['c']);
+        assert_eq!(rivals(&discs, 1), vec!['a', 'c']);
+        assert_eq!(rivals(&discs, 2), vec!['a']);
+        // One site yields to nobody, and a site with no frame is no rival.
+        assert_eq!(rivals(&[Some('a')], 0), Vec::<char>::new());
+        assert_eq!(rivals(&[Some('a'), None], 0), Vec::<char>::new());
     }
 
     #[wasm_bindgen_test]

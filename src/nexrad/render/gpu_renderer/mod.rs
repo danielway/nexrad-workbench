@@ -45,6 +45,8 @@ struct UniformLocations {
     azimuth_spacing_deg: glow::UniformLocation,
     prev_azimuth_spacing_deg: glow::UniformLocation,
     storm_motion: glow::UniformLocation,
+    rival_count: glow::UniformLocation,
+    rivals: glow::UniformLocation,
 }
 
 /// Spatial metadata for a single sweep (current or previous).
@@ -85,6 +87,14 @@ struct CpuShadowData {
     azimuths: Vec<f32>,
     gate_values: Vec<f32>,
     radial_times: Vec<f64>,
+}
+
+/// A disc on screen: its radar's centre and the radius its data reaches,
+/// in physical pixels of the canvas viewport.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ScreenDisc {
+    pub center: [f32; 2],
+    pub radius: f32,
 }
 
 /// GPU-based radar renderer using WebGL2 shaders.
@@ -226,6 +236,8 @@ impl RadarGpuRenderer {
                 azimuth_spacing_deg: uniform("u_azimuth_spacing_deg")?,
                 prev_azimuth_spacing_deg: uniform("u_prev_azimuth_spacing_deg")?,
                 storm_motion: uniform("u_storm_motion")?,
+                rival_count: uniform("u_rival_count")?,
+                rivals: uniform("u_rivals")?,
             };
 
             // Create placeholders for previous sweep textures
@@ -328,6 +340,7 @@ impl RadarGpuRenderer {
         processing: &RenderProcessing,
         sweep_info: Option<(f32, f32)>,
         sweep_chunk_boundary: Option<f32>,
+        rivals: &[ScreenDisc],
     ) {
         if !self.has_data {
             return;
@@ -456,6 +469,14 @@ impl RadarGpuRenderer {
             );
             let [east, north] = self.storm_motion.unwrap_or([0.0, 0.0]);
             gl.uniform_2_f32(Some(&self.uniforms.storm_motion), east, north);
+
+            let rivals = &rivals[..rivals.len().min(crate::core::sites::MAX_RIVALS)];
+            let mut packed = [0.0f32; 3 * crate::core::sites::MAX_RIVALS];
+            for (slot, disc) in packed.chunks_exact_mut(3).zip(rivals) {
+                slot.copy_from_slice(&[disc.center[0], disc.center[1], disc.radius]);
+            }
+            gl.uniform_1_i32(Some(&self.uniforms.rival_count), rivals.len() as i32);
+            gl.uniform_3_f32_slice(Some(&self.uniforms.rivals), &packed);
 
             // Draw fullscreen quad
             gl.draw_arrays(glow::TRIANGLES, 0, 6);
