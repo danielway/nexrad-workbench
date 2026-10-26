@@ -55,8 +55,12 @@ then held. It does not change from volume to volume, so the colors stay
 steady while a loop plays. The side panel shows the motion in use, for
 example "Storm motion NE 47 km/h, locked". Press **Update** next to it to take
 the motion again from the storms on screen, for instance after jumping to a
-different storm or day. Picking SRV again after another product also takes a
-new motion.
+different storm or day.
+
+**Switching away and back takes a new motion.** The lock lasts while SRV is
+the product on screen. If you switch to another product, such as VEL, and then
+back to SRV, the app takes the motion again from the storms on screen at that
+moment, so it may differ from the one you had before.
 
 **Before there is a motion.** Tracks need at least two volumes, and a
 confident motion usually needs a few more, so the app looks at the volumes
