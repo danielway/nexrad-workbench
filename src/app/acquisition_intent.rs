@@ -488,6 +488,11 @@ impl WorkbenchApp {
     /// runs only on a live range — and idempotent via the same dedup as
     /// the forward pump. The live stream itself only fetches the in-progress
     /// volume, so previous volumes must come from the archive.
+    ///
+    /// The range was chosen by the user, so its volumes queue as `Selection`:
+    /// as `Reactive` items the playhead pruning dropped every volume more than
+    /// two scans from a paused playhead, and a loop of more than a few frames
+    /// stalled after three.
     pub(crate) fn pump_lookback_backfill(&mut self, ctx: &egui::Context) {
         if !acquisition_core::lookback_backfill_due(
             self.playback.state.is_live_range(),
@@ -522,7 +527,7 @@ impl WorkbenchApp {
         );
         for site in 0..self.sites.list.len() {
             let actions = self.reduce_window_plan(site, &plan);
-            self.execute_window_actions(ctx, site, actions, QueueOrigin::Reactive);
+            self.execute_window_actions(ctx, site, actions, QueueOrigin::Selection);
         }
     }
 }
