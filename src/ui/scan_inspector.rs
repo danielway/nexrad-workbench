@@ -69,7 +69,7 @@ fn estimated_sweep_bytes() -> u64 {
 /// press that opened it, remembered per inspected scan (egui memory — it is
 /// a screen position, the shell's fact).
 fn anchor_for(ctx: &egui::Context, scan_start: f64) -> Rect {
-    let id = egui::Id::new("scan_inspector_anchor");
+    let id = egui::Id::unique("scan_inspector_anchor");
     let stored: Option<(f64, Pos2)> = ctx.data(|d| d.get_temp(id));
     let pos = match stored {
         Some((s, pos)) if s == scan_start => pos,

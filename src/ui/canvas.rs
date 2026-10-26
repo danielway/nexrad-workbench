@@ -395,7 +395,7 @@ pub(crate) fn render_canvas_with_geo(
                         playback_secs: playback.state.playback_position(),
                     },
                     ui.ctx()
-                        .memory(|m| m.area_rect(egui::Id::new(MAP_TOOLBAR_ID)))
+                        .memory(|m| m.area_rect(egui::Id::unique(MAP_TOOLBAR_ID)))
                         .map(|r| r.size()),
                 );
                 let keep_out = chrome_frame.keep_out();
@@ -832,7 +832,7 @@ fn render_map_toolbar(ui: &egui::Ui, rect: &egui::Rect, state: &mut AppState) {
     ];
     let inset = crate::core::map_chrome::TOOLBAR_INSET;
     let top = super::canvas_overlays::map_top_clearance(*rect);
-    egui::Area::new(egui::Id::new(MAP_TOOLBAR_ID))
+    egui::Area::new(egui::Id::unique(MAP_TOOLBAR_ID))
         .fixed_pos(rect.left_top() + egui::vec2(inset, top + inset))
         // Middle, like the caption: dialogs live in Foreground and only
         // restack when their stack changes, so a Foreground area first shown
@@ -1144,7 +1144,7 @@ fn render_phone_loading(
         .ctx()
         .layer_painter(egui::LayerId::new(
             egui::Order::Middle,
-            egui::Id::new("phone_loading"),
+            egui::Id::unique("phone_loading"),
         ))
         .with_clip_rect(*rect);
     painter.rect_filled(*rect, 0.0, theme::phone::loading_scrim());
@@ -1198,7 +1198,7 @@ fn render_canvas_caption(
         return;
     };
     let font = theme::readout_font();
-    let id = egui::Id::new("canvas_caption");
+    let id = egui::Id::unique("canvas_caption");
     // The caption's width is known once laid out: last frame's.
     let width = ui
         .ctx()

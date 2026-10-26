@@ -186,7 +186,7 @@ pub(crate) fn paint_card(
     let painter = ctx
         .layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
-            egui::Id::new("storm_cell_card"),
+            egui::Id::unique("storm_cell_card"),
         ))
         .with_clip_rect(canvas);
     let body = FontId::monospace(if phone { 12.0 } else { 11.5 });

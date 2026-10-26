@@ -56,12 +56,12 @@ const POPOVER_GAP: f32 = 6.0;
 
 /// The egui id of an entry's window.
 fn window_id(id: DialogId) -> Id {
-    Id::new(("dialog_window", id.key()))
+    Id::unique(("dialog_window", id.key()))
 }
 
 /// The egui id of an entry's backdrop.
 fn backdrop_id(id: DialogId) -> Id {
-    Id::new(("dialog_backdrop", id.key()))
+    Id::unique(("dialog_backdrop", id.key()))
 }
 
 /// What a dialog or popover reports back.

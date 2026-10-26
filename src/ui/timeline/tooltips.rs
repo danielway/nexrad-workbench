@@ -161,8 +161,8 @@ pub(super) fn render_timeline_tooltip(
 
     egui::Tooltip::always_open(
         ui.ctx().clone(),
-        egui::LayerId::new(egui::Order::Tooltip, ui.id()),
-        ui.id().with("tl_tooltip"),
+        egui::LayerId::new(egui::Order::Tooltip, ui.scope_id()),
+        ui.scope_id().with("tl_tooltip"),
         Rect::from_center_size(hover_pos, Vec2::splat(20.0)),
     )
     .show(|ui: &mut egui::Ui| {
@@ -213,8 +213,8 @@ pub(super) fn render_lane_tooltip(
     };
     egui::Tooltip::always_open(
         ui.ctx().clone(),
-        egui::LayerId::new(egui::Order::Tooltip, ui.id()),
-        ui.id().with("tl_lane_tooltip"),
+        egui::LayerId::new(egui::Order::Tooltip, ui.scope_id()),
+        ui.scope_id().with("tl_lane_tooltip"),
         Rect::from_center_size(hover_pos, Vec2::splat(20.0)),
     )
     .show(|ui: &mut egui::Ui| {

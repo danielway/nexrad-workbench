@@ -85,7 +85,7 @@ pub(in crate::ui) fn render_mini_timeline(
         Pos2::new(panel_clip.left(), panel_clip.top() - STRIP_REACH_PX),
         panel_clip.max,
     );
-    let scrub_to = egui::Area::new(ui.id().with("mini_strip"))
+    let scrub_to = egui::Area::new(ui.scope_id().with("mini_strip"))
         .order(egui::Order::Middle)
         .fixed_pos(reach.min)
         .constrain(false)
