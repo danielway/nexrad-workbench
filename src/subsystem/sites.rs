@@ -370,7 +370,7 @@ impl Sites {
     }
 
     /// The sites the canvas draws, in [`crate::core::sites::draw_order`]:
-    /// older frame first, so the newer frame is on top.
+    /// older frame first. Overlaps are split by [`crate::core::sites::rivals`].
     pub(crate) fn drawn(&self) -> impl Iterator<Item = &SiteState> {
         let times: Vec<Option<f64>> = self
             .iter()

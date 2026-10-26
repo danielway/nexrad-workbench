@@ -11,7 +11,7 @@ use super::canvas_overlays::{
 use crate::core::geo_labels::{GeoLabelPlacementKey, GeoLabelVisibilityKey};
 use crate::core::RenderProcessing;
 use crate::geo::{GeoLayerSet, GlobeProjection, MapProjection, ScreenBounds, ViewMode};
-use crate::nexrad::RadarGpuRenderer;
+use crate::nexrad::{RadarGpuRenderer, ScreenDisc};
 use crate::state::AppState;
 use crate::ui::theme;
 use eframe::egui::{self, Rect, Sense, Stroke};
@@ -408,8 +408,18 @@ pub(crate) fn render_canvas_with_geo(
                     })
                     .collect();
 
-                // Every site's disc, older frame first so the newer one is
-                // on top (core::sites::draw_order), each with its own reveal.
+                // Every site's disc, each with its own reveal. Where discs
+                // overlap, each pixel shows the nearest radar that reaches
+                // it (core::sites::rivals), so the split holds still while
+                // a loop steps between sites' scans.
+                let discs: Vec<Option<ScreenDisc>> = sites
+                    .iter()
+                    .map(|s| {
+                        s.gpu.radar.as_ref().and_then(|renderer| {
+                            screen_disc(&projection, renderer, &rect, s.lat, s.lon)
+                        })
+                    })
+                    .collect();
                 for drawn in sites.drawn() {
                     let (sweep, boundary) = if std::ptr::eq(drawn, site) {
                         (gpu_sweep, chunk_boundary)
@@ -419,14 +429,17 @@ pub(crate) fn render_canvas_with_geo(
                             .find(|o| std::ptr::eq(o.site, drawn))
                             .map_or((None, None), |o| (o.sweep, o.chunk_boundary))
                     };
-                    if let Some(renderer) = drawn.gpu.radar.as_ref() {
+                    let index = sites
+                        .iter()
+                        .position(|s| std::ptr::eq(s, drawn))
+                        .expect("a drawn site is in the list");
+                    if let (Some(renderer), Some(disc)) = (drawn.gpu.radar.as_ref(), discs[index]) {
                         draw_radar_gpu(
                             ui,
-                            &projection,
                             renderer,
                             &rect,
-                            drawn.lat,
-                            drawn.lon,
+                            disc,
+                            crate::core::sites::rivals(&discs, index),
                             &processing,
                             sweep,
                             boundary,
@@ -985,30 +998,19 @@ fn render_map_toolbar(ui: &egui::Ui, rect: &egui::Rect, state: &mut AppState) {
         });
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_radar_gpu(
-    ui: &mut egui::Ui,
+/// Where `renderer`'s disc sits on the canvas, in screen points relative to
+/// `rect`: the radar's centre and the radius its data reaches. `None` when
+/// the renderer holds no sweep.
+fn screen_disc(
     projection: &MapProjection,
     renderer: &Arc<Mutex<RadarGpuRenderer>>,
     rect: &Rect,
     radar_lat: f64,
     radar_lon: f64,
-    processing: &RenderProcessing,
-    sweep_info: Option<(f32, f32)>,
-    sweep_chunk_boundary: Option<f32>,
-) {
-    // Check if renderer has data and get the actual data range
-    let max_range_km = {
-        let r = renderer.lock().expect("renderer mutex poisoned");
-        if !r.has_data() {
-            return;
-        }
-        r.max_range_km()
-    };
-
+) -> Option<ScreenDisc> {
     // Use the actual data max range (not a fixed constant) so the shader's
     // pixel-to-km mapping matches the geographic projection exactly.
-    let range_km = max_range_km;
+    let range_km = data_range_km(Some(renderer))?;
 
     let km_to_deg = 1.0 / 111.0;
     let lat_correction = radar_lat.to_radians().cos();
@@ -1025,11 +1027,35 @@ fn draw_radar_gpu(
         x: radar_lon + lon_range,
         y: radar_lat,
     });
-    let radius_px = (edge_screen.x - center_screen.x).abs();
+    Some(ScreenDisc {
+        center: [center_screen.x - rect.min.x, center_screen.y - rect.min.y],
+        radius: (edge_screen.x - center_screen.x).abs(),
+    })
+}
 
+/// `disc` in the viewport's physical pixels.
+fn disc_in_pixels(disc: &ScreenDisc, px_per_point: f32) -> ScreenDisc {
+    ScreenDisc {
+        center: [disc.center[0] * px_per_point, disc.center[1] * px_per_point],
+        radius: disc.radius * px_per_point,
+    }
+}
+
+/// Draw one site's disc. `rivals` are the other sites' discs
+/// (`core::sites::rivals`): the pixels one of them is nearer to and covers
+/// are left to it.
+#[allow(clippy::too_many_arguments)]
+fn draw_radar_gpu(
+    ui: &mut egui::Ui,
+    renderer: &Arc<Mutex<RadarGpuRenderer>>,
+    rect: &Rect,
+    disc: ScreenDisc,
+    rivals: Vec<ScreenDisc>,
+    processing: &RenderProcessing,
+    sweep_info: Option<(f32, f32)>,
+    sweep_chunk_boundary: Option<f32>,
+) {
     let renderer = renderer.clone();
-    let center = [center_screen.x, center_screen.y];
-    let canvas_min = rect.min;
     let processing = processing.clone();
 
     let callback = egui::PaintCallback {
@@ -1041,18 +1067,20 @@ fn draw_radar_gpu(
                 let px_per_point = info.pixels_per_point;
                 let viewport = info.viewport_in_pixels();
                 // Convert from screen points to physical pixels relative to viewport
-                let adjusted_center = [
-                    (center[0] - canvas_min.x) * px_per_point,
-                    (center[1] - canvas_min.y) * px_per_point,
-                ];
+                let own = disc_in_pixels(&disc, px_per_point);
+                let rivals: Vec<ScreenDisc> = rivals
+                    .iter()
+                    .map(|d| disc_in_pixels(d, px_per_point))
+                    .collect();
                 r.paint(
                     gl,
-                    adjusted_center,
-                    radius_px * px_per_point,
+                    own.center,
+                    own.radius,
                     [viewport.width_px as f32, viewport.height_px as f32],
                     &processing,
                     sweep_info,
                     sweep_chunk_boundary,
+                    &rivals,
                 );
             }
         })),

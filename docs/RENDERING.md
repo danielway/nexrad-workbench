@@ -9,9 +9,14 @@ once per pixel, every frame.
 Module: [src/nexrad/render/gpu_renderer/](../src/nexrad/render/gpu_renderer/).
 
 Each site on the map has its own renderer (`SiteGpu::radar` on
-`SiteState`) with its own textures. The 2D canvas draws every site's disc
-in `core::sites::draw_order`, older frame first, so the newer frame is on
-top where two discs overlap.
+`SiteState`) with its own textures. The 2D canvas draws every site's disc;
+where two discs overlap, each pixel shows the nearest radar whose data
+reaches it. Each disc's shader gets the other discs' centres and data radii
+(`core::sites::rivals`, the `u_rivals` uniform) and leaves out the pixels a
+rival is nearer to and covers. The split depends only on where the radars
+are, so it holds still while a loop steps past one site's scan and not
+another's. (An earlier rule, newer frame on top, flipped the whole overlap
+between radars on every such step.)
 
 ## What the GPU does (and why)
 
@@ -271,10 +276,11 @@ truth for sweep data.
 The order is decided in the core, by
 `core::volume_plan::globe_draw_plan`:
 
-- **Surface patches first, older frame first.** The patches go down in
-  `core::sites::draw_order`, the same rule as the 2D discs: a site with
-  no frame first, then by the frame's midpoint time, so the newer frame
-  is on top where two discs overlap.
+- **Surface patches first.** The patches go down in
+  `core::sites::draw_order` (a site with no frame first, then by the
+  frame's midpoint time). Overlaps split as in 2D: each point on the sphere
+  shows the nearest radar that reaches it, compared by the cosine of the
+  arc to each radar.
 - **Volumes after, back to front.** `volume_draw_order` sorts the sites
   drawing a volume by their distance from the camera, farthest first.
   Each volume's half-resolution result is blended over what is already

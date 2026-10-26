@@ -7,7 +7,7 @@
 
 use crate::core::volume_plan::{GlobeDraw, GlobeSite};
 use crate::geo::{GeoLineRenderer, GlobeRenderer};
-use crate::nexrad::{GlobeRadarRenderer, RadarGpuRenderer, VolumeRayRenderer};
+use crate::nexrad::{GlobeDisc, GlobeRadarRenderer, RadarGpuRenderer, VolumeRayRenderer};
 use crate::state::AppState;
 use eframe::egui::{self, Rect};
 use glow::HasContext;
@@ -31,6 +31,13 @@ impl SitePaint {
             globe_radar: site.gpu.globe_radar.clone(),
             volume_ray: site.gpu.volume_ray.clone(),
         }
+    }
+
+    /// The site's patch on the sphere, when its flat renderer holds a sweep.
+    fn patch(&self) -> Option<GlobeDisc> {
+        let r = self.radar.as_ref()?.lock().ok()?;
+        r.has_data()
+            .then(|| GlobeDisc::new(self.lat, self.lon, r.max_range_km()))
     }
 }
 
@@ -61,6 +68,15 @@ pub(crate) fn draw_globe(
         [camera_pos.x, camera_pos.y, camera_pos.z],
     );
     let paints: Vec<SitePaint> = sites.iter().map(SitePaint::of).collect();
+    // The patches on the sphere, for splitting their overlaps: each point
+    // shows the nearest radar that reaches it (core::sites::rivals).
+    let patches: Vec<Option<GlobeDisc>> = (0..paints.len())
+        .map(|i| {
+            plan.contains(&GlobeDraw::Surface(i))
+                .then(|| paints[i].patch())
+                .flatten()
+        })
+        .collect();
 
     let camera = state.viz_state.camera.clone();
     let processing = state.render_processing.clone();
@@ -92,7 +108,13 @@ pub(crate) fn draw_globe(
             // 3. Each site's patch or volume, in the plan's order.
             for step in &plan {
                 match *step {
-                    GlobeDraw::Surface(i) => paint_surface(gl, &paints[i], &camera, &processing),
+                    GlobeDraw::Surface(i) => paint_surface(
+                        gl,
+                        &paints[i],
+                        &camera,
+                        &processing,
+                        &crate::core::sites::rivals(&patches, i),
+                    ),
                     GlobeDraw::Volume(i) => {
                         paint_volume(gl, &paints[i], &camera, &processing, volume_density_cutoff)
                     }
@@ -117,13 +139,14 @@ fn paint_surface(
     site: &SitePaint,
     camera: &crate::geo::Camera,
     processing: &crate::core::RenderProcessing,
+    rivals: &[GlobeDisc],
 ) {
     if let (Some(ref rr), Some(ref grr)) = (&site.radar, &site.globe_radar) {
         if let (Ok(flat_r), Ok(mut globe_r)) = (rr.lock(), grr.lock()) {
             if flat_r.has_data() {
                 // Rebuild mesh if site changed
                 globe_r.update_site(gl, site.lat, site.lon, flat_r.max_range_km());
-                globe_r.paint(gl, camera, &flat_r, processing);
+                globe_r.paint(gl, camera, &flat_r, processing, rivals);
             }
         }
     }

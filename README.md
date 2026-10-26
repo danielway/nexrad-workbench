@@ -51,7 +51,7 @@ no account, no server: everything runs on your own device.
 
 ![Milton seen by KTBW, KMLB and KJAX together, with storm cells outlined across all three](docs/media/multi-site.jpg)
 
-<sub>**Three radars, one map.** Milton at 03:00 UTC on 10 October 2024 from Tampa Bay, Melbourne and Jacksonville. The newer frame draws on top where discs overlap, storm cells are found once across all three, and each extra site gets its own lane under the timeline.</sub>
+<sub>**Three radars, one map.** Milton at 03:00 UTC on 10 October 2024 from Tampa Bay, Melbourne and Jacksonville. Where discs overlap, the nearest radar shows, storm cells are found once across all three, and each extra site gets its own lane under the timeline.</sub>
 
 ![Albuquerque, Cannon AFB and Holloman radars replayed together in Rays mode, three sweep lines turning at once](docs/media/multi-site-rays.webp)
 
