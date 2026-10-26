@@ -32,9 +32,10 @@ pub(crate) enum QueueItemState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum QueueOrigin {
     /// Implicit prefetch driven by the playhead (anchor fast path, debounced
-    /// window pump, lookback backfill).
+    /// window pump).
     Reactive,
-    /// A finalized timeline range selection's bulk fetch.
+    /// A finalized timeline range selection's bulk fetch, or the backfill of
+    /// a range pinned to now.
     Selection,
     /// A direct user action: failed-cell retry, queue-sheet retry, inspector
     /// tap-to-fetch.
