@@ -77,9 +77,9 @@ no account, no server: everything runs on your own device.
 
 <sub>**When will it get here.** The same outbreak at 03:47 UTC, with a measurement from Princeton, Kentucky, to the strongest storm. The end on the storm follows it as it moves, and the readout gives the distance and the storm's closest approach: 3.7 km in 23 minutes.</sub>
 
-![Velocity and storm-relative velocity side by side on the Mayfield storm near Lyon County, Kentucky](docs/media/vel-srv.jpg)
+![Velocity and storm-relative velocity side by side on a Milton rainband storm in St. Lucie County, Florida](docs/media/vel-srv.jpg)
 
-<sub>**Storm-relative velocity.** The same storm at 03:58 UTC, moving north-east at 93 km/h, almost straight away from the radar. In plain velocity (left) that motion paints the whole storm red, and the rotation shows only as a small green speck. Storm-relative velocity (right) takes the motion out, so the inbound side of the circulation stands out next to the outbound side. The probe reads the same gate as −15.5 m/s and −33.1 m/s.</sub>
+<sub>**Storm-relative velocity.** A storm in one of Hurricane Milton's rainbands, west of Fort Pierce, Florida, at 16:53 UTC on 9 October 2024, seen from Melbourne. The storms were moving north toward the radar at 41 km/h, so plain velocity (left) shows the whole cell inbound and the rotation is only a pale patch beside a darker green one. Storm-relative velocity (right) takes that motion out, and the same spot becomes an outbound and inbound pair side by side.</sub>
 
 ![Rays playback of one Milton volume, the sweep line painting each tilt over the last](docs/media/sweep.webp)
 
