@@ -823,6 +823,7 @@ fn chunk_type_str(t: ChunkType) -> &'static str {
         ChunkType::Start => "S",
         ChunkType::Intermediate => "I",
         ChunkType::End => "E",
+        _ => "?",
     }
 }
 
@@ -833,7 +834,7 @@ fn waveform_str(w: WaveformType) -> &'static str {
         WaveformType::ContiguousDopplerWithoutAmbiguityResolution => "CDWO",
         WaveformType::Batch => "B",
         WaveformType::StaggeredPulsePair => "SPP",
-        WaveformType::Unknown(_) => "?",
+        _ => "?",
     }
 }
 
@@ -842,7 +843,7 @@ fn channel_str(c: ChannelConfiguration) -> &'static str {
         ChannelConfiguration::ConstantPhase => "CP",
         ChannelConfiguration::RandomPhase => "RP",
         ChannelConfiguration::Sz2Phase => "SZ2",
-        ChannelConfiguration::Unknown(_) => "?",
+        _ => "?",
     }
 }
 

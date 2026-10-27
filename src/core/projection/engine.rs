@@ -274,7 +274,7 @@ impl ProjectionEngine {
     fn projection_inner(&mut self, anchor: &ChunkIdentifier, now_secs: f64) -> Option<&Projection> {
         let key = CacheKey {
             input_revision: self.input_revision,
-            anchor_volume: anchor.volume().as_number(),
+            anchor_volume: anchor.volume().number(),
             anchor_sequence: anchor.sequence(),
             now_bucket_secs: now_secs.floor() as i64,
         };
@@ -308,7 +308,7 @@ impl ProjectionEngine {
                     .find_map(|c| c.projected.as_ref().map(|f| f.collection_time_secs))
                     .unwrap_or(now_secs)
             });
-            let current_volume = *anchor.volume();
+            let current_volume = anchor.volume();
             // Whether a projection was already built — the fallback-durations
             // gate (worker used `frame_projection.is_some()`); once a plan
             // exists the library bounds win and the VCP fallback is unused.
@@ -406,7 +406,7 @@ mod tests {
         ChunkIdentifier::new(
             "KDMX".to_string(),
             nexrad_data::aws::realtime::VolumeIndex::new(1).unwrap(),
-            when.naive_utc(),
+            when,
             sequence,
             nexrad_data::aws::realtime::ChunkType::Intermediate,
             Some(when),
@@ -448,7 +448,7 @@ mod tests {
         let anchor = ChunkIdentifier::new(
             "KDMX".to_string(),
             nexrad_data::aws::realtime::VolumeIndex::new(1).unwrap(),
-            when.naive_utc(),
+            when,
             1,
             nexrad_data::aws::realtime::ChunkType::Start,
             Some(when),
@@ -467,7 +467,7 @@ mod coverage_tests {
         ChunkIdentifier::new(
             "KDMX".to_string(),
             nexrad_data::aws::realtime::VolumeIndex::new(volume).unwrap(),
-            when.naive_utc(),
+            when,
             sequence,
             nexrad_data::aws::realtime::ChunkType::Intermediate,
             Some(when),

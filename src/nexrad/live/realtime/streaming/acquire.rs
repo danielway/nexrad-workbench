@@ -55,8 +55,8 @@ async fn acquire_streaming_state(site_id: &str) -> nexrad_data::result::Result<S
                 log::debug!(
                     "Realtime: resumed {} from cached volume hint {} → latest {} ({} list calls)",
                     site_id,
-                    hint.as_number(),
-                    volume.as_number(),
+                    hint.number(),
+                    volume.number(),
                     calls
                 );
                 return StreamingState::init_at_volume(site_id, volume, calls).await;

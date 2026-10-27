@@ -21,18 +21,45 @@ pub(crate) fn decode_record_to_radials(record_bytes: &[u8]) -> Result<Vec<Radial
     let record = Record::from_slice(record_bytes);
 
     if !record.compressed() {
-        return record
-            .radials()
-            .map_err(|e| format!("Failed to decode uncompressed record: {}", e));
+        return Ok(lenient_radials(&record));
     }
 
     let decompressed = record
         .decompress()
         .map_err(|e| format!("Failed to decompress record: {}", e))?;
 
-    decompressed
-        .radials()
-        .map_err(|e| format!("Failed to decode record radials: {}", e))
+    Ok(lenient_radials(&decompressed))
+}
+
+/// The radials of a decompressed record, skipping any that fail to decode.
+///
+/// `Record::radials` is all-or-nothing, so one damaged message (a chunk's
+/// truncated tail, a bad radial in a single-record legacy volume) would
+/// drop every radial. This keeps the ones that decode, as the release
+/// candidates did.
+pub(crate) fn lenient_radials(record: &Record<'_>) -> Vec<Radial> {
+    let mut skipped = 0;
+    let radials = record
+        .iter_radials()
+        .filter_map(|radial| radial.map_err(|_| skipped += 1).ok())
+        .collect();
+    if skipped > 0 {
+        log::warn!("Skipped {} radial(s) that failed to decode", skipped);
+    }
+    radials
+}
+
+/// The messages of a decompressed record up to the first that fails to
+/// decode. Like [`lenient_radials`], this keeps what decodes instead of
+/// failing the whole record.
+pub(crate) fn lenient_messages<'a>(
+    record: &'a Record<'_>,
+) -> impl Iterator<Item = nexrad_decode::messages::Message<'a>> {
+    nexrad_decode::iter_messages(record.data()).map_while(|message| {
+        message
+            .inspect_err(|e| log::warn!("Stopped decoding record at a bad message: {}", e))
+            .ok()
+    })
 }
 
 /// Extract the volume start time from decoded radials.
@@ -86,8 +113,8 @@ fn moment_params(product: Product, radial: &Radial) -> Option<(f64, f64, usize, 
 }
 
 /// Get raw byte slice from a radial's moment data for a given product.
-fn moment_raw_values(product: Product, radial: &Radial) -> Option<&[u8]> {
-    radial.moment(product).map(|m| m.raw_values())
+fn moment_raw_bytes(product: Product, radial: &Radial) -> Option<&[u8]> {
+    radial.moment(product).map(|m| m.raw_bytes())
 }
 
 /// Build a PrecomputedSweep from a filtered, sorted list of radials.
@@ -121,7 +148,7 @@ fn build_precomputed_sweep(target: &[&Radial], product: Product) -> Option<Preco
     let gate_values = if data_word_size == 16 {
         let mut vals: Vec<u16> = vec![0; total]; // 0 = below threshold sentinel
         for (row, radial) in target.iter().enumerate() {
-            if let Some(bytes) = moment_raw_values(product, radial) {
+            if let Some(bytes) = moment_raw_bytes(product, radial) {
                 let dest = &mut vals[row * gate_count..(row + 1) * gate_count];
                 let n = (bytes.len() / 2).min(gate_count);
                 for i in 0..n {
@@ -133,7 +160,7 @@ fn build_precomputed_sweep(target: &[&Radial], product: Product) -> Option<Preco
     } else {
         let mut vals: Vec<u8> = vec![0; total]; // 0 = below threshold sentinel
         for (row, radial) in target.iter().enumerate() {
-            if let Some(bytes) = moment_raw_values(product, radial) {
+            if let Some(bytes) = moment_raw_bytes(product, radial) {
                 let dest = &mut vals[row * gate_count..(row + 1) * gate_count];
                 let n = bytes.len().min(gate_count);
                 dest[..n].copy_from_slice(&bytes[..n]);
@@ -171,21 +198,16 @@ mod coverage_tests {
     use ::nexrad::model::data::{MomentData, RadialStatus};
 
     /// Build an 8-bit reflectivity radial with the given metadata and raw gate
-    /// bytes. `first_gate_range`/`gate_interval` are in meters (the moment
-    /// stores them as integer millis-of-km, i.e. `* 0.001` => km).
+    /// bytes: first gate at 2 km, 250 m apart.
     fn refl_radial(ts_ms: i64, azimuth: f32, elevation: f32, raw: Vec<u8>) -> Radial {
-        let gate_count = raw.len();
-        let m = MomentData::from_fixed_point(
-            Product::Reflectivity,
-            gate_count, // gate_count
-            2000,       // first_gate_range -> 2.0 km
-            250,        // gate_interval -> 0.25 km
-            8,          // data_word_size (8-bit)
-            2.0,        // scale
-            66.0,       // offset
-            raw,
-        )
-        .unwrap();
+        let m = MomentData::builder(Product::Reflectivity, raw)
+            .first_gate_range_meters(2000)
+            .gate_interval_meters(250)
+            .data_word_size(8)
+            .scale(2.0)
+            .offset(66.0)
+            .build()
+            .unwrap();
         Radial::builder(0, azimuth, 1, elevation)
             .collection_timestamp_millis(ts_ms)
             .azimuth_spacing_degrees(0.5)
@@ -307,30 +329,26 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn sweep_u16_reflectivity_decodes_big_endian() {
-        // 16-bit moment: raw_values are big-endian u16 pairs.
+        // 16-bit moment: raw bytes are big-endian u16 pairs.
         // gate_count = 2, values = [0x01,0x02, 0x03,0x04] -> [258, 772].
-        let m0 = MomentData::from_fixed_point(
-            Product::Reflectivity,
-            2,
-            1000,
-            500,
-            16,
-            1.0,
-            0.0,
-            vec![0x01, 0x02, 0x03, 0x04],
-        )
-        .unwrap();
-        let m1 = MomentData::from_fixed_point(
-            Product::Reflectivity,
-            2,
-            1000,
-            500,
-            16,
-            1.0,
-            0.0,
-            vec![0x10, 0x20, 0x30, 0x40],
-        )
-        .unwrap();
+        let m0 = MomentData::builder(Product::Reflectivity, vec![0x01, 0x02, 0x03, 0x04])
+            .gate_count(2)
+            .first_gate_range_meters(1000)
+            .gate_interval_meters(500)
+            .data_word_size(16)
+            .scale(1.0)
+            .offset(0.0)
+            .build()
+            .unwrap();
+        let m1 = MomentData::builder(Product::Reflectivity, vec![0x10, 0x20, 0x30, 0x40])
+            .gate_count(2)
+            .first_gate_range_meters(1000)
+            .gate_interval_meters(500)
+            .data_word_size(16)
+            .scale(1.0)
+            .offset(0.0)
+            .build()
+            .unwrap();
         let r0 = Radial::builder(0, 0.0, 1, 1.0)
             .collection_timestamp_millis(1_000)
             .azimuth_spacing_degrees(0.5)
@@ -365,17 +383,15 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn sweep_cfp_product_uses_cfp_branch() {
         // ClutterFilterPower is a moment like any other.
-        let cfp = MomentData::from_fixed_point(
-            Product::ClutterFilterPower,
-            3,
-            2000,
-            250,
-            8,
-            1.0,
-            0.0,
-            vec![8, 9, 10],
-        )
-        .unwrap();
+        let cfp = MomentData::builder(Product::ClutterFilterPower, vec![8, 9, 10])
+            .gate_count(3)
+            .first_gate_range_meters(2000)
+            .gate_interval_meters(250)
+            .data_word_size(8)
+            .scale(1.0)
+            .offset(0.0)
+            .build()
+            .unwrap();
         let r0 = Radial::builder(0, 30.0, 1, 0.5)
             .collection_timestamp_millis(5_000)
             .azimuth_spacing_degrees(0.5)
@@ -399,19 +415,17 @@ mod coverage_tests {
     }
 
     #[wasm_bindgen_test]
-    fn short_raw_values_are_rejected_by_the_model() {
+    fn short_raw_bytes_are_rejected_by_the_model() {
         // nexrad-model checks the byte count against gate_count * word size,
         // so a radial can't carry fewer bytes than its declared gates.
-        let m = MomentData::from_fixed_point(
-            Product::Reflectivity,
-            4,
-            0,
-            1000,
-            8,
-            1.0,
-            0.0,
-            vec![7, 8],
-        );
+        let m = MomentData::builder(Product::Reflectivity, vec![7, 8])
+            .gate_count(4)
+            .first_gate_range_meters(0)
+            .gate_interval_meters(1000)
+            .data_word_size(8)
+            .scale(1.0)
+            .offset(0.0)
+            .build();
         assert!(m.is_err());
     }
 }
@@ -431,5 +445,15 @@ mod framing_tests {
         assert_eq!(radials.len(), 3);
         let azimuths: Vec<f32> = radials.iter().map(|r| r.azimuth_angle_degrees()).collect();
         assert!(azimuths.windows(2).all(|w| w[1] > w[0]), "{azimuths:?}");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_damaged_tail_keeps_the_radials_before_it() {
+        // Cut the record inside its last radial, as a chunk with a
+        // truncated tail would arrive.
+        let truncated = Record::from_slice(&TFLL_RADIALS[..TFLL_RADIALS.len() - 100]);
+        assert!(truncated.radials().is_err());
+        assert_eq!(lenient_radials(&truncated).len(), 2);
+        assert_eq!(lenient_messages(&truncated).count(), 2);
     }
 }

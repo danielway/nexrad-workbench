@@ -23,10 +23,10 @@ i_overlay = "9.1"
 glam = "0.34"
 shapefile = "0.9"
 chrono = { version = "0.4", default-features = false, features = ["std", "wasmbind"] }
-nexrad = { git = "https://github.com/danielway/nexrad", branch = "main", default-features = false, features = ["wasm"] }
-nexrad-data = { git = "https://github.com/danielway/nexrad", branch = "main" }
-nexrad-decode = { git = "https://github.com/danielway/nexrad", branch = "main" }  # Direct dependency for VCP message extraction
-nexrad-render = { git = "https://github.com/danielway/nexrad", branch = "main" }  # Direct dependency for render_radials API
+nexrad = { version = "1.0.0", default-features = false, features = ["aws", "render"] }
+nexrad-data = { version = "1.0.0", default-features = false, features = ["aws", "model"] }
+nexrad-decode = "1.0.0"  # Direct dependency for VCP message extraction
+nexrad-render = "1.0.0"  # Direct dependency for render_radials API
 web-time = "1.1"  # Cross-platform timing (works on WASM and native)
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

@@ -267,7 +267,9 @@ pub(crate) fn continuous_color_scale(product: Product) -> ColorScale {
         ],
         other => return nexrad_render::default_scale(other),
     };
-    ColorScale::Continuous(ContinuousColorScale::new(stops))
+    ColorScale::Continuous(
+        ContinuousColorScale::new(stops).expect("built-in color stops are finite"),
+    )
 }
 
 #[cfg(test)]

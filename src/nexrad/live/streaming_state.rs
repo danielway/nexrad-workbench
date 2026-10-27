@@ -81,7 +81,7 @@ impl StreamingState {
         let mut requests_made = prior_requests + 1;
 
         let latest_id = chunks.last().ok_or(AwsError::ExpectedChunkNotFound)?;
-        let latest = download_chunk(site, latest_id).await?;
+        let latest = download_chunk(latest_id).await?;
         requests_made += 1;
         let mut bytes_downloaded = latest.chunk.data().len() as u64;
         let latest_id = latest.identifier.clone();
@@ -97,7 +97,7 @@ impl StreamingState {
         } else {
             // Mid-volume join — fetch the Start chunk (sequence 1) separately.
             let start_id = latest_id.with_sequence(1, ChunkType::Start);
-            if let Ok(start) = download_chunk(site, &start_id).await {
+            if let Ok(start) = download_chunk(&start_id).await {
                 requests_made += 1;
                 bytes_downloaded += start.chunk.data().len() as u64;
                 if let Ok(v) = extract_vcp(&start.chunk) {
@@ -225,7 +225,7 @@ impl StreamingState {
         chunk_id: ChunkIdentifier,
     ) -> Result<Option<DownloadedChunk>> {
         self.requests_made += 1;
-        match download_chunk(&self.site, &chunk_id).await {
+        match download_chunk(&chunk_id).await {
             Ok(downloaded) => {
                 self.bytes_downloaded += downloaded.chunk.data().len() as u64;
 
@@ -266,7 +266,7 @@ impl StreamingState {
             Some(id) => id,
             None => return Ok(None), // Start chunk hasn't been published yet
         };
-        let downloaded = download_chunk(&self.site, target).await?;
+        let downloaded = download_chunk(target).await?;
         self.requests_made += 1;
         self.bytes_downloaded += downloaded.chunk.data().len() as u64;
 
@@ -335,7 +335,7 @@ impl StreamingState {
 
     /// Volume index the iterator is currently anchored in.
     pub(crate) fn current_volume(&self) -> VolumeIndex {
-        *self.current.volume()
+        self.current.volume()
     }
 
     pub(crate) fn requests_made(&self) -> usize {

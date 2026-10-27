@@ -71,7 +71,6 @@ fn filter_backfill_sequences(
 /// newly-selected elevation.
 #[allow(clippy::too_many_arguments)]
 async fn emit_backfill_chunks(
-    site_id: &str,
     targets: &[ChunkIdentifier],
     iter: &mut StreamingState,
     engine: &SharedProjectionEngine,
@@ -90,7 +89,7 @@ async fn emit_backfill_chunks(
         return 0;
     }
 
-    let results = join_all(targets.iter().map(|id| download_chunk(site_id, id))).await;
+    let results = join_all(targets.iter().map(download_chunk)).await;
     drain_control(loop_state, control_rx);
     if loop_state.stop_requested {
         return 0;
@@ -218,7 +217,6 @@ pub(super) async fn run_init_backfill(
                 );
 
                 let emitted = emit_backfill_chunks(
-                    site_id,
                     &to_download,
                     iter,
                     engine,
@@ -336,7 +334,6 @@ pub(super) async fn run_mid_stream_backfill(
     );
 
     emit_backfill_chunks(
-        site_id,
         &to_download,
         iter,
         engine,

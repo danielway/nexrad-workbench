@@ -252,7 +252,7 @@ mod coverage_tests {
         ChunkIdentifier::new(
             "KDMX".to_string(),
             VolumeIndex::new(1).unwrap(),
-            when.naive_utc(),
+            when,
             sequence,
             ChunkType::Intermediate,
             Some(when),

@@ -4,6 +4,7 @@
 //! decompression, VCP extraction, radial grouping by elevation, and
 //! pre-computed sweep blob generation for IndexedDB storage.
 
+use super::record_decode::{lenient_messages, lenient_radials};
 use crate::data::keys::*;
 use crate::data::{ExtractedVcp, ExtractedVcpElevation};
 use std::collections::HashMap;
@@ -41,7 +42,7 @@ fn waveform_code(
         WaveformType::ContiguousDopplerWithoutAmbiguityResolution => "CDWO",
         WaveformType::Batch => "B",
         WaveformType::StaggeredPulsePair => "SPP",
-        WaveformType::Unknown(_) => "Unknown",
+        _ => "Unknown",
     }
 }
 
@@ -175,12 +176,9 @@ pub(crate) fn decompress_and_decode_records(
             .map(|v| v.elevations.is_empty())
             .unwrap_or(true);
         let radials = if needs_vcp {
-            match record.messages() {
-                Ok(msgs) => decode_with_vcp_extraction(msgs, &mut extracted_vcp),
-                Err(_) => Vec::new(),
-            }
+            decode_with_vcp_extraction(lenient_messages(record), &mut extracted_vcp)
         } else {
-            record.radials().unwrap_or_default()
+            lenient_radials(record)
         };
         decode_only_ms += t_radials.elapsed().as_secs_f64() * 1000.0;
 
@@ -360,12 +358,12 @@ pub(crate) fn decode_start_chunk(data: Vec<u8>, accum_has_full_vcp: bool) -> Chu
                             .map(|v| v.elevations.is_empty())
                             .unwrap_or(true)
                     {
-                        if let Ok(msgs) = decompressed.messages() {
-                            let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
-                            chunk_radials.extend(r);
-                        }
+                        chunk_radials.extend(decode_with_vcp_extraction(
+                            lenient_messages(&decompressed),
+                            &mut chunk_vcp,
+                        ));
                     } else {
-                        chunk_radials.extend(decompressed.radials().unwrap_or_default());
+                        chunk_radials.extend(lenient_radials(&decompressed));
                     }
                 }
                 Err(e) => {
@@ -405,12 +403,12 @@ pub(crate) fn decode_subsequent_chunk(
         match record.decompress() {
             Ok(decompressed) => {
                 if !accum_has_full_vcp {
-                    if let Ok(msgs) = decompressed.messages() {
-                        let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
-                        chunk_radials.extend(r);
-                    }
+                    chunk_radials.extend(decode_with_vcp_extraction(
+                        lenient_messages(&decompressed),
+                        &mut chunk_vcp,
+                    ));
                 } else {
-                    chunk_radials.extend(decompressed.radials().unwrap_or_default());
+                    chunk_radials.extend(lenient_radials(&decompressed));
                 }
             }
             Err(e) => {

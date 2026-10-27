@@ -79,7 +79,7 @@ impl KnownChunkInventory {
     /// upload.
     pub(crate) fn observe(&mut self, chunk: KnownChunk) -> bool {
         self.by_volume
-            .entry(chunk.coord.volume.as_number())
+            .entry(chunk.coord.volume.number())
             .or_default()
             .merge(chunk.coord.sequence, chunk.upload_secs, chunk.chunk_type);
 
@@ -120,8 +120,8 @@ impl KnownChunkInventory {
     /// Drop volumes outside the current + next window to bound memory. Keeps
     /// only `keep` and `keep.next()`.
     pub(crate) fn retain_from(&mut self, keep: VolumeIndex) {
-        let a = keep.as_number();
-        let b = keep.next().as_number();
+        let a = keep.number();
+        let b = keep.next().number();
         self.by_volume.retain(|v, _| *v == a || *v == b);
     }
 
@@ -134,28 +134,28 @@ impl KnownChunkInventory {
     /// Whether a specific `(volume, sequence)` chunk is known-available.
     pub(crate) fn contains(&self, coord: ChunkCoord) -> bool {
         self.by_volume
-            .get(&coord.volume.as_number())
+            .get(&coord.volume.number())
             .is_some_and(|v| v.seqs.contains(&coord.sequence))
     }
 
     /// Highest known sequence published in `volume`, if any.
     pub(crate) fn newest_seq_in(&self, volume: VolumeIndex) -> Option<usize> {
         self.by_volume
-            .get(&volume.as_number())
+            .get(&volume.number())
             .and_then(|v| v.max_seq())
     }
 
     /// Newest S3 upload time (Unix seconds) seen in `volume`, if any.
     pub(crate) fn newest_upload_in(&self, volume: VolumeIndex) -> Option<f64> {
         self.by_volume
-            .get(&volume.as_number())
+            .get(&volume.number())
             .and_then(|v| v.newest_upload_secs)
     }
 
     /// Whether `volume`'s End chunk has been observed.
     pub(crate) fn has_end(&self, volume: VolumeIndex) -> bool {
         self.by_volume
-            .get(&volume.as_number())
+            .get(&volume.number())
             .is_some_and(|v| v.has_end)
     }
 }
@@ -315,7 +315,7 @@ mod coverage_tests {
         assert!(inv.observe(known(2, 1, 200.0, ChunkType::Start)));
         let n = inv.newest().unwrap();
         assert_eq!(n.upload_secs, 200.0);
-        assert_eq!(n.coord.volume.as_number(), 2);
+        assert_eq!(n.coord.volume.number(), 2);
     }
 
     #[wasm_bindgen_test]

@@ -12,6 +12,6 @@ publish = false
 
 [dependencies]
 # Same releases the app uses (see the root Cargo.lock), without the AWS client.
-nexrad-data = { version = "=1.0.0-rc.7", default-features = false, features = ["nexrad-model"] }
-nexrad-model = "=1.0.0-rc.2"
+nexrad-data = { version = "=1.0.0", default-features = false, features = ["model"] }
+nexrad-model = "=1.0.0"
 flate2 = "1.1"

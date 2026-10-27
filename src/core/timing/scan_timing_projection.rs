@@ -539,7 +539,7 @@ pub(crate) fn project_full_scan_timing(
     let start_chunk = ChunkIdentifier::new(
         site.to_string(),
         volume,
-        start_time.naive_utc(),
+        start_time,
         1,
         ChunkType::Start,
         Some(start_time),
@@ -566,7 +566,7 @@ mod tests {
         ChunkIdentifier::new(
             "KDMX".to_string(),
             VolumeIndex::new(1).unwrap(),
-            upload_at(upload_secs).naive_utc(),
+            upload_at(upload_secs),
             sequence,
             chunk_type,
             Some(upload_at(upload_secs)),
@@ -863,7 +863,7 @@ mod coverage_tests {
         ChunkIdentifier::new(
             "KDMX".to_string(),
             VolumeIndex::new(1).unwrap(),
-            upload_at(upload_secs).naive_utc(),
+            upload_at(upload_secs),
             sequence,
             chunk_type,
             Some(upload_at(upload_secs)),

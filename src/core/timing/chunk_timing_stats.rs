@@ -88,6 +88,7 @@ fn chunk_type_order(t: ChunkType) -> u8 {
         ChunkType::Start => 0,
         ChunkType::Intermediate => 1,
         ChunkType::End => 2,
+        _ => 3,
     }
 }
 
@@ -98,7 +99,7 @@ fn waveform_order(w: WaveformType) -> u8 {
         WaveformType::ContiguousDopplerWithoutAmbiguityResolution => 2,
         WaveformType::Batch => 3,
         WaveformType::StaggeredPulsePair => 4,
-        WaveformType::Unknown(_) => 5,
+        _ => 5,
     }
 }
 
@@ -107,7 +108,7 @@ fn channel_order(c: ChannelConfiguration) -> u8 {
         ChannelConfiguration::ConstantPhase => 0,
         ChannelConfiguration::RandomPhase => 1,
         ChannelConfiguration::Sz2Phase => 2,
-        ChannelConfiguration::Unknown(_) => 3,
+        _ => 3,
     }
 }
 
@@ -473,6 +474,7 @@ fn chunk_type_to_str(t: ChunkType) -> &'static str {
         ChunkType::Start => "S",
         ChunkType::Intermediate => "I",
         ChunkType::End => "E",
+        _ => "?",
     }
 }
 
@@ -492,7 +494,7 @@ fn waveform_type_to_str(t: WaveformType) -> &'static str {
         WaveformType::ContiguousDopplerWithoutAmbiguityResolution => "CDWO",
         WaveformType::Batch => "B",
         WaveformType::StaggeredPulsePair => "SPP",
-        WaveformType::Unknown(_) => "Unknown",
+        _ => "Unknown",
     }
 }
 
@@ -513,7 +515,7 @@ fn channel_configuration_to_str(c: ChannelConfiguration) -> &'static str {
         ChannelConfiguration::ConstantPhase => "constant_phase",
         ChannelConfiguration::RandomPhase => "random_phase",
         ChannelConfiguration::Sz2Phase => "sz2_phase",
-        ChannelConfiguration::Unknown(_) => "unknown_phase",
+        _ => "unknown_phase",
     }
 }
 
