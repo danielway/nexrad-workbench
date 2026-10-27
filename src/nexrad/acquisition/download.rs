@@ -319,7 +319,7 @@ async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult 
 /// truncated lists) are retryable. Everything else — including `S3ObjectNotFound`
 /// (404), which means the file genuinely does not exist in the archive — is
 /// terminal.
-fn classify_nexrad_result<T>(result: nexrad_data::result::Result<T>) -> Verdict<T> {
+pub(super) fn classify_nexrad_result<T>(result: nexrad_data::result::Result<T>) -> Verdict<T> {
     use nexrad_data::result::Error;
     match result {
         Ok(v) => Verdict::Ok(v),

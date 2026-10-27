@@ -68,44 +68,6 @@ const OPEN_DAY_TTL_MS: i64 = 10 * 60 * 1000;
 // Listing → day summary
 // ---------------------------------------------------------------------------
 
-/// One page of an S3 `ListObjectsV2` response: each object's file name (the
-/// key's last path segment) and size in bytes.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub(crate) struct S3Listing {
-    pub files: Vec<(String, u64)>,
-    pub truncated: bool,
-}
-
-/// Parse a `ListObjectsV2` XML body. Tolerant by design: anything it can't
-/// read is skipped rather than failing the whole day.
-pub(crate) fn parse_s3_listing(xml: &str) -> S3Listing {
-    let tag = |body: &str, name: &str| -> Option<String> {
-        let open = format!("<{name}>");
-        let close = format!("</{name}>");
-        let start = body.find(&open)? + open.len();
-        let end = body[start..].find(&close)? + start;
-        Some(body[start..end].to_string())
-    };
-    let mut files = Vec::new();
-    let mut rest = xml;
-    while let Some(start) = rest.find("<Contents>") {
-        let after = &rest[start + "<Contents>".len()..];
-        let Some(end) = after.find("</Contents>") else {
-            break;
-        };
-        let body = &after[..end];
-        if let (Some(key), Some(size)) = (tag(body, "Key"), tag(body, "Size")) {
-            if let Ok(size) = size.trim().parse::<u64>() {
-                let name = key.rsplit('/').next().unwrap_or(&key).to_string();
-                files.push((name, size));
-            }
-        }
-        rest = &after[end..];
-    }
-    let truncated = tag(xml, "IsTruncated").is_some_and(|t| t.trim() == "true");
-    S3Listing { files, truncated }
-}
-
 /// The format suffix of a volume file name: `"V06"` for
 /// `KTBW20241009_000313_V06`, `"V03"` for `…_V03.gz`, empty for the
 /// unsuffixed pre-2008 files.
@@ -934,27 +896,6 @@ mod tests {
             has_scans: false,
             ..day(day_start, mean_bytes, "V06")
         }
-    }
-
-    #[wasm_bindgen_test]
-    fn parses_keys_sizes_and_truncation() {
-        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<ListBucketResult><Name>unidata-nexrad-level2</Name><IsTruncated>false</IsTruncated>
-<Contents><Key>2024/10/09/KTBW/KTBW20241009_000313_V06</Key><LastModified>2024-10-09T00:10:00.000Z</LastModified><Size>15194370</Size></Contents>
-<Contents><Key>2024/10/09/KTBW/KTBW20241009_000830_V06_MDM</Key><Size>4096</Size></Contents>
-<Contents><Key>2024/10/09/KTBW/bad</Key><Size>x</Size></Contents>
-</ListBucketResult>"#;
-        let listing = parse_s3_listing(xml);
-        assert!(!listing.truncated);
-        assert_eq!(
-            listing.files,
-            vec![
-                ("KTBW20241009_000313_V06".to_string(), 15_194_370),
-                ("KTBW20241009_000830_V06_MDM".to_string(), 4096),
-            ]
-        );
-        assert!(parse_s3_listing("<IsTruncated>true</IsTruncated>").truncated);
-        assert_eq!(parse_s3_listing("").files, Vec::new());
     }
 
     #[wasm_bindgen_test]
