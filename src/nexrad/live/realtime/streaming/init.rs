@@ -224,7 +224,7 @@ pub(super) fn emit_join_at_volume_start(
         return None;
     };
     emitted_sequences_this_volume.insert(latest_chunk.identifier.sequence());
-    cache_volume_number(site_id, *latest_chunk.identifier.volume());
+    cache_volume_number(site_id, latest_chunk.identifier.volume());
 
     log::debug!(
         "Init: emitting latest_chunk as start ({} bytes)",

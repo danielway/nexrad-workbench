@@ -25,11 +25,8 @@ fn decode_volume_cache(raw: &str) -> Option<(nexrad_data::aws::realtime::VolumeI
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
     let v = value.get("v")?.as_u64()? as usize;
     let t = value.get("t")?.as_f64()?;
-    if (1..=999).contains(&v) {
-        Some((nexrad_data::aws::realtime::VolumeIndex::new(v), t))
-    } else {
-        None
-    }
+    let volume = nexrad_data::aws::realtime::VolumeIndex::new(v).ok()?;
+    Some((volume, t))
 }
 
 /// Cache the latest volume number (with the current wall-clock time) in
@@ -37,7 +34,7 @@ fn decode_volume_cache(raw: &str) -> Option<(nexrad_data::aws::realtime::VolumeI
 pub(super) fn cache_volume_number(site_id: &str, volume: nexrad_data::aws::realtime::VolumeIndex) {
     if let Some(window) = web_sys::window() {
         if let Ok(Some(storage)) = window.local_storage() {
-            let payload = encode_volume_cache(volume.as_number(), current_timestamp_f64());
+            let payload = encode_volume_cache(volume.number(), current_timestamp_f64());
             let _ = storage.set_item(&volume_cache_key(site_id), &payload);
         }
     }
@@ -94,7 +91,7 @@ mod tests {
     fn volume_cache_round_trips_through_json() {
         let encoded = encode_volume_cache(347, 1_700_000_000.5);
         let (vol, t) = decode_volume_cache(&encoded).expect("decodes own output");
-        assert_eq!(vol.as_number(), 347);
+        assert_eq!(vol.number(), 347);
         assert_eq!(t, 1_700_000_000.5);
     }
 
@@ -144,14 +141,14 @@ mod coverage_tests {
         // The inclusive range is 1..=999; both endpoints decode.
         match decode_volume_cache(&encode_volume_cache(1, 10.0)) {
             Some((vol, t)) => {
-                assert_eq!(vol.as_number(), 1);
+                assert_eq!(vol.number(), 1);
                 assert_eq!(t, 10.0);
             }
             None => panic!("v=1 should be accepted"),
         }
         match decode_volume_cache(&encode_volume_cache(999, 20.0)) {
             Some((vol, t)) => {
-                assert_eq!(vol.as_number(), 999);
+                assert_eq!(vol.number(), 999);
                 assert_eq!(t, 20.0);
             }
             None => panic!("v=999 should be accepted"),

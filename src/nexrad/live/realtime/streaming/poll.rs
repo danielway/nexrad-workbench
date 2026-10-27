@@ -39,19 +39,12 @@ fn classify_filter_outcome(
     result: nexrad_data::result::Result<crate::nexrad::live::streaming_state::TryNextOutcome>,
 ) -> Verdict<FilterFetchResult> {
     use crate::nexrad::live::streaming_state::TryNextOutcome;
-    use nexrad_data::result::aws::AWSError;
     use nexrad_data::result::Error;
     match result {
         Ok(TryNextOutcome::Downloaded(c)) => Verdict::Ok(FilterFetchResult::Downloaded(c)),
         Ok(TryNextOutcome::NotYetAvailable) => Verdict::Retry { after: None },
         Ok(TryNextOutcome::SyntheticVolumeEnd) => Verdict::Ok(FilterFetchResult::SyntheticEnd),
-        Err(Error::AWS(
-            AWSError::S3GetObjectRequest(_)
-            | AWSError::S3GetObject(_)
-            | AWSError::S3Streaming(_)
-            | AWSError::S3ListObjects(_)
-            | AWSError::TruncatedListObjectsResponse,
-        )) => Verdict::Retry { after: None },
+        Err(Error::Aws(e)) if e.is_transient() => Verdict::Retry { after: None },
         Err(e) => Verdict::Terminal(format!("{}", e)),
     }
 }
@@ -65,18 +58,11 @@ fn classify_filter_outcome(
 fn classify_chunk_result(
     result: nexrad_data::result::Result<Option<nexrad_data::aws::realtime::DownloadedChunk>>,
 ) -> Verdict<FilterFetchResult> {
-    use nexrad_data::result::aws::AWSError;
     use nexrad_data::result::Error;
     match result {
         Ok(Some(chunk)) => Verdict::Ok(FilterFetchResult::Downloaded(chunk)),
         Ok(None) => Verdict::Retry { after: None },
-        Err(Error::AWS(
-            AWSError::S3GetObjectRequest(_)
-            | AWSError::S3GetObject(_)
-            | AWSError::S3Streaming(_)
-            | AWSError::S3ListObjects(_)
-            | AWSError::TruncatedListObjectsResponse,
-        )) => Verdict::Retry { after: None },
+        Err(Error::Aws(e)) if e.is_transient() => Verdict::Retry { after: None },
         Err(e) => Verdict::Terminal(format!("{}", e)),
     }
 }
@@ -315,7 +301,7 @@ pub(super) async fn wait_for_next_target(
 
         // Probe the next-volume slot. A failure is non-fatal: keep the
         // existing schedule, so we're never worse than the single-sleep path.
-        let listed = match list_chunks_in_volume(site_id, target_volume, 100).await {
+        let listed = match list_chunks_in_volume(site_id, target_volume).await {
             Ok(ids) => ids,
             Err(e) => {
                 log::warn!(

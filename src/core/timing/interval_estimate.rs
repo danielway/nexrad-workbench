@@ -226,7 +226,7 @@ mod tests {
         let next = ChunkMetadata::for_test(6, Some(1), 2, 6, false, 18.0);
         let bucket = ChunkCharacteristics {
             chunk_type: nexrad_data::aws::realtime::ChunkType::Intermediate,
-            waveform_type: WaveformType::CS,
+            waveform_type: WaveformType::ContiguousSurveillance,
             channel_configuration: ChannelConfiguration::ConstantPhase,
             is_first_in_sweep: false,
         };
@@ -295,7 +295,7 @@ mod coverage_tests {
     fn cs_bucket() -> ChunkCharacteristics {
         ChunkCharacteristics {
             chunk_type: nexrad_data::aws::realtime::ChunkType::Intermediate,
-            waveform_type: WaveformType::CS,
+            waveform_type: WaveformType::ContiguousSurveillance,
             channel_configuration: ChannelConfiguration::ConstantPhase,
             is_first_in_sweep: false,
         }
@@ -530,7 +530,9 @@ mod coverage_tests {
         let meta = ChunkMetadata::for_test(8, Some(2), 0, 3, true, 18.0);
         let resolved = chunk_characteristics(&meta, &vcp).expect("cut index 1 resolves");
         assert!(resolved.chunk_type == nexrad_data::aws::realtime::ChunkType::Intermediate);
-        assert!(resolved.waveform_type == WaveformType::CDWO);
+        assert!(
+            resolved.waveform_type == WaveformType::ContiguousDopplerWithoutAmbiguityResolution
+        );
         assert!(resolved.channel_configuration == ChannelConfiguration::RandomPhase);
         assert!(resolved.is_first_in_sweep);
 
@@ -538,7 +540,7 @@ mod coverage_tests {
         // and an intra-sweep (is_first_in_sweep = false) flag.
         let meta0 = ChunkMetadata::for_test(5, Some(1), 1, 3, false, 18.0);
         let resolved0 = chunk_characteristics(&meta0, &vcp).expect("cut index 0 resolves");
-        assert!(resolved0.waveform_type == WaveformType::CS);
+        assert!(resolved0.waveform_type == WaveformType::ContiguousSurveillance);
         assert!(resolved0.channel_configuration == ChannelConfiguration::ConstantPhase);
         assert!(!resolved0.is_first_in_sweep);
     }

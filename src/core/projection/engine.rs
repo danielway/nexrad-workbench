@@ -274,7 +274,7 @@ impl ProjectionEngine {
     fn projection_inner(&mut self, anchor: &ChunkIdentifier, now_secs: f64) -> Option<&Projection> {
         let key = CacheKey {
             input_revision: self.input_revision,
-            anchor_volume: anchor.volume().as_number(),
+            anchor_volume: anchor.volume().number(),
             anchor_sequence: anchor.sequence(),
             now_bucket_secs: now_secs.floor() as i64,
         };
@@ -308,7 +308,7 @@ impl ProjectionEngine {
                     .find_map(|c| c.projected.as_ref().map(|f| f.collection_time_secs))
                     .unwrap_or(now_secs)
             });
-            let current_volume = *anchor.volume();
+            let current_volume = anchor.volume();
             // Whether a projection was already built — the fallback-durations
             // gate (worker used `frame_projection.is_some()`); once a plan
             // exists the library bounds win and the VCP fallback is unused.
@@ -405,8 +405,8 @@ mod tests {
         let when = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         ChunkIdentifier::new(
             "KDMX".to_string(),
-            nexrad_data::aws::realtime::VolumeIndex::new(1),
-            when.naive_utc(),
+            nexrad_data::aws::realtime::VolumeIndex::new(1).unwrap(),
+            when,
             sequence,
             nexrad_data::aws::realtime::ChunkType::Intermediate,
             Some(when),
@@ -447,8 +447,8 @@ mod tests {
         let when = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         let anchor = ChunkIdentifier::new(
             "KDMX".to_string(),
-            nexrad_data::aws::realtime::VolumeIndex::new(1),
-            when.naive_utc(),
+            nexrad_data::aws::realtime::VolumeIndex::new(1).unwrap(),
+            when,
             1,
             nexrad_data::aws::realtime::ChunkType::Start,
             Some(when),
@@ -466,8 +466,8 @@ mod coverage_tests {
         let when = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         ChunkIdentifier::new(
             "KDMX".to_string(),
-            nexrad_data::aws::realtime::VolumeIndex::new(volume),
-            when.naive_utc(),
+            nexrad_data::aws::realtime::VolumeIndex::new(volume).unwrap(),
+            when,
             sequence,
             nexrad_data::aws::realtime::ChunkType::Intermediate,
             Some(when),
@@ -482,7 +482,7 @@ mod coverage_tests {
     ) -> KnownChunk {
         KnownChunk {
             coord: super::super::inventory::ChunkCoord {
-                volume: VolumeIndex::new(volume),
+                volume: VolumeIndex::new(volume).unwrap(),
                 sequence,
             },
             upload_secs: upload,
@@ -622,7 +622,7 @@ mod coverage_tests {
     fn observe_listing_empty_does_not_bump() {
         let mut eng = ProjectionEngine::new();
         // An empty listing can't advance the anchor → no bump.
-        eng.observe_listing(VolumeIndex::new(1), &[]);
+        eng.observe_listing(VolumeIndex::new(1).unwrap(), &[]);
         assert_eq!(eng.input_revision, 0);
     }
 
@@ -631,7 +631,7 @@ mod coverage_tests {
         let mut eng = ProjectionEngine::new();
         // The helper chunk carries an upload date_time → first listing entry
         // advances the anchor → bump.
-        eng.observe_listing(VolumeIndex::new(1), &[cv_chunk(1, 1)]);
+        eng.observe_listing(VolumeIndex::new(1).unwrap(), &[cv_chunk(1, 1)]);
         assert_eq!(eng.input_revision, 1);
     }
 

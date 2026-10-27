@@ -3,18 +3,16 @@
 //! Pure functions for building color lookup tables (no GL dependency).
 //! Used by `gpu_renderer` for texture uploads and by `canvas` for legend rendering.
 
-use nexrad_render::{Color as NrColor, ColorScale, ColorStop, ContinuousColorScale, Product};
+use nexrad::model::data::Product;
+use nexrad_render::{Color as NrColor, ColorScale, ColorStop, ContinuousColorScale};
 
 /// Default value ranges per product (used for color LUT normalization).
+/// The crate's ranges, except CC, which reaches 1.05 so the LUT keeps a few
+/// entries above a perfect correlation.
 pub(crate) fn product_value_range(product: Product) -> (f32, f32) {
     match product {
-        Product::Reflectivity => (-32.0, 95.0),
-        Product::Velocity => (-64.0, 64.0),
-        Product::SpectrumWidth => (0.0, 30.0),
-        Product::DifferentialReflectivity => (-2.0, 6.0),
         Product::CorrelationCoefficient => (0.0, 1.05),
-        Product::DifferentialPhase => (0.0, 360.0),
-        Product::ClutterFilterPower => (-20.0, 20.0),
+        other => other.value_range(),
     }
 }
 
@@ -267,14 +265,18 @@ pub(crate) fn continuous_color_scale(product: Product) -> ColorScale {
             ColorStop::new(10.0, NrColor::rgb(1.0000, 0.4118, 0.4118)),
             ColorStop::new(20.0, NrColor::rgb(0.8039, 0.0000, 0.0000)),
         ],
+        other => return nexrad_render::default_scale(other),
     };
-    ColorScale::Continuous(ContinuousColorScale::new(stops))
+    ColorScale::Continuous(
+        ContinuousColorScale::new(stops).expect("built-in color stops are finite"),
+    )
 }
 
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
-    use nexrad_render::{ColorScale, Product};
+    use nexrad::model::data::Product;
+    use nexrad_render::ColorScale;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     const PRODUCTS: [Product; 7] = [

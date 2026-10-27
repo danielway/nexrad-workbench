@@ -12,6 +12,7 @@ use crate::nexrad::live::realtime::RealtimeResult;
 use crate::nexrad::live::streaming_state::{StreamingInit, StreamingState};
 use eframe::egui;
 use futures_channel::mpsc::UnboundedSender;
+use nexrad_data::aws::realtime::LatestVolumeResult;
 use std::cell::Cell;
 
 /// How recent the cached volume hint must be (in seconds) for the fast-path
@@ -21,10 +22,10 @@ use std::cell::Cell;
 /// and discovery falls back to `get_latest_volume`.
 const VOLUME_HINT_MAX_AGE_SECS: f64 = 20.0 * 60.0;
 
-/// Decide whether the forward-probe should advance from the current candidate to
-/// the next slot, given each slot's newest-chunk S3 upload time (seconds). We
-/// advance only while the next slot is strictly newer; a not-yet-written or
-/// recycled-older slot stops the walk. Pure — split out for testing.
+/// Whether a volume slot holds a newer volume than the current one, given each
+/// slot's newest-chunk S3 upload time (seconds): only a strictly newer upload
+/// counts, so a not-yet-written or recycled-older slot does not. Pure — split
+/// out for testing.
 pub(super) fn probe_should_advance(
     candidate_upload_secs: f64,
     next_upload_secs: Option<f64>,
@@ -32,74 +33,30 @@ pub(super) fn probe_should_advance(
     matches!(next_upload_secs, Some(next) if next > candidate_upload_secs)
 }
 
-/// Newest-chunk S3 upload time (seconds) for a volume slot, or `None` if the
-/// slot has no chunks / no upload metadata.
-async fn slot_newest_upload_secs(
-    site_id: &str,
-    volume: nexrad_data::aws::realtime::VolumeIndex,
-) -> Option<f64> {
-    let chunks = nexrad_data::aws::realtime::list_chunks_in_volume(site_id, volume, 100)
-        .await
-        .ok()?;
-    chunks
-        .last()?
-        .upload_date_time()
-        .map(|dt| dt.timestamp_millis() as f64 / 1000.0)
-}
-
-/// Forward-probe from a fresh cache hint to the true latest volume, comparing S3
-/// upload times (list-only, no chunk downloads). Returns the resolved volume and
-/// the number of list calls made (threaded into `init_at_volume` for accurate
-/// request accounting). Returns `None` — forcing the caller to fall back to the
-/// library's binary search — when the hint slot itself is empty or its upload
-/// time is already older than [`VOLUME_HINT_MAX_AGE_SECS`].
-async fn probe_latest_from_hint(
-    site_id: &str,
-    hint: nexrad_data::aws::realtime::VolumeIndex,
-) -> Option<(nexrad_data::aws::realtime::VolumeIndex, usize)> {
-    let mut calls = 1;
-    let mut candidate = hint;
-    let mut candidate_upload = slot_newest_upload_secs(site_id, hint).await?;
-
-    // Guard against a slot that survived the recency gate by cached-at time but
-    // whose data is actually stale (e.g. the site went offline): if the hint's
-    // own newest chunk is old, don't trust it — fall back to a full search.
-    if current_timestamp_f64() - candidate_upload >= VOLUME_HINT_MAX_AGE_SECS {
-        return None;
-    }
-
-    loop {
-        let next = candidate.next();
-        let next_upload = slot_newest_upload_secs(site_id, next).await;
-        calls += 1;
-        if probe_should_advance(candidate_upload, next_upload) {
-            candidate = next;
-            candidate_upload = next_upload.expect("Some by probe_should_advance");
-        } else {
-            break;
-        }
-    }
-
-    Some((candidate, calls))
-}
-
 /// Discover the latest volume for a site and initialize a [`StreamingState`] at
 /// it.
 ///
 /// Fast path: if [`get_cached_volume_hint`] returns a hint cached within
-/// [`VOLUME_HINT_MAX_AGE_SECS`], forward-probe from it ([`probe_latest_from_hint`])
-/// — usually 1–3 list calls — and init there. Any miss (no hint, stale, empty
-/// slot, or stale slot data) falls through to the library's rotated-array binary
-/// search via `get_latest_volume`, so there is no correctness regression.
+/// [`VOLUME_HINT_MAX_AGE_SECS`], walk forward from it with the library's
+/// `get_latest_volume_from_hint` — usually 1–3 list calls — and init there. Any
+/// miss (no hint, stale hint, or a failed walk) falls through to the library's
+/// full search via `get_latest_volume`.
 async fn acquire_streaming_state(site_id: &str) -> nexrad_data::result::Result<StreamingInit> {
     if let Some((hint, cached_at)) = get_cached_volume_hint(site_id) {
         if current_timestamp_f64() - cached_at < VOLUME_HINT_MAX_AGE_SECS {
-            if let Some((volume, calls)) = probe_latest_from_hint(site_id, hint).await {
+            let walked =
+                nexrad_data::aws::realtime::get_latest_volume_from_hint(site_id, hint).await;
+            if let Ok(LatestVolumeResult {
+                volume: Some(volume),
+                calls,
+                ..
+            }) = walked
+            {
                 log::debug!(
                     "Realtime: resumed {} from cached volume hint {} → latest {} ({} list calls)",
                     site_id,
-                    hint.as_number(),
-                    volume.as_number(),
+                    hint.number(),
+                    volume.number(),
                     calls
                 );
                 return StreamingState::init_at_volume(site_id, volume, calls).await;
@@ -108,8 +65,8 @@ async fn acquire_streaming_state(site_id: &str) -> nexrad_data::result::Result<S
     }
 
     let result = nexrad_data::aws::realtime::get_latest_volume(site_id).await?;
-    let volume = result.volume.ok_or(nexrad_data::result::Error::AWS(
-        nexrad_data::result::aws::AWSError::LatestVolumeNotFound,
+    let volume = result.volume.ok_or(nexrad_data::result::Error::Aws(
+        nexrad_data::result::AwsError::LatestVolumeNotFound,
     ))?;
     StreamingState::init_at_volume(site_id, volume, result.calls).await
 }

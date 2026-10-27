@@ -133,7 +133,7 @@ pub(super) fn build_vcp(elevations: &[TestElevation]) -> Message<'static> {
 
     let messages = decode_messages(&frame).expect("VCP frame decodes");
     for m in messages {
-        if let MessageContents::VolumeCoveragePattern(v) = m.contents() {
+        if let MessageContents::RdaVolumeCoveragePattern(v) = m.contents() {
             return v.clone().into_owned();
         }
     }
@@ -169,20 +169,26 @@ mod tests {
         assert_eq!(elevs.len(), 2);
 
         assert!(elevs[0].super_resolution_half_degree_azimuth());
-        assert_eq!(elevs[0].waveform_type(), WaveformType::CS);
+        assert_eq!(
+            elevs[0].waveform_type(),
+            WaveformType::ContiguousSurveillance
+        );
         assert_eq!(
             elevs[0].channel_configuration(),
             ChannelConfiguration::ConstantPhase
         );
-        assert!((elevs[0].azimuth_rate() - 22.5).abs() < 1e-9);
+        assert!((elevs[0].azimuth_rate_degrees_per_second() - 22.5).abs() < 1e-9);
 
         assert!(!elevs[1].super_resolution_half_degree_azimuth());
-        assert_eq!(elevs[1].waveform_type(), WaveformType::CDWO);
+        assert_eq!(
+            elevs[1].waveform_type(),
+            WaveformType::ContiguousDopplerWithoutAmbiguityResolution
+        );
         assert_eq!(
             elevs[1].channel_configuration(),
             ChannelConfiguration::RandomPhase
         );
-        assert!((elevs[1].azimuth_rate() - 33.75).abs() < 1e-9);
+        assert!((elevs[1].azimuth_rate_degrees_per_second() - 33.75).abs() < 1e-9);
 
         // The angle/azimuth-rate decode helpers in this module agree with the
         // decoder, so tests can hand-pick raw values for known decoded results.

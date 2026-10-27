@@ -272,16 +272,22 @@ fn waveform_transition_penalty_secs(from: Option<WaveformType>, to: Option<Wavef
     match (from, to) {
         // CS → CDW: same-angle SAILS/MRLE transition. The dominant source of
         // remaining empty polls. Effective shift after 70/30 blend dilution is ~2.8s.
-        (WaveformType::CS, WaveformType::CDW) => 4.0,
+        (
+            WaveformType::ContiguousSurveillance,
+            WaveformType::ContiguousDopplerWithAmbiguityResolution,
+        ) => 4.0,
         // CDW → CS: reverse direction, observed ~+1s drift (held on Δstart across both volumes).
-        (WaveformType::CDW, WaveformType::CS) => 1.0,
+        (
+            WaveformType::ContiguousDopplerWithAmbiguityResolution,
+            WaveformType::ContiguousSurveillance,
+        ) => 1.0,
         // B → CDWO: high-elevation transition between B sweeps and CDWO. Bumped after
         // a second volume showed +1.95s residual pred_err at this transition.
-        (WaveformType::B, WaveformType::CDWO) => 3.5,
+        (WaveformType::Batch, WaveformType::ContiguousDopplerWithoutAmbiguityResolution) => 3.5,
         // CDWO leaving to any other waveform: small penalty, ~+1s.
-        (WaveformType::CDWO, _) => 1.0,
+        (WaveformType::ContiguousDopplerWithoutAmbiguityResolution, _) => 1.0,
         // Anything arriving at B: small penalty, ~+1s.
-        (_, WaveformType::B) => 1.0,
+        (_, WaveformType::Batch) => 1.0,
         // Catch-all for untabulated waveform changes: conservative middle ground.
         _ => 2.0,
     }
@@ -348,8 +354,8 @@ mod tests {
         let g = ChunkTimingModel::inter_sweep_gap_secs(
             1.0,
             6.0,
-            Some(WaveformType::CS),
-            Some(WaveformType::CDW),
+            Some(WaveformType::ContiguousSurveillance),
+            Some(WaveformType::ContiguousDopplerWithAmbiguityResolution),
         );
         assert!((g - 5.1).abs() < EPS, "got {g}");
     }
@@ -439,7 +445,13 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn waveform_penalty_table() {
-        use WaveformType::*;
+        const CS: WaveformType = WaveformType::ContiguousSurveillance;
+        const CDW: WaveformType = WaveformType::ContiguousDopplerWithAmbiguityResolution;
+        const CDWO: WaveformType = WaveformType::ContiguousDopplerWithoutAmbiguityResolution;
+        const B: WaveformType = WaveformType::Batch;
+        const SPP: WaveformType = WaveformType::StaggeredPulsePair;
+        #[allow(non_upper_case_globals)]
+        const Unknown: WaveformType = WaveformType::Unknown(0);
         let pen = waveform_transition_penalty_secs;
         // None on either side → 0.0.
         assert_eq!(pen(None, None), 0.0);
@@ -528,9 +540,19 @@ mod coverage_tests {
     fn inter_sweep_gap_single_side_waveform_no_penalty() {
         // Only one waveform known → penalty branch returns 0.0, so the gap is
         // base + slew only. 2° change → 0.7 + 2*0.08 = 0.86.
-        let g1 = ChunkTimingModel::inter_sweep_gap_secs(0.5, 2.5, Some(WaveformType::CS), None);
+        let g1 = ChunkTimingModel::inter_sweep_gap_secs(
+            0.5,
+            2.5,
+            Some(WaveformType::ContiguousSurveillance),
+            None,
+        );
         assert!((g1 - 0.86).abs() < EPS, "g1 {g1}");
-        let g2 = ChunkTimingModel::inter_sweep_gap_secs(0.5, 2.5, None, Some(WaveformType::CDW));
+        let g2 = ChunkTimingModel::inter_sweep_gap_secs(
+            0.5,
+            2.5,
+            None,
+            Some(WaveformType::ContiguousDopplerWithAmbiguityResolution),
+        );
         assert!((g2 - 0.86).abs() < EPS, "g2 {g2}");
     }
 
@@ -541,8 +563,8 @@ mod coverage_tests {
         let g = ChunkTimingModel::inter_sweep_gap_secs(
             3.0,
             3.0,
-            Some(WaveformType::CDW),
-            Some(WaveformType::CDW),
+            Some(WaveformType::ContiguousDopplerWithAmbiguityResolution),
+            Some(WaveformType::ContiguousDopplerWithAmbiguityResolution),
         );
         assert!((g - 0.7).abs() < EPS, "got {g}");
     }
@@ -553,8 +575,8 @@ mod coverage_tests {
         let g = ChunkTimingModel::inter_sweep_gap_secs(
             0.0,
             10.0,
-            Some(WaveformType::B),
-            Some(WaveformType::CDWO),
+            Some(WaveformType::Batch),
+            Some(WaveformType::ContiguousDopplerWithoutAmbiguityResolution),
         );
         assert!((g - 5.0).abs() < EPS, "got {g}");
     }
@@ -563,7 +585,13 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn waveform_penalty_cdwo_leaving_beats_catch_all() {
-        use WaveformType::*;
+        const CS: WaveformType = WaveformType::ContiguousSurveillance;
+        const CDW: WaveformType = WaveformType::ContiguousDopplerWithAmbiguityResolution;
+        const CDWO: WaveformType = WaveformType::ContiguousDopplerWithoutAmbiguityResolution;
+        const B: WaveformType = WaveformType::Batch;
+        const SPP: WaveformType = WaveformType::StaggeredPulsePair;
+        #[allow(non_upper_case_globals)]
+        const Unknown: WaveformType = WaveformType::Unknown(0);
         let pen = waveform_transition_penalty_secs;
         // (CDWO, _) arm fires before the generic catch-all for an untabulated
         // target like SPP → 1.0, not 2.0.
@@ -573,7 +601,13 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn waveform_penalty_arriving_at_b_arm() {
-        use WaveformType::*;
+        const CS: WaveformType = WaveformType::ContiguousSurveillance;
+        const CDW: WaveformType = WaveformType::ContiguousDopplerWithAmbiguityResolution;
+        const CDWO: WaveformType = WaveformType::ContiguousDopplerWithoutAmbiguityResolution;
+        const B: WaveformType = WaveformType::Batch;
+        const SPP: WaveformType = WaveformType::StaggeredPulsePair;
+        #[allow(non_upper_case_globals)]
+        const Unknown: WaveformType = WaveformType::Unknown(0);
         let pen = waveform_transition_penalty_secs;
         // (_, B) arm → 1.0 for sources not otherwise tabulated.
         assert_eq!(pen(Some(CDW), Some(B)), 1.0);
@@ -583,7 +617,13 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn waveform_penalty_catch_all_untabulated_pairs() {
-        use WaveformType::*;
+        const CS: WaveformType = WaveformType::ContiguousSurveillance;
+        const CDW: WaveformType = WaveformType::ContiguousDopplerWithAmbiguityResolution;
+        const CDWO: WaveformType = WaveformType::ContiguousDopplerWithoutAmbiguityResolution;
+        const B: WaveformType = WaveformType::Batch;
+        const SPP: WaveformType = WaveformType::StaggeredPulsePair;
+        #[allow(non_upper_case_globals)]
+        const Unknown: WaveformType = WaveformType::Unknown(0);
         let pen = waveform_transition_penalty_secs;
         // None of the specific/asymmetric arms match → catch-all 2.0.
         assert_eq!(pen(Some(SPP), Some(CDW)), 2.0);
@@ -594,7 +634,13 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn waveform_penalty_unknown_same_discriminant_is_zero() {
-        use WaveformType::*;
+        const CS: WaveformType = WaveformType::ContiguousSurveillance;
+        const CDW: WaveformType = WaveformType::ContiguousDopplerWithAmbiguityResolution;
+        const CDWO: WaveformType = WaveformType::ContiguousDopplerWithoutAmbiguityResolution;
+        const B: WaveformType = WaveformType::Batch;
+        const SPP: WaveformType = WaveformType::StaggeredPulsePair;
+        #[allow(non_upper_case_globals)]
+        const Unknown: WaveformType = WaveformType::Unknown(0);
         let pen = waveform_transition_penalty_secs;
         // Unknown→Unknown hits the same-discriminant short-circuit → 0.0.
         assert_eq!(pen(Some(Unknown), Some(Unknown)), 0.0);

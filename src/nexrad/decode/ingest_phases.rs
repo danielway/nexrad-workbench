@@ -4,27 +4,47 @@
 //! decompression, VCP extraction, radial grouping by elevation, and
 //! pre-computed sweep blob generation for IndexedDB storage.
 
+use super::record_decode::{lenient_messages, lenient_radials};
 use crate::data::keys::*;
 use crate::data::{ExtractedVcp, ExtractedVcpElevation};
 use std::collections::HashMap;
 
-pub(crate) const PRODUCTS: &[(nexrad_render::Product, &str)] = &[
-    (nexrad_render::Product::Reflectivity, "reflectivity"),
-    (nexrad_render::Product::Velocity, "velocity"),
-    (nexrad_render::Product::SpectrumWidth, "spectrum_width"),
+pub(crate) const PRODUCTS: &[(nexrad::model::data::Product, &str)] = &[
+    (nexrad::model::data::Product::Reflectivity, "reflectivity"),
+    (nexrad::model::data::Product::Velocity, "velocity"),
     (
-        nexrad_render::Product::DifferentialReflectivity,
+        nexrad::model::data::Product::SpectrumWidth,
+        "spectrum_width",
+    ),
+    (
+        nexrad::model::data::Product::DifferentialReflectivity,
         "differential_reflectivity",
     ),
     (
-        nexrad_render::Product::CorrelationCoefficient,
+        nexrad::model::data::Product::CorrelationCoefficient,
         "correlation_coefficient",
     ),
     (
-        nexrad_render::Product::DifferentialPhase,
+        nexrad::model::data::Product::DifferentialPhase,
         "differential_phase",
     ),
 ];
+
+/// The ICD's short code for a waveform ("CS", "CDW", ...), as the VCP
+/// tooltips and the forecast table show it.
+fn waveform_code(
+    w: nexrad_decode::messages::volume_coverage_pattern::WaveformType,
+) -> &'static str {
+    use nexrad_decode::messages::volume_coverage_pattern::WaveformType;
+    match w {
+        WaveformType::ContiguousSurveillance => "CS",
+        WaveformType::ContiguousDopplerWithAmbiguityResolution => "CDW",
+        WaveformType::ContiguousDopplerWithoutAmbiguityResolution => "CDWO",
+        WaveformType::Batch => "B",
+        WaveformType::StaggeredPulsePair => "SPP",
+        _ => "Unknown",
+    }
+}
 
 pub(crate) fn decode_with_vcp_extraction<'a>(
     messages: impl IntoIterator<Item = nexrad_decode::messages::Message<'a>>,
@@ -40,33 +60,20 @@ pub(crate) fn decode_with_vcp_extraction<'a>(
             .unwrap_or(false);
 
         match msg.contents() {
-            MessageContents::VolumeCoveragePattern(ref vcp_msg) if !has_full_vcp => {
+            MessageContents::RdaVolumeCoveragePattern(ref vcp_msg) if !has_full_vcp => {
                 let header = vcp_msg.header();
                 let elevations: Vec<ExtractedVcpElevation> = vcp_msg
                     .elevations()
                     .iter()
                     .map(|e| ExtractedVcpElevation {
-                        // nexrad-decode's decode_angle() sums bit 15 as a
-                        // positive 180° contribution instead of treating it as
-                        // the sign bit, so negative elevations (e.g. KMAX's
-                        // -0.2°) come back wrapped near 360°. Real VCP
-                        // elevations never exceed ~20°, so any value above 180°
-                        // is a wrapped negative.
-                        angle: {
-                            let a = e.elevation_angle() as f32;
-                            if a > 180.0 {
-                                a - 360.0
-                            } else {
-                                a
-                            }
-                        },
-                        waveform: format!("{:?}", e.waveform_type()),
+                        angle: e.elevation_angle_degrees(),
+                        waveform: waveform_code(e.waveform_type()).to_string(),
                         prf_number: e.surveillance_prf_number(),
                         is_sails: e.is_sails_cut(),
                         is_mrle: e.is_mrle_cut(),
                         is_base_tilt: e.is_base_tilt_cut(),
                         azimuth_rate: {
-                            let rate = e.azimuth_rate();
+                            let rate = e.azimuth_rate_degrees_per_second();
                             if rate > 0.0 {
                                 Some(rate as f32)
                             } else {
@@ -76,13 +83,13 @@ pub(crate) fn decode_with_vcp_extraction<'a>(
                     })
                     .collect();
                 *extracted_vcp = Some(ExtractedVcp {
-                    number: header.pattern_number(),
+                    number: header.vcp_number_raw(),
                     elevations,
                 });
             }
             MessageContents::DigitalRadarData(ref m) if extracted_vcp.is_none() => {
                 if let Some(vol_block) = m.volume_data_block() {
-                    let raw = vol_block.volume_coverage_pattern_number();
+                    let raw = vol_block.inner().vcp_number_raw();
                     if raw > 0 {
                         *extracted_vcp = Some(ExtractedVcp {
                             number: raw,
@@ -94,7 +101,7 @@ pub(crate) fn decode_with_vcp_extraction<'a>(
             // Pre-2008 volumes carry no message 5; the pattern number rides
             // on every legacy radial instead.
             MessageContents::DigitalRadarDataLegacy(ref m) if extracted_vcp.is_none() => {
-                let raw = m.vcp_number();
+                let raw = m.vcp_number_raw();
                 if raw > 0 {
                     *extracted_vcp = Some(ExtractedVcp {
                         number: raw,
@@ -169,19 +176,16 @@ pub(crate) fn decompress_and_decode_records(
             .map(|v| v.elevations.is_empty())
             .unwrap_or(true);
         let radials = if needs_vcp {
-            match super::record_decode::record_messages(record.data()) {
-                Ok(msgs) => decode_with_vcp_extraction(msgs, &mut extracted_vcp),
-                Err(_) => Vec::new(),
-            }
+            decode_with_vcp_extraction(lenient_messages(record), &mut extracted_vcp)
         } else {
-            super::record_decode::record_radials(record.data()).unwrap_or_default()
+            lenient_radials(record)
         };
         decode_only_ms += t_radials.elapsed().as_secs_f64() * 1000.0;
 
         if !radials.is_empty() {
             for r in &radials {
                 radial_metas.push((
-                    r.collection_timestamp(),
+                    r.collection_timestamp_millis(),
                     r.elevation_number(),
                     r.elevation_angle_degrees(),
                     r.azimuth_angle_degrees(),
@@ -354,16 +358,12 @@ pub(crate) fn decode_start_chunk(data: Vec<u8>, accum_has_full_vcp: bool) -> Chu
                             .map(|v| v.elevations.is_empty())
                             .unwrap_or(true)
                     {
-                        if let Ok(msgs) = super::record_decode::record_messages(decompressed.data())
-                        {
-                            let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
-                            chunk_radials.extend(r);
-                        }
+                        chunk_radials.extend(decode_with_vcp_extraction(
+                            lenient_messages(&decompressed),
+                            &mut chunk_vcp,
+                        ));
                     } else {
-                        chunk_radials.extend(
-                            super::record_decode::record_radials(decompressed.data())
-                                .unwrap_or_default(),
-                        );
+                        chunk_radials.extend(lenient_radials(&decompressed));
                     }
                 }
                 Err(e) => {
@@ -403,15 +403,12 @@ pub(crate) fn decode_subsequent_chunk(
         match record.decompress() {
             Ok(decompressed) => {
                 if !accum_has_full_vcp {
-                    if let Ok(msgs) = super::record_decode::record_messages(decompressed.data()) {
-                        let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
-                        chunk_radials.extend(r);
-                    }
+                    chunk_radials.extend(decode_with_vcp_extraction(
+                        lenient_messages(&decompressed),
+                        &mut chunk_vcp,
+                    ));
                 } else {
-                    chunk_radials.extend(
-                        super::record_decode::record_radials(decompressed.data())
-                            .unwrap_or_default(),
-                    );
+                    chunk_radials.extend(lenient_radials(&decompressed));
                 }
             }
             Err(e) => {
@@ -445,11 +442,11 @@ pub(crate) fn compute_chunk_time_spans(
 ) -> ChunkTimeSpans {
     let chunk_min_ts_secs: Option<f64> = chunk_radials
         .iter()
-        .map(|r| r.collection_timestamp() as f64 / 1000.0)
+        .map(|r| r.collection_timestamp_millis() as f64 / 1000.0)
         .reduce(f64::min);
     let chunk_max_ts_secs: Option<f64> = chunk_radials
         .iter()
-        .map(|r| r.collection_timestamp() as f64 / 1000.0)
+        .map(|r| r.collection_timestamp_millis() as f64 / 1000.0)
         .reduce(f64::max);
 
     let chunk_elev_spans: Vec<(u8, f64, f64, u32)> = {
@@ -457,7 +454,7 @@ pub(crate) fn compute_chunk_time_spans(
             std::collections::BTreeMap::new();
         for r in chunk_radials {
             let elev = r.elevation_number();
-            let t = r.collection_timestamp() as f64 / 1000.0;
+            let t = r.collection_timestamp_millis() as f64 / 1000.0;
             map.entry(elev)
                 .and_modify(|(min, max, count)| {
                     if t < *min {
@@ -494,7 +491,7 @@ pub(crate) fn compute_chunk_time_spans(
     let last_radial_azimuth: Option<f32> = chunk_radials.last().map(|r| r.azimuth_angle_degrees());
     let last_radial_time_secs: Option<f64> = chunk_radials
         .last()
-        .map(|r| r.collection_timestamp() as f64 / 1000.0);
+        .map(|r| r.collection_timestamp_millis() as f64 / 1000.0);
 
     ChunkTimeSpans {
         chunk_min_ts_secs,
@@ -545,22 +542,17 @@ mod coverage_tests {
         elevation_angle_degrees: f32,
         azimuth_angle_degrees: f32,
     ) -> Radial {
-        Radial::new(
-            collection_timestamp_ms,
+        Radial::builder(
             0,
             azimuth_angle_degrees,
-            1.0,
-            RadialStatus::IntermediateRadialData,
             elevation_number,
             elevation_angle_degrees,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
         )
+        .collection_timestamp_millis(collection_timestamp_ms)
+        .azimuth_spacing_degrees(1.0)
+        .radial_status(RadialStatus::IntermediateRadialData)
+        .build()
+        .unwrap()
     }
 
     // ---- timing_for_elevation -------------------------------------------

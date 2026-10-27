@@ -144,7 +144,7 @@ pub(super) async fn streaming_loop(
         // design so the user sees their selected tilt immediately on connect.
         let initial_filter = loop_state.active_filter;
         let latest_seq = init_result.latest_chunk.identifier.sequence();
-        let volume = *init_result.latest_chunk.identifier.volume();
+        let volume = init_result.latest_chunk.identifier.volume();
         cache_volume_number(&site_id, volume);
         chunks_in_volume = 1; // start chunk already emitted
 
@@ -463,7 +463,7 @@ pub(super) async fn streaming_loop(
                     };
                     chunks_in_volume = 0;
                     current_scan_start_secs = crate::data::ProvisionalStart(header_secs);
-                    cache_volume_number(&site_id, *chunk.identifier.volume());
+                    cache_volume_number(&site_id, chunk.identifier.volume());
                     emitted_sequences_this_volume.clear();
 
                     engine::install_volume_boundary(

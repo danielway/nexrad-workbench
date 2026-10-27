@@ -279,7 +279,7 @@ async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult 
     let site_owned = site_id.to_string();
     let files = match with_retry(&DEFAULT_POLICY, "archive_list", |_attempt| {
         let s = site_owned.clone();
-        async move { classify_nexrad_result(archive::list_files(&s, &date).await) }
+        async move { classify_nexrad_result(archive::list_files(&s, date).await) }
     })
     .await
     {
@@ -319,18 +319,11 @@ async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult 
 /// truncated lists) are retryable. Everything else — including `S3ObjectNotFound`
 /// (404), which means the file genuinely does not exist in the archive — is
 /// terminal.
-fn classify_nexrad_result<T>(result: nexrad_data::result::Result<T>) -> Verdict<T> {
-    use nexrad_data::result::aws::AWSError;
+pub(super) fn classify_nexrad_result<T>(result: nexrad_data::result::Result<T>) -> Verdict<T> {
     use nexrad_data::result::Error;
     match result {
         Ok(v) => Verdict::Ok(v),
-        Err(Error::AWS(
-            AWSError::S3GetObjectRequest(_)
-            | AWSError::S3GetObject(_)
-            | AWSError::S3Streaming(_)
-            | AWSError::S3ListObjects(_)
-            | AWSError::TruncatedListObjectsResponse,
-        )) => Verdict::Retry { after: None },
+        Err(Error::Aws(e)) if e.is_transient() => Verdict::Retry { after: None },
         Err(e) => Verdict::Terminal(format!("{}", e)),
     }
 }
@@ -376,7 +369,10 @@ async fn download_specific_file(
     // and S3 key are parsed out of it), and the name came from an archive
     // listing in the first place — so no pre-GET LIST is needed. A name
     // that doesn't exist surfaces as a terminal 404 on the GET.
-    let Some(url) = archive_url(&archive::Identifier::new(file_name.to_string())) else {
+    let Some(url) = archive::Identifier::parse(file_name)
+        .ok()
+        .map(|id| archive_url(&id))
+    else {
         return DownloadResult::Error {
             message: format!("Download failed: bad file name {file_name}"),
             site_id: site_id.to_string(),
@@ -420,16 +416,14 @@ async fn download_specific_file(
 }
 
 /// The archive URL of a volume file: `<bucket>/YYYY/MM/DD/SITE/<name>`.
-fn archive_url(id: &nexrad::data::aws::archive::Identifier) -> Option<String> {
-    let date = id.date_time()?;
-    let site = id.site()?;
-    Some(format!(
+fn archive_url(id: &nexrad::data::aws::archive::Identifier) -> String {
+    format!(
         "{}/{}/{}/{}",
         ARCHIVE_BUCKET_URL,
-        date.format("%Y/%m/%d"),
-        site,
+        id.date_time().format("%Y/%m/%d"),
+        id.site(),
         id.name()
-    ))
+    )
 }
 
 /// One GET of an archive file, its body read as a stream: each chunk that

@@ -1,10 +1,7 @@
 //! Day listings with file sizes, for the overview's storm-activity bars.
 //!
-//! The app's own listing path (`download::fetch_archive_listing`) goes
-//! through `nexrad_data::aws::archive::list_files`, which in the published
-//! 1.0.0-rc.7 drops each file's size. Until the app moves to a release with
-//! `list_files_with_sizes`, this issues the same S3 `ListObjectsV2` request
-//! itself and parses it with [`crate::core::storm_activity::parse_s3_listing`].
+//! Days are listed with `nexrad_data::aws::archive::list_files_with_sizes`,
+//! the same request the app's own listing path makes, with each file's size.
 //!
 //! Before any listing, a site's published activity index is read once per
 //! session from the app's own origin (`activity-index/<SITE>.json`, see
@@ -19,21 +16,19 @@
 //! channel. Stored summaries are read and written through the
 //! [`MainThreadStore`].
 
+use super::download::classify_nexrad_result;
 use super::download::NetworkStats;
 use crate::core::activity_index::{
     index_path, month_path, resolve_index, resolve_month, revalidation_tag, IndexOutcome,
     IndexResponse, MonthKey,
 };
-use crate::core::storm_activity::{parse_s3_listing, summarize_day};
+use crate::core::storm_activity::summarize_day;
 use crate::data::{DayActivity, MainThreadStore, SiteId};
-use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
+use crate::net::retry::{with_retry, DEFAULT_POLICY};
 use eframe::egui;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
-
-/// The archive bucket the listings come from.
-const ARCHIVE_BUCKET_URL: &str = "https://unidata-nexrad-level2.s3.amazonaws.com";
 
 /// A finished activity request.
 pub(crate) enum ActivityMessage {
@@ -268,78 +263,21 @@ async fn fetch_index(path: &str, etag: Option<&str>) -> IndexResponse {
     }
 }
 
-/// The `ListObjectsV2` URL for one site-day.
-fn listing_url(site: &SiteId, day_start: i64) -> Option<String> {
-    let date = chrono::DateTime::from_timestamp(day_start, 0)?.date_naive();
-    Some(format!(
-        "{}/?list-type=2&prefix={}/{}",
-        ARCHIVE_BUCKET_URL,
-        date.format("%Y/%m/%d"),
-        site.0
-    ))
-}
-
-/// Every file listed for `site` on the day starting at `day_start`, with
-/// sizes.
+/// Every volume file listed for `site` on the day starting at `day_start`,
+/// with sizes.
 async fn list_day_files(site: &SiteId, day_start: i64) -> Result<Vec<(String, u64)>, String> {
-    let url = listing_url(site, day_start).ok_or("bad day")?;
-    let body = with_retry(&DEFAULT_POLICY, "activity_list", |_attempt| {
-        let url = url.clone();
-        async move { fetch_text(&url).await }
+    use nexrad_data::aws::archive;
+
+    let date = chrono::DateTime::from_timestamp(day_start, 0)
+        .ok_or("bad day")?
+        .date_naive();
+    let files = with_retry(&DEFAULT_POLICY, "activity_list", |_attempt| {
+        let site = site.0.clone();
+        async move { classify_nexrad_result(archive::list_files_with_sizes(&site, date).await) }
     })
     .await?;
-    let listing = parse_s3_listing(&body);
-    if listing.truncated {
-        // A site-day holds a few hundred files; a truncated page means
-        // something unexpected, so don't record a partial day.
-        return Err("listing truncated".into());
-    }
-    Ok(listing.files)
-}
-
-/// One GET, classified for the retry loop.
-async fn fetch_text(url: &str) -> Verdict<String> {
-    let global = js_sys::global();
-    let promise = if let Some(window) = global.dyn_ref::<web_sys::Window>() {
-        window.fetch_with_str(url)
-    } else if let Some(worker) = global.dyn_ref::<web_sys::WorkerGlobalScope>() {
-        worker.fetch_with_str(url)
-    } else {
-        return Verdict::Terminal("no fetch".into());
-    };
-    let response: web_sys::Response = match JsFuture::from(promise).await {
-        Ok(v) => match v.dyn_into() {
-            Ok(r) => r,
-            Err(_) => return Verdict::Terminal("invalid response".into()),
-        },
-        Err(_) => return Verdict::Retry { after: None },
-    };
-    let status = response.status();
-    if status == 408 || status == 429 || (500..=599).contains(&status) {
-        return Verdict::Retry { after: None };
-    }
-    if !response.ok() {
-        return Verdict::Terminal(format!("HTTP {}", status));
-    }
-    let Ok(text) = response.text() else {
-        return Verdict::Terminal("no body".into());
-    };
-    match JsFuture::from(text).await.ok().and_then(|v| v.as_string()) {
-        Some(body) => Verdict::Ok(body),
-        None => Verdict::Retry { after: None },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test;
-
-    #[wasm_bindgen_test]
-    fn lists_the_site_day_prefix() {
-        assert_eq!(
-            listing_url(&SiteId::new("KTBW"), 1_728_432_000).as_deref(),
-            Some("https://unidata-nexrad-level2.s3.amazonaws.com/?list-type=2&prefix=2024/10/09/KTBW")
-        );
-    }
+    Ok(files
+        .into_iter()
+        .map(|file| (file.identifier().name().to_string(), file.size()))
+        .collect())
 }

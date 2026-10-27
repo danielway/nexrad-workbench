@@ -496,7 +496,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             // Append radials and metadata for the current elevation.
             for r in &chunk_radials {
                 accum.current_radial_metas.push((
-                    r.collection_timestamp(),
+                    r.collection_timestamp_millis(),
                     r.elevation_number(),
                     r.elevation_angle_degrees(),
                     r.azimuth_angle_degrees(),
@@ -620,7 +620,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             // Product summary from current radials
             let mut products_present: Vec<&str> = Vec::new();
             if let Some(r) = accum.current_radials.first() {
-                use nexrad_render::Product;
+                use nexrad::model::data::Product;
                 for (p, name) in [
                     (Product::Reflectivity, "REF"),
                     (Product::Velocity, "VEL"),
@@ -629,7 +629,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     (Product::CorrelationCoefficient, "CC"),
                     (Product::DifferentialPhase, "PHI"),
                 ] {
-                    if p.moment_data(r).is_some() || p.cfp_moment_data(r).is_some() {
+                    if r.moment(p).is_some() {
                         products_present.push(name);
                     }
                 }

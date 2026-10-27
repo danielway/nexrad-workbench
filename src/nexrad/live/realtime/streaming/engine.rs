@@ -71,7 +71,7 @@ pub(super) fn observe_chunk_arrival(
         let mut eng = engine.borrow_mut();
         eng.observe_known_chunk(KnownChunk {
             coord: ChunkCoord {
-                volume: *identifier.volume(),
+                volume: identifier.volume(),
                 sequence: identifier.sequence(),
             },
             upload_secs,
@@ -97,7 +97,7 @@ pub(super) fn install_volume_boundary(
     if let Some(vcp) = iter.install_vcp_from_start(&chunk.chunk) {
         engine
             .borrow_mut()
-            .begin_volume(vcp, scan_start_secs, *chunk.identifier.volume());
+            .begin_volume(vcp, scan_start_secs, chunk.identifier.volume());
     } else {
         engine
             .borrow_mut()

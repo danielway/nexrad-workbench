@@ -5,7 +5,7 @@ use crate::nexrad::color_table::{
     build_reflectivity_lut, continuous_color_scale, product_from_str, product_value_range,
 };
 use glow::HasContext;
-use nexrad_render::Product;
+use nexrad::model::data::Product;
 
 impl RadarGpuRenderer {
     /// Upload decoded radar data to GPU textures.

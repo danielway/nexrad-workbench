@@ -251,8 +251,8 @@ mod coverage_tests {
         let when = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         ChunkIdentifier::new(
             "KDMX".to_string(),
-            VolumeIndex::new(1),
-            when.naive_utc(),
+            VolumeIndex::new(1).unwrap(),
+            when,
             sequence,
             ChunkType::Intermediate,
             Some(when),

@@ -17,7 +17,7 @@ use nexrad_data::aws::realtime::{
     download_chunk, list_chunks_in_volume, Chunk, ChunkIdentifier, ChunkType, DownloadedChunk,
     VolumeIndex,
 };
-use nexrad_data::result::{aws::AWSError, Error, Result};
+use nexrad_data::result::{AwsError, Error, Result};
 use nexrad_decode::messages::volume_coverage_pattern;
 
 /// Fetched at init: the latest chunk in the volume, plus the Start chunk if
@@ -77,43 +77,33 @@ impl StreamingState {
         volume: VolumeIndex,
         prior_requests: usize,
     ) -> Result<StreamingInit> {
-        let chunks = list_chunks_in_volume(site, volume, 100).await?;
+        let chunks = list_chunks_in_volume(site, volume).await?;
         let mut requests_made = prior_requests + 1;
 
-        let latest_id = chunks.last().ok_or(AWSError::ExpectedChunkNotFound)?;
-        let (latest_id, latest_chunk) = download_chunk(site, latest_id).await?;
+        let latest_id = chunks.last().ok_or(AwsError::ExpectedChunkNotFound)?;
+        let latest = download_chunk(latest_id).await?;
         requests_made += 1;
-        let mut bytes_downloaded = latest_chunk.data().len() as u64;
+        let mut bytes_downloaded = latest.chunk.data().len() as u64;
+        let latest_id = latest.identifier.clone();
 
         let mut vcp: Option<volume_coverage_pattern::Message<'static>> = None;
         let mut start_chunk_download: Option<DownloadedChunk> = None;
 
         if latest_id.chunk_type() == ChunkType::Start {
             // Latest IS the Start chunk — extract VCP from it.
-            if let Ok(v) = extract_vcp(&latest_chunk) {
+            if let Ok(v) = extract_vcp(&latest.chunk) {
                 vcp = Some(v);
             }
         } else {
             // Mid-volume join — fetch the Start chunk (sequence 1) separately.
-            let start_id = ChunkIdentifier::new(
-                site.to_string(),
-                volume,
-                *latest_id.date_time_prefix(),
-                1,
-                ChunkType::Start,
-                None,
-            );
-            if let Ok((sid, schunk)) = download_chunk(site, &start_id).await {
+            let start_id = latest_id.with_sequence(1, ChunkType::Start);
+            if let Ok(start) = download_chunk(&start_id).await {
                 requests_made += 1;
-                bytes_downloaded += schunk.data().len() as u64;
-                if let Ok(v) = extract_vcp(&schunk) {
+                bytes_downloaded += start.chunk.data().len() as u64;
+                if let Ok(v) = extract_vcp(&start.chunk) {
                     vcp = Some(v);
                 }
-                start_chunk_download = Some(DownloadedChunk {
-                    identifier: sid,
-                    chunk: schunk,
-                    attempts: 1,
-                });
+                start_chunk_download = Some(start);
             }
         }
 
@@ -128,11 +118,7 @@ impl StreamingState {
 
         Ok(StreamingInit {
             state,
-            latest_chunk: DownloadedChunk {
-                identifier: latest_id,
-                chunk: latest_chunk,
-                attempts: 1,
-            },
+            latest_chunk: latest,
             start_chunk: start_chunk_download,
             vcp,
         })
@@ -157,7 +143,7 @@ impl StreamingState {
             let mapper = self
                 .mapper
                 .as_ref()
-                .ok_or(AWSError::FailedToDetermineNextChunk)?;
+                .ok_or(AwsError::FailedToDetermineNextChunk)?;
             let final_seq = mapper.final_sequence();
             let current_seq = self.current.sequence();
 
@@ -190,14 +176,7 @@ impl StreamingState {
         } else {
             ChunkType::Intermediate
         };
-        let next_id = ChunkIdentifier::new(
-            self.current.site().to_string(),
-            *self.current.volume(),
-            *self.current.date_time_prefix(),
-            target,
-            next_type,
-            None,
-        );
+        let next_id = self.current.with_sequence(target, next_type);
         let downloaded = self.try_fetch_chunk(next_id).await?;
         Ok(match downloaded {
             Some(c) => TryNextOutcome::Downloaded(c),
@@ -210,14 +189,7 @@ impl StreamingState {
     /// filtered out, so the next iteration rolls over to the next volume
     /// via the existing `try_fetch_volume_start` path.
     fn advance_current_to_synthetic_end(&mut self, final_sequence: usize) {
-        self.current = ChunkIdentifier::new(
-            self.current.site().to_string(),
-            *self.current.volume(),
-            *self.current.date_time_prefix(),
-            final_sequence,
-            ChunkType::End,
-            None,
-        );
+        self.current = self.current.with_sequence(final_sequence, ChunkType::End);
     }
 
     /// Attempts to fetch the next chunk.
@@ -228,7 +200,7 @@ impl StreamingState {
         let mapper = self
             .mapper
             .as_ref()
-            .ok_or(AWSError::FailedToDetermineNextChunk)?;
+            .ok_or(AwsError::FailedToDetermineNextChunk)?;
         let final_sequence = mapper.final_sequence();
         let current_sequence = self.current.sequence();
 
@@ -244,14 +216,7 @@ impl StreamingState {
         } else {
             ChunkType::Intermediate
         };
-        let next_id = ChunkIdentifier::new(
-            self.current.site().to_string(),
-            *self.current.volume(),
-            *self.current.date_time_prefix(),
-            next_sequence,
-            next_type,
-            None,
-        );
+        let next_id = self.current.with_sequence(next_sequence, next_type);
         self.try_fetch_chunk(next_id).await
     }
 
@@ -260,22 +225,18 @@ impl StreamingState {
         chunk_id: ChunkIdentifier,
     ) -> Result<Option<DownloadedChunk>> {
         self.requests_made += 1;
-        match download_chunk(&self.site, &chunk_id).await {
-            Ok((identifier, chunk)) => {
-                self.bytes_downloaded += chunk.data().len() as u64;
+        match download_chunk(&chunk_id).await {
+            Ok(downloaded) => {
+                self.bytes_downloaded += downloaded.chunk.data().len() as u64;
 
                 // VCP install (navigation mapper) + projection bookkeeping
                 // (engine set_vcp/anchor, inter-chunk duration) happen in the
                 // streaming loop after this returns — see `install_vcp_from_start`.
-                self.current = identifier.clone();
+                self.current = downloaded.identifier.clone();
 
-                Ok(Some(DownloadedChunk {
-                    identifier,
-                    chunk,
-                    attempts: 1,
-                }))
+                Ok(Some(downloaded))
             }
-            Err(Error::AWS(AWSError::S3ObjectNotFound)) => {
+            Err(Error::Aws(AwsError::S3ObjectNotFound)) => {
                 debug!("Chunk {} not yet available", chunk_id.name());
                 Ok(None)
             }
@@ -287,7 +248,7 @@ impl StreamingState {
         &mut self,
         volume: VolumeIndex,
     ) -> Result<Option<DownloadedChunk>> {
-        let chunks = list_chunks_in_volume(&self.site, volume, 100).await?;
+        let chunks = list_chunks_in_volume(&self.site, volume).await?;
         self.requests_made += 1;
 
         // Always emit the Start chunk first when transitioning to a new
@@ -305,19 +266,15 @@ impl StreamingState {
             Some(id) => id,
             None => return Ok(None), // Start chunk hasn't been published yet
         };
-        let (identifier, chunk) = download_chunk(&self.site, target).await?;
+        let downloaded = download_chunk(target).await?;
         self.requests_made += 1;
-        self.bytes_downloaded += chunk.data().len() as u64;
+        self.bytes_downloaded += downloaded.chunk.data().len() as u64;
 
         // VCP install + engine bookkeeping happen in the loop after this
         // returns (the chunk is a Start by construction here).
-        self.current = identifier.clone();
+        self.current = downloaded.identifier.clone();
 
-        Ok(Some(DownloadedChunk {
-            identifier,
-            chunk,
-            attempts: 1,
-        }))
+        Ok(Some(downloaded))
     }
 
     // ── Navigation (mapper-backed) + cursor reads ──────────────────────
@@ -378,7 +335,7 @@ impl StreamingState {
 
     /// Volume index the iterator is currently anchored in.
     pub(crate) fn current_volume(&self) -> VolumeIndex {
-        *self.current.volume()
+        self.current.volume()
     }
 
     pub(crate) fn requests_made(&self) -> usize {
@@ -391,19 +348,8 @@ impl StreamingState {
 }
 
 fn extract_vcp(chunk: &Chunk) -> Result<volume_coverage_pattern::Message<'static>> {
-    if let Chunk::Start(file) = chunk {
-        for mut record in file.records()? {
-            if record.compressed() {
-                record = record.decompress()?;
-            }
-            for message in record.messages()? {
-                if let nexrad_decode::messages::MessageContents::VolumeCoveragePattern(vcp) =
-                    message.contents()
-                {
-                    return Ok(vcp.clone().into_owned());
-                }
-            }
-        }
+    match chunk {
+        Chunk::Start(file) => file.coverage_pattern_message(),
+        _ => Err(Error::MissingCoveragePattern),
     }
-    Err(Error::MissingCoveragePattern)
 }

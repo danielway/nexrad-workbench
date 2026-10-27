@@ -147,8 +147,8 @@ impl ElevationChunkMapper {
             let end_seq = total_chunk_count + elevation_chunk_count - 1;
             elevation_chunk_mappings.push((start_seq, end_seq));
 
-            let azimuth_rate = elevation.azimuth_rate();
-            let elevation_angle = elevation.elevation_angle();
+            let azimuth_rate = elevation.azimuth_rate_degrees_per_second();
+            let elevation_angle = elevation.elevation_angle_degrees() as f64;
             let waveform_type = elevation.waveform_type();
 
             for chunk_idx in 0..elevation_chunk_count {
@@ -575,14 +575,20 @@ mod coverage_tests {
         assert_eq!(e1.elevation_number(), Some(1));
         assert!((e1.elevation_angle_deg() - 11.25).abs() < 1e-9);
         assert!((e1.azimuth_rate_dps() - 22.5).abs() < 1e-9);
-        assert_eq!(e1.waveform_type(), Some(WaveformType::CS));
+        assert_eq!(
+            e1.waveform_type(),
+            Some(WaveformType::ContiguousSurveillance)
+        );
 
         // Elevation 2: standard, 0 deg angle, 11.25 dps, CS waveform.
         let e2 = m.get_chunk_metadata(8).unwrap();
         assert_eq!(e2.elevation_number(), Some(2));
         assert!((e2.elevation_angle_deg() - 0.0).abs() < 1e-9);
         assert!((e2.azimuth_rate_dps() - 11.25).abs() < 1e-9);
-        assert_eq!(e2.waveform_type(), Some(WaveformType::CS));
+        assert_eq!(
+            e2.waveform_type(),
+            Some(WaveformType::ContiguousSurveillance)
+        );
     }
 
     #[wasm_bindgen_test]

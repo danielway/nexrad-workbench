@@ -56,7 +56,6 @@ use std::path::{Path, PathBuf};
 
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
-use nexrad_model::data::DataMoment;
 
 fn main() {
     let mut args = std::env::args().skip(1).peekable();
@@ -148,7 +147,7 @@ fn build_fixture(path: &Path, max_range_km: f64) -> Vec<u8> {
         assert_eq!(m.scale(), scale, "scale changes within the sweep");
         assert_eq!(m.offset(), offset, "offset changes within the sweep");
         azimuths.push(r.azimuth_angle_degrees());
-        let raw = m.raw_values();
+        let raw = m.raw_bytes();
         for g in 0..gate_count {
             gates.push(raw.get(g * 2).copied().unwrap_or(0));
         }
@@ -158,7 +157,7 @@ fn build_fixture(path: &Path, max_range_km: f64) -> Vec<u8> {
     let mut payload = Vec::new();
     payload.extend_from_slice(b"NXSC");
     payload.push(1);
-    payload.extend_from_slice(site.identifier());
+    payload.extend_from_slice(site.identifier().as_bytes());
     payload.extend_from_slice(&(site.latitude() as f64).to_le_bytes());
     payload.extend_from_slice(&(site.longitude() as f64).to_le_bytes());
     payload.extend_from_slice(&elevation.to_le_bytes());
@@ -209,7 +208,7 @@ fn build_volume_fixture(path: &Path, (az0, az1, r0, r1): (f64, f64, f64, f64)) -
     let mut payload = Vec::new();
     payload.extend_from_slice(b"NXSV");
     payload.push(1);
-    payload.extend_from_slice(site.identifier());
+    payload.extend_from_slice(site.identifier().as_bytes());
     payload.push(tilts.len() as u8);
     for (elevation, number, sweep) in tilts {
         let mut radials: Vec<_> = sweep
@@ -254,7 +253,7 @@ fn build_volume_fixture(path: &Path, (az0, az1, r0, r1): (f64, f64, f64, f64)) -
         for r in &kept {
             let m = r.reflectivity().unwrap();
             assert_eq!(m.scale(), scale, "scale changes within the sweep");
-            let raw = m.raw_values();
+            let raw = m.raw_bytes();
             for &g in &kept_gates {
                 payload.push(raw.get(g).copied().unwrap_or(0));
             }
