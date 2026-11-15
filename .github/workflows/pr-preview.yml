@@ -17,11 +17,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup Rust
+      - name: Install Rust (version from rust-toolchain.toml)
         if: github.event.action != 'closed'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+        run: rustup toolchain install
 
       - name: Rust Cache
         if: github.event.action != 'closed'
