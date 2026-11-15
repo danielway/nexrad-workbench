@@ -111,9 +111,7 @@ pub(super) fn segment(
         let mut next_live = Vec::new();
         for &parent in &live {
             let mut found = Vec::new();
-            // Index loop: `labeler` is borrowed mutably inside.
-            for p in 0..components[parent].pixels.len() {
-                let (a, g) = components[parent].pixels[p];
+            for &(a, g) in &components[parent].pixels {
                 let seed = a as usize * gate_count + g as usize;
                 let Some(pixels) = labeler.fill(seed, level, stamp) else {
                     continue;
