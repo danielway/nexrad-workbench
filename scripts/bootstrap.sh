@@ -2,14 +2,13 @@
 # Local / devcontainer setup for nexrad-workbench.
 # Keep the wasm-bindgen-cli pin in lockstep with .github/workflows/ci.yml.
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
 # Must match Cargo.lock's wasm-bindgen version and CI's install step.
 WASM_BINDGEN_CLI_VERSION="${WASM_BINDGEN_CLI_VERSION:-0.2.127}"
 
-echo "==> Rust toolchain (stable + wasm32 + clippy/rustfmt)"
-rustup show active-toolchain >/dev/null 2>&1 || rustup toolchain install stable
-rustup target add wasm32-unknown-unknown
-rustup component add clippy rustfmt
+echo "==> Rust toolchain (pinned in rust-toolchain.toml, with wasm32 + clippy/rustfmt)"
+rustup toolchain install
 
 echo "==> wasm-bindgen-cli ${WASM_BINDGEN_CLI_VERSION} (pinned; must match Cargo.lock)"
 if ! command -v wasm-bindgen-test-runner >/dev/null 2>&1 \

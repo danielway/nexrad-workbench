@@ -598,9 +598,7 @@ mod tests {
     fn a_gap_in_the_radials_leaves_cells_empty() {
         let mut cut = Cut::new(28.0, -82.0, 50, |_, _| 50.0);
         // Drop radials 80..=100: east is a 20° gap, far over 1.5°.
-        for a in 80..=100 {
-            cut.azimuths[a] = -1.0;
-        }
+        cut.azimuths[80..=100].fill(-1.0);
         let cuts = [CompositeCut {
             site: "KTBW",
             time_ms: 0,

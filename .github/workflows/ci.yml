@@ -15,10 +15,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust (stable, rustfmt)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      - name: Install Rust (version from rust-toolchain.toml)
+        run: rustup toolchain install
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -30,11 +28,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust (stable, clippy)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-          components: clippy
+      - name: Install Rust (version from rust-toolchain.toml)
+        run: rustup toolchain install
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -51,10 +46,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+      - name: Install Rust (version from rust-toolchain.toml)
+        run: rustup toolchain install
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -69,10 +62,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+      - name: Install Rust (version from rust-toolchain.toml)
+        run: rustup toolchain install
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -92,10 +83,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+      - name: Install Rust (version from rust-toolchain.toml)
+        run: rustup toolchain install
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -123,8 +112,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust (version from rust-toolchain.toml)
+        run: rustup toolchain install
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
