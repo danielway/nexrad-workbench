@@ -84,7 +84,7 @@ Always commit at natural milestones — a self-contained fix, a completed featur
 ## Key Constraints
 
 - **WASM-only target**: The default build target is `wasm32-unknown-unknown` (set in `.cargo/config.toml`). All code must compile for this target. Native stubs exist but are minimal.
-- **Stable toolchain only**: No nightly, no `build-std`, no atomics. See `rust-toolchain.toml`.
+- **Pinned stable toolchain**: `rust-toolchain.toml` pins an exact stable version, and CI installs from it. Bump it by hand and fix any new clippy lints in the same PR. No nightly, no `build-std`, no atomics.
 - **No `await` inside IndexedDB readwrite transactions**: In WASM, IDB transactions auto-commit when the event loop yields. Read first in a separate readonly transaction, then write synchronously in readwrite before calling `.await`. See `src/data/indexeddb/`.
 - **Module edges are build-enforced**: `tools/arch_check.rs` (run from `build.rs` on every `cargo check`) fails the build on any cross-module dependency edge that isn't in its ALLOWED table. Fix the direction, or add to ALLOWED only with a real architectural reason. Never add to GRANDFATHERED.
 - **`globalThis` not `window`**: IDB and other browser APIs accessed via `js_sys::global()` / `js_sys::Reflect::get("indexedDB")` so the same code works in both main thread and Web Worker contexts.
